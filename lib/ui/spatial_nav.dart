@@ -254,20 +254,14 @@ class _Candidate {
 /// 所以修法就是**把原版天然成立的那个不变量显式写出来**：
 /// 候选只能是"本身可聚焦、且**不包含任何其他可聚焦后代**"的节点。
 ///
-/// # 为什么用「无子节点」而不是「无**可聚焦**子节点」
-///
-/// ```text
-/// child.children.isEmpty          ← 用的是这个
-/// ```
-/// 因为"有子节点但都不接受焦点"的容器（比如 `FocusTraversalGroup`）
-/// 本来就被 `canRequestFocus == false` 挡掉了；
-/// 而按 `children` 判可以**同时**排除掉那些
-/// 「自己可聚焦 + 有可聚焦子节点」的中间层 —— 那种节点才是
-/// 真正会造成"焦点落到看不见的容器上"的元凶。
-///
-/// ⚠️ 被排除的只是**作为导航目标**的资格，
-///    `walk()` 仍然会递归进它的子节点 —— 所以页面里的真控件一个都不会丢。
-bool _isLeafFocusTarget(FocusNode node) => node.children.isEmpty;
+/// A control can own excluded package focus descendants. Those nodes remain in
+/// the focus tree but cannot receive focus, so children.isEmpty would remove
+/// the application control as well. Reject scopes explicitly, and reject a
+/// container only when a descendant can actually receive focus. The collection
+/// walk still visits descendants to find each independent control.
+bool _isLeafFocusTarget(FocusNode node) =>
+    node is! FocusScopeNode &&
+    !node.descendants.any((descendant) => descendant.canRequestFocus);
 
 /// 收集当前树里**真正可见且可聚焦**的节点
 ///

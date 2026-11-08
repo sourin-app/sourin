@@ -30,6 +30,7 @@
 // ⚠️ 不能用 `!Device.isDesktop`：那会把**手机**也排除掉，而手机打字很方便。
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/device.dart';
@@ -79,7 +80,7 @@ void main() {
       await _mountBottomSheet(t, count: 120);
 
       expect(
-        find.byType(TextField),
+        find.byType(ui.TextField),
         findsNothing,
         reason: '★★ TV **绝不能**有搜索框 —— 遥控器无法输入，'
             '而且 `TextField` 会吃掉方向键：TV 用户焦点一旦落上去，'
@@ -92,7 +93,7 @@ void main() {
       await _mountBottomSheet(t, count: 120);
 
       expect(
-        find.byType(TextField),
+        find.byType(ui.TextField),
         findsOneWidget,
         reason: '★ 用户明确要求「支持搜索」—— 手机打字很方便，'
             '绝不能因为给 TV 加门控而连带把手机的搜索也关掉。',
@@ -103,14 +104,14 @@ void main() {
       Device.overrideKind(DeviceKind.desktop);
       await _mountBottomSheet(t, count: 120);
 
-      expect(find.byType(TextField), findsOneWidget,
+      expect(find.byType(ui.TextField), findsOneWidget,
           reason: '★ 桌面是搜索功能的主场景（用户说的就是 PC）');
     });
 
     testWidgets('★ 集数 ≤ 30 时**任何**设备都不显示（阈值仍然有效）', (t) async {
       Device.overrideKind(DeviceKind.desktop);
       await _mountBottomSheet(t, count: 12);
-      expect(find.byType(TextField), findsNothing,
+      expect(find.byType(ui.TextField), findsNothing,
           reason: '12 集的剧摆个搜索框是噪音 —— 阈值 $kEpisodeSearchAfter 仍要生效');
     });
 
@@ -118,11 +119,11 @@ void main() {
       Device.overrideKind(DeviceKind.touchOnly);
 
       await _mountBottomSheet(t, count: kEpisodeSearchAfter);
-      expect(find.byType(TextField), findsNothing,
+      expect(find.byType(ui.TextField), findsNothing,
           reason: '恰好等于阈值时不显示（判据是 `>` 不是 `>=`）');
 
       await _mountBottomSheet(t, count: kEpisodeSearchAfter + 1);
-      expect(find.byType(TextField), findsOneWidget,
+      expect(find.byType(ui.TextField), findsOneWidget,
           reason: '刚过阈值就要显示 —— 边界不能差一格');
     });
   });

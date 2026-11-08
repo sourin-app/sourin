@@ -71,6 +71,8 @@ library;
  * ⇒ 这是本仓「同一纪律缺少可执行守卫」的又一处（同类：铁律 170）。
  * ```
  */
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
@@ -286,7 +288,9 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
     }
     if (!mounted) return;
     // ★ 判据走纯函数（可单测，见它的文档）—— 类型提升成局部量避免 lint 报多余的 `!`
-    final realSource = (srcUrl != null && srcUrl.trim().isNotEmpty) ? srcUrl.trim() : '';
+    final realSource = (srcUrl != null && srcUrl.trim().isNotEmpty)
+        ? srcUrl.trim()
+        : '';
     setState(() {
       if (kindForExisting(sourceUrl: realSource) == PluginInputKind.link) {
         // ★ 真·按链接安装的：预填那个链接，类型锁死
@@ -440,19 +444,18 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
       actions: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          TextButton(
+          ui.TextButton(
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('取消'),
           ),
-          FilledButton(
+          ui.FilledButton(
             onPressed: _loadingSource
                 ? null
                 : () {
                     final t = _ctl.text.trim();
                     if (t.isEmpty) return;
-                    Navigator.of(context).pop(
-                      PluginEditResult(kind: _kind, text: t),
-                    );
+                    Navigator.of(context)
+                        .pop(PluginEditResult(kind: _kind, text: t));
                   },
             child: Text(_isEdit ? '保存' : '安装'),
           ),
@@ -481,9 +484,7 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
               ),
               const SizedBox(width: Sp.x2),
               Text(
-                _loadingSource
-                    ? '正在读取源码…'
-                    : (isLink ? '将按：链接安装' : '将按：源码安装'),
+                _loadingSource ? '正在读取源码…' : (isLink ? '将按：链接安装' : '将按：源码安装'),
                 key: const ValueKey('plugin_edit_kind_label'),
                 style: TextStyle(
                   color: colors.primary,
@@ -509,7 +510,7 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
           ),
           const SizedBox(height: Sp.x3),
           // ── 唯一的输入框
-          TextField(
+          ui.TextField(
             controller: _ctl,
             onChanged: _onChanged,
             enabled: !_loadingSource,
@@ -541,18 +542,20 @@ class _PluginEditDialogState extends State<PluginEditDialogBody> {
                 ),
               ),
               const SizedBox(width: Sp.x1),
-              ChoiceChip(
+              ui.ChoiceChip(
                 label: const Text('链接'),
                 selected: isLink,
-                onSelected:
-                    typeLocked ? null : (_) => _pick(PluginInputKind.link),
+                onSelected: typeLocked
+                    ? null
+                    : (_) => _pick(PluginInputKind.link),
               ),
               const SizedBox(width: Sp.x2),
-              ChoiceChip(
+              ui.ChoiceChip(
                 label: const Text('源码'),
                 selected: !isLink,
-                onSelected:
-                    typeLocked ? null : (_) => _pick(PluginInputKind.source),
+                onSelected: typeLocked
+                    ? null
+                    : (_) => _pick(PluginInputKind.source),
               ),
             ],
           ),

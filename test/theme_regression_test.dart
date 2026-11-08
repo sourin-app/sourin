@@ -63,10 +63,11 @@ void main() {
   final bg = AppPalette.dark.background;
 
   group('① 两套 Material 不能混用', () {
-    test('lib/ 下不允许出现 package:flutter/material.dart', () {
+    test('业务界面不得越过唯一 Miuix SDK 兼容边界', () {
       final offenders = <String>[];
       for (final e in Directory('lib').listSync(recursive: true)) {
         if (e is! File || !e.path.endsWith('.dart')) continue;
+        if (e.path.replaceAll('\\', '/').endsWith('/ui/theme/miuix_framework_bridge.dart')) continue;
         final src = e.readAsStringSync();
         if (src.contains("import 'package:flutter/material.dart'")) {
           offenders.add(e.path);

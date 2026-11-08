@@ -31,13 +31,12 @@
 //    那种由核心层的封面代理解决（`proxy_covers`），
 //    核心会把封面换成 `http://127.0.0.1:<port>/s/...` 并附上正确请求头。
 
+import 'miuix_controls.dart' as ui;
+
 import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
-// ★★★ 第 66 轮 M 批次：玻璃组件（Owner：「彻底不用 Material 组件，全部自建/玻璃」）
-//   ⚠️ 包实际版本是 **1.11.0**（pubspec 写 ^1.7.2，锁到 1.11.0）
-//      ⇒ API 与 1.7.2 不同：GlassChip 有 label/selected/onTap，
-//         GlassButton 的图标版要 icon 必填、文本版要 GlassButton.custom。
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../core/device.dart';
 import '../tokens.dart';
@@ -262,9 +261,11 @@ class _PosterCardState extends State<PosterCard> {
        */
       child: PressFeedback(
         enabled: widget.onTap != null && !_hasPressAncestor,
-        child: InkWell(
+        child: ui.InkWell(
           onTap: widget.onTap,
-          onFocusChange: (f) { if (f != _focused) setState(() => _focused = f); },
+          onFocusChange: (f) {
+            if (f != _focused) setState(() => _focused = f);
+          },
           borderRadius: Radii.rMd,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -369,9 +370,11 @@ class _PosterCardState extends State<PosterCard> {
                                 if (progress == null) {
                                   // 加载完成
                                   if (!_loaded) {
-                                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                                      if (mounted) setState(() => _loaded = true);
-                                    });
+                                    WidgetsBinding.instance
+                                        .addPostFrameCallback((_) {
+                                          if (mounted)
+                                            setState(() => _loaded = true);
+                                        });
                                   }
                                   return child;
                                 }
@@ -437,8 +440,9 @@ class _PosterCardState extends State<PosterCard> {
                                   ? Icon(
                                       AppIcons.movie_outlined,
                                       size: FontSizes.display * 0.6,
-                                      color: colors.onSurfaceVariant
-                                          .withValues(alpha: 0.5),
+                                      color: colors.onSurfaceVariant.withValues(
+                                        alpha: 0.5,
+                                      ),
                                     )
                                   : Text(
                                       // 原版 `title.slice(0, 1)` —— 中文一个字就是完整的字
@@ -467,7 +471,9 @@ class _PosterCardState extends State<PosterCard> {
                               left: Sp.x2,
                               child: _Chip(
                                 // 原版：`unread > 99 ? "99+" : unread`
-                                text: widget.unread > 99 ? '99+' : '${widget.unread}',
+                                text: widget.unread > 99
+                                    ? '99+'
+                                    : '${widget.unread}',
                                 color: AppColors.badge,
                                 /*
                                  * ★ 未读数走「实心强调」而不是玻璃 —— 这是**修一个
@@ -543,23 +549,35 @@ class _PosterCardState extends State<PosterCard> {
                                 child: AnimatedOpacity(
                                   // ★ 测试用它定位本层（`PosterCard` 里还有**另一个**
                                   //   `AnimatedOpacity` —— 图片首帧淡入，必须区分开）
-                                  key: const ValueKey<String>('poster-hover-glow'),
+                                  key: const ValueKey<String>(
+                                    'poster-hover-glow',
+                                  ),
                                   opacity: _hover ? 1 : 0,
                                   // ★ 判据②：150ms（`Motion.fast`，高频操作走最低档）
                                   //   判据④：`MotionPrefs` ⇒ 系统"减少动态效果"时
                                   //           `Duration.zero`（状态仍在，只是无过渡）
-                                  duration: MotionPrefs.duration(context, Motion.fast),
-                                  curve: MotionPrefs.curve(context, Motion.easeOut),
+                                  duration: MotionPrefs.duration(
+                                    context,
+                                    Motion.fast,
+                                  ),
+                                  curve: MotionPrefs.curve(
+                                    context,
+                                    Motion.easeOut,
+                                  ),
                                   child: DecoratedBox(
                                     decoration: BoxDecoration(
                                       // 极淡的品牌色罩（6%）：让"亮起来"有实体感
-                                      color: colors.primary.withValues(alpha: 0.06),
+                                      color: colors.primary.withValues(
+                                        alpha: 0.06,
+                                      ),
                                       borderRadius: Radii.rMd,
                                       // ★ 与 TV 聚焦环**同一种**表达（描边），
                                       //   但更细更淡 ⇒ 两种状态看得出区别：
                                       //   悬停 2px/55%、聚焦 3px/100%
                                       border: Border.all(
-                                        color: colors.primary.withValues(alpha: 0.55),
+                                        color: colors.primary.withValues(
+                                          alpha: 0.55,
+                                        ),
                                         width: 2,
                                       ),
                                     ),
@@ -573,7 +591,10 @@ class _PosterCardState extends State<PosterCard> {
                   ),
                   if (ringed) ...[
                     Positioned(
-                      left: -6, top: -6, right: -6, bottom: -6,
+                      left: -6,
+                      top: -6,
+                      right: -6,
+                      bottom: -6,
                       child: IgnorePointer(
                         child: DecoratedBox(
                           decoration: BoxDecoration(
@@ -587,7 +608,10 @@ class _PosterCardState extends State<PosterCard> {
                       ),
                     ),
                     Positioned(
-                      left: -3, top: -3, right: -3, bottom: -3,
+                      left: -3,
+                      top: -3,
+                      right: -3,
+                      bottom: -3,
                       child: IgnorePointer(
                         child: DecoratedBox(
                           decoration: BoxDecoration(
@@ -603,8 +627,8 @@ class _PosterCardState extends State<PosterCard> {
 
               // ── 标题 / 副标题 ──
               if (widget.showCaption) ...[
-              const SizedBox(height: Sp.x2),
-              /*
+                const SizedBox(height: Sp.x2),
+                /*
                * ★★★ 2026-10-09（Owner：「已缓存的视频高度不一致,名字会换行,
                *                高度不一致不好看需要统一」）
                *
@@ -627,18 +651,19 @@ class _PosterCardState extends State<PosterCard> {
                * ⚠️ 高度算式与 `AppMetrics.posterMetaHeight` **同源** ——
                *    那个函数是承载高度（含副标题等）的权威，这里只取标题那几行。
                */
-              if (widget.titleLines > 1)
-                SizedBox(
-                  height: AppMetrics.posterTitleLine *
-                      widget.titleLines *
-                      AppMetrics.cardTextScale,
-                  child: Align(
-                    alignment: Alignment.topLeft,
-                    child: Text(
-                      widget.title,
-                      maxLines: widget.titleLines,
-                      overflow: TextOverflow.ellipsis,
-                      /*
+                if (widget.titleLines > 1)
+                  SizedBox(
+                    height:
+                        AppMetrics.posterTitleLine *
+                        widget.titleLines *
+                        AppMetrics.cardTextScale,
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: Text(
+                        widget.title,
+                        maxLines: widget.titleLines,
+                        overflow: TextOverflow.ellipsis,
+                        /*
                        * ★★★ `height` 这一行是**必须的**，不是装饰（实测定的）
                        *
                        * # 不写它会怎样（我第一版就漏了，实测抓出来）
@@ -672,40 +697,40 @@ class _PosterCardState extends State<PosterCard> {
                        * ⚠️ 只在 `titleLines > 1` 这条分支里加：
                        *    `titleLines == 1` 是默认值，必须逐字节保持原行为。
                        */
-                      style: TextStyle(
-                        fontSize: FontSizes.base,
-                        fontWeight: FontWeights.regular,
-                        color: colors.onSurface,
-                        height: AppMetrics.posterTitleLine / FontSizes.base,
+                        style: TextStyle(
+                          fontSize: FontSizes.base,
+                          fontWeight: FontWeights.regular,
+                          color: colors.onSurface,
+                          height: AppMetrics.posterTitleLine / FontSizes.base,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              if (widget.titleLines <= 1)
-                Text(
-                  widget.title,
-                  // ★ 行数由调用点决定（默认 1 ⇒ 与旧代码逐位相同）
-                  maxLines: widget.titleLines,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: FontSizes.base,
-                    fontWeight: FontWeights.regular,
-                    color: colors.onSurface,
-                  ),
-                ),
-              if (widget.subtitle != null && widget.subtitle!.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(
-                    widget.subtitle!,
-                    maxLines: 1,
+                if (widget.titleLines <= 1)
+                  Text(
+                    widget.title,
+                    // ★ 行数由调用点决定（默认 1 ⇒ 与旧代码逐位相同）
+                    maxLines: widget.titleLines,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      color: colors.onSurfaceVariant,
+                      fontSize: FontSizes.base,
+                      fontWeight: FontWeights.regular,
+                      color: colors.onSurface,
                     ),
                   ),
-                ),
+                if (widget.subtitle != null && widget.subtitle!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      widget.subtitle!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
               ],
             ],
           ),
@@ -781,98 +806,30 @@ class _PosterCardState extends State<PosterCard> {
   }
 }
 
-/// 海报上的小标签（角标 / 未读数）
-///
-/// # ★★★ 第 66 轮 M 批次：玻璃化（Owner 原话「彻底不用 Material 组件，全部自建/玻璃」）
-///
-/// # 为什么**只有这一层**值得玻璃化
-/// ```text
-/// 我截图看过整张卡片（`.probe/shots/t66/t66_card_before.png`）：
-///   卡片 = **海报图片**（占 2/3 面积，几乎不透明）+ 下方两行文字。
-/// ⇒ 在海报**本体**上加玻璃是**看不见的**：玻璃的视觉本质是"背景透过来"，
-///   而海报本身是实色图片 ⇒ 模糊一块实色图 = 实色图（零变化，纯浪费 GPU）。
-/// ⇒ 真正"浮在图片之上、背景会透过来"的层只有这两个角标。
-///   它们原来是不透明的黑底（alpha 0.62）⇒ 换成玻璃后图片会**透出来**，
-///   这才是玻璃该用的地方。
-/// ```
-///
-/// # 为什么用 `GlassChip` 而不是 `GlassCard`
-/// ```text
-/// 角标是"一小块带文字的胶囊" ⇒ `GlassChip` 的语义（label + 圆角胶囊）正好。
-/// `GlassCard` 是容器（默认 padding 16、形状是超椭圆），套在这个尺寸上
-/// 会把 2 字角标撑得很大。
-/// ```
-///
-/// # 为什么不保留原来的 `color:` 参数
-/// ```text
-/// 原来未读数用 `AppColors.badge`（红色底）。玻璃化后底色由
-/// `GlassChip` 的 specular/fill 决定，**不能**再叠一个不透明红底
-/// （那样玻璃就看不见了）。
-/// ⇒ 未读数的"红"改由 `labelStyle` 的**文字色**承担（见调用点），
-///   并保留 `selected` 语义给将来用。★ 未读的**可辨识度**不能丢：
-///   原设计靠"红底白字"，现在靠"玻璃底 + 红字 + 加粗"。
-/// ```
+/// Actual Miuix badges preserve readable labels over arbitrary poster images.
+/// Unread counts keep their explicit solid semantic color.
 class _Chip extends StatelessWidget {
   const _Chip({required this.text, this.color, this.solid = false});
-
   final String text;
-
-  /// 语义色（未读数用 `AppColors.badge`）
   final Color? color;
-
-  /// `true` ⇒ **不走玻璃**，画不透明实心底（未读数专用）
-  ///
-  /// 见调用点那段说明：未读数是功能性信号，可读性优先于通透感。
   final bool solid;
 
   @override
-  Widget build(BuildContext context) {
-    /*
-     * 实心分支：保留改动前的观感（红底白字），一个像素都不动。
-     * ⚠️ 这不是"没玻璃化干净"，是**有意保留**：见调用点的对比度说明。
-     */
-    if (solid) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 2),
-        decoration: BoxDecoration(
-          color: color ?? Colors.black.withValues(alpha: 0.62),
-          borderRadius: Radii.rFull,
+  Widget build(BuildContext context) => miuix.MiuixBadge(
+    containerColor: solid
+        ? color ?? Colors.black87
+        : Colors.black.withValues(alpha: .72),
+    contentColor: solid ? Colors.white : color ?? Colors.white,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x1, vertical: 2),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          fontWeight: FontWeight.w600,
+          color: solid ? Colors.white : color ?? Colors.white,
         ),
-        child: Text(
-          text,
-          style: const TextStyle(
-            fontSize: FontSizes.cap,
-            fontWeight: FontWeight.w600,
-            color: Colors.white,
-          ),
-        ),
-      );
-    }
-
-    return GlassChip(
-      label: text,
-      /*
-       * ★ 默认档（`GlassQuality.standard`）—— 不是随手写的：
-       *   本卡片在**长列表**里（首页一个源可到 693 张）。
-       *   包内文档原话：standard 档 "Use when: Widget is in a scrollable
-       *   list (ListView, GridView, etc.)" / "Works correctly during scrolling"
-       *   / "5-10x faster than BackdropFilter"。
-       *   premium 档是给静态头图用的 ⇒ 这里用 standard。
-       */
-      quality: GlassQuality.standard,
-      // ⚠️ 1.11.0 的 `GlassChip` **没有** `shape` 参数（1.7.2 有）——
-      //    它的胶囊形状由组件自己决定。这也是"必须按 1.11.0 API 写"的一个实例。
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 2),
-      labelStyle: TextStyle(
-        fontSize: FontSizes.cap,
-        fontWeight: FontWeight.w600,
-        /*
-         * 有 `color`（= 未读数）⇒ 用那个色**当文字色**；
-         * 否则用白色（角标在深色海报上）。
-         * ⚠️ 原来是"底色"，现在变"文字色"—— 见类注释的说明。
-         */
-        color: color ?? Colors.white,
       ),
-    );
-  }
+    ),
+  );
 }

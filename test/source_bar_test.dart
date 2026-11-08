@@ -10,7 +10,7 @@
 //
 // 拆成 4 条：
 // ```text
-// ① 和底栏的液态玻璃样式要**看起来完全一致**
+// ① 2026-11-08：实际 Miuix 控件在亮暗主题下保持可读选择态
 // ② 滚动时**吸附在顶部**（sticky）
 // ③ 最右侧显示**有多少个源**
 // ④ **鼠标拖拽**能左右滑动
@@ -28,90 +28,101 @@
 // 截图只用来确认"观感"这一类无法断言的东西。
 
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/sourin_api.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/widgets/source_bar.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 
 /// 造 N 个假源（只用得到 id / name；其余字段不影响源条渲染）
 List<ProviderManifest> _sources(int n) => [
-      for (var i = 0; i < n; i++)
-        ProviderManifest(
-          id: 'src-$i',
-          name: '源$i',
-          enabled: true,
-        ),
-    ];
+  for (var i = 0; i < n; i++)
+    ProviderManifest(id: 'src-$i', name: '源$i', enabled: true),
+];
 
 Widget _host(Widget child, {ThemeData? theme}) {
-  // 默认深色（与 shell 的默认主题一致）；浅色用例显式传 `FTheme.neutral.light`
+  // Each test selects the production light/dark Miuix theme explicitly.
   final data = theme ?? AppTheme.themeFor(Brightness.dark);
   return MaterialApp(
     theme: data,
     builder: (_, c) => AppThemeHost(data: data, child: c ?? const SizedBox()),
-    home: Scaffold(body: Center(child: child)),
+    home: AppScaffold(child: Center(child: child)),
   );
 }
 
-/// 收集树里所有 `AnimatedContainer` 的渐变（源条的选中药丸就是其中之一）
-List<Gradient> _gradients(WidgetTester t) {
-  final found = <Gradient>[];
-  for (final el in collectAllElementsFrom(
-    t.binding.rootElement!,
-    skipOffstage: false,
-  )) {
-    final w = el.widget;
-    if (w is AnimatedContainer) {
-      final d = w.decoration;
-      if (d is BoxDecoration && d.gradient != null) found.add(d.gradient!);
-    }
-  }
-  return found;
+Color _surfaceColor(WidgetTester tester, Finder pill) {
+  final button = find.descendant(
+    of: pill,
+    matching: find.byType(miuix.MiuixButton),
+  );
+  expect(button, findsOneWidget);
+  final paints = find.descendant(
+    of: button,
+    matching: find.byWidgetPredicate(
+      (widget) =>
+          widget is DecoratedBox && widget.decoration is ShapeDecoration,
+    ),
+  );
+  expect(paints, findsOneWidget);
+  final paint = tester.renderObject<RenderDecoratedBox>(paints);
+  return (paint.decoration as ShapeDecoration).color!;
 }
 
-/// 取某个纯 `Text` 的颜色（源条 pill 的名字就是纯 Text）
-Color? _textColor(WidgetTester t, String label) {
-  for (final el in collectAllElementsFrom(
-    t.binding.rootElement!,
-    skipOffstage: false,
-  )) {
-    final w = el.widget;
-    if (w is Text && w.data == label) return w.style?.color;
-  }
-  return null;
+Color _textColor(WidgetTester tester, String label) {
+  final text = find.byWidgetPredicate(
+    (widget) => widget is RichText && widget.text.toPlainText() == label,
+  );
+  expect(text, findsOneWidget);
+  final paint = tester.renderObject<RenderParagraph>(text);
+  expect(paint.text.style?.color, isNotNull);
+  return paint.text.style!.color!;
 }
+
+double _contrast(Color foreground, Color background) {
+  final a = Color.alphaBlend(foreground, background).computeLuminance();
+  final b = background.computeLuminance();
+  return (math.max(a, b) + .05) / (math.min(a, b) + .05);
+}
+
+Finder _pill(String label) => find.widgetWithText(SourcePill, label);
 
 void main() {
+  setUp(UiPrefs.debugResetForTest);
+  tearDown(UiPrefs.debugResetForTest);
   group('源条 —— 基本显示规则', () {
-    testWidgets('★ 单源也渲染液态玻璃条（2026-10-31 Owner 改判）', (t) async {
-      await t.pumpWidget(_host(
-        SourceBar(
-          sources: _sources(1),
-          current: 'src-0',
-          onSelect: (_) {},
+    testWidgets('单源也渲染实际 Miuix 源条', (t) async {
+      await t.pumpWidget(
+        _host(
+          SourceBar(sources: _sources(1), current: 'src-0', onSelect: (_) {}),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
-      expect(find.text('源0'), findsOneWidget,
-          reason: 'Owner 2026-10-31 逐字：「首页就算只有一个源也要显示那个'
-              '液态选择的」—— 原版 `sources.length > 1` 的隐藏行为已推翻。\n'
-              '单源默认选中；点击重选被 `_switchSource` 的同源守卫短路，无害。');
+      expect(
+        find.text('源0'),
+        findsOneWidget,
+        reason:
+            'Owner 2026-10-31 逐字：「首页就算只有一个源也要显示那个'
+            '液态选择的」—— 原版 `sources.length > 1` 的隐藏行为已推翻。\n'
+            '单源默认选中；点击重选被 `_switchSource` 的同源守卫短路，无害。',
+      );
     });
 
-    testWidgets('★ 两个源以上才显示', (t) async {
-      await t.pumpWidget(_host(
-        SourceBar(
-          sources: _sources(2),
-          current: 'src-0',
-          onSelect: (_) {},
+    testWidgets('多个源同时显示', (t) async {
+      await t.pumpWidget(
+        _host(
+          SourceBar(sources: _sources(2), current: 'src-0', onSelect: (_) {}),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
       expect(find.text('源0'), findsOneWidget);
@@ -120,37 +131,44 @@ void main() {
 
     testWidgets('★ 点击 pill 回调选中（点击不能被拖拽支持破坏）', (t) async {
       String? picked;
-      await t.pumpWidget(_host(
-        SourceBar(
-          sources: _sources(4),
-          current: 'src-0',
-          onSelect: (id) => picked = id,
+      await t.pumpWidget(
+        _host(
+          SourceBar(
+            sources: _sources(4),
+            current: 'src-0',
+            onSelect: (id) => picked = id,
+          ),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
       await t.tap(find.text('源2'));
       await t.pumpAndSettle();
 
-      expect(picked, 'src-2',
-          reason: '★ 加了 mouse 拖拽后，点击仍必须能选中 —— '
-              '手势竞技场按"是否超过拖拽阈值"裁决，短按应该是点击赢');
+      expect(
+        picked,
+        'src-2',
+        reason:
+            '★ 加了 mouse 拖拽后，点击仍必须能选中 —— '
+            '手势竞技场按"是否超过拖拽阈值"裁决，短按应该是点击赢',
+      );
     });
   });
 
   group('源数量显示（用户要求 ③）', () {
     testWidgets('★ 源 > 3 时显示「N 个源」', (t) async {
-      await t.pumpWidget(_host(
-        SourceBar(
-          sources: _sources(25),
-          current: 'src-0',
-          onSelect: (_) {},
+      await t.pumpWidget(
+        _host(
+          SourceBar(sources: _sources(25), current: 'src-0', onSelect: (_) {}),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
-      expect(find.textContaining('个源'), findsOneWidget,
-          reason: '用户明确要求「最右侧也没显示有多少个源」');
+      expect(
+        find.textContaining('个源'),
+        findsOneWidget,
+        reason: '用户明确要求「最右侧也没显示有多少个源」',
+      );
       /*
        * ⚠️ 数量是用 `Text.rich` 画的（两个 TextSpan：数字 + " 个源"），
        *    所以 `find.text('25')` **匹配不到**（它只匹配纯 Text）。
@@ -168,24 +186,27 @@ void main() {
       expect(
         texts.any((s) => s.contains('25')),
         isTrue,
-        reason: '★ 要显示**真实数量**（25 个源 → 文本里得有 25）。'
+        reason:
+            '★ 要显示**真实数量**（25 个源 → 文本里得有 25）。'
             '当前所有 RichText: $texts',
       );
     });
 
     testWidgets('★ 源 ≤ 3 时不显示（原版 showCount 是 > 3）', (t) async {
-      await t.pumpWidget(_host(
-        SourceBar(
-          sources: _sources(3),
-          current: 'src-0',
-          onSelect: (_) {},
+      await t.pumpWidget(
+        _host(
+          SourceBar(sources: _sources(3), current: 'src-0', onSelect: (_) {}),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
-      expect(find.textContaining('个源'), findsNothing,
-          reason: '原版 `showCount = sources.length > 3` —— '
-              '3 个源一眼数完，再挂个计数是噪音');
+      expect(
+        find.textContaining('个源'),
+        findsNothing,
+        reason:
+            '原版 `showCount = sources.length > 3` —— '
+            '3 个源一眼数完，再挂个计数是噪音',
+      );
     });
   });
 
@@ -203,30 +224,32 @@ void main() {
        * ⚠️ 断言的是**真实 Scrollable 的 offset 变化** ——
        *    不是"源码里写了 dragDevices"（那是静态断言，证明不了运行时生效）。
        */
-      await t.pumpWidget(_host(
-        SizedBox(
-          width: 400, // 故意比内容窄 → 必然可滚
-          child: SourceBar(
-            sources: _sources(25),
-            current: 'src-0',
-            onSelect: (_) {},
+      await t.pumpWidget(
+        _host(
+          SizedBox(
+            width: 400, // 故意比内容窄 → 必然可滚
+            child: SourceBar(
+              sources: _sources(25),
+              current: 'src-0',
+              onSelect: (_) {},
+            ),
           ),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
       final scrollable = find.byType(Scrollable).first;
       final pos = t.state<ScrollableState>(scrollable).position;
       final before = pos.pixels;
-      expect(pos.maxScrollExtent, greaterThan(0),
-          reason: '前置条件：内容宽度必须超出容器，否则无从验证滚动');
+      expect(
+        pos.maxScrollExtent,
+        greaterThan(0),
+        reason: '前置条件：内容宽度必须超出容器，否则无从验证滚动',
+      );
 
       // ── 用**鼠标**拖拽（不是 touch）──
       final center = t.getCenter(scrollable);
-      final g = await t.startGesture(
-        center,
-        kind: PointerDeviceKind.mouse,
-      );
+      final g = await t.startGesture(center, kind: PointerDeviceKind.mouse);
       // 分步移动（一步到位可能被判定为 fling 之外的行为）
       for (var i = 1; i <= 6; i++) {
         await g.moveBy(Offset(-40, 0));
@@ -239,22 +262,25 @@ void main() {
       expect(
         after,
         greaterThan(before),
-        reason: '★ 鼠标向左拖拽后 offset 必须增大（内容往左滚）—— '
+        reason:
+            '★ 鼠标向左拖拽后 offset 必须增大（内容往左滚）—— '
             '没变说明 `dragDevices` 没生效，用户仍"不能左右滑动"',
       );
     });
 
     testWidgets('★ 触摸拖拽也仍然可用（不能为了鼠标破坏触摸）', (t) async {
-      await t.pumpWidget(_host(
-        SizedBox(
-          width: 400,
-          child: SourceBar(
-            sources: _sources(25),
-            current: 'src-0',
-            onSelect: (_) {},
+      await t.pumpWidget(
+        _host(
+          SizedBox(
+            width: 400,
+            child: SourceBar(
+              sources: _sources(25),
+              current: 'src-0',
+              onSelect: (_) {},
+            ),
           ),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
       final scrollable = find.byType(Scrollable).first;
@@ -272,8 +298,7 @@ void main() {
       await g.up();
       await t.pumpAndSettle();
 
-      expect(pos.pixels, greaterThan(before),
-          reason: '触摸端拖拽是移动端的标准操作，不能被改坏');
+      expect(pos.pixels, greaterThan(before), reason: '触摸端拖拽是移动端的标准操作，不能被改坏');
     });
   });
 
@@ -293,39 +318,41 @@ void main() {
        */
       const barH = 44.0 + 16; // 源条 44 + 上下各 8
 
-      await t.pumpWidget(_host(
-        SizedBox(
-          width: 500,
-          height: 400,
-          child: CustomScrollView(
-            slivers: [
-              // 源条上方的"我的"版块（高 200，会被滚上去）
-              const SliverToBoxAdapter(child: SizedBox(height: 200)),
-              SliverPersistentHeader(
-                pinned: true,
-                delegate: _TestHeader(
-                  extent: barH,
-                  child: SizedBox(
-                    height: barH,
-                    child: SourceBar(
-                      sources: _sources(5),
-                      current: 'src-0',
-                      onSelect: (_) {},
+      await t.pumpWidget(
+        _host(
+          SizedBox(
+            width: 500,
+            height: 400,
+            child: CustomScrollView(
+              slivers: [
+                // 源条上方的"我的"版块（高 200，会被滚上去）
+                const SliverToBoxAdapter(child: SizedBox(height: 200)),
+                SliverPersistentHeader(
+                  pinned: true,
+                  delegate: _TestHeader(
+                    extent: barH,
+                    child: SizedBox(
+                      height: barH,
+                      child: SourceBar(
+                        sources: _sources(5),
+                        current: 'src-0',
+                        onSelect: (_) {},
+                      ),
                     ),
                   ),
                 ),
-              ),
-              // 一段足够长的内容，保证能滚
-              SliverList(
-                delegate: SliverChildListDelegate([
-                  for (var i = 0; i < 30; i++)
-                    const SizedBox(height: 60, child: Text('content')),
-                ]),
-              ),
-            ],
+                // 一段足够长的内容，保证能滚
+                SliverList(
+                  delegate: SliverChildListDelegate([
+                    for (var i = 0; i < 30; i++)
+                      const SizedBox(height: 60, child: Text('content')),
+                  ]),
+                ),
+              ],
+            ),
           ),
         ),
-      ));
+      );
       await t.pumpAndSettle();
 
       final barFinder = find.byType(SourceBar);
@@ -388,15 +415,17 @@ void main() {
        */
       var guard = 0;
       while (pos.pixels < pos.maxScrollExtent - 1 && guard < 20) {
-        pos.jumpTo(
-          (pos.pixels + 300).clamp(0.0, pos.maxScrollExtent),
-        );
+        pos.jumpTo((pos.pixels + 300).clamp(0.0, pos.maxScrollExtent));
         await t.pumpAndSettle();
         guard++;
       }
-      expect(pos.pixels, closeTo(pos.maxScrollExtent, 1.0),
-          reason: '前置条件：必须滚到底（当前 ${pos.pixels} / '
-              '${pos.maxScrollExtent}，滚了 $guard 次）');
+      expect(
+        pos.pixels,
+        closeTo(pos.maxScrollExtent, 1.0),
+        reason:
+            '前置条件：必须滚到底（当前 ${pos.pixels} / '
+            '${pos.maxScrollExtent}，滚了 $guard 次）',
+      );
 
       final atBottom = t.getTopLeft(barFinder).dy;
 
@@ -413,7 +442,8 @@ void main() {
       expect(
         afterMore,
         closeTo(atBottom, 0.5),
-        reason: '★★ 滚到底后源条必须**钉住不动** —— '
+        reason:
+            '★★ 滚到底后源条必须**钉住不动** —— '
             '这就是用户要的「随着页面滚动吸附在顶部」。'
             ' 到底时=$atBottom 再滚后=$afterMore',
       );
@@ -431,15 +461,18 @@ void main() {
       expect(
         atBottom,
         closeTo(viewportTop, 1.0),
-        reason: '★ 钉住的位置必须是**滚动视口的顶边**（视口顶边=$viewportTop，'
+        reason:
+            '★ 钉住的位置必须是**滚动视口的顶边**（视口顶边=$viewportTop，'
             '源条=$atBottom）—— 停在别处说明只是"跟着滚"，不是吸附',
       );
 
       // 吸附的意义：一直可见
-      expect(barFinder, findsOneWidget,
-          reason: '★ 吸附之后源条必须仍在屏幕上');
-      expect(t.getRect(barFinder).height, greaterThan(0),
-          reason: '源条高度不能为 0（被压扁就等于看不见）');
+      expect(barFinder, findsOneWidget, reason: '★ 吸附之后源条必须仍在屏幕上');
+      expect(
+        t.getRect(barFinder).height,
+        greaterThan(0),
+        reason: '源条高度不能为 0（被压扁就等于看不见）',
+      );
     });
   });
 
@@ -455,14 +488,21 @@ void main() {
        * `ListView` 做不到吸附 —— 它的子项都是平级的，没有一个能"钉住"。
        * 必须换成 sliver 体系。
        */
-      expect(home.contains('CustomScrollView('), isTrue,
-          reason: '★ 必须换成 CustomScrollView —— ListView 无法做 sticky');
-      expect(home.contains('SliverPersistentHeader('), isTrue,
-          reason: '★ 源条必须包在 SliverPersistentHeader 里');
+      expect(
+        home.contains('CustomScrollView('),
+        isTrue,
+        reason: '★ 必须换成 CustomScrollView —— ListView 无法做 sticky',
+      );
+      expect(
+        home.contains('SliverPersistentHeader('),
+        isTrue,
+        reason: '★ 源条必须包在 SliverPersistentHeader 里',
+      );
       expect(
         home.contains('pinned: true'),
         isTrue,
-        reason: '★ 必须 pinned: true —— 这是"吸附"的关键；'
+        reason:
+            '★ 必须 pinned: true —— 这是"吸附"的关键；'
             'pinned: false 会跟着滚走',
       );
       expect(
@@ -491,172 +531,117 @@ void main() {
     });
 
     test('★ SourceBar 必须带 GlobalKey（否则滚动时丢滚动位置）', () {
-      expect(home.contains('sourceBarKey'), isTrue,
-          reason: '★ `SliverPersistentHeaderDelegate.build()` 会被反复调用，'
-              '没有 GlobalKey 的话 SourceBar 的 State 可能被重建 —— '
-              'ScrollController 重置 → 用户滚到第 10 个源一滚动就跳回第 1 个');
+      expect(
+        home.contains('sourceBarKey'),
+        isTrue,
+        reason:
+            '★ `SliverPersistentHeaderDelegate.build()` 会被反复调用，'
+            '没有 GlobalKey 的话 SourceBar 的 State 可能被重建 —— '
+            'ScrollController 重置 → 用户滚到第 10 个源一滚动就跳回第 1 个',
+      );
     });
   });
-  group('玻璃样式（用户要求 ①）—— ★ 已解锁：源条有**它自己的**令牌', () {
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★★★ 这一组曾经**锁死过错误行为**（2026-09-24 重写）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * # 上一版断言的是什么
-     *
-     * ```text
-     * 「选中 pill 必须是白色渐变（**照抄底栏 `--tab-pill-bg`**）」
-     * → 断言渐变两端是 white 0.96 / white 0.80
-     * ```
-     *
-     * # 为什么那是"基于错误前提的正确观察"（必须改掉）
-     *
-     * ```text
-     * 观察是对的：底栏药丸 (249,249,249) vs 源条药丸 (30,32,40) —— 确实差得远
-     * 结论是错的：以为"照抄 0.96/0.80 就两个主题都对"
-     *            —— 因为**当时底栏自己也是错的**（同一个 bug：硬编码浅色值、
-     *               没有主题分支，就是用户报的"黑色模式下有问题"）
-     * ```
-     * 于是那条测试**会阻止正确的修复**：谁把源条改成原版的 `--surface-4`
-     * （深 0.17 / 浅 1.0），它就红。
-     *
-     * # 现在断言什么（原版的**真实**令牌）
-     *
-     * ```css
-     * tokens.css:338        --srcbar-pill-bg: var(--surface-4);
-     * tokens.css:249  深色   --surface-4: rgb(255 255 255 / 0.17);  单一值
-     * theme-light.css:81    --srcbar-pill-bg: var(--surface-4);
-     * theme-light.css:89 浅色 --surface-4: rgb(255 255 255 / 1);   纯白实底
-     * ```
-     * ⚠️ 源条的值与底栏（深 0.19→0.10 / 浅 0.96→0.80）**本来就不同**，
-     *    而且**两边都对** —— 因为它们是两个令牌、调的目标不同：
-     *    `--tab-pill-bg` 是"玻璃上浮起一层"（要透、要有高光方向感），
-     *    `--srcbar-pill-bg` 是 `--surface-4`（通用的"表面层级"第 4 档，
-     *    要**实**）。详见 `source_bar.dart` 里那段长注释。
-     *
-     * ★ 这里的方法是**真正渲染 widget 再读渐变的实际颜色**，不是文本匹配：
-     *   上一版也是渲染级（`find.byType` + 读 decoration），那一点是对的，
-     *   只是**期望值**抄错了参照物。
-     */
-    testWidgets('★★★ 深色：源条药丸必须是 white **0.17**（不是底栏的 0.96/0.80）',
-        (t) async {
-      await t.pumpWidget(_host(
-        SourceBar(
-          sources: _sources(4),
-          current: 'src-1',
-          onSelect: (_) {},
+  group('Miuix 源条实际绘制与键盘交互', () {
+    for (final brightness in Brightness.values) {
+      testWidgets('选中和未选中源的文字与实际底色可读 / $brightness', (t) async {
+        await t.pumpWidget(
+          _host(
+            SourceBar(sources: _sources(4), current: 'src-1', onSelect: (_) {}),
+            theme: AppTheme.themeFor(brightness),
+          ),
+        );
+        await t.pumpAndSettle();
+        expect(find.byType(miuix.MiuixCard), findsOneWidget);
+        expect(find.byType(miuix.MiuixButton), findsNWidgets(4));
+        final colors = miuix.MiuixTheme.of(t.element(_pill('源1'))).colors;
+        for (final label in ['源0', '源1']) {
+          final selected = label == '源1';
+          final surface = _surfaceColor(t, _pill(label));
+          final text = _textColor(t, label);
+          expect(surface, selected ? colors.primary : colors.secondaryVariant);
+          expect(text, selected ? colors.onPrimary : colors.onSecondaryVariant);
+          expect(_contrast(text, surface), greaterThanOrEqualTo(4.5));
+        }
+        expect(t.takeException(), isNull);
+      });
+    }
+
+    testWidgets('已挂载源条在亮暗往返中保留选择、滚动与焦点', (t) async {
+      final brightness = ValueNotifier(Brightness.light);
+      addTearDown(brightness.dispose);
+      var current = 'src-0';
+      final selected = <String>[];
+      await t.pumpWidget(
+        ValueListenableBuilder<Brightness>(
+          valueListenable: brightness,
+          builder: (_, value, child) => _host(
+            StatefulBuilder(
+              builder: (_, setState) => SizedBox(
+                width: 400,
+                child: SourceBar(
+                  sources: _sources(12),
+                  current: current,
+                  onSelect: (id) => setState(() {
+                    current = id;
+                    selected.add(id);
+                  }),
+                ),
+              ),
+            ),
+            theme: AppTheme.themeFor(value),
+          ),
         ),
-        theme: AppTheme.themeFor(Brightness.dark),
-      ));
+      );
       await t.pumpAndSettle();
-
-      final found = _gradients(t);
-      expect(found, isNotEmpty,
-          reason: '★ 选中 pill 必须有**渐变**底 —— '
-              '没有渐变说明又退回"纯色/半透明色块"');
-
-      final g = found.first as LinearGradient;
-      final c0 = g.colors.first;
-
-      // 三段都要是白色（RGB 全 1），只有**透明度**按主题变
-      expect(c0.r, closeTo(1.0, 0.02), reason: '药丸是"叠白"，RGB 必须是纯白');
-      expect(c0.g, closeTo(1.0, 0.02));
-      expect(c0.b, closeTo(1.0, 0.02));
-
-      /*
-       * ★ 关键：**透明度**必须是 `--surface-4` 的 0.17
-       *
-       * ⚠️ 容差 0.02：0.17 落在 8 位色深的 43.35 级，Dart 的
-       *    `Color.a` 是归一化 double，量化误差约 0.0009 —— 容差给 0.02
-       *    是为了同时挡住"写成 0.16/0.19"这种**邻近的错值**：
-       *    0.19（底栏的深色值）会被判红，这正是我们要的。
-       */
-      expect(c0.a, closeTo(0.17, 0.02),
-          reason: '★★★ 深色源条药丸必须是 `--surface-4` = white **0.17**。\n'
-              '实测拿到 ${c0.a.toStringAsFixed(4)}。\n'
-              '⚠️ 不要"照抄底栏的 0.96/0.80"——那是**底栏自己的 bug**'
-              '（硬编码浅色值、无主题分支），照抄会把 bug 复制到这里。');
-      debugPrint('[Y] 深色源条药丸 alpha=${c0.a.toStringAsFixed(4)} '
-          '（期望 0.17；底栏深色是 0.19→0.10）');
-    });
-
-    testWidgets('★★★ 浅色：源条药丸必须是 white **1.0**（纯白实底，比底栏的 0.96 更实）',
-        (t) async {
-      await t.pumpWidget(_host(
-        SourceBar(
-          sources: _sources(4),
-          current: 'src-1',
-          onSelect: (_) {},
-        ),
-        theme: AppTheme.themeFor(Brightness.light),
-      ));
+      await t.tap(find.text('源1'));
       await t.pumpAndSettle();
-
-      final found = _gradients(t);
-      expect(found, isNotEmpty, reason: '★ 选中 pill 必须有渐变底');
-
-      final g = found.first as LinearGradient;
-      final c0 = g.colors.first;
-
-      // `--surface-4` 浅色 = `rgb(255 255 255 / 1)` —— 纯白实底
-      expect(c0.a, closeTo(1.0, 0.02),
-          reason: '★★★ 浅色源条药丸必须是 `--surface-4` = white **1.0**。\n'
-              '原版 `theme-light.css:74` 解释了为什么浅色要**更实**：\n'
-              '> 浅色下 `--surface-4` 是纯白，叠在 `--surface-1`（白 62%）\n'
-              '> 的切换条底上正好"浮"出来一层 —— 不需要额外描边。\n'
-              '实测拿到 ${c0.a.toStringAsFixed(4)}；底栏浅色是 0.96→0.80 的透白。');
-      debugPrint('[Y] 浅色源条药丸 alpha=${c0.a.toStringAsFixed(4)} '
-          '（期望 1.0；底栏浅色是 0.96→0.80）');
-    });
-
-    testWidgets('★★ 选中态文字色必须**跟随主题**（深色药丸暗 → 用亮字）',
-        (t) async {
-      /*
-       * ⚠️ 这条是"只改药丸、不改文字"的那个坑的守卫。
-       *
-       * 旧实现写死"药丸恒为白 → 字恒为深色 `#1E2028`"。修好药丸后
-       * 深色药丸是 0.17（**暗**的），再用深色字就是**暗底暗字**
-       * —— 与原来那个白底白字是同一类 bug 的反向版本。
-       *
-       * 判据用"渲染出来的实际颜色"，并且要求**两套主题取到相反的值**：
-       * ```text
-       * 深色  药丸 alpha 0.17（暗）→ 文字应当偏亮
-       * 浅色  药丸 alpha 1.0（亮） → 文字应当偏暗
-       * ```
-       */
-      // ── 深色 ──
-      await t.pumpWidget(_host(
-        SourceBar(sources: _sources(4), current: 'src-1', onSelect: (_) {}),
-        theme: AppTheme.themeFor(Brightness.dark),
-      ));
+      expect(selected, ['src-1']);
+      final scroll = t.state<ScrollableState>(find.byType(Scrollable)).position;
+      scroll.jumpTo(35);
+      await t.pump();
+      final offset = scroll.pixels;
+      final originalBar = t.element(find.byType(SourceBar));
+      final innerFocus = Focus.of(t.element(find.text('源1')));
+      final focus = [
+        innerFocus,
+        ...innerFocus.ancestors,
+      ].firstWhere((node) => node.canRequestFocus);
+      focus.requestFocus();
+      await t.pump();
+      expect(focus.hasPrimaryFocus, isTrue);
+      final unselectedPaint = <Brightness, Color>{};
+      for (final mode in [Brightness.dark, Brightness.light]) {
+        brightness.value = mode;
+        await t.pumpAndSettle();
+        expect(t.element(find.byType(SourceBar)), same(originalBar));
+        expect(t.widget<SourceBar>(find.byType(SourceBar)).current, 'src-1');
+        expect(scroll.pixels, closeTo(offset, .01));
+        expect(FocusManager.instance.primaryFocus, same(focus));
+        final colors = miuix.MiuixTheme.of(t.element(_pill('源1'))).colors;
+        expect(_surfaceColor(t, _pill('源1')), colors.primary);
+        expect(_textColor(t, '源1'), colors.onPrimary);
+        final surface = _surfaceColor(t, _pill('源0'));
+        unselectedPaint[mode] = surface;
+        expect(surface, colors.secondaryVariant);
+        expect(
+          _contrast(_textColor(t, '源0'), surface),
+          greaterThanOrEqualTo(4.5),
+        );
+      }
+      expect(
+        unselectedPaint[Brightness.dark],
+        isNot(unselectedPaint[Brightness.light]),
+      );
+      await t.sendKeyEvent(LogicalKeyboardKey.select);
       await t.pumpAndSettle();
-      final darkText = _textColor(t, '源1');
-      expect(darkText, isNotNull,
-          reason: '取不到选中 pill 的文字色 —— 断言会在空处跑（假绿）');
-
-      // ── 浅色 ──
-      await t.pumpWidget(_host(
-        SourceBar(sources: _sources(4), current: 'src-1', onSelect: (_) {}),
-        theme: AppTheme.themeFor(Brightness.light),
-      ));
+      expect(selected, ['src-1', 'src-1']);
+      await t.sendKeyEvent(LogicalKeyboardKey.tab);
+      await t.pump();
+      await t.sendKeyEvent(LogicalKeyboardKey.enter);
       await t.pumpAndSettle();
-      final lightText = _textColor(t, '源1');
-      expect(lightText, isNotNull, reason: '取不到浅色下的文字色');
-
-      double lum(Color c) => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
-
-      debugPrint('[Y] 源条选中文字：深色主题=$darkText 浅色主题=$lightText');
-
-      expect(lum(darkText!), greaterThan(0.5),
-          reason: '★★ 深色主题下药丸是暗的（0.17），文字必须**亮** —— '
-              '实测 $darkText');
-      expect(lum(lightText!), lessThan(0.5),
-          reason: '★★ 浅色主题下药丸是纯白（1.0），文字必须**暗** —— '
-              '实测 $lightText');
-      expect(lum(darkText), greaterThan(lum(lightText)),
-          reason: '★ 两套主题的文字色必须**相反** —— '
-              '相同就说明"药丸按主题分支了、文字没有"（只改了一半）');
+      expect(selected, ['src-1', 'src-1', 'src-2']);
+      expect(t.widget<SourceBar>(find.byType(SourceBar)).current, 'src-2');
+      expect(t.takeException(), isNull);
     });
   });
 }

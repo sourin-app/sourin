@@ -1,8 +1,11 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/ui/settings_page.dart';
 import 'package:sourin_spike/ui/settings/tvbox_aggregate_page.dart';
+
+import 'support/miuix_dialog_host.dart';
 
 const _providers = [
   ProviderManifest(id: 'hidden', name: 'Hidden', kind: 'tvbox', hidden: true),
@@ -100,15 +103,12 @@ void main() {
   testWidgets('aggregate search and bulk controls retain offscreen selection', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Material(
-          child: TvboxAggregateSitesDialog(
-            aggregate: const TvboxAggregate(sites: _sites),
-            sourceOf: (_) => null,
-            panelBuilder: (_, __, ___) => const SizedBox.shrink(),
-          ),
-        ),
+    await pumpMiuixDialog(
+      tester,
+      TvboxAggregateSitesDialog(
+        aggregate: const TvboxAggregate(sites: _sites),
+        sourceOf: (_) => null,
+        panelBuilder: (_, __, ___) => const SizedBox.shrink(),
       ),
     );
     await tester.enterText(
@@ -127,7 +127,7 @@ void main() {
     await tester.pump();
     expect(
       tester
-          .widget<Checkbox>(
+          .widget<ui.Checkbox>(
             find.byKey(const ValueKey<String>('agg-site-check-outside')),
           )
           .value,
@@ -135,7 +135,7 @@ void main() {
     );
     expect(
       tester
-          .widget<Checkbox>(
+          .widget<ui.Checkbox>(
             find.byKey(const ValueKey<String>('agg-site-check-one')),
           )
           .value,
@@ -143,7 +143,7 @@ void main() {
     );
     expect(
       tester
-          .widget<Checkbox>(
+          .widget<ui.Checkbox>(
             find.byKey(const ValueKey<String>('agg-site-check-unsupported')),
           )
           .onChanged,

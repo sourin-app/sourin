@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Related: [player Miuix controls](../feature/2026-11-08-player-miuix-controls.md), 2026-11-08. The control migration preserves this note's notifier and local rebuild constraints.
+
 > 同域：[2026-10-18-bottom-bar-unmount-per-hover.md](../bug-fix/2026-10-18-bottom-bar-unmount-per-hover.md)
 > 两篇是**先后关系**：本篇（`e6458e5`，重建 1624→20）修掉「整页 setState」；
 > 那篇接着修「结构存在但装卸代价仍在」（`pageBuild` 已 0 而仍有 1624 次重建的部分）。

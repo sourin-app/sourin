@@ -144,6 +144,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
+import 'miuix_controls.dart' as ui;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -2664,7 +2665,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
               ),
             ),
             const SizedBox(height: Sp.x4),
-            TextButton(
+            ui.TextButton(
               onPressed: _retryLoad,
               child: const Text('重试'),
             ),
@@ -3213,7 +3214,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       final usingDefault = from == null || to == null;
 
       return Expanded(
-        child: Tooltip(
+        child: ui.Tooltip(
           message: playing
               ? '正在循环播放$label整段 —— 点一下「暂停在这一帧」'
               : ok
@@ -3221,7 +3222,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
                   : '$label区间还没设，或长度不足 1 秒',
           child: SizedBox(
             height: kRowH,
-            child: OutlinedButton.icon(
+            child: ui.OutlinedButton.icon(
               onPressed: ok ? () => _toggleRange(which, lo, hi) : null,
               icon: Icon(
                 playing ? AppIcons.pause : AppIcons.play_arrow_rounded,
@@ -3232,7 +3233,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
                 playing ? '暂停' : '$label整段',
                 style: const TextStyle(fontSize: FontSizes.sm),
               ),
-              style: OutlinedButton.styleFrom(
+              style: ui.OutlinedButton.styleFrom(
                 minimumSize: const Size(0, kRowH),
                 padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -3301,7 +3302,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   ///   改前是手写 Row（开关在左、文字在右、只有开关能点）⇒
   ///   换成 `SwitchListTile`（文字在左、整行可点、带涟漪与读屏语义）。
   Widget _autoSkipRow(AppPalette colors) {
-    return SwitchListTile(
+    return ui.SwitchListTile(
       contentPadding: EdgeInsets.zero,
       dense: true,
       value: _autoSkip,
@@ -3377,13 +3378,13 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
               ),
             ),
           ),
-        TextButton(
+        ui.TextButton(
           // ★ 重置是破坏性操作：忙的时候不许并发操作
           onPressed: _busy ? null : _reset,
           child: Text(_resetting ? '重置中…' : '重置'),
         ),
         const SizedBox(width: Sp.x2),
-        FilledButton(
+        ui.FilledButton(
           onPressed: _canSave ? _save : null,
           child: Text(_saving ? '保存中…' : '确认设置'),
         ),
@@ -3878,8 +3879,7 @@ class _EdgeRow extends StatelessWidget {
                 width: valueW,
                 child: MouseRegion(
                   cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
+                  child: ui.InkWell(
                     onTap: onTapValue,
                     child: Text(
                       v == null ? '— — —' : _fmtSeconds(v),
@@ -3962,7 +3962,7 @@ class _EdgeRow extends StatelessWidget {
               SizedBox(
                 width: stepSize,
                 height: stepSize,
-                child: IconButton(
+                child: ui.IconButton(
                   /*
                    * ★ task-13 ⑥：未设置时**不再置灰** —— 改走 onTapValue
                    *   （定格到默认位置，见 _defaultAt）。
@@ -3973,7 +3973,7 @@ class _EdgeRow extends StatelessWidget {
                   tooltip: previewTip ?? '预览这一点',
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
-                  style: IconButton.styleFrom(
+                  style: ui.IconButton.styleFrom(
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     minimumSize: Size(stepSize, stepSize),
                     padding: EdgeInsets.zero,
@@ -3990,12 +3990,12 @@ class _EdgeRow extends StatelessWidget {
               SizedBox(
                 width: 68,
                 height: stepSize,
-                child: TextButton.icon(
+                child: ui.TextButton.icon(
                   // ★ task-13 ⑥：同紧凑形态 —— 未设置时改走 onTapValue
                   onPressed: v == null ? onTapValue : () => onPreview(v),
                   icon: const Icon(AppIcons.play_arrow, size: 18),
                   label: const Text('预览'),
-                  style: TextButton.styleFrom(
+                  style: ui.TextButton.styleFrom(
                     // 同样收紧 —— 默认 48 高会撑起整行
                     minimumSize: Size(0, stepSize),
                     padding: const EdgeInsets.symmetric(horizontal: Sp.x1),
@@ -4013,13 +4013,13 @@ class _EdgeRow extends StatelessWidget {
               SizedBox(
                 width: stepSize,
                 height: stepSize,
-                child: IconButton(
+                child: ui.IconButton(
                   onPressed: () => onChanged(null),
                   icon: const Icon(AppIcons.backspace_outlined, size: 18),
                   tooltip: '清除这一点',
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
-                  style: IconButton.styleFrom(
+                  style: ui.IconButton.styleFrom(
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     minimumSize: Size(stepSize, stepSize),
                     padding: EdgeInsets.zero,
@@ -4086,13 +4086,13 @@ class _StepBtn extends StatelessWidget {
          */
         width: size,
         height: size,
-        child: IconButton(
+        child: ui.IconButton(
           onPressed: enabled ? onTap : null,
           icon: Icon(icon, size: 18, color: enabled ? null : colors.border),
           visualDensity: VisualDensity.compact,
           padding: EdgeInsets.zero,
           // 关掉 48 的强制命中区扩展（那正是宽度失控的来源）
-          style: IconButton.styleFrom(
+          style: ui.IconButton.styleFrom(
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             minimumSize: Size(size, size),
             padding: EdgeInsets.zero,

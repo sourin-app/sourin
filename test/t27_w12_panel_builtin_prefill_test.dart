@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart'; // 面板宿主同 t100：material_ui 的 MaterialApp 才带 Material 祖先
 import 'package:sourin_spike/core/danmaku.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
@@ -143,7 +144,7 @@ void main() {
        *   ⇒ 改成「一个凭证输入框都不该有」+「状态行仍如实说内置」。
        */
       final credFields = t
-          .widgetList<TextField>(find.byType(TextField))
+          .widgetList<ui.TextField>(find.byType(ui.TextField))
           .where((f) =>
               f.decoration?.labelText == 'AppId' ||
               f.decoration?.labelText == 'AppSecret')

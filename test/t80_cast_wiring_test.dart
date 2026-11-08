@@ -28,6 +28,8 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'support/miuix_finders.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/design/widgets/app_text_button.dart';
@@ -403,9 +405,9 @@ void main() {
     testWidgets('B① 空 url：控件照画、且**不**自己禁用（宿主靠不画来兜）', (t) async {
       await t.pumpWidget(_host(const CastButton(url: '')));
       expect(find.byType(CastButton), findsOneWidget);
-      expect(find.byTooltip('投屏到电视'), findsOneWidget,
+      expect(miuixTooltip('投屏到电视'), findsOneWidget,
           reason: '★ 非 busy / 非 active / 非 failed 时的 tooltip');
-      final ib = t.widget<IconButton>(find.byType(IconButton));
+      final ib = t.widget<ui.IconButton>(find.byType(ui.IconButton));
       // ★ 如实记录现状：`CastButton` **不看** url 是否为空来决定禁用态
       //   （`onPressed: _busy ? null : _onTap`，禁用只来自 `_busy`）。
       //   所以「没流不给点」**必须**由宿主的门控 `castUrl.isNotEmpty` 承担 ——
@@ -429,7 +431,7 @@ void main() {
       expect(cb.headers, headers,
           reason: '★ headers 丢了就是电视端 403');
       expect(cb.title, '第 3 集');
-      expect(find.byTooltip('投屏到电视'), findsOneWidget);
+      expect(miuixTooltip('投屏到电视'), findsOneWidget);
       // ★ 绝不 tap：那会走 `showCastDeviceSheet` 真发 SSDP 包。
     });
 
@@ -452,7 +454,7 @@ void main() {
        *
        * ⇒ 加固：旧类型和新类型**都不许出现**。
        */
-      expect(find.byType(TextButton), findsNothing,
+      expect(find.byType(ui.TextButton), findsNothing,
           reason: '★ 底栏 headGear 里不许有 TextButton（t68 E⑥）；带标签的那支是给别处用的');
       /*
        * ★★ 跨实现判据（dlg-plugin 建议，2026-10-17 采纳）

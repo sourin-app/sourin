@@ -1,3 +1,4 @@
+import 'miuix_controls.dart' as ui;
 // ═══════════════════════════════════════════════════════════════════════
 //  共享 loading —— 页级 / 遮罩级的粗体转圈（★ OPS-14，2026-10-10）
 // ═══════════════════════════════════════════════════════════════════════
@@ -34,7 +35,7 @@
 // # 颜色怎么选（这是最需要解释的一处）
 // ```text
 // 任务书要求：深底用主题主色或明确的白色，浅底用 onSurfaceVariant。
-// 
+//
 // ⚠ **不能直接用 colorScheme.primary** —— 本仓两套主色都恰好是中性色：
 //    深色板 AppPalette.dark.primary  = #E5E5E5（浅灰！）
 //    浅色板 AppPalette.light.primary = #171717（近黑）
@@ -104,9 +105,6 @@
 
 import 'package:material_ui/material_ui.dart';
 
-import 'dart:math' as math;
-
-import '../app_palette.dart';
 import '../tokens.dart';
 
 /// loading 的**唯一**尺寸 / 描边真源
@@ -297,15 +295,15 @@ class AppLoading extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final palette = AppPalette.of(context);
 
     // ★ 取色只认「背后那块底色」（CR #11 / T26-W6）：
     //   ① 调用方显式声明的 ground
     //   ② 祖先链上最近的 ColoredBox（播放页 _LoadingOverlay 就是这个形状，
     //      它一个字都没改就修好了）
     //   ③ 都没有才回落主题明暗（与 OPS-14 的行为**逐字一致**）
-    final groundColor =
-        _declaresGround(ground) ? ground : _groundFromAncestors(context);
+    final groundColor = _declaresGround(ground)
+        ? ground
+        : _groundFromAncestors(context);
     final onDark = groundColor != null
         ? ThemeData.estimateBrightnessForColor(groundColor) == Brightness.dark
         : theme.brightness == Brightness.dark;
@@ -359,9 +357,6 @@ class AppLoading extends StatelessWidget {
        *    不是"那一档的具体色值"）。
        */
       color = _ReadableOn.light;
-    } else if (palette.brightness == Brightness.dark) {
-      // 深色调色板的前景就是 #FAFAFA，且将来调令牌时两处一起变
-      color = palette.foreground;
     } else {
       // ⚠️ 这里**不能**取 palette.foreground —— 浅色板的它是近黑
       //    （#0A0A0A / 实际生效的浅色板 #1E2028），压到黑遮罩上等于隐形。
@@ -371,7 +366,10 @@ class AppLoading extends StatelessWidget {
     final indicator = SizedBox(
       width: size,
       height: size,
-      child: _AppSpinner(color: color, stroke: AppLoadingSize.stroke),
+      child: ui.CircularProgressIndicator(
+        color: color,
+        strokeWidth: AppLoadingSize.stroke,
+      ),
     );
 
     if (label == null) return indicator;
@@ -382,142 +380,11 @@ class AppLoading extends StatelessWidget {
       children: [
         indicator,
         const SizedBox(height: Sp.x3),
-        Text(label!, style: TextStyle(color: color, fontSize: FontSizes.sm)),
+        Text(
+          label!,
+          style: TextStyle(color: color, fontSize: FontSizes.sm),
+        ),
       ],
     );
   }
-}
-
-/*
- * ═══════════════════════════════════════════════════════════════════════
- *  自绘转圈（2026-10-17，Owner 第 3 条）
- * ═══════════════════════════════════════════════════════════════════════
- *
- * # 为什么放弃 CircularProgressIndicator
- * ```text
- * Owner 原话：「loading圆圈有锯齿,然后那个还是看不清楚,请对比度高一点」
- *
- * 上一轮（OPS-14）只调了 size/strokeWidth/color，Owner 仍然看不清 ⇒ 改法不够。
- * 而且新增了「锯齿」—— Material 的 CircularProgressIndicator 内部把
- * 进度弧切得很碎（它要支持 determinate 分段），在 30px 这种小尺寸下
- * 弧边缘的采样点少，描边又只有 4px ⇒ 视觉上就是一撮毛边。
- * ```
- *
- * # 自绘怎么解决这两个问题
- * ```text
- * ① 锯齿：drawArc + isAntiAlias + StrokeCap.round
- *    圆弧是一段**连续**的贝塞尔，不做分段切割 ⇒ 边缘干净。
- * ② 看不清：整条圆环用「低透明度轨道 + 高透明度亮弧」双层
- *    —— 轨道让用户看到"这是一个圆"，亮弧给出运动感，
- *      且两层都从传入的 color 派生，保证与底色对比度足够。
- * ```
- *
- * # 为什么用 AnimationController 而不是自己算时间
- * ```text
- * 归还给 Flutter 的 scheduler 才能跟 vsync 对齐；
- * 自己 Timer 会掉帧且测试里无法 pump 控制。
- * 单次 AnimationController.repeat() 是最小实现。
- * ```
- */
-class _AppSpinner extends StatefulWidget {
-  const _AppSpinner({required this.color, required this.stroke});
-
-  final Color color;
-  final double stroke;
-
-  @override
-  State<_AppSpinner> createState() => _AppSpinnerState();
-}
-
-class _AppSpinnerState extends State<_AppSpinner>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _c,
-      builder: (context, _) => CustomPaint(
-        painter: _SpinnerPainter(
-          progress: _c.value,
-          color: widget.color,
-          stroke: widget.stroke,
-        ),
-      ),
-    );
-  }
-}
-
-class _SpinnerPainter extends CustomPainter {
-  _SpinnerPainter({
-    required this.progress,
-    required this.color,
-    required this.stroke,
-  });
-
-  final double progress;
-  final Color color;
-  final double stroke;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final r = (math.min(size.width, size.height) - stroke) / 2;
-    final center = Offset(size.width / 2, size.height / 2);
-    final rect = Rect.fromCircle(center: center, radius: r);
-
-    // ① 轨道：同一色相的极低透明度 —— 让人看出"这是个圆"
-    final track = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round
-      ..isAntiAlias = true
-      ..color = color.withValues(alpha: 0.18);
-    canvas.drawCircle(center, r, track);
-
-    // ② 亮弧：绕圈跑（比例见下面 sweep 的注释）
-    final arc = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round
-      ..isAntiAlias = true
-      ..color = color;
-
-    /*
-     * ★ 亮弧占周长的比例 —— **2026-10-17 从 0.28 改成 0.4**（Lead 决定 B）
-     *
-     * # 为什么 0.28 不够
-     * ```text
-     * 实测截图（.probe/shots/t37_SIDEBYSIDE_30.png 并排对比）：
-     *   旧 CircularProgressIndicator 的弧约 3/4 周长 ⇒ 一眼就是「在转」
-     *   0.28（≈101°）配合 alpha 0.18 的暗轨道 ⇒
-     *     观感是「一个暗圈 + 一小段白」，不像「一个圈在转」
-     * ```
-     *
-     * # 判据不是「好看」，是 Owner 的需求
-     * ```text
-     * Owner 原话是「看不清楚」⇒ 他要的是**更容易看出在转**，
-     * 而不是「更精致的细弧风格」。审美服从需求。
-     * ⇒ 0.4 ≈ 144°，比 0.28 长 43%，运动感明显但不至于糊成一圈。
-     * ```
-     *
-     * ⚠️ 若将来仍嫌不明显，可再试 0.5；但**不要超过 0.5** ——
-     *    超过半圈后首尾接近相接，反而看不出旋转方向。
-     */
-    const sweep = math.pi * 2 * 0.4;
-    final start = progress * math.pi * 2 - math.pi / 2;
-    canvas.drawArc(rect, start, sweep, false, arc);
-  }
-
-  @override
-  bool shouldRepaint(_SpinnerPainter old) =>
-      old.progress != progress || old.color != color || old.stroke != stroke;
 }

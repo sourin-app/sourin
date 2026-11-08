@@ -72,6 +72,7 @@ import 'dart:io';
 import 'package:flutter/services.dart' show MethodCall, MethodChannel;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart' as mui;
 import 'package:media_kit/media_kit.dart';
 import 'package:sourin_spike/core/ffi.dart';
@@ -610,7 +611,7 @@ void main() {
       // ★ 直接取按钮的 onPressed 调它 —— 证明"按钮 → 回调"这根线真的接着，
       //   而不依赖播放器 Stack 里的命中测试（那个在本单测里被视频层挡着，
       //   生产环境里按钮在最上层、能点到；这里测的是**接线**，不是命中测试）。
-      final btn = t.widget<mui.TextButton>(find.widgetWithText(mui.TextButton, _kFromStartLabel));
+      final btn = t.widget<ui.TextButton>(find.widgetWithText(ui.TextButton, _kFromStartLabel));
       expect(btn.onPressed, isNotNull,
           reason: '★「从头播放」必须挂着一个回调（null = 壳）');
       btn.onPressed!();
@@ -653,8 +654,8 @@ void main() {
        *     （见 `_flash('已跳到上次观看位置')`）—— 两者都在同一段生产代码里，
        *     缺一这条就红。
        */
-      final btn = t.widget<mui.FilledButton>(
-          find.widgetWithText(mui.FilledButton, _kContinueLabel));
+      final btn = t.widget<ui.FilledButton>(
+          find.widgetWithText(ui.FilledButton, _kContinueLabel));
       expect(btn.onPressed, isNotNull,
           reason: '★「继续观看」必须挂着一个回调（null = 壳）');
       btn.onPressed!();

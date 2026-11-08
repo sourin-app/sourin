@@ -120,6 +120,8 @@ import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import '../../core/sourin_api.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
@@ -901,7 +903,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
                 '本页会自动把它派生成第二个、第三个源，'
                 '所以同一个插件贴几次就有几个源。',
               ),
-            TextField(
+            ui.TextField(
               controller: _installUrl,
               decoration: const InputDecoration(
                 labelText: '插件地址',
@@ -912,7 +914,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
             const SizedBox(height: Sp.x2),
             _actions(colors, [_btn('从网址安装', _installFromUrl)]),
             const SizedBox(height: Sp.x3),
-            TextField(
+            ui.TextField(
               controller: _installSrc,
               maxLines: 5,
               decoration: const InputDecoration(
@@ -924,7 +926,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
             ),
             const SizedBox(height: Sp.x2),
             if (_instances.isNotEmpty) ...[
-              TextField(
+              ui.TextField(
                 controller: _newName,
                 decoration: const InputDecoration(
                   labelText: '新源的名字（留空 = 自动叫 Emby N）',
@@ -947,14 +949,12 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
                   ? '下面这些还没归属：先在上面装一个源'
                   : '下面这些会写进「$_selectedLabel」（$_selectedId）',
             ),
-            const _Hint(
-              '保存后回到首页点 Emby 卡片验证：能列出影片就说明配置已生效。',
-            ),
+            const _Hint('保存后回到首页点 Emby 卡片验证：能列出影片就说明配置已生效。'),
             const _Hint(
               '每台服务器一套地址 / 账号 / 密码 —— 换一台就点上面列表里那一行，'
               '本页会清空输入框重新填它自己的配置（不会串）。',
             ),
-            TextField(
+            ui.TextField(
               controller: _serverUrl,
               decoration: const InputDecoration(
                 labelText: '服务器地址',
@@ -964,7 +964,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
               ),
             ),
             const SizedBox(height: Sp.x2),
-            TextField(
+            ui.TextField(
               controller: _username,
               decoration: const InputDecoration(
                 labelText: '用户名',
@@ -972,7 +972,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
               ),
             ),
             const SizedBox(height: Sp.x2),
-            TextField(
+            ui.TextField(
               controller: _password,
               obscureText: true,
               decoration: const InputDecoration(labelText: '密码', isDense: true),
@@ -983,7 +983,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
             // 否则 flutter 断言 'ListTile background color or ink splashes may be invisible.'。
             Material(
               type: MaterialType.transparency,
-              child: SwitchListTile(
+              child: ui.SwitchListTile(
                 value: _transcode,
                 onChanged: (v) => setState(() => _transcode = v),
                 title: const Text('优先转码'),
@@ -1089,9 +1089,9 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
     final child = Text(label);
     final handler = _busy ? null : () => unawaited(onTap());
     if (primary) {
-      return FilledButton(onPressed: handler, child: child);
+      return ui.FilledButton(onPressed: handler, child: child);
     }
-    return OutlinedButton(onPressed: handler, child: child);
+    return ui.OutlinedButton(onPressed: handler, child: child);
   }
 
   Widget _actions(ColorScheme colors, List<Widget> children) => Padding(
@@ -1107,7 +1107,7 @@ class _EmbySettingsPageState extends State<EmbySettingsPage> {
             width: 16,
             height: 16,
             // ★ T27-07（lead 集成补漏）：显式 onSurface，不落主题 primary 灰。
-            child: CircularProgressIndicator(
+            child: ui.CircularProgressIndicator(
               color: colors.onSurface,
               strokeWidth: 2,
             ),
@@ -1282,7 +1282,7 @@ class _InstanceTile extends StatelessWidget {
       // 'ListTile background color or ink splashes may be invisible.'
       child: Material(
         type: MaterialType.transparency,
-        child: ListTile(
+        child: ui.ListTile(
           dense: true,
           contentPadding: EdgeInsets.zero,
           selected: selected,
@@ -1308,7 +1308,7 @@ class _InstanceTile extends StatelessWidget {
               color: colors.onSurfaceVariant,
             ),
           ),
-          trailing: IconButton(
+          trailing: ui.IconButton(
             tooltip: '删除这个源',
             icon: const Icon(AppIcons.delete_outline, size: 20),
             onPressed: busy ? null : onDelete,

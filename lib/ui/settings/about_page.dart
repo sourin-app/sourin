@@ -22,6 +22,8 @@ import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import '../../core/app_update/app_update_controller.dart';
 import '../../core/app_update/app_version.dart';
 import '../../core/app_update/client.dart';
@@ -95,7 +97,11 @@ class AboutSettingsPageState extends State<AboutSettingsPage> {
       return;
     }
     final platform = UpdateHttp.currentTarget().$1;
-    final wantDownload = await showUpdateDialog(context, rel, platform: platform);
+    final wantDownload = await showUpdateDialog(
+      context,
+      rel,
+      platform: platform,
+    );
     if (!wantDownload) return;
     await _downloadAndInstall(c, rel, platform);
   }
@@ -108,8 +114,11 @@ class AboutSettingsPageState extends State<AboutSettingsPage> {
     final file = await c.downloadRelease(rel);
     if (!mounted) return;
     if (file == null) {
-      showAppToast(context, c.download.error ?? '下载未完成',
-          style: errToastStyle());
+      showAppToast(
+        context,
+        c.download.error ?? '下载未完成',
+        style: errToastStyle(),
+      );
       return;
     }
     if (!InstallLaunch.canInstallDirectly) {
@@ -175,17 +184,12 @@ class AboutSettingsPageState extends State<AboutSettingsPage> {
               label: '架构',
               value: 'Flutter + media_kit + Rust',
             ),
-            SettingsInfoRow(
-              label: '版本',
-              value: _versionLabel(),
-            ),
-            SettingsInfoRow(
-              label: '设备 ID',
-              value: _sync?.deviceId ?? '(未知)',
-            ),
+            SettingsInfoRow(label: '版本', value: _versionLabel()),
+            SettingsInfoRow(label: '设备 ID', value: _sync?.deviceId ?? '(未知)'),
             SettingsInfoRow(
               label: '内容源',
-              value: '${_providers.length} 个'
+              value:
+                  '${_providers.length} 个'
                   '（${_providers.where((p) => p.enabled).length} 个已启用）',
             ),
           ],
@@ -227,10 +231,7 @@ class AboutSettingsPageState extends State<AboutSettingsPage> {
             ),
           ],
         ),
-        const SettingsBlock(
-          title: '更新下载方式',
-          children: [UpdateRouteEditor()],
-        ),
+        const SettingsBlock(title: '更新下载方式', children: [UpdateRouteEditor()]),
       ],
     );
   }
@@ -266,7 +267,9 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
     final c = AppUpdateController.instance.route;
     _cfg = c;
     _host = TextEditingController(text: c.proxyHost);
-    _port = TextEditingController(text: c.proxyPort > 0 ? '${c.proxyPort}' : '');
+    _port = TextEditingController(
+      text: c.proxyPort > 0 ? '${c.proxyPort}' : '',
+    );
     _mirror = TextEditingController(text: c.customMirror);
   }
 
@@ -290,15 +293,19 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final r in UpdateRoute.values)
-          RadioListTile<UpdateRoute>(
+          ui.RadioListTile<UpdateRoute>(
             value: r,
             // ignore: deprecated_member_use
             groupValue: _cfg.route,
             // ignore: deprecated_member_use
-            onChanged: (v) => _apply(_cfg.copyWith(route: v ?? UpdateRoute.direct)),
+            onChanged: (v) =>
+                _apply(_cfg.copyWith(route: v ?? UpdateRoute.direct)),
             dense: true,
             contentPadding: EdgeInsets.zero,
-            title: Text(_routeLabel(r), style: const TextStyle(fontSize: FontSizes.sm)),
+            title: Text(
+              _routeLabel(r),
+              style: const TextStyle(fontSize: FontSizes.sm),
+            ),
           ),
         if (_cfg.route == UpdateRoute.proxy) ...[
           const SizedBox(height: Sp.x2),
@@ -310,8 +317,12 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
               ),
               const SizedBox(width: Sp.x2),
               Expanded(
-                child: _Field(_port, '端口（如 7890）', _onPort,
-                    keyboard: TextInputType.number),
+                child: _Field(
+                  _port,
+                  '端口（如 7890）',
+                  _onPort,
+                  keyboard: TextInputType.number,
+                ),
               ),
             ],
           ),
@@ -328,32 +339,41 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
             runSpacing: Sp.x2,
             children: [
               for (final m in UpdateMirror.list)
-                ChoiceChip(
-                  label: Text(m.name, style: const TextStyle(fontSize: FontSizes.cap)),
+                ui.ChoiceChip(
+                  label: Text(
+                    m.name,
+                    style: const TextStyle(fontSize: FontSizes.cap),
+                  ),
                   selected: _cfg.mirrorName == m.name,
-                  onSelected: (sel) => _apply(_cfg.copyWith(
-                    mirrorName: sel ? m.name : '',
-                    customMirror: sel ? '' : _cfg.customMirror,
-                  )),
+                  onSelected: (sel) => _apply(
+                    _cfg.copyWith(
+                      mirrorName: sel ? m.name : '',
+                      customMirror: sel ? '' : _cfg.customMirror,
+                    ),
+                  ),
                 ),
             ],
           ),
           const SizedBox(height: Sp.x2),
           _Field(_mirror, '或填写自己的镜像地址（可留空）', _onMirror),
           const SizedBox(height: Sp.x1),
-          Text('镜像只用于下载安装包；获取更新信息仍走直连或代理。',
-              style:
-                  TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+          Text(
+            '镜像只用于下载安装包；获取更新信息仍走直连或代理。',
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
         ],
       ],
     );
   }
 
   static String _routeLabel(UpdateRoute r) => switch (r) {
-        UpdateRoute.direct => '直连下载',
-        UpdateRoute.proxy => '通过代理下载',
-        UpdateRoute.mirror => '镜像加速下载',
-      };
+    UpdateRoute.direct => '直连下载',
+    UpdateRoute.proxy => '通过代理下载',
+    UpdateRoute.mirror => '镜像加速下载',
+  };
 
   void _onHost(String v) => _apply(_cfg.copyWith(proxyHost: v.trim()));
   void _onPort(String v) =>
@@ -370,7 +390,7 @@ class _Field extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
+    return ui.TextField(
       controller: ctrl,
       onChanged: onChanged,
       keyboardType: keyboard,
@@ -397,7 +417,7 @@ class _SettingsSwitchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SwitchListTile(
+    return ui.SwitchListTile(
       value: value,
       onChanged: onChanged,
       dense: true,
@@ -429,9 +449,9 @@ class _PrimaryButton extends StatelessWidget {
         child: Center(child: AppLoading(size: 16)),
       );
     }
-    return FilledButton(
+    return ui.FilledButton(
       onPressed: onPressed,
-      style: FilledButton.styleFrom(
+      style: ui.FilledButton.styleFrom(
         minimumSize: const Size(0, 40),
         padding: const EdgeInsets.symmetric(horizontal: Sp.x5),
       ),

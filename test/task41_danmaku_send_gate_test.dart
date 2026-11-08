@@ -12,7 +12,7 @@
 // # ★★★ 为什么断言用 find.text / find.byIcon，不用 find.byType(按钮类)
 // ```text
 // 本项目踩过这个坑：换成 AppTextButton 之后，
-//   expect(find.byType(TextButton), findsNothing)  会**静默通过**
+//   expect(find.byType(ui.TextButton), findsNothing)  会**静默通过**
 // —— 按钮明明在，只是换了个类。
 // ⇒ 断言**用户能看见的东西**（文字 / 图标），与实现类解耦。
 // ```
@@ -27,6 +27,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -125,7 +126,7 @@ void main() {
         reason: '★★ 发送按钮必须能被用户看见');
     expect(find.byIcon(Icons.chat_bubble_outline), findsOneWidget,
         reason: '★ 入口图标在');
-    expect(find.byType(TextField), findsOneWidget,
+    expect(find.byType(ui.TextField), findsOneWidget,
         reason: '★ 必须有输入框');
     expect(find.text('发个弹幕…'), findsOneWidget,
         reason: '★ 空态有提示文案');
@@ -164,7 +165,7 @@ void main() {
     )));
     await t.pumpAndSettle();
 
-    await t.enterText(find.byType(TextField), '  测试弹幕  ');
+    await t.enterText(find.byType(ui.TextField), '  测试弹幕  ');
     await t.pump();
     await t.tap(find.text('发送'));
     await t.pumpAndSettle();
@@ -187,14 +188,14 @@ void main() {
     )));
     await t.pumpAndSettle();
 
-    await t.enterText(find.byType(TextField), '发不出去的弹幕');
+    await t.enterText(find.byType(ui.TextField), '发不出去的弹幕');
     await t.pump();
     await t.tap(find.text('发送'));
     await t.pumpAndSettle();
 
     expect(find.text('这个源不支持发送弹幕'), findsOneWidget,
         reason: '★★★ 失败原因必须显示 —— 静默失败是这条功能最坏的形态');
-    final tf = t.widget<TextField>(find.byType(TextField));
+    final tf = t.widget<ui.TextField>(find.byType(ui.TextField));
     expect(tf.controller?.text, '发不出去的弹幕',
         reason: '★★ 失败后不许清空 —— 用户辛苦打的字不能没了');
   });
@@ -207,12 +208,12 @@ void main() {
     )));
     await t.pumpAndSettle();
 
-    await t.enterText(find.byType(TextField), '会成功的弹幕');
+    await t.enterText(find.byType(ui.TextField), '会成功的弹幕');
     await t.pump();
     await t.tap(find.text('发送'));
     await t.pumpAndSettle();
 
-    final tf = t.widget<TextField>(find.byType(TextField));
+    final tf = t.widget<ui.TextField>(find.byType(ui.TextField));
     expect(tf.controller?.text, '',
         reason: '★ 成功后清空，方便接着发下一条');
   });
@@ -225,7 +226,7 @@ void main() {
     )));
     await t.pumpAndSettle();
 
-    await t.enterText(find.byType(TextField), 'x');
+    await t.enterText(find.byType(ui.TextField), 'x');
     await t.pump();
     await t.tap(find.text('发送'));
     await t.pumpAndSettle();
@@ -277,7 +278,7 @@ void main() {
       await t.pumpWidget(_host(const _BottomBarHarness(danmakuSend: null)));
       await t.pumpAndSettle();
 
-      expect(find.byType(TextField), findsNothing,
+      expect(find.byType(ui.TextField), findsNothing,
           reason: '★★★ 不支持 ⇒ 输入框不该出现（Owner：不支持就不显示）');
       expect(find.text('发送'), findsNothing,
           reason: '★★★ 发送按钮也不该出现');
@@ -295,7 +296,7 @@ void main() {
       )));
       await t.pumpAndSettle();
 
-      expect(find.byType(TextField), findsOneWidget,
+      expect(find.byType(ui.TextField), findsOneWidget,
           reason: '★★ 能发的时候必须有输入框');
       expect(find.text('发送'), findsOneWidget,
           reason: '★★ 能发的时候必须有发送按钮');

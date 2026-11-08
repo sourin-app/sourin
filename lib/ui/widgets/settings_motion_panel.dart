@@ -1,4 +1,5 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../tokens.dart';
 import 'motion_prefs.dart';
@@ -81,18 +82,20 @@ class _SettingsMotionPanelState extends State<SettingsMotionPanel>
                       style: MotionPrefs.resolve(context, style),
                       child: child!,
                     ),
-                    child: Container(
+                    child: miuix.MiuixCard(
                       key: const ValueKey('motion-preview-card'),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
+                      cornerRadius: Radii.lg,
+                      colors: miuix.MiuixCardColors(
                         color: colors.primaryContainer,
-                        borderRadius: Radii.rLg,
+                        contentColor: colors.onPrimaryContainer,
                       ),
-                      child: Text(
-                        style.label,
-                        style: TextStyle(
-                          color: colors.onPrimaryContainer,
-                          fontSize: FontSizes.lg,
+                      child: Center(
+                        child: Text(
+                          style.label,
+                          style: TextStyle(
+                            color: colors.onPrimaryContainer,
+                            fontSize: FontSizes.lg,
+                          ),
                         ),
                       ),
                     ),
@@ -114,12 +117,10 @@ class _SettingsMotionPanelState extends State<SettingsMotionPanel>
                     selected: false,
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute<void>(
-                        builder: (context) => const Scaffold(
-                          body: SettingsSubPage(
-                            title: '动画预览',
-                            subtitle: '返回时也会使用当前动画',
-                            children: [Text('页面切换使用你选择的风格。')],
-                          ),
+                        builder: (context) => const SettingsSubPage(
+                          title: '动画预览',
+                          subtitle: '返回时也会使用当前动画',
+                          children: [Text('页面切换使用你选择的风格。')],
                         ),
                       ),
                     ),

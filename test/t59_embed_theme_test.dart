@@ -37,6 +37,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/detail_page.dart';
@@ -252,7 +253,7 @@ void main() {
        * 非 embedded  → Scaffold 层数 = 1   ← 本页画了（见阳性对照）
        * ```
        */
-      final scaffolds = find.byType(Scaffold).evaluate().length;
+      final scaffolds = find.byType(miuix.MiuixScaffold).evaluate().length;
       // ignore: avoid_print
       print('[T60] embedded Scaffold 层数 = $scaffolds（期望 0）');
 
@@ -308,7 +309,7 @@ void main() {
       );
       await t.pump();
 
-      final scaffolds = find.byType(Scaffold).evaluate().length;
+      final scaffolds = find.byType(miuix.MiuixScaffold).evaluate().length;
       // ignore: avoid_print
       print('[T60] 非 embedded Scaffold 层数 = $scaffolds（期望 1）');
 

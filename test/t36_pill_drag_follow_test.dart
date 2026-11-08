@@ -1,169 +1,115 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  task-36：tab 药丸**按住拖动时跟随手指**
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # Owner 原话
-// > 我点击未选中的然后保持点击动作 左右滑动，这个选中态并不会跟随
-//
-// # 根因
-//   药丸位置只由「已选中的 tab」决定（_pillLeft(current, tabWidth)），
-//   而 current 只由 onTap（抬手才触发）改变 ⇒ 拖动期间没有任何路径改位置。
-//
-// # 挂载真实 ShellPage（与 bottom_bar_fit_test 同一套脚手架）
-//   底栏是私有的 _BottomBar ⇒ 只能从整个 ShellPage 里把它找出来。
-//   ⚠️ 必须用 tester.view.physicalSize（不是 setSurfaceSize），
-//      否则 MediaQuery 与布局不一致（那个坑 bottom_bar_fit_test:73-91 记着）。
-
+// The glass drag-to-select pill was intentionally replaced by Miuix navigation.
+// Test the production widget: a drag cancels, a released tap activates once,
+// and keyboard/remote activation reaches pages.
+import 'package:flutter/services.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
-
-import 'package:sourin_spike/shell.dart';
-import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/shell.dart' show AppTab;
 import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/shell_layouts/miuix_shell_navigation.dart';
 
-Widget _appWith() {
+Future<void> _mount(WidgetTester tester, List<AppTab> visits) async {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(360, 700);
+  addTearDown(tester.view.reset);
+  var current = AppTab.home;
   final theme = AppTheme.themeFor(Brightness.dark);
-  return MaterialApp(
-    theme: theme,
-    builder: (context, child) =>
-        AppThemeHost(data: theme, child: child ?? const SizedBox()),
-    home: ShellPage(key: debugShellKey),
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: theme,
+      builder: (_, child) => AppThemeHost(data: theme, child: child!),
+      home: AppScaffold(
+        child: StatefulBuilder(
+          builder: (context, setState) => Align(
+            alignment: Alignment.bottomCenter,
+            child: MiuixShellNavigation(
+              current: current,
+              unread: 0,
+              onSelect: (tab) => setState(() {
+                current = tab;
+                visits.add(tab);
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
   );
+  await tester.pumpAndSettle();
 }
 
-void _claim(WidgetTester t) {
-  while (t.takeException() != null) {}
-}
-
-Future<void> _pump(WidgetTester t) async {
-  t.view.devicePixelRatio = 1.0;
-  t.view.physicalSize = const Size(1280, 800);
-  addTearDown(t.view.reset);
-  await t.pumpWidget(_appWith());
-  await t.pump();
-  _claim(t);
-  await t.pump(const Duration(milliseconds: 1500));
-  _claim(t);
-}
-
-/// 有界推进，替代 `pumpAndSettle()`
-///
-/// ★★★ 2026-10-21：`ShellPage` 上**永远有 21 个 transient ticker**
-/// （实测 `transientCallbackCount` 恒定 21，连推 85 帧一帧都不降）
-/// ⇒ `pumpAndSettle()` 等的是「没有帧被调度」，**永远等不到** ⇒ 超时。
-///
-/// ⚠️ 那 21 个 ticker 的**具体来源未查**（`AppLoading` 计数实测 = 0，
-///   与本文件无关）。不查的理由：**它不改变改法** ——
-///    无论谁占 ticker，"有界推进"都是正确做法。
-///
-/// 判据：有界推进后 UI 完全可用（实测 5 个 tab 全部命中 = 1）。
-Future<void> _settleBounded(WidgetTester t, {int frames = 40}) async {
-  for (var i = 0; i < frames; i++) {
-    await t.pump(const Duration(milliseconds: 16));
-    _claim(t);
-  }
-}
-
-/// 药丸当前的 left（读**真实渲染**，不读 State 私有字段）
-///
-/// 药丸 = Stack 里那个带**渐变**的 DecoratedBox（见 _BottomPalette.pillGradient）。
-double _pillLeft(WidgetTester t) {
-  /*
-   * ⚠️ 必须**限定在导航栏内**找，不能用全局 .first ——
-   *   实测全树有 2 个渐变 DecoratedBox：
-   *     #0 rect=(84.5,116)-(180.5,152)   ← 页面内容里的，不是药丸
-   *     #1 rect=(286,736)-(404,782)      ← 这才是底栏药丸
-   *   用 .first 会一直读到 #0 ⇒ 无论怎么拖都是 84.5（我第一版就这样假红）。
-   */
-  final pill = find.descendant(
-    of: find.byKey(const ValueKey('t36-bar'), skipOffstage: false),
-    matching: find.byWidgetPredicate((w) {
-      if (w is! DecoratedBox) return false;
-      final d = w.decoration;
-      return d is BoxDecoration && d.gradient != null;
-    }),
-  );
-  expect(pill, findsOneWidget, reason: '前置：导航栏里必须恰好一颗药丸');
-  return t.getRect(pill.first).left;
-}
-
-/// 底栏那块玻璃面板（拖动手势就挂在它上面）
-Finder get _bar => find.byKey(const ValueKey('t36-bar'));
+miuix.MiuixNavigationBarItem _item(WidgetTester tester, AppTab tab) =>
+    tester.widget<miuix.MiuixNavigationBarItem>(
+      find.descendant(
+        of: find.byKey(ValueKey('shell-nav-${tab.name}')),
+        matching: find.byType(miuix.MiuixNavigationBarItem),
+      ),
+    );
 
 void main() {
-  testWidgets('★★★ 拖动中药丸 left 必须真的变化（Owner 报的核心缺陷）', (t) async {
-    await _pump(t);
-    final before = _pillLeft(t);
+  setUp(UiPrefs.debugResetForTest);
+  tearDown(UiPrefs.debugResetForTest);
 
-    final g = await t.startGesture(t.getCenter(_bar));
-    await t.pump();
-    /*
-     * ⚠️ 必须**分两次** moveBy，不能一次 80px。
-     * 实测：第一次 moveBy 的距离有 `kTouchSlop`(≈18px) 被**手势识别**吃掉
-     *   —— 那一段用于判定「这是拖动不是点击」，onStart 在越过阈值处触发，
-     *   药丸此时被设成**原位**，于是只量一次会读到「没动」（我的第一版就这样）。
-     * 真实用户是连续移动的，第二次之后的位移才 1:1 反映到药丸上。
-     */
-    await g.moveBy(const Offset(40, 0));
-    await t.pump();
-    await g.moveBy(const Offset(40, 0));
-    await t.pump();
-
-    final during = _pillLeft(t);
-    debugPrint('[T36] 拖动前=' + before.toStringAsFixed(1) +
-        '  拖动中=' + during.toStringAsFixed(1));
-    expect(during, greaterThan(before + 5),
-        reason: '★★★ 拖动时药丸必须跟手 —— 这正是 Owner 报的缺陷');
-
-    await g.up();
-    // ★ 不能用 pumpAndSettle：本页永远有 21 个 ticker 在跑（实测恒定不降），
-    //   它等的是「没有帧被调度」⇒ 永远等不到。改成有界推进。
-    await _settleBounded(t);
+  testWidgets('drag cancels navigation without changing the selected page', (
+    tester,
+  ) async {
+    final visits = <AppTab>[];
+    await _mount(tester, visits);
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('shell-nav-live'))),
+    );
+    await tester.pump();
+    await gesture.moveBy(const Offset(80, 0));
+    await tester.pump();
+    expect(_item(tester, AppTab.home).selected, isTrue);
+    expect(visits, isEmpty);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(visits, isEmpty);
+    expect(_item(tester, AppTab.live).selected, isFalse);
+    expect(tester.takeException(), isNull);
   });
 
-  testWidgets('★★★ 拖动零延迟（1ms 内必须跟上，不能是 420ms 追尾）', (t) async {
-    await _pump(t);
-    final g = await t.startGesture(t.getCenter(_bar));
-    await t.pump();
-    await g.moveBy(const Offset(50, 0));
-    await t.pump(const Duration(milliseconds: 1));
-    final a = _pillLeft(t);
-    await g.moveBy(const Offset(50, 0));
-    await t.pump(const Duration(milliseconds: 1));
-    final b = _pillLeft(t);
-    debugPrint('[T36] 零延迟: ' + a.toStringAsFixed(1) +
-        ' → ' + b.toStringAsFixed(1) +
-        '  差=' + (b - a).toStringAsFixed(1));
-    expect(b - a, greaterThan(30),
-        reason: '★★★ 若走 420ms 补间，1ms 内只挪几个像素 ⇒ 这里会红');
-    await g.up();
-    await _settleBounded(t);
-  });
+  testWidgets(
+    'tap activates exactly once on release and changes real selection',
+    (tester) async {
+      final visits = <AppTab>[];
+      await _mount(tester, visits);
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byKey(const ValueKey('shell-nav-search'))),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(visits, isEmpty);
+      expect(_item(tester, AppTab.home).selected, isTrue);
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(visits, [AppTab.search]);
+      expect(_item(tester, AppTab.search).selected, isTrue);
+      expect(_item(tester, AppTab.home).selected, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-  testWidgets('★★★ 纯点击必须仍然走 420ms 补间（规格④零回归）', (t) async {
-    await _pump(t);
-    final before = _pillLeft(t);
-
-    await t.tap(find.text('搜索'));
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 60));
-    final mid = _pillLeft(t);
-    /*
-     * ★ 这里原本是 `pumpAndSettle()`，同样永远等不到静止。
-     *   但这条语义要求「补间跑完」，所以推进量必须**覆盖 420ms 补间**：
-     *   用有界推进 600ms（> 420ms），而不是随便推几帧。
-     */
-    await t.pump(const Duration(milliseconds: 600));
-    _claim(t);
-    final after = _pillLeft(t);
-    debugPrint('[T36] 点击: 前=' + before.toStringAsFixed(1) +
-        ' 60ms=' + mid.toStringAsFixed(1) +
-        ' 结束=' + after.toStringAsFixed(1));
-
-    expect(after, greaterThan(before + 5), reason: '★ 点击必须切换位置');
-    expect(mid, lessThan(after - 1),
-        reason: '★★★ 点击必须走 420ms 补间（60ms 时还没到位）——'
-            '若这里已是零延迟，说明拖动分支污染了点击路径');
-    _claim(t);
+  testWidgets('one tab stop per item supports Enter Space and remote Select', (
+    tester,
+  ) async {
+    final visits = <AppTab>[];
+    await _mount(tester, visits);
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.select);
+    await tester.pumpAndSettle();
+    expect(visits, [AppTab.home, AppTab.live, AppTab.follow]);
+    expect(_item(tester, AppTab.follow).selected, isTrue);
+    expect(tester.takeException(), isNull);
   });
 }

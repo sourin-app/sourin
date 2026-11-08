@@ -29,6 +29,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:media_kit/media_kit.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -284,7 +285,7 @@ void main() {
       final c = Calls();
       await pumpDialog(t, settingsState(noCredential()), c);
 
-      final btn = find.widgetWithText(FilledButton, '去弹幕设置');
+      final btn = find.widgetWithText(ui.FilledButton, '去弹幕设置');
       expect(btn, findsOneWidget, reason: '★ 指引必须有一个能点的出口');
       /*
        * ★★ 必须先滚进视口
@@ -331,7 +332,7 @@ void main() {
       expect(find.text('弹幕服务没收到凭证'), findsOneWidget,
           reason: '★★★ 生产链路上必须真的画出来（探针 → _danmakuSettings.error → 面板）');
       expect(find.textContaining('Missing Authentication Headers'), findsWidgets);
-      expect(find.widgetWithText(FilledButton, '去弹幕设置'), findsOneWidget,
+      expect(find.widgetWithText(ui.FilledButton, '去弹幕设置'), findsOneWidget,
           reason: '★ 宿主这一侧也接了 onHintAction');
 
       expect(debugPlayerCloseDanmakuSettingsForProbe(), isTrue);

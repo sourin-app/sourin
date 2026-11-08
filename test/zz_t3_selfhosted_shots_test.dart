@@ -4,6 +4,7 @@
 //   SOURIN_SHOT_DIR=.probe/shots flutter test test/zz_t3_selfhosted_shots_test.dart --concurrency=1
 // ignore_for_file: avoid_print
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/danmaku.dart';
@@ -75,7 +76,7 @@ Future<void> _pump(
   //      而按钮本身在 `:2141`。
   //   ⇒ 判据不能靠"哪个页签名字听起来像"，必须读**渲染位置**。
   await t.tap(find.descendant(
-    of: find.byType(SegmentedButton<DanmakuPanelTab>),
+    of: find.byKey(const ValueKey('danmaku-settings-tabs')),
     matching: find.text('高级'),
   ));
   await t.pumpAndSettle();
@@ -140,7 +141,7 @@ void main() {
       ),
     );
     await t.enterText(
-      find.ancestor(of: find.text('服务地址'), matching: find.byType(TextField)),
+      find.ancestor(of: find.text('服务地址'), matching: find.byType(ui.TextField)),
       'http://127.0.0.1:9321',
     );
     await t.pump();

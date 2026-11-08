@@ -27,9 +27,12 @@
 //  滚动静默失效。用 `itemExtent` + 列数**纯算**出它的偏移，不依赖构建状态。
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import '../widgets/miuix_controls.dart' as ui;
 
 import '../../core/models.dart';
 import '../tokens.dart';
+import '../theme/miuix_palette.dart';
 import '../widgets/episode_filter.dart' show effectiveFlag, episodesForLine;
 import '../widgets/episode_strip.dart' show EpisodeLineBar;
 import '../../design/icons/app_icons.dart';
@@ -266,30 +269,33 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
             ? const BorderRadius.horizontal(left: Radius.circular(Radii.lg))
             : const BorderRadius.vertical(top: Radius.circular(Radii.lg)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _header(),
-          // ★ 多线路才画线路条（单线路不画 —— 不给用户多余 UI）
-          //
-          // ★ 2026-10-29：上游没传 `flags` 时**自己从 episodes 推**（顺序 = 首次出现顺序），
-          //   否则"有 17 条线路却没有线路条"⇒ 用户没法切，只能看到一堆重复集。
-          if (_flags.length > 1) ...[
+      child: miuix.MiuixTheme(
+        data: miuixThemeData(Brightness.dark),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _header(),
+            // ★ 多线路才画线路条（单线路不画 —— 不给用户多余 UI）
+            //
+            // ★ 2026-10-29：上游没传 `flags` 时**自己从 episodes 推**（顺序 = 首次出现顺序），
+            //   否则"有 17 条线路却没有线路条"⇒ 用户没法切，只能看到一堆重复集。
+            if (_flags.length > 1) ...[
+              const SizedBox(height: Sp.x3),
+              EpisodeLineBar(
+                flags: _flags,
+                selected: effectiveFlag(widget.episodes, widget.selectedFlag),
+                onPick: (f) => widget.onPickFlag?.call(f),
+              ),
+            ],
+            if (_segmentCount > 1) ...[
+              const SizedBox(height: Sp.x3),
+              _segmentBar(),
+            ],
             const SizedBox(height: Sp.x3),
-            EpisodeLineBar(
-              flags: _flags,
-              selected: effectiveFlag(widget.episodes, widget.selectedFlag),
-              onPick: (f) => widget.onPickFlag?.call(f),
-            ),
+            Expanded(child: _grid(width)),
           ],
-          if (_segmentCount > 1) ...[
-            const SizedBox(height: Sp.x3),
-            _segmentBar(),
-          ],
-          const SizedBox(height: Sp.x3),
-          Expanded(child: _grid(width)),
-        ],
+        ),
       ),
     );
   }
@@ -314,7 +320,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
       ),
       const Spacer(),
       // ★ 倒序开关：Owner 明确要的形态（某视频站/腾讯都有）
-      IconButton(
+      ui.IconButton(
         onPressed: () {
           setState(() => _descending = !_descending);
           WidgetsBinding.instance.addPostFrameCallback(
@@ -329,7 +335,7 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
           color: _descending ? const Color(0xFF32C7FF) : Colors.white,
         ),
       ),
-      IconButton(
+      ui.IconButton(
         onPressed: widget.onClose,
         tooltip: '关闭',
         visualDensity: VisualDensity.compact,
@@ -348,11 +354,11 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
       itemBuilder: (context, i) {
         final seg = _segments[i];
         final active = i == _segment;
-        return ChoiceChip(
+        return ui.ChoiceChip(
           label: Text(
             seg.label,
             style: TextStyle(
-              color: active ? const Color(0xFF07212B) : Colors.white,
+              color: Colors.white,
               fontSize: FontSizes.cap,
               fontWeight: active ? FontWeight.w600 : FontWeight.w400,
             ),
@@ -362,7 +368,6 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
               _switchSegment(seg.startIndex ~/ widget.segmentSize),
           showCheckmark: false,
           backgroundColor: const Color(0x1FFFFFFF),
-          selectedColor: const Color(0xFF32C7FF),
           side: BorderSide.none,
           shape: const RoundedRectangleBorder(
             borderRadius: Radii.rFull,
@@ -409,8 +414,8 @@ class _PlayerEpisodePanelState extends State<PlayerEpisodePanel> {
       button: true,
       selected: active,
       label: '第 ${i + 1} 集',
-      child: InkWell(
-        onTap: () => widget.onPick(ep),
+      child: miuix.MiuixPressable(
+        onPressed: () => widget.onPick(ep),
         borderRadius: BorderRadius.circular(Radii.xs),
         child: Container(
           width: cellW,

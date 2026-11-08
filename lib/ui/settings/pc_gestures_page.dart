@@ -38,6 +38,8 @@
 
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import '../../core/device.dart';
 import '../../core/player_gestures.dart';
 import '../tokens.dart';
@@ -112,7 +114,8 @@ class _PcGesturesSettingsPageState extends State<PcGesturesSettingsPage> {
              */
             SettingsGestureToggle(
               label: '方向键单击：步数控制',
-              hint: '左右方向键轻点一下，跳一个步长'
+              hint:
+                  '左右方向键轻点一下，跳一个步长'
                   '（与下面的长按各自开关）',
               value: PlayerGestures.pcArrowSeekEnabled,
               onChanged: (v) => setState(() {
@@ -135,7 +138,8 @@ class _PcGesturesSettingsPageState extends State<PcGesturesSettingsPage> {
             const SizedBox(height: Sp.x5),
             SettingsGestureToggle(
               label: '方向键长按：快进快退',
-              hint: '按住右方向键倍速快进、按住左方向键连续快退'
+              hint:
+                  '按住右方向键倍速快进、按住左方向键连续快退'
                   '，松开恢复原速',
               value: PlayerGestures.pcArrowHoldEnabled,
               onChanged: (v) => setState(() {
@@ -156,7 +160,7 @@ class _PcGesturesSettingsPageState extends State<PcGesturesSettingsPage> {
             ],
 
             const SizedBox(height: Sp.x5),
-            Divider(color: colors.outlineVariant, height: 1),
+            ui.Divider(color: colors.outlineVariant, height: 1),
             const SizedBox(height: Sp.x5),
 
             SettingsGestureToggle(
@@ -167,7 +171,8 @@ class _PcGesturesSettingsPageState extends State<PcGesturesSettingsPage> {
                * 单击那一半已经不存在了，不改的话用户会去点画面
                * 期待跳秒，然后以为"坏了"。
                */
-              hint: '鼠标长按左半屏连续快退、长按右半屏倍速快进'
+              hint:
+                  '鼠标长按左半屏连续快退、长按右半屏倍速快进'
                   '（单击画面为播放/暂停）。'
                   '★ PC 上更常用的是上面的方向键，'
                   '这个鼠标手势可单独关掉',

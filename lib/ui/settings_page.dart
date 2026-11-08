@@ -45,8 +45,15 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'widgets/settings_tabs.dart';
+import 'widgets/settings_dropdown.dart';
+
 import 'package:material_ui/material_ui.dart';
+
+import 'widgets/miuix_controls.dart' as ui;
+
 // ★ 2026-10-22（PR #32 / CR 线程 5）：`ValueListenable` 必须**精确**导入。
 //   `material_ui` 只 `export 'package:flutter/widgets.dart';`，而 widgets.dart
 //   对 foundation 只 `show Brightness, UniqueKey` ⇒ `ValueNotifier` /
@@ -1482,7 +1489,6 @@ class SettingsPageState extends State<SettingsPage> {
     await _afterImport(r);
   }
 
-
   /// 声明式源 ⇒ **可视化编排**（Owner 第 9 条）
   ///
   /// # 与 [_editProvider] 里其它分支的分工
@@ -1579,6 +1585,7 @@ class SettingsPageState extends State<SettingsPage> {
     if (!mounted) return;
     await _afterImport(r);
   }
+
   /// 弹窗返回后的统一收尾（刷新 + 提示）
   ///
   /// # 为什么抽出来
@@ -2127,9 +2134,11 @@ class SettingsPageState extends State<SettingsPage> {
        *   （硬约束 1），删除即完全恢复（硬约束 2）。
        *   ```
        */
-      _flash('「${e.name}」没有声明可配置项（它没有 config 声明）；'
-          '可视化编排用于声明式源，这里直接打开「源个性化编排」——'
-          '只写覆盖层，插件文件一个字节都不动');
+      _flash(
+        '「${e.name}」没有声明可配置项（它没有 config 声明）；'
+        '可视化编排用于声明式源，这里直接打开「源个性化编排」——'
+        '只写覆盖层，插件文件一个字节都不动',
+      );
       if (!mounted) return;
       await showAppDialog<void>(
         context: context,
@@ -2230,21 +2239,21 @@ class SettingsPageState extends State<SettingsPage> {
   /// ⚠️ 判据必须**正向列举** declarative，不能写成「不是 js 就给」——
   ///    后者会给内置源画一个点了必报错的按钮（与 `_canEdit` 同一个理由）。
   /// 打开「TVBox 聚合源」管理页（R2-#2：**两处入口共用同一个页面**）
-///
-/// ```text
-/// 入口 ①：聚合源那类的**组头**（`TvboxGroupHeader.onConfigure`，R1 加）
-/// 入口 ②：聚合源**卡片自己的菜单**项「编辑链接…」（本次加）
-/// ★ 为什么两处都要：Owner 两次反馈点的位置不同（第一次读到的是"进不去"，
-///   第二次点的是**卡片菜单**）—— 而菜单项的可用性受 `kind` 门控（见 `_configOf` 的注释）。
-/// ```
-void _openAggregatePage() {
-  showAppDialog<void>(
-    context: context,
-    builder: (_) => const TvboxAggregatePage(),
-  );
-}
+  ///
+  /// ```text
+  /// 入口 ①：聚合源那类的**组头**（`TvboxGroupHeader.onConfigure`，R1 加）
+  /// 入口 ②：聚合源**卡片自己的菜单**项「编辑链接…」（本次加）
+  /// ★ 为什么两处都要：Owner 两次反馈点的位置不同（第一次读到的是"进不去"，
+  ///   第二次点的是**卡片菜单**）—— 而菜单项的可用性受 `kind` 门控（见 `_configOf` 的注释）。
+  /// ```
+  void _openAggregatePage() {
+    showAppDialog<void>(
+      context: context,
+      builder: (_) => const TvboxAggregatePage(),
+    );
+  }
 
-VoidCallback? _configOf(String id) {
+  VoidCallback? _configOf(String id) {
     final p = _providers.where((x) => x.id == id).firstOrNull;
     /*
      * ★★★ 2026-10-27（R2-#2 第二次反馈，Owner 逐字）：
@@ -2562,7 +2571,7 @@ VoidCallback? _configOf(String id) {
         title: title,
         content: Material(
           type: MaterialType.transparency,
-          child: TextField(
+          child: ui.TextField(
             controller: ctl,
             maxLines: maxLines,
             autofocus: true,
@@ -2782,62 +2791,62 @@ VoidCallback? _configOf(String id) {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                  /*
+                    /*
                    * ★ 开机自启放在状态区**之上**
                    *
                    * 原版注释：
                    * > 这是「它会不会自己起来」的开关，
                    * > 比「现在开着没有」更该先被看到。
                    */
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _remoteAutoStart,
-                    onChanged: _toggleRemoteAutoStart,
-                    title: const Text('开机自动开启'),
-                    subtitle: Text(
-                      '开启后每次启动程序都自动挂上遥控，不用再手动点。'
-                      '关掉遥控会自动取消这个勾选。',
-                      style: TextStyle(
-                        fontSize: FontSizes.cap,
-                        color: colors.onSurfaceVariant,
+                    ui.SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: _remoteAutoStart,
+                      onChanged: _toggleRemoteAutoStart,
+                      title: const Text('开机自动开启'),
+                      subtitle: Text(
+                        '开启后每次启动程序都自动挂上遥控，不用再手动点。'
+                        '关掉遥控会自动取消这个勾选。',
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: colors.onSurfaceVariant,
+                        ),
                       ),
                     ),
-                  ),
 
-                  if (_remote?.running != true)
-                    /*
+                    if (_remote?.running != true)
+                      /*
                      * ★ 2026-10-01：按钮与提示在窄屏改为**上下两行**。
                      *   原来 `Row(按钮 + Spacer文字)` 在 363 dp 内容区里
                      *   会把「默认端口 8642」挤成两行、或与按钮贴住。
                      *   宽屏仍是一行（`Wrap` 放得下就不换行 ⇒ 观感不变）。
                      */
-                    Wrap(
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: Sp.x3,
-                      runSpacing: Sp.x1,
-                      children: [
-                        FilledButton(
-                          onPressed: _remoteBusy ? null : _startRemote,
-                          child: Text(_remoteBusy ? '启动中…' : '开启遥控'),
-                        ),
-                        Text(
-                          '默认端口 8642',
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant,
+                      Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        spacing: Sp.x3,
+                        runSpacing: Sp.x1,
+                        children: [
+                          ui.FilledButton(
+                            onPressed: _remoteBusy ? null : _startRemote,
+                            child: Text(_remoteBusy ? '启动中…' : '开启遥控'),
                           ),
-                        ),
-                      ],
-                    )
-                  else
-                    _RemotePanel(
-                      status: _remote!,
-                      busy: _remoteBusy,
-                      onStop: _stopRemote,
-                      onRefreshPin: _refreshPin,
-                      onSetFixedPin: _setFixedPin,
-                      onCopy: _copy,
-                    ),
+                          Text(
+                            '默认端口 8642',
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      _RemotePanel(
+                        status: _remote!,
+                        busy: _remoteBusy,
+                        onStop: _stopRemote,
+                        onRefreshPin: _refreshPin,
+                        onSetFixedPin: _setFixedPin,
+                        onCopy: _copy,
+                      ),
                   ],
                 ),
               ),
@@ -2959,8 +2968,11 @@ VoidCallback? _configOf(String id) {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(AppIcons.tips_and_updates_outlined,
-                        size: 16, color: colors.primary),
+                    Icon(
+                      AppIcons.tips_and_updates_outlined,
+                      size: 16,
+                      color: colors.primary,
+                    ),
                     const SizedBox(width: Sp.x2),
                     Expanded(
                       child: Column(
@@ -3027,7 +3039,12 @@ VoidCallback? _configOf(String id) {
               subtitle: '${_providers.length} 个内容源 · 安装 / 编辑 / 更新 / 排序 / 代理',
               onTap: _openPluginsPage,
             ),
-            SourceDiscoveryEntry(onSourcesChanged: () { loadAll(); widget.onProvidersChanged?.call(); }),
+            SourceDiscoveryEntry(
+              onSourcesChanged: () {
+                loadAll();
+                widget.onProvidersChanged?.call();
+              },
+            ),
             SettingsEntryRow(
               icon: Icons.web_outlined,
               title: '自定义 HTML 首页',
@@ -3143,10 +3160,12 @@ VoidCallback? _configOf(String id) {
                *    直接构造就会命中。这是那条守卫的真实口径，不是它坏了。
                * ```
                */
-              onTap: () => unawaited(showAppDialog<void>(
-                context: context,
-                builder: (_) => const PanSettingsPage(),
-              )),
+              onTap: () => unawaited(
+                showAppDialog<void>(
+                  context: context,
+                  builder: (_) => const PanSettingsPage(),
+                ),
+              ),
             ),
 
             /*
@@ -3287,7 +3306,7 @@ VoidCallback? _configOf(String id) {
                   ],
 
                   const SizedBox(height: Sp.x5),
-                  Divider(color: colors.outlineVariant, height: 1),
+                  ui.Divider(color: colors.outlineVariant, height: 1),
                   const SizedBox(height: Sp.x5),
 
                   /*
@@ -3393,7 +3412,6 @@ VoidCallback? _configOf(String id) {
              * ShellPage._currentLayout() 已不读它，留着是无害的历史值；
              * 主动去删反而要在启动路径上加一次写盘。
              */
-
             SettingsGroupLabel(text: '数据与外观'),
             SettingsEntryRow(
               icon: AppIcons.cloud_sync_outlined,
@@ -3429,7 +3447,6 @@ VoidCallback? _configOf(String id) {
             ),
           ],
         ),
-
       ],
     );
   }
@@ -3604,6 +3621,7 @@ VoidCallback? _configOf(String id) {
       newIndex: newIndex,
     );
   }
+
   /// 「关于」行版本串的**常量后缀** —— 与修复前逐字相同（`'$version · 架构与设备信息'`）
   static const String kCoreVersionLabelSuffix = ' · 架构与设备信息';
 
@@ -3621,8 +3639,9 @@ VoidCallback? _configOf(String id) {
     if (version != null) return '$version$kCoreVersionLabelSuffix';
     if (error != null) return kCoreVersionFallbackLabel;
     throw ArgumentError(
-        'coreVersionLabelFor：version 与 error 不能同时为 null —— '
-        '没有「取版本失败」的证据就不许降级');
+      'coreVersionLabelFor：version 与 error 不能同时为 null —— '
+      '没有「取版本失败」的证据就不许降级',
+    );
   }
 
   /// 「直播源」tab 拖动排序
@@ -3787,7 +3806,8 @@ VoidCallback? _configOf(String id) {
                   pluginEntry: _pluginOf(live[i].id),
                   onConfig: _configOf(live[i].id),
                   onCopy: _copy,
-                  onOverride: () => _openOverrideEditor(live[i].id, live[i].name),
+                  onOverride: () =>
+                      _openOverrideEditor(live[i].id, live[i].name),
                   onPluginUpdate: _pluginSources.containsKey(live[i].id)
                       ? () => _openPluginUpdate(live[i].id, live[i].name)
                       // 同上：TVBox 源走订阅更新弹窗（判据同 `_providers` 那处）
@@ -3829,8 +3849,10 @@ VoidCallback? _configOf(String id) {
      */
     final allVisible = visibleProviders(_nonLiveProviders);
     final list = filterManagedSources(
-      allVisible, query: _sourceQuery,
-      enabled: _sourceEnabledFilter, sourceClass: _sourceClassFilter,
+      allVisible,
+      query: _sourceQuery,
+      enabled: _sourceEnabledFilter,
+      sourceClass: _sourceClassFilter,
     );
     // ★ 展示序列（TVBox 聚合组可折叠）：其他源在前、聚合组在后；折叠时整组省掉
     //   纯函数 `tvboxGroupOrder` 不读 State ⇒ 门禁可直接注入（见 zz_t1048）
@@ -4009,7 +4031,8 @@ VoidCallback? _configOf(String id) {
           if (_liveSources.isNotEmpty) ...[
             const SizedBox(width: 4),
             _MiniChip(
-              text: '直播 '
+              text:
+                  '直播 '
                   '${_liveSources.where((p) => p.enabled).length}'
                   '/${_liveSources.length}',
               tone: _ChipTone.brand,
@@ -4058,7 +4081,8 @@ VoidCallback? _configOf(String id) {
             resultCount: list.length,
             totalCount: allVisible.length,
             onQuery: (query) => _setSourceFilter(query: query),
-            onEnabled: (enabled) => _setSourceFilter(enabled: enabled, setEnabled: true),
+            onEnabled: (enabled) =>
+                _setSourceFilter(enabled: enabled, setEnabled: true),
             onClass: (sourceClass) =>
                 _setSourceFilter(sourceClass: sourceClass, setClass: true),
           ),
@@ -4089,19 +4113,19 @@ VoidCallback? _configOf(String id) {
             runSpacing: Sp.x2,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              FilledButton.icon(
+              ui.FilledButton.icon(
                 key: const ValueKey<String>('source-manager-import'),
                 onPressed: _openImportDialog,
                 icon: const Icon(AppIcons.add, size: 16),
                 label: const Text('导入源'),
               ),
-              IconButton(
+              ui.IconButton(
                 key: const ValueKey<String>('source-manager-order'),
                 tooltip: '调整顺序',
                 onPressed: _openOrderDialog,
                 icon: const Icon(AppIcons.reorder, size: 18),
               ),
-              FilledButton.icon(
+              ui.FilledButton.icon(
                 onPressed: _installPlugin,
                 icon: const Icon(AppIcons.download, size: 16),
                 label: const Text('从网址安装'),
@@ -4185,9 +4209,7 @@ VoidCallback? _configOf(String id) {
                       valueListenable: _healthRev,
                       builder: (context, _, __) => _menuRow(
                         AppIcons.monitor_heart_outlined,
-                        _sweeping
-                            ? '检测中 $_healthDone/$_healthTotal'
-                            : '健康检测',
+                        _sweeping ? '检测中 $_healthDone/$_healthTotal' : '健康检测',
                       ),
                     ),
                   ),
@@ -4445,9 +4467,9 @@ VoidCallback? _configOf(String id) {
           isEmpty: allVisible.isEmpty,
           onImport: _openImportDialog,
           onConfigure: () => showAppDialog<void>(
-              context: context,
-              builder: (_) => const TvboxAggregatePage(),
-            ),
+            context: context,
+            builder: (_) => const TvboxAggregatePage(),
+          ),
         ),
         if (list.isEmpty && allVisible.isNotEmpty)
           const Padding(
@@ -4544,7 +4566,8 @@ VoidCallback? _configOf(String id) {
               TvboxGroupHeader(
                 count: tvboxGroupCount(list),
                 expanded: _tvboxExpanded,
-                onToggle: () => setState(() => _tvboxExpanded = !_tvboxExpanded),
+                onToggle: () =>
+                    setState(() => _tvboxExpanded = !_tvboxExpanded),
                 onConfigure: () => showAppDialog<void>(
                   context: context,
                   builder: (_) => const TvboxAggregatePage(),
@@ -4580,9 +4603,9 @@ VoidCallback? _configOf(String id) {
                */
               onConfigure: cls == SourceClass.tvboxAggregate
                   ? () => showAppDialog<void>(
-                        context: context,
-                        builder: (_) => const TvboxAggregatePage(),
-                      )
+                      context: context,
+                      builder: (_) => const TvboxAggregatePage(),
+                    )
                   : null,
             ),
           /*
@@ -4613,16 +4636,17 @@ VoidCallback? _configOf(String id) {
                 onReorder: (o, n) => _onReorderWithin(visible, o, n),
                 itemBuilder: (context, i, dragHandle, cellWidth) => Padding(
                   key: ValueKey(visible[i].id),
-            padding: EdgeInsets.zero,
-            child: _ProviderCard(
-              provider: visible[i],
-              /*
+                  padding: EdgeInsets.zero,
+                  child: _ProviderCard(
+                    provider: visible[i],
+                    /*
                * ★ 第 07 项：展开态由宿主持有 —— 同一个 `Set` 同时服务
                * 「内容源」与「直播源」两份列表（按源 id，天然互不干扰）。
                */
-              expanded: _expandedProviderIds.contains(visible[i].id),
-              onToggleDetails: () => _toggleProviderDetails(visible[i].id),
-              /*
+                    expanded: _expandedProviderIds.contains(visible[i].id),
+                    onToggleDetails: () =>
+                        _toggleProviderDetails(visible[i].id),
+                    /*
                * ★ 本格宽度由网格传进来（`ReorderableCardGrid` 算的列数
                * 本来就是按它分的）。卡片用它决定按钮横排还是换行。
                *
@@ -4632,27 +4656,29 @@ VoidCallback? _configOf(String id) {
                *    会直接抛 "LayoutBuilder does not support
                *    returning intrinsic dimensions"（实测踩到）。
                */
-              cellWidth: cellWidth,
-              /*
+                    cellWidth: cellWidth,
+                    /*
                * 拖动把手 —— 由网格造好传进来（见上面的说明）。
                * `ReorderableCardGrid` 靠它知道拖的是第几格。
                */
-              dragHandle: dragHandle,
-              /*
+                    dragHandle: dragHandle,
+                    /*
                * 「上一个 / 下一个」按钮的可用性：
                * 第一张不能上移、最后一张不能下移。
                * ⚠️ 边界按钮**置灰而不是隐藏** ——
                *    隐藏会让每张卡的按钮位置错开，
                *    置灰则整列按钮**竖直对齐**，好点也好认。
                */
-              canMoveUp: i > 0,
-              canMoveDown: i < list.length - 1,
-              onMoveUp: () => _moveProviderBy(visible[i].id, -1, within: visible),
-              onMoveDown: () => _moveProviderBy(visible[i].id, 1, within: visible),
-              onToggle: () => _toggleProvider(visible[i]),
-              onRemove: _removeOf(visible[i]),
-              onEdit: () => _editProvider(visible[i]),
-              /*
+                    canMoveUp: i > 0,
+                    canMoveDown: i < list.length - 1,
+                    onMoveUp: () =>
+                        _moveProviderBy(visible[i].id, -1, within: visible),
+                    onMoveDown: () =>
+                        _moveProviderBy(visible[i].id, 1, within: visible),
+                    onToggle: () => _toggleProvider(visible[i]),
+                    onRemove: _removeOf(visible[i]),
+                    onEdit: () => _editProvider(visible[i]),
+                    /*
                * ★★ 合并后从原 `_PluginTile` **并过来**的两样
                *
                * ```text
@@ -4668,16 +4694,17 @@ VoidCallback? _configOf(String id) {
                * 文件，两个都传 null → 卡片上不画「配置」按钮、
                * 描述行也不拼文件名。
                */
-              pluginEntry: _pluginOf(visible[i].id),
-              onConfig: _configOf(visible[i].id),
-              // ★ task-5：标识 chip 可点复制上游链接 —— 复用宿主现成的 `_copy`
-              //（它带「已复制」toast，且 `_toastRev` 让二级页也看得到）
-              onCopy: _copy,
-              // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
-              onOverride: () => _openOverrideEditor(visible[i].id, visible[i].name),
-              // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
-              tvboxSource: _tvboxSourceOf(visible[i].id),
-              /*
+                    pluginEntry: _pluginOf(visible[i].id),
+                    onConfig: _configOf(visible[i].id),
+                    // ★ task-5：标识 chip 可点复制上游链接 —— 复用宿主现成的 `_copy`
+                    //（它带「已复制」toast，且 `_toastRev` 让二级页也看得到）
+                    onCopy: _copy,
+                    // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
+                    onOverride: () =>
+                        _openOverrideEditor(visible[i].id, visible[i].name),
+                    // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
+                    tvboxSource: _tvboxSourceOf(visible[i].id),
+                    /*
                * ★★ 只有**有安装链接**的插件才有这个入口（task-23）
                *
                * `_pluginSources` 来自 `list_plugin_sources`
@@ -4688,10 +4715,10 @@ VoidCallback? _configOf(String id) {
                *（没有任何 meta）→ **26 张卡一个都不会有这个按钮**。
                * 这是**正确行为**，不是 bug —— 见字段注释的原则。
                */
-              onPluginUpdate: _pluginSources.containsKey(visible[i].id)
-                  ? () =>
-                        _openPluginUpdate(visible[i].id, visible[i].name)
-                  /*
+                    onPluginUpdate: _pluginSources.containsKey(visible[i].id)
+                        ? () =>
+                              _openPluginUpdate(visible[i].id, visible[i].name)
+                        /*
                    * TVBox 源走**另一个弹窗**（task-14 附加）
                    *
                    * 两者共用卡片上同一个图标按钮（`_ProviderCard.onPluginUpdate`），
@@ -4704,9 +4731,9 @@ VoidCallback? _configOf(String id) {
                    * 两处都查不到 => 仍传 `null` => **不画按钮**
                    * （`test/plugin_update_ui_test.dart` 钉住了这个语义）。
                    */
-                  : _tvboxSources.containsKey(visible[i].id)
-                  ? () => _openTvboxUpdate(visible[i].id, visible[i].name)
-                  : null,
+                        : _tvboxSources.containsKey(visible[i].id)
+                        ? () => _openTvboxUpdate(visible[i].id, visible[i].name)
+                        : null,
                   ),
                 ),
               );
@@ -4773,57 +4800,20 @@ VoidCallback? _configOf(String id) {
 // _PluginsTabBarDelegate  pinned 的 SliverPersistentHeader delegate
 // ```
 //
-// ⚠️ 药丸**只在外层容器上有一块玻璃**（`GlassContainer` 恰好 1 处）——
-//    `my_shelf_test.dart:45-52` 记着这个坑：给每个 tab 各套一块会变成
-//    「两个独立小胶囊」，与底栏那条大玻璃完全不像。
-
-/// 二级页的两个 tab
-///
-/// ⚠️ 用枚举驱动（`_PluginsTab.values`）而不是手写两份 chip ——
-///    漏一个就少一个 tab，而且滑动药丸的宽度算不出来。
+// Plugin sections share the actual Miuix tab row used by the library shelf.
 enum _PluginsTab {
-  /// 内容源 / JS 插件 —— 原样复用 `SettingsPageState._pluginsBlock`
-  ///
-  /// ★★★ N8a（2026-10-27）：页签文案「JS 插件」→「源」
-  ///
-  /// 与一级页入口行 / 区块标题 / 二级页页头**同一个词**。
-  /// ⚠️ 判据：这是**导航用的页签名**（用户照着找入口），
-  ///    按 Lead 裁定的 N8a 门禁范围（导航 / 区块 / 页签标题）**必须**改。
-  ///    与 `'js' => 'JS 插件'` 那个 **kind chip** 不同 ——
-  ///    那个是分类名，放行（见 `_kindLabel` 的注释）。
-  ///
-  /// ⚠️ 本 tab 的**内容**没变：它仍是"排除直播源之外的全部源"
-  ///    （`_nonLiveProviders`）。五分类（N8b-4）是在**列表内部**再分组，
-  ///    不改变"有两个 tab"这个结构（一次大改无法归因，故不重构）。
   plugins('源'),
-
-  /// 只列 `capabilities.live` 为真的源，并允许在这一页启停 / 排序
   live('直播源');
 
   const _PluginsTab(this.label);
-
-  /// tab 上的文字
   final String label;
 }
 
-/// 每个 tab 的宽度（与 `follow_page.dart:1119` 的 `_followTabWidth` 同值）
-///
-/// ★ 用**定宽**而不是测量：本文件里**不能出现会在布局期自测宽度的那个
-///   构建器** —— `test/provider_grid_responsive_test.dart:618-639` 断言
-///   它不存在，因为卡片住在 `IntrinsicHeight` 下，自测宽会直接抛
-///   "does not support returning intrinsic dimensions"（实测踩到）。
-///   定宽同时让滑动药丸的 `FractionallySizedBox(widthFactor: 0.5)` 成立。
+// Fixed extents keep the pinned section measurable under IntrinsicHeight.
 const double _pluginsTabWidth = 96;
-
-/// tab 本体高度 —— ≥34 才满足触控目标规范（`DEVELOPMENT.md` 坑 35）
 const double _pluginsTabH = 34;
-
-/// pinned 条的总高度
-///
-/// = 玻璃容器（`_pluginsTabH` + 上下各 `Sp.x2` 的 `padding`）+ 下呼吸 `Sp.x2`
 const double _pluginsTabBarExtent = _pluginsTabH + Sp.x2 * 2 + Sp.x2;
 
-/// 玻璃 tab 条（外层一块玻璃 + 内部滑动药丸 + 两个**透明** chip）
 class _PluginsTabBar extends StatelessWidget {
   const _PluginsTabBar({required this.current, required this.onChanged});
 
@@ -4831,83 +4821,15 @@ class _PluginsTabBar extends StatelessWidget {
   final ValueChanged<_PluginsTab> onChanged;
 
   @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
-    /*
-     * ★ 药丸与文字**取同一个调色板**（`colors.primary` / `colors.onPrimary`）
-     *
-     * `follow_page.dart:1278-1340` 记着这个坑：药丸用一个色、文字却用
-     * `colorScheme.onSurface` ⇒ 深色主题下白字压白药丸，**看不见**。
-     */
-    return GlassContainer(
-      shape: const LiquidRoundedSuperellipse(borderRadius: 999),
-      quality: GlassQuality.standard,
-      /*
-       * ★ `padding` 不能省（`theme_page.dart:74` 的实测结论）：
-       *   药丸要离玻璃边缘留一口气，否则选中的高亮会盖住折射带，
-       *   玻璃"看起来没生效"。
-       */
-      padding: const EdgeInsets.all(Sp.x2),
-      child: SizedBox(
-        width: _pluginsTabWidth * 2,
-        height: _pluginsTabH,
-        child: Stack(
-          children: [
-            // ① 滑动药丸（在下面一层）
-            //
-            // ★ 用 `AnimatedPositioned` 而不是 `AnimatedAlign` ——
-            //   与 `follow_page.dart:1108-1179` 的 `_FollowTabs` 同一个做法
-            //   （`left: current.index * _followTabWidth` + `top/bottom: 0`）。
-            //   Stack 的宽度是上面写死的 `_pluginsTabWidth * 2`，
-            //   所以药丸的落点是**算出来的**，不需要测量。
-            AnimatedPositioned(
-              duration: Motion.slow,
-              curve: Curves.easeOutCubic,
-              left: current == _PluginsTab.plugins ? 0 : _pluginsTabWidth,
-              top: 0,
-              bottom: 0,
-              width: _pluginsTabWidth,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: colors.primary,
-                  borderRadius: Radii.rFull,
-                ),
-              ),
-            ),
-            // ② 两个 chip —— **透明**底（玻璃在外层那一个容器上）
-            Positioned.fill(
-              child: Row(
-                children: [
-                  for (final t in _PluginsTab.values)
-                    Expanded(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => onChanged(t),
-                        child: Center(
-                          child: Text(
-                            t.label,
-                            style: TextStyle(
-                              fontSize: FontSizes.sm,
-                              fontWeight: current == t
-                                  ? FontWeight.w600
-                                  : FontWeight.w400,
-                              color: current == t
-                                  ? colors.onPrimary
-                                  : colors.onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => SizedBox(
+    width: _pluginsTabWidth * _PluginsTab.values.length,
+    child: SettingsTabs(
+      labels: [for (final tab in _PluginsTab.values) tab.label],
+      selected: current.index,
+      onSelected: (index) => onChanged(_PluginsTab.values[index]),
+      height: _pluginsTabH,
+    ),
+  );
 }
 
 /// tab 条的 pinned delegate
@@ -5021,10 +4943,12 @@ class _PluginsPageState extends State<_PluginsPage> {
       clipBehavior: Clip.antiAlias,
       slivers: [
         SliverToBoxAdapter(
-          child: SourceDiscoveryEntry(onSourcesChanged: () {
-            host.loadAll();
-            host.widget.onProvidersChanged?.call();
-          }),
+          child: SourceDiscoveryEntry(
+            onSourcesChanged: () {
+              host.loadAll();
+              host.widget.onProvidersChanged?.call();
+            },
+          ),
         ),
         /*
          * ★ tab 条：`pinned: true` 就是「滚到哪都留在视口顶」的**全部来源**。
@@ -5327,8 +5251,7 @@ Widget settingsProviderCardForTest({
 Widget settingsProviderCardsForTest({
   required List<ProviderManifest> providers,
   double cellWidth = 700,
-}) =>
-    _TestProviderCardsHost(providers: providers, cellWidth: cellWidth);
+}) => _TestProviderCardsHost(providers: providers, cellWidth: cellWidth);
 
 class _TestProviderCardsHost extends StatefulWidget {
   const _TestProviderCardsHost({
@@ -5349,22 +5272,22 @@ class _TestProviderCardsHostState extends State<_TestProviderCardsHost> {
 
   @override
   Widget build(BuildContext context) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          for (final p in widget.providers)
-            _ProviderCard(
-              provider: p,
-              cellWidth: widget.cellWidth,
-              onToggle: () {},
-              onEdit: () {},
-              onRemove: () {},
-              expanded: _expanded.contains(p.id),
-              onToggleDetails: () => setState(() {
-                if (!_expanded.remove(p.id)) _expanded.add(p.id);
-              }),
-            ),
-        ],
-      );
+    mainAxisSize: MainAxisSize.min,
+    children: <Widget>[
+      for (final p in widget.providers)
+        _ProviderCard(
+          provider: p,
+          cellWidth: widget.cellWidth,
+          onToggle: () {},
+          onEdit: () {},
+          onRemove: () {},
+          expanded: _expanded.contains(p.id),
+          onToggleDetails: () => setState(() {
+            if (!_expanded.remove(p.id)) _expanded.add(p.id);
+          }),
+        ),
+    ],
+  );
 }
 
 /// **空列表时的下一步提示**（第 20/19 项收口：用户当场"看不到聚合"的根因之一）
@@ -5420,7 +5343,7 @@ class SourcesEmptyState extends StatelessWidget {
             style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
           ),
           const SizedBox(height: Sp.x3),
-          FilledButton.icon(
+          ui.FilledButton.icon(
             key: const ValueKey<String>('sources-empty-import'),
             onPressed: onImport,
             icon: const Icon(AppIcons.download, size: 16),
@@ -5455,10 +5378,8 @@ class _TestProviderCardHostState extends State<_TestProviderCardHost> {
   bool _expanded = false;
 
   @override
-  Widget build(BuildContext context) => widget.builder(
-        _expanded,
-        () => setState(() => _expanded = !_expanded),
-      );
+  Widget build(BuildContext context) =>
+      widget.builder(_expanded, () => setState(() => _expanded = !_expanded));
 }
 
 /// 第 07 项：卡片详情区的展开态**由宿主持有**（`Set<源 id>`）
@@ -5780,14 +5701,12 @@ class _ProviderCard extends StatelessWidget {
     return Opacity(
       // 原版 `.prov.is-off { opacity: 0.55 }`
       opacity: off ? 0.55 : 1.0,
-      child: Container(
-        // 原版 `.prov { padding: var(--sp-2) var(--sp-3) }` = 8px 12px
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
-        decoration: BoxDecoration(
-          color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
-          borderRadius: Radii.rLg,
-          border: Border.all(color: colors.outlineVariant),
+      child: miuix.MiuixCard(
+        insideMargin: const EdgeInsets.symmetric(
+          horizontal: Sp.x3,
+          vertical: Sp.x2,
         ),
+        cornerRadius: Radii.lg,
         child: Column(
           /*
            * ⚠️ 从 `Row` 改成 `Column(Row, _panels)`（集成任务 M）
@@ -5928,8 +5847,7 @@ class _ProviderCard extends StatelessWidget {
 
                         // ── 正文（可收缩）──
                         Expanded(
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
+                          child: ui.InkWell(
                             /*
                              * ★ 可点区域 = **只有正文这一格**。
                              *   拖动把手、图标、右侧按钮区都在它外面 ⇒
@@ -5939,14 +5857,14 @@ class _ProviderCard extends StatelessWidget {
                              */
                             onTap: onToggleDetails,
                             child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _nameRow(colors),
-                              const SizedBox(height: 3),
-                              _descLine(colors),
-                              GithubSourceOrigin(providerId: provider.id),
-                              /*
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _nameRow(colors),
+                                const SizedBox(height: 3),
+                                _descLine(colors),
+                                GithubSourceOrigin(providerId: provider.id),
+                                /*
                        * ★ task-5（缺陷 5）：来源标识 + 上游链接
                        *
                        * ⚠️ 单独一行、**不动描述行** —— 描述行是本卡最挤的
@@ -5957,12 +5875,12 @@ class _ProviderCard extends StatelessWidget {
                        *    逐像素相同（内置源里 `srcl` 有 @author 但没链接，
                        *    只画标识 chip；只有"连作者都没写"的源才完全不画）。
                        */
-                              if (_sourceLabel != null ||
-                                  _upstream.isNotEmpty) ...[
-                                const SizedBox(height: 4),
-                                _sourceLine(colors),
-                              ],
-                              /*
+                                if (_sourceLabel != null ||
+                                    _upstream.isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  _sourceLine(colors),
+                                ],
+                                /*
                        * ★ task-7：源类型 · 上次源更新时间
                        *
                        * Owner 要求：JS 插件卡片显示「源类型 · 上次源更新时间」。
@@ -5978,11 +5896,11 @@ class _ProviderCard extends StatelessWidget {
                        * ⚠️ 绝不显示占位垃圾：缺一样就只显示另一样，
                        *    两样都缺整行消失（没有「· 」「null」「-」）。
                        */
-                              if (_sourceMetaLine != null) ...[
-                                const SizedBox(height: 4),
-                                _sourceMetaText(colors),
-                              ],
-                              /*
+                                if (_sourceMetaLine != null) ...[
+                                  const SizedBox(height: 4),
+                                  _sourceMetaText(colors),
+                                ],
+                                /*
                        * ★ T5：TVBox 源的「上次更新」行
                        *
                        * Owner 原话：「源 里面的没有显示上次更新时间，这个要显示出来」。
@@ -5993,22 +5911,22 @@ class _ProviderCard extends StatelessWidget {
                        *    JS 插件卡的时间在 task-7 那行（上面的 `_sourceMetaLine`），
                        *    内置源两样都没有 ⇒ 整行不画，高度零回归。
                        */
-                              if (_tvboxUpdatedLine != null) ...[
-                                const SizedBox(height: 4),
-                                _tvboxUpdatedText(colors),
-                              ],
-                              /*
+                                if (_tvboxUpdatedLine != null) ...[
+                                  const SizedBox(height: 4),
+                                  _tvboxUpdatedText(colors),
+                                ],
+                                /*
                        * ⚠️ `Capabilities` **没有** `hasAny` 之类的聚合 getter
                        *    （只有 8 个 bool 字段）—— 而 `models.dart` 不在
                        *    我这次允许改动的文件范围内，所以在这里本地算。
                        *    将来若给模型加 `hasAny`，这里可以换成直接调用。
                        */
-                              if (_hasAnyCap(provider.capabilities)) ...[
-                                const SizedBox(height: 4),
-                                _capsRow(colors),
-                              ],
+                                if (_hasAnyCap(provider.capabilities)) ...[
+                                  const SizedBox(height: 4),
+                                  _capsRow(colors),
+                                ],
 
-                              /*
+                                /*
                                * ★ N5a（2026-10-27）：代理模式摘要行恢复**常显**
                                *
                                * Owner 原话：「还把 具体插件 是否 直连还是走代理
@@ -6020,13 +5938,13 @@ class _ProviderCard extends StatelessWidget {
                                * 面板本体仍遵守第 07 项「展开才挂载」；点摘要 = 展开卡片。
                                * 读取中/失败 → 零尺寸（不占行高、测试环境无 DLL 不出垃圾）。
                                */
-                              _ProxyModeSummary(
-                                providerId: provider.id,
-                                colors: colors,
-                                onActivate: onToggleDetails,
-                                loader: proxySummaryLoader,
-                              ),
-                            ],
+                                _ProxyModeSummary(
+                                  providerId: provider.id,
+                                  colors: colors,
+                                  onActivate: onToggleDetails,
+                                  loader: proxySummaryLoader,
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -6073,11 +5991,12 @@ class _ProviderCard extends StatelessWidget {
              *    卡片正文只有 ~211px，面板内部已用 Expanded + ellipsis 防溢出
              *    （speed-dev 实测三个状态 overflow = 0）。
              */
-            if (expanded) PluginSpeedTestPanel(
-              providerId: provider.id,
-              providerName: provider.name,
-              enabled: provider.enabled,
-            ),
+            if (expanded)
+              PluginSpeedTestPanel(
+                providerId: provider.id,
+                providerName: provider.name,
+                enabled: provider.enabled,
+              ),
 
             // Only mount detail panels after an explicit body tap.
             if (expanded) _panels(),
@@ -6291,7 +6210,7 @@ class _ProviderCard extends StatelessWidget {
         ],
         if (!provider.working) ...[
           const SizedBox(width: 4),
-          Tooltip(
+          ui.Tooltip(
             message: provider.brokenReason ?? '该源当前不可用',
             child: _MiniChip(text: '已失效', tone: _ChipTone.danger),
           ),
@@ -6399,8 +6318,7 @@ class _ProviderCard extends StatelessWidget {
     return Row(
       children: [
         if (label != null) _MiniChip(text: label, tone: _ChipTone.brand),
-        if (label != null && _upstream.isNotEmpty)
-          const SizedBox(width: Sp.x2),
+        if (label != null && _upstream.isNotEmpty) const SizedBox(width: Sp.x2),
         if (_upstream.isNotEmpty) Expanded(child: _upstreamLink(colors)),
       ],
     );
@@ -6436,9 +6354,9 @@ class _ProviderCard extends StatelessWidget {
       ),
     );
     if (onCopy == null) return text;
-    return Tooltip(
+    return ui.Tooltip(
       message: '上游接口\n$_upstream\n\n点击复制',
-      child: GestureDetector(
+      child: ui.InkWell(
         onTap: () => onCopy!(_upstream),
         child: MouseRegion(
           cursor: SystemMouseCursors.click,
@@ -6545,7 +6463,8 @@ class _ProviderCard extends StatelessWidget {
   /// 排查"这个源的上游多久没动了"时，用户需要看到带时区的原始时间。
   Widget _sourceMetaText(ColorScheme colors) {
     final tips = <String>[
-      if (_sourceKind.isNotEmpty) '源类型：${_kindTextOf(_sourceKind)}（$_sourceKind）',
+      if (_sourceKind.isNotEmpty)
+        '源类型：${_kindTextOf(_sourceKind)}（$_sourceKind）',
       if (_sourceUpdatedAt.isNotEmpty) '上次源更新：$_sourceUpdatedAt',
     ];
     final text = Text(
@@ -6559,7 +6478,7 @@ class _ProviderCard extends StatelessWidget {
       ),
     );
     if (tips.isEmpty) return text;
-    return Tooltip(message: tips.join('\n'), child: text);
+    return ui.Tooltip(message: tips.join('\n'), child: text);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -6590,10 +6509,7 @@ class _ProviderCard extends StatelessWidget {
       ),
     );
     if (!failed || (s.lastUpdateError ?? '').isEmpty) return text;
-    return Tooltip(
-      message: '失败原因：${s.lastUpdateError}',
-      child: text,
-    );
+    return ui.Tooltip(message: '失败原因：${s.lastUpdateError}', child: text);
   }
 
   /// 能力标签行
@@ -6765,17 +6681,17 @@ class _ProviderCard extends StatelessWidget {
          *（`IconButton` 会自动用 disabled 颜色）。
          */
         AppIconButton(
-            onPressed: canMoveUp ? onMoveUp : null,
-            icon: Icon(AppIcons.keyboard_arrow_up),
-            iconSize: 18,
-            tooltip: '上移一位',
-          ),
+          onPressed: canMoveUp ? onMoveUp : null,
+          icon: Icon(AppIcons.keyboard_arrow_up),
+          iconSize: 18,
+          tooltip: '上移一位',
+        ),
         AppIconButton(
-            onPressed: canMoveDown ? onMoveDown : null,
-            icon: Icon(AppIcons.keyboard_arrow_down),
-            iconSize: 18,
-            tooltip: '下移一位',
-          ),
+          onPressed: canMoveDown ? onMoveDown : null,
+          icon: Icon(AppIcons.keyboard_arrow_down),
+          iconSize: 18,
+          tooltip: '下移一位',
+        ),
         // 与右侧操作之间留一点间距，避免两组按钮糊成一片
         const SizedBox(width: Sp.x2),
         /*
@@ -6858,7 +6774,10 @@ class _ProviderCard extends StatelessWidget {
          *   ⇒ **若只加菜单项而不改这一行，整个菜单仍不画**（我差点只改一处）。
          * ★ 判据仍是**按 id 显式列**（见下方那一项的理由）。
          */
-        if (_canEdit || _isThirdParty || onOverride != null || provider.id == kTvboxAggregateId)
+        if (_canEdit ||
+            _isThirdParty ||
+            onOverride != null ||
+            provider.id == kTvboxAggregateId)
           AppMenuButton<String>(
             items: [
               if (_canEdit)
@@ -7000,8 +6919,9 @@ class _ProxyModeSummaryState extends State<_ProxyModeSummary> {
 
   Future<void> _load() async {
     try {
-      final cfg =
-          await (widget.loader ?? SourinApi.proxyConfigWithPassword)(widget.providerId);
+      final cfg = await (widget.loader ?? SourinApi.proxyConfigWithPassword)(
+        widget.providerId,
+      );
       if (!mounted) return;
       setState(() {
         _cfg = cfg;
@@ -7026,8 +6946,11 @@ class _ProxyModeSummaryState extends State<_ProxyModeSummary> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Icon(AppIcons.settings_outlined,
-              size: 13, color: widget.colors.onSurfaceVariant),
+          Icon(
+            AppIcons.settings_outlined,
+            size: 13,
+            color: widget.colors.onSurfaceVariant,
+          ),
           const SizedBox(width: 4),
           Flexible(
             child: Text(
@@ -7045,7 +6968,7 @@ class _ProxyModeSummaryState extends State<_ProxyModeSummary> {
     );
     final onTap = widget.onActivate;
     if (onTap == null) return row;
-    return GestureDetector(behavior: HitTestBehavior.opaque, onTap: onTap, child: row);
+    return ui.InkWell(onTap: onTap, child: row);
   }
 }
 
@@ -7146,7 +7069,7 @@ class _PluginTile extends StatelessWidget {
                     ),
                     if (!entry.loaded) ...[
                       const SizedBox(width: Sp.x2),
-                      Tooltip(
+                      ui.Tooltip(
                         message: entry.error ?? '加载失败',
                         child: Icon(
                           AppIcons.error_outline,
@@ -7467,12 +7390,12 @@ class _RemotePanel extends StatelessWidget {
           spacing: Sp.x2,
           runSpacing: Sp.x2,
           children: [
-            OutlinedButton.icon(
+            ui.OutlinedButton.icon(
               onPressed: busy ? null : onStop,
               icon: const Icon(AppIcons.link_off, size: 16),
               label: const Text('关闭遥控'),
             ),
-            OutlinedButton.icon(
+            ui.OutlinedButton.icon(
               onPressed: onSetFixedPin,
               icon: const Icon(AppIcons.password, size: 16),
               label: Text(status.fixedPin == null ? '设固定码' : '改固定码'),
@@ -7639,9 +7562,8 @@ class _RemoteBlockState extends State<_RemoteBlock> {
 
   /// 收起态那一行的状态文案 —— ★ 跟着 `running` 走（改前写死「没开启」，
   /// 遥控明明在跑也这么说，等于告诉用户功能没开）
-  String get _collapsedSubtitle => widget.running
-      ? '运行中 · 手机浏览器遥控，不用装 App'
-      : '没开启 · 手机浏览器遥控，不用装 App';
+  String get _collapsedSubtitle =>
+      widget.running ? '运行中 · 手机浏览器遥控，不用装 App' : '没开启 · 手机浏览器遥控，不用装 App';
 
   @override
   Widget build(BuildContext context) {
@@ -7664,50 +7586,50 @@ class _RemoteBlockState extends State<_RemoteBlock> {
         borderRadius: Radii.rLg,
         onTap: () => _setOpen(true),
         child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Sp.x4,
-              vertical: Sp.x3,
-            ),
-            decoration: BoxDecoration(
-              color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
-              borderRadius: Radii.rLg,
-              border: Border.all(color: colors.outlineVariant),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '局域网遥控',
-                        style: TextStyle(
-                          fontSize: FontSizes.base,
-                          color: colors.onSurface,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _collapsedSubtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: Sp.x2),
-                Icon(
-                  AppIcons.expand_more,
-                  size: 20,
-                  color: colors.onSurfaceVariant,
-                ),
-              ],
-            ),
+          padding: const EdgeInsets.symmetric(
+            horizontal: Sp.x4,
+            vertical: Sp.x3,
           ),
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
+            borderRadius: Radii.rLg,
+            border: Border.all(color: colors.outlineVariant),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '局域网遥控',
+                      style: TextStyle(
+                        fontSize: FontSizes.base,
+                        color: colors.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _collapsedSubtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: Sp.x2),
+              Icon(
+                AppIcons.expand_more,
+                size: 20,
+                color: colors.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
       );
     }
 
@@ -7746,12 +7668,12 @@ class _RemoteBlockState extends State<_RemoteBlock> {
 typedef RemoteBlock = _RemoteBlock;
 
 Widget _menuRow(IconData icon, String label, {Color? color}) => Row(
-      children: [
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: Sp.x3),
-        Text(label, style: color == null ? null : TextStyle(color: color)),
-      ],
-    );
+  children: [
+    Icon(icon, size: 16, color: color),
+    const SizedBox(width: Sp.x3),
+    Text(label, style: color == null ? null : TextStyle(color: color)),
+  ],
+);
 
 class _MiniChip extends StatelessWidget {
   const _MiniChip({required this.text, this.tone = _ChipTone.plain});
@@ -7763,43 +7685,25 @@ class _MiniChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
-    /*
-     * 具体色值：
-     * ```text
-     * plain   透明底 + outlineVariant 描边
-     * brand   primary 13% 底（原版用主题色，我们同义）
-     * off     onSurface 8% 底 + 更淡的字
-     * danger  error 20% 底 + error 字（原版是硬编码的红，我们用语义色）
-     * ```
-     * ⚠️ 用 `withValues(alpha:)` 而不是 `withOpacity` ——
-     *    后者已废弃（analyze 会报 deprecation）。
-     */
-    final (Color bg, Color fg, bool outline) = switch (tone) {
-      _ChipTone.plain => (Colors.transparent, colors.onSurfaceVariant, true),
+    final (Color bg, Color fg) = switch (tone) {
+      _ChipTone.plain => (
+        colors.surfaceContainerHighest,
+        colors.onSurfaceVariant,
+      ),
       _ChipTone.brand => (
         colors.primary.withValues(alpha: 0.13),
         colors.primary,
-        false,
       ),
       _ChipTone.off => (
         colors.onSurface.withValues(alpha: 0.08),
         colors.onSurfaceVariant.withValues(alpha: 0.75),
-        false,
       ),
-      _ChipTone.danger => (
-        colors.error.withValues(alpha: 0.20),
-        colors.error,
-        false,
-      ),
+      _ChipTone.danger => (colors.error.withValues(alpha: 0.20), colors.error),
     };
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: 1),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: Radii.rFull,
-        border: outline ? Border.all(color: colors.outlineVariant) : null,
-      ),
+    return miuix.MiuixBadge(
+      containerColor: bg,
+      contentColor: fg,
       child: Text(
         text,
         // ⚠️ 不换行 —— 与名称行的"禁止换行"配套（见 `_nameRow` 的说明）
@@ -7918,10 +7822,7 @@ class HealthSweepProgressRow extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              AppInlineSpinner(
-                size: 14,
-                color: colors.primary,
-              ),
+              AppInlineSpinner(size: 14, color: colors.primary),
               const SizedBox(width: Sp.x2),
               Text(
                 label(),
@@ -7939,10 +7840,7 @@ class HealthSweepProgressRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: Sp.x2),
-              AppTextButton(
-                onPressed: onStop,
-                child: const Text('停止'),
-              ),
+              AppTextButton(onPressed: onStop, child: const Text('停止')),
             ],
           ),
         );
@@ -8100,49 +7998,49 @@ class _OrderDialogState extends State<_OrderDialog> {
         child: Material(
           type: MaterialType.transparency,
           child: ListView.builder(
-          clipBehavior: Clip.antiAlias,
-          itemCount: _list.length,
-          itemBuilder: (_, i) {
-            final id = _list[i];
-            return ListTile(
-              dense: true,
-              leading: Text(
-                '${i + 1}',
-                style: TextStyle(color: colors.onSurfaceVariant),
-              ),
-              title: Text(widget.nameOf(id)),
-              // 已停用的标注出来，避免用户以为它消失了
-              subtitle: widget.offOf(id)
-                  ? Text(
-                      '已停用',
-                      style: TextStyle(
-                        fontSize: FontSizes.cap,
-                        color: colors.onSurfaceVariant,
-                      ),
-                    )
-                  : null,
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  AppIconButton(
-                    onPressed: i > 0 ? () => _move(i, -1) : null,
-                    icon: Icon(AppIcons.keyboard_arrow_up),
-                    tooltip: '上移',
-                  ),
-                  AppIconButton(
-                    onPressed: i < _list.length - 1
-                        ? () => _move(i, 1)
-                        : null,
-                    icon: Icon(AppIcons.keyboard_arrow_down),
-                    tooltip: '下移',
-                  ),
-                ],
-              ),
-            );
-          },
-            ),
+            clipBehavior: Clip.antiAlias,
+            itemCount: _list.length,
+            itemBuilder: (_, i) {
+              final id = _list[i];
+              return ui.ListTile(
+                dense: true,
+                leading: Text(
+                  '${i + 1}',
+                  style: TextStyle(color: colors.onSurfaceVariant),
+                ),
+                title: Text(widget.nameOf(id)),
+                // 已停用的标注出来，避免用户以为它消失了
+                subtitle: widget.offOf(id)
+                    ? Text(
+                        '已停用',
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      )
+                    : null,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AppIconButton(
+                      onPressed: i > 0 ? () => _move(i, -1) : null,
+                      icon: Icon(AppIcons.keyboard_arrow_up),
+                      tooltip: '上移',
+                    ),
+                    AppIconButton(
+                      onPressed: i < _list.length - 1
+                          ? () => _move(i, 1)
+                          : null,
+                      icon: Icon(AppIcons.keyboard_arrow_down),
+                      tooltip: '下移',
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
         ),
+      ),
       actions: AppGlassDialogActions(
         onCancel: () => Navigator.pop(context),
         confirmLabel: '保存',
@@ -8422,7 +8320,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
             const SizedBox(height: Sp.x2),
 
             // ── 来源链接（截断 + 悬停看全）──
-            Tooltip(
+            ui.Tooltip(
               message: widget.sourceUrl,
               child: Row(
                 children: [
@@ -8447,7 +8345,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
             // ── 检测按钮 + 结果 ──
             Row(
               children: [
-                FilledButton.tonalIcon(
+                ui.FilledButton.tonalIcon(
                   onPressed: _busy ? null : _check,
                   icon: const Icon(AppIcons.refresh, size: 16),
                   label: Text(_checking ? '检测中…' : '检测更新'),
@@ -8465,7 +8363,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
              * （原版「必须确认才导入」的精神。）
              */
             if (c != null && c.hasUpdate) ...[
-              FilledButton.icon(
+              ui.FilledButton.icon(
                 onPressed: _busy ? null : _update,
                 icon: const Icon(AppIcons.download, size: 16),
                 label: Text(_updating ? '更新中…' : '更新到 v${c.remoteVersion}'),
@@ -8481,7 +8379,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
               const SizedBox(height: Sp.x2),
             ],
 
-            Divider(height: 1, color: colors.outlineVariant),
+            ui.Divider(height: 1, color: colors.outlineVariant),
             const SizedBox(height: Sp.x2),
 
             // ── 历史档 ──
@@ -8633,7 +8531,7 @@ class _PluginUpdateDialogState extends State<_PluginUpdateDialog> {
       clipBehavior: Clip.antiAlias,
       itemCount: _versions.length,
       separatorBuilder: (_, __) =>
-          Divider(height: 1, color: colors.outlineVariant),
+          ui.Divider(height: 1, color: colors.outlineVariant),
       itemBuilder: (_, i) {
         final v = _versions[i];
         return Padding(
@@ -8799,26 +8697,25 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
         confirmLabel: '保存',
         confirmIsDestructive: false,
         onConfirm: () {
-            final out = <String, dynamic>{};
-            for (final f in widget.config.fields) {
-              switch (f.type) {
-                // ★ 归一后的词是 switch（不是 bool）
-                case 'switch':
-                  out[f.key] = _bools[f.key] ?? false;
-                case 'select':
-                  out[f.key] = _selects[f.key] ?? '';
-                case 'number':
-                  out[f.key] =
-                      num.tryParse(_controllers[f.key]?.text ?? '') ?? 0;
-                // ★ info 不接收值：宿主 config_value_ok 对 info 恒 false，
-                //   把它一起回写会让**整次保存**以「值类型不对」失败。
-                case 'info':
-                  break;
-                default:
-                  out[f.key] = _controllers[f.key]?.text ?? '';
-              }
+          final out = <String, dynamic>{};
+          for (final f in widget.config.fields) {
+            switch (f.type) {
+              // ★ 归一后的词是 switch（不是 bool）
+              case 'switch':
+                out[f.key] = _bools[f.key] ?? false;
+              case 'select':
+                out[f.key] = _selects[f.key] ?? '';
+              case 'number':
+                out[f.key] = num.tryParse(_controllers[f.key]?.text ?? '') ?? 0;
+              // ★ info 不接收值：宿主 config_value_ok 对 info 恒 false，
+              //   把它一起回写会让**整次保存**以「值类型不对」失败。
+              case 'info':
+                break;
+              default:
+                out[f.key] = _controllers[f.key]?.text ?? '';
             }
-            Navigator.pop(context, out);
+          }
+          Navigator.pop(context, out);
         },
       ),
     );
@@ -8828,23 +8725,23 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
     switch (f.type) {
       // ★ 归一后的词是 switch（不是 bool）—— 见 models.dart ConfigField
       case 'switch':
-        return SwitchListTile(
+        return ui.SwitchListTile(
           contentPadding: EdgeInsets.zero,
           value: _bools[f.key] ?? false,
           onChanged: (v) => setState(() => _bools[f.key] = v),
           title: const SizedBox.shrink(),
         );
       case 'select':
-        return DropdownButtonFormField<String>(
-          initialValue: _selects[f.key],
-          items: [
-            for (final o in f.options)
-              DropdownMenuItem(value: o.value, child: Text(o.label)),
+        return SettingsDropdown<String>(
+          value: _selects[f.key],
+          options: [
+            for (final option in f.options)
+              SettingsDropdownOption(option.value, option.label),
           ],
-          onChanged: (v) => setState(() => _selects[f.key] = v ?? ''),
+          onChanged: (value) => setState(() => _selects[f.key] = value),
         );
       case 'password':
-        return TextField(
+        return ui.TextField(
           controller: _controllers[f.key],
           obscureText: true,
           decoration: InputDecoration(
@@ -8859,7 +8756,7 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
       case 'info':
         return const SizedBox.shrink();
       default:
-        return TextField(
+        return ui.TextField(
           controller: _controllers[f.key],
           keyboardType: f.type == 'number'
               ? TextInputType.number
@@ -8872,7 +8769,6 @@ class _PluginConfigDialogState extends State<_PluginConfigDialog> {
     }
   }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 //  「TVBox 聚合」分组（Owner 架构要求 A′ 的 B 半）
@@ -8988,18 +8884,28 @@ List<ProviderManifest> filterManagedSources(
   SourceClass? sourceClass,
 }) {
   final needle = query.trim().toLowerCase();
-  return visibleProviders(providers).where((p) =>
-      (enabled == null || p.enabled == enabled) &&
-      (sourceClass == null || sourceClassOf(p) == sourceClass) &&
-      (needle.isEmpty || '${p.name} ${p.id}'.toLowerCase().contains(needle)))
+  return visibleProviders(providers)
+      .where(
+        (p) =>
+            (enabled == null || p.enabled == enabled) &&
+            (sourceClass == null || sourceClassOf(p) == sourceClass) &&
+            (needle.isEmpty ||
+                '${p.name} ${p.id}'.toLowerCase().contains(needle)),
+      )
       .toList(growable: false);
 }
 
 class SourceManagerToolbar extends StatefulWidget {
   const SourceManagerToolbar({
-    super.key, required this.query, required this.enabled,
-    required this.sourceClass, required this.resultCount, required this.totalCount,
-    required this.onQuery, required this.onEnabled, required this.onClass,
+    super.key,
+    required this.query,
+    required this.enabled,
+    required this.sourceClass,
+    required this.resultCount,
+    required this.totalCount,
+    required this.onQuery,
+    required this.onEnabled,
+    required this.onClass,
   });
 
   final String query;
@@ -9039,7 +8945,7 @@ class _SourceManagerToolbarState extends State<SourceManagerToolbar> {
       children: [
         SizedBox(
           width: constraints.maxWidth > 360 ? 360 : constraints.maxWidth,
-          child: TextField(
+          child: ui.TextField(
             key: const ValueKey<String>('source-manager-search'),
             controller: _search,
             onChanged: widget.onQuery,
@@ -9047,34 +8953,33 @@ class _SourceManagerToolbarState extends State<SourceManagerToolbar> {
               isDense: true,
               hintText: '搜索源名称或标识',
               prefixIcon: const Icon(Icons.search),
-              suffixIcon: widget.query.isEmpty ? null : IconButton(
-                tooltip: '清空搜索', icon: const Icon(Icons.clear),
-                onPressed: () => widget.onQuery(''),
-              ),
+              suffixIcon: widget.query.isEmpty
+                  ? null
+                  : ui.IconButton(
+                      tooltip: '清空搜索',
+                      icon: const Icon(Icons.clear),
+                      onPressed: () => widget.onQuery(''),
+                    ),
             ),
           ),
         ),
-        DropdownButton<bool>(
+        SettingsDropdown<bool?>(
           value: widget.enabled,
-          hint: const Text('全部状态'),
+          options: const [
+            SettingsDropdownOption(null, '全部状态'),
+            SettingsDropdownOption(true, '已启用'),
+            SettingsDropdownOption(false, '已停用'),
+          ],
           onChanged: widget.onEnabled,
-          items: const [
-            DropdownMenuItem<bool>(value: null, child: Text('全部状态')),
-            DropdownMenuItem<bool>(value: true, child: Text('已启用')),
-            DropdownMenuItem<bool>(value: false, child: Text('已停用')),
-          ],
         ),
-        DropdownButton<SourceClass>(
+        SettingsDropdown<SourceClass?>(
           value: widget.sourceClass,
-          hint: const Text('全部类型'),
-          onChanged: widget.onClass,
-          items: [
-            const DropdownMenuItem<SourceClass>(
-                value: null, child: Text('全部类型')),
+          options: [
+            const SettingsDropdownOption(null, '全部类型'),
             for (final sourceClass in SourceClass.values)
-              DropdownMenuItem<SourceClass>(
-                  value: sourceClass, child: Text(sourceClass.label)),
+              SettingsDropdownOption(sourceClass, sourceClass.label),
           ],
+          onChanged: widget.onClass,
         ),
         Text('${widget.resultCount}/${widget.totalCount}'),
       ],
@@ -9110,7 +9015,9 @@ List<(SourceClass, List<ProviderManifest>)> groupSourcesByClass(
 ) {
   final out = <(SourceClass, List<ProviderManifest>)>[];
   for (final c in SourceClass.values) {
-    final items = list.where((p) => sourceClassOf(p) == c).toList(growable: false);
+    final items = list
+        .where((p) => sourceClassOf(p) == c)
+        .toList(growable: false);
     if (items.isNotEmpty) out.add((c, items));
   }
   return out;
@@ -9191,11 +9098,13 @@ class SourceClassHeader extends StatelessWidget {
     }
     return Padding(
       padding: const EdgeInsets.only(bottom: Sp.x2),
-      child: Material(
-        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
-        borderRadius: Radii.rLg,
+      child: miuix.MiuixCard(
+        cornerRadius: Radii.lg,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x2),
+          padding: const EdgeInsets.symmetric(
+            horizontal: Sp.x4,
+            vertical: Sp.x2,
+          ),
           child: Row(
             children: <Widget>[
               Expanded(
@@ -9261,13 +9170,12 @@ class TvboxGroupHeader extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: Sp.x2),
-      child: Material(
-        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
-        borderRadius: Radii.rLg,
-        child: InkWell(
+      child: miuix.MiuixCard(
+        cornerRadius: Radii.lg,
+        child: miuix.MiuixCard(
           key: const ValueKey<String>('tvbox-group-header'),
-          borderRadius: Radii.rLg,
-          onTap: onToggle,
+          cornerRadius: Radii.lg,
+          onPressed: onToggle,
           child: Padding(
             padding: EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
             child: Row(
@@ -9429,64 +9337,66 @@ class _TvboxAutoUpdateRowState extends State<TvboxAutoUpdateRow> {
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
         Container(
-      margin: const EdgeInsets.only(bottom: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest.withValues(alpha: 0.4),
-        borderRadius: Radii.rMd,
-      ),
-      child: Row(
-        children: <Widget>[
-          AppSwitch(
-            key: const ValueKey<String>('tvbox-auto-update-switch'),
-            value: s.enabled,
-            onChanged: _saving
-                ? null
-                : (v) => _save(enabled: v),
+          margin: const EdgeInsets.only(bottom: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerHighest.withValues(alpha: 0.4),
+            borderRadius: Radii.rMd,
           ),
-          const SizedBox(width: Sp.x2),
-          Expanded(
-            child: Column(
-              key: const ValueKey<String>('tvbox-auto-update-labels'),
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  'TVBox 订阅自动更新',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
-                ),
-                Text(
-                  s.enabled
-                      ? '按链接定时核对订阅并应用更新（当前 ${TvboxAutoUpdateRow.intervalLabel(s.intervalSecs)}）'
-                      : '已关闭：只在手动点「立即更新」时联网',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (s.enabled) ...<Widget>[
-            const SizedBox(width: Sp.x2),
-            for (final secs in TvboxAutoUpdateRow.kIntervalChoices) ...<Widget>[
-              ChoiceChip(
-                key: ValueKey<String>('tvbox-auto-update-interval-$secs'),
-                label: Text(TvboxAutoUpdateRow.intervalLabel(secs)),
-                selected: s.intervalSecs == secs,
-                onSelected: _saving
-                    ? null
-                    : (_) => _save(intervalSecs: secs),
+          child: Row(
+            children: <Widget>[
+              AppSwitch(
+                key: const ValueKey<String>('tvbox-auto-update-switch'),
+                value: s.enabled,
+                onChanged: _saving ? null : (v) => _save(enabled: v),
               ),
-              const SizedBox(width: Sp.x1),
+              const SizedBox(width: Sp.x2),
+              Expanded(
+                child: Column(
+                  key: const ValueKey<String>('tvbox-auto-update-labels'),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Text(
+                      'TVBox 订阅自动更新',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: FontSizes.sm,
+                        color: colors.onSurface,
+                      ),
+                    ),
+                    Text(
+                      s.enabled
+                          ? '按链接定时核对订阅并应用更新（当前 ${TvboxAutoUpdateRow.intervalLabel(s.intervalSecs)}）'
+                          : '已关闭：只在手动点「立即更新」时联网',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (s.enabled) ...<Widget>[
+                const SizedBox(width: Sp.x2),
+                for (final secs
+                    in TvboxAutoUpdateRow.kIntervalChoices) ...<Widget>[
+                  ui.ChoiceChip(
+                    key: ValueKey<String>('tvbox-auto-update-interval-$secs'),
+                    label: Text(TvboxAutoUpdateRow.intervalLabel(secs)),
+                    selected: s.intervalSecs == secs,
+                    onSelected: _saving
+                        ? null
+                        : (_) => _save(intervalSecs: secs),
+                  ),
+                  const SizedBox(width: Sp.x1),
+                ],
+              ],
             ],
-          ],
-        ],
-        ),
+          ),
         ),
         if (err != null)
           Padding(

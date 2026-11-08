@@ -81,11 +81,15 @@ library;
 
 import '../design/widgets/app_icon_button.dart';
 import '../design/widgets/app_ink_well.dart';
+import 'widgets/app_menu.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
+
+import 'widgets/miuix_controls.dart' as ui;
 
 import '../core/app_log.dart';
 import '../core/download_dir.dart';
@@ -448,9 +452,11 @@ void debugClearCacheMetaMemo() => _metaMemo.clear();
 /// ⚠️ 生产路径（默认 null）**一行都不走这里** —— 见下面 `_lookupMeta` 的分支。
 /// ★ 端到端那条（真库 → 真封面）由真机探针证，不靠这个口子。
 @visibleForTesting
-({Future<List<HistoryEntry>> Function() history,
-        Future<List<Favorite>> Function() favorites})?
-    debugMetaFetchers;
+({
+  Future<List<HistoryEntry>> Function() history,
+  Future<List<Favorite>> Function() favorites,
+})?
+debugMetaFetchers;
 
 /// ★★ 探针注入点：**单条 progress 的读取**（默认 null ⇒ 走真 `SourinApi.getProgress`）
 ///
@@ -473,17 +479,19 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
         : await SourinApi.listHistory();
     for (final h in hist) {
       if (titleSimilarity(dirName, h.title) == 1.0) {
-        cands.add(CachedMeta(
-          provider: h.provider,
-          nativeId: h.nativeId,
-          title: h.title,
-          cover: h.cover,
-          watchedAt: h.watchedAt,
-          source: 'history',
-          // ★ 留着给下面那次"认回同一集"的比对（见 pickedEpisodeId）
-          histPosition: h.position,
-          histDuration: h.duration,
-        ));
+        cands.add(
+          CachedMeta(
+            provider: h.provider,
+            nativeId: h.nativeId,
+            title: h.title,
+            cover: h.cover,
+            watchedAt: h.watchedAt,
+            source: 'history',
+            // ★ 留着给下面那次"认回同一集"的比对（见 pickedEpisodeId）
+            histPosition: h.position,
+            histDuration: h.duration,
+          ),
+        );
       }
     }
   } catch (e) {
@@ -496,13 +504,15 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
         : await SourinApi.listFavorites();
     for (final f in favs) {
       if (titleSimilarity(dirName, f.title) == 1.0) {
-        cands.add(CachedMeta(
-          provider: f.provider,
-          nativeId: f.nativeId,
-          title: f.title,
-          cover: f.cover,
-          source: 'favorites',
-        ));
+        cands.add(
+          CachedMeta(
+            provider: f.provider,
+            nativeId: f.nativeId,
+            title: f.title,
+            cover: f.cover,
+            source: 'favorites',
+          ),
+        );
       }
     }
   } catch (e) {
@@ -597,15 +607,19 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
            *    而采纳错的代价是**静默污染在线进度**（见上面那段）。
            * ⇒ 宁可返回 null（调用方退化成"不写镜像"），也不猜。
            */
-          AppLog.write('CACHE',
-              '集号反查放弃（无 position/duration 可比）：${pick.provider}:${pick.nativeId}');
+          AppLog.write(
+            'CACHE',
+            '集号反查放弃（无 position/duration 可比）：${pick.provider}:${pick.nativeId}',
+          );
         } else if (p.position == hp && p.duration == hd) {
           pickedEpisodeId = p.episodeId;
         } else {
-          AppLog.write('CACHE',
-              '集号反查放弃（位置对不上 ⇒ progress 已被别的一集覆盖）：'
-              '${pick.provider}:${pick.nativeId} '
-              'history=($hp/$hd) progress=(${p.position}/${p.duration})');
+          AppLog.write(
+            'CACHE',
+            '集号反查放弃（位置对不上 ⇒ progress 已被别的一集覆盖）：'
+                '${pick.provider}:${pick.nativeId} '
+                'history=($hp/$hd) progress=(${p.position}/${p.duration})',
+          );
         }
       }
     } catch (e) {
@@ -613,11 +627,14 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
       AppLog.write('CACHE', '集号反查失败（${pick.provider}:${pick.nativeId}）：$e');
     }
   }
-  AppLog.write('CACHE', '封面找回：目录「$dirName」命中 ${cands.length} 条 ⇒ '
-      '选 ${pick.provider}:${pick.nativeId}（来源=${pick.source}，'
-      '有封面=${(pick.cover ?? '').trim().isNotEmpty}，'
-      '集号=${pickedEpisodeId ?? "(无)"}）；'
-      '其余：${cands.skip(1).map((c) => "${c.provider}:${c.nativeId}").join(", ")}');
+  AppLog.write(
+    'CACHE',
+    '封面找回：目录「$dirName」命中 ${cands.length} 条 ⇒ '
+        '选 ${pick.provider}:${pick.nativeId}（来源=${pick.source}，'
+        '有封面=${(pick.cover ?? '').trim().isNotEmpty}，'
+        '集号=${pickedEpisodeId ?? "(无)"}）；'
+        '其余：${cands.skip(1).map((c) => "${c.provider}:${c.nativeId}").join(", ")}',
+  );
   if (_blank(pickedEpisodeId)) return pick;
   return CachedMeta(
     provider: pick.provider,
@@ -628,8 +645,8 @@ Future<CachedMeta?> _lookupMeta(String dirName) async {
     source: pick.source,
     episodeId: pickedEpisodeId,
   );
-
 }
+
 Future<List<CachedWork>> scanCacheWorks(String rootPath) async {
   final root = Directory(rootPath);
   if (!await root.exists()) return const <CachedWork>[];
@@ -659,11 +676,7 @@ Future<CachedWork> _scanWork(Directory dir) async {
     } catch (_) {
       // ★ 文件在扫码期间被删/被占用 ⇒ 当 0，绝不让整页失败
     }
-    eps.add(CachedEpisode(
-      fileName: name,
-      bytes: bytes,
-      isComplete: !isPart,
-    ));
+    eps.add(CachedEpisode(fileName: name, bytes: bytes, isComplete: !isPart));
   }
   eps.sort((a, b) => a.fileName.compareTo(b.fileName));
 
@@ -724,8 +737,7 @@ Future<CachedWork> _scanWork(Directory dir) async {
   String? localCoverPath;
   final coverFile = pickStr(DownloadQueue.kSidecarCoverFileKey);
   if (coverFile != null) {
-    final f = File(
-        '${dir.path}${Platform.pathSeparator}$coverFile');
+    final f = File('${dir.path}${Platform.pathSeparator}$coverFile');
     if (await f.exists() && f.parent.absolute.path == dir.absolute.path) {
       localCoverPath = f.path;
     }
@@ -1303,7 +1315,12 @@ class CachedDelete {
         ? fileName.substring(0, fileName.length - 5)
         : fileName;
     var any = false;
-    for (final name in <String>[base, '$base.part', '$base.ts', '$base.ts.part']) {
+    for (final name in <String>[
+      base,
+      '$base.part',
+      '$base.ts',
+      '$base.ts.part',
+    ]) {
       final target = resolveDeletable(workDir, name);
       if (target == null) continue;
       try {
@@ -1348,11 +1365,7 @@ class CachedDelete {
 typedef OnOpenCached = void Function(CachedPlayRequest request);
 
 class CachePage extends StatefulWidget {
-  const CachePage({
-    super.key,
-    this.isTv = false,
-    this.onOpen,
-  });
+  const CachePage({super.key, this.isTv = false, this.onOpen});
 
   final bool isTv;
 
@@ -1499,7 +1512,8 @@ class CachePageState extends State<CachePage> {
     debugLoadCount++;
     try {
       // ★ 与 media_page 共用**同一个**扫描入口（探针注入点只有一处）
-      final rootPath = CachePage.debugScanRootOverride ?? await DownloadDir.root();
+      final rootPath =
+          CachePage.debugScanRootOverride ?? await DownloadDir.root();
       final works = await scanCacheWorks(rootPath);
       if (!mounted) return;
       setState(() {
@@ -1578,7 +1592,7 @@ class CachePageState extends State<CachePage> {
             body: '在详情页点「下载」把整集存到本地，这里就会列出来。',
           );
         }
-        return RefreshIndicator(
+        return ui.RefreshIndicator(
           onRefresh: load,
           child: CustomScrollView(
             slivers: <Widget>[
@@ -1588,7 +1602,8 @@ class CachePageState extends State<CachePage> {
                 padding: Layout.contentInsetOf(context),
                 sliver: SliverLayoutBuilder(
                   builder: (context, c) {
-                    final band = c.crossAxisExtent +
+                    final band =
+                        c.crossAxisExtent +
                         Layout.contentPaddingOf(context) * 2;
                     final cols = Layout.columnsForBand(band);
                     final gap = Layout.gapFor(band);
@@ -1696,7 +1711,7 @@ class CachePageState extends State<CachePage> {
           const SizedBox(height: Sp.x1),
           ClipRRect(
             borderRadius: Radii.rSm,
-            child: LinearProgressIndicator(
+            child: ui.LinearProgressIndicator(
               // ★ total<=0（还没拿到分片清单）时给一个不确定进度条，
               //   不要画成 0% —— 那看起来像「卡住了」
               value: t.total > 0 ? t.progress : null,
@@ -1712,10 +1727,7 @@ class CachePageState extends State<CachePage> {
               t.error!,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: FontSizes.cap,
-                color: colors.error,
-              ),
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
             ),
           ],
         ],
@@ -1776,7 +1788,7 @@ class CachePageState extends State<CachePage> {
               _stat(colors, '已下好', '$eps'),
               const SizedBox(width: Sp.x8),
               // 路径挂在 Tooltip 上：仍然查得到，但不再占版面
-              Tooltip(
+              ui.Tooltip(
                 message: _root.isEmpty ? '' : '存放位置：$_root',
                 child: _stat(colors, '占用', humanBytes(_totalBytes)),
               ),
@@ -1820,7 +1832,9 @@ class CachePageState extends State<CachePage> {
     final sub = StringBuffer(humanBytes(w.bytes));
     sub.write(' \u00b7 ');
     if (w.partialCount > 0) {
-      sub.write('${w.completedCount} \u96c6\uff08${w.partialCount} \u4e2a\u5728\u4e0b\uff09');
+      sub.write(
+        '${w.completedCount} \u96c6\uff08${w.partialCount} \u4e2a\u5728\u4e0b\uff09',
+      );
     } else {
       sub.write('${w.completedCount} \u96c6');
     }
@@ -1838,7 +1852,10 @@ class CachePageState extends State<CachePage> {
   /// \u5728\u6587\u4ef6\u7ba1\u7406\u5668\u91cc\u6253\u5f00\u90a3\u4e2a\u76ee\u5f55\uff08\u5931\u8d25\u53ea\u8bf4\u4e00\u53e5\u8bdd\uff0c\u4e0d\u5f39\u7a97\uff09
   Future<void> _openFolder(CachedWork w) async {
     final ok = await DownloadDir.open(w.path);
-    if (!ok) _say('\u6253\u5f00\u76ee\u5f55\u5931\u8d25\uff08\u5f53\u524d\u7cfb\u7edf\u4e0d\u652f\u6301\uff09');
+    if (!ok)
+      _say(
+        '\u6253\u5f00\u76ee\u5f55\u5931\u8d25\uff08\u5f53\u524d\u7cfb\u7edf\u4e0d\u652f\u6301\uff09',
+      );
   }
 
   /// 组织本地会话 → 交宿主转发（★ 会话在**本页**组织好，见 buildLocalPlayRequest）
@@ -2172,8 +2189,6 @@ abstract final class _HoverCapability {
   }
 }
 
-
-
 class _CacheWorkCardState extends State<_CacheWorkCard> {
   bool _hover = false;
 
@@ -2196,8 +2211,10 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     // ★ R8：每帧按**真实能力**重算（插拔鼠标会变，见 _hoverable 的说明）
-    _hoverable = cacheCardHoverable(context,
-        hwHover: CachePage.debugHoverableOverride);
+    _hoverable = cacheCardHoverable(
+      context,
+      hwHover: CachePage.debugHoverableOverride,
+    );
     /*
      * ★★★ CR-09：宽度从**父约束**拿（= SliverGrid 给这一格的约束），
      *     不再读 `MediaQuery` —— 见文件上半部分 `_posterCellWidth` 的说明。
@@ -2222,8 +2239,10 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
     final sub = StringBuffer(humanBytes(widget.work.bytes));
     sub.write(' · ');
     if (widget.work.partialCount > 0) {
-      sub.write('${widget.work.completedCount} 集'
-          '（${widget.work.partialCount} 个在下）');
+      sub.write(
+        '${widget.work.completedCount} 集'
+        '（${widget.work.partialCount} 个在下）',
+      );
     } else {
       sub.write('${widget.work.completedCount} 集');
     }
@@ -2342,7 +2361,9 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
                 child: AnimatedOpacity(
                   // ★ 给这枚按钮一个**稳定 key**（测试按它定位）
                   //   —— 几何位置会随布局变，按坐标定位的测试会断起来无故红。
-                  key: ValueKey<String>('cache-card-more:${widget.work.dirName}'),
+                  key: ValueKey<String>(
+                    'cache-card-more:${widget.work.dirName}',
+                  ),
                   // ★ 用 AnimatedOpacity（FadeTransition，零 Transform）
                   //   —— 与 PosterCard 内部那层悬停辉光同一手法，不引入新结构
                   //
@@ -2365,8 +2386,11 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
                       child: SizedBox(
                         width: 28,
                         height: 28,
-                        child: Icon(AppIcons.more_horiz,
-                            size: 18, color: colors.onSurface),
+                        child: Icon(
+                          AppIcons.more_horiz,
+                          size: 18,
+                          color: colors.onSurface,
+                        ),
                       ),
                     ),
                   ),
@@ -2389,28 +2413,27 @@ class _CacheWorkCardState extends State<_CacheWorkCard> {
 
   /// 三个入口共用的那一个菜单
   ///
-  /// ★ 用 `PopupMenuItem.onTap` 而不是 `await showMenu()` 的返回值：
-  ///   后者只在「点了某一项」时给值，而**按 Esc / 点外面关闭**时给 null，
-  ///   无法区分"点了取消"与"点了第一项"—— 那会让键盘用户永远弹不出菜单。
+  /// 显式选项值与取消的 null 分开，三个入口共用实际 Miuix 菜单。
   Future<void> _openMenu(Offset anchor) async {
     if (!mounted) return;
     final mq = MediaQuery.sizeOf(context);
-    await showMenu<void>(
+    final action = await showAppMenu<String>(
       context: context,
       position: RelativeRect.fromRect(
         Rect.fromLTWH(anchor.dx, anchor.dy, 1, 1),
         Offset.zero & mq,
       ),
-      items: <PopupMenuEntry<void>>[
-        PopupMenuItem<void>(
-          onTap: widget.onDelete,
-          child: const Text('删除整部'),
-        ),
-        PopupMenuItem<void>(
-          onTap: widget.onOpenFolder,
-          child: const Text('打开所在文件夹'),
-        ),
+      items: const [
+        AppMenuItem(value: 'delete', label: '删除整部', danger: true),
+        AppMenuItem(value: 'open-folder', label: '打开所在文件夹'),
       ],
     );
+    if (!mounted) return;
+    switch (action) {
+      case 'delete':
+        widget.onDelete();
+      case 'open-folder':
+        widget.onOpenFolder();
+    }
   }
 }

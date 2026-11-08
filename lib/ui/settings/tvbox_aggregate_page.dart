@@ -26,10 +26,14 @@
 //   **对话框暂不重构**，待这轮 UI 稳定后统一（已记在交付说明里）。
 // ```
 import 'source_discovery_page.dart';
+
 import 'dart:async' show unawaited;
 
 // ★ characters 扩展（clampNoteTo60 用）由 material_ui 转出，无需单独 import
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import '../widgets/miuix_controls.dart' as ui;
 
 import '../../core/ffi.dart' show userErrorText;
 import '../../core/sourin_api.dart';
@@ -43,10 +47,7 @@ import '../widgets/provider_login_panel.dart';
 import '../widgets/proxy_panel.dart';
 // ★ N8b-2：聚合源管理面板（链接可改 / 测试连通 / 立即更新）
 import '../widgets/tvbox_source_panel.dart'
-    show
-        TvboxSourceManagePanel,
-        tvboxLastUpdateFailed,
-        tvboxLastUpdateText;
+    show TvboxSourceManagePanel, tvboxLastUpdateFailed, tvboxLastUpdateText;
 
 /// 打开聚合二级页（设置页入口一行调用它）
 Future<void> showTvboxAggregatePage(BuildContext context) {
@@ -120,7 +121,9 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
         _configSiteTotal = total;
         _selected
           ..clear()
-          ..addAll(a.sites.where((s) => s.implemented && s.enabled).map((s) => s.id));
+          ..addAll(
+            a.sites.where((s) => s.implemented && s.enabled).map((s) => s.id),
+          );
         _loading = false;
       });
       /*
@@ -244,10 +247,7 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
       //   ListTile（都要 Material 画水波纹）⇒ 必须自己补一层 transparency。
       builder: (_) => Material(
         type: MaterialType.transparency,
-        child: TvboxAggregateSitesDialog(
-          aggregate: a,
-          sourceOf: _subOf,
-        ),
+        child: TvboxAggregateSitesDialog(aggregate: a, sourceOf: _subOf),
       ),
     );
     if (updated == null || !mounted) return;
@@ -326,7 +326,10 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                   Text(
                     _error,
                     key: const ValueKey<String>('agg-error'),
-                    style: TextStyle(fontSize: FontSizes.sm, color: colors.error),
+                    style: TextStyle(
+                      fontSize: FontSizes.sm,
+                      color: colors.error,
+                    ),
                   )
                 else if (a != null) ...<Widget>[
                   /*
@@ -368,7 +371,8 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                    *    不在这里另写一遍（写两遍必然漂移）。
                    * ⚠️ 后端没给（旧核心）⇒ `null` ⇒ 整行不画 —— 不编「从未更新」。
                    */
-                  if (tvboxLastUpdateText(_aggregateSource) != null) ...<Widget>[
+                  if (tvboxLastUpdateText(_aggregateSource) !=
+                      null) ...<Widget>[
                     Text(
                       tvboxLastUpdateText(_aggregateSource)!,
                       key: const ValueKey<String>('agg-last-update'),
@@ -413,8 +417,10 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
                     Text(
                       _saveError,
                       key: const ValueKey<String>('agg-save-error'),
-                      style:
-                          TextStyle(fontSize: FontSizes.cap, color: colors.error),
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.error,
+                      ),
                     ),
                   ],
                 ],
@@ -432,13 +438,13 @@ class _SectionTitle extends StatelessWidget {
   final String text;
   @override
   Widget build(BuildContext context) => Text(
-        text,
-        style: TextStyle(
-          fontSize: FontSizes.sm,
-          fontWeight: FontWeight.w600,
-          color: Theme.of(context).colorScheme.onSurface,
-        ),
-      );
+    text,
+    style: TextStyle(
+      fontSize: FontSizes.sm,
+      fontWeight: FontWeight.w600,
+      color: Theme.of(context).colorScheme.onSurface,
+    ),
+  );
 }
 
 /// 「这个聚合源是谁」—— 备注（Owner 说的"自己起名字"）+ 子源统计
@@ -557,10 +563,12 @@ String clampNoteTo60(String raw) {
 }
 
 class _TvboxAggregateLinkDialogState extends State<TvboxAggregateLinkDialog> {
-  late final TextEditingController _link =
-      TextEditingController(text: widget.currentLink);
-  late final TextEditingController _note =
-      TextEditingController(text: widget.aggregate.note);
+  late final TextEditingController _link = TextEditingController(
+    text: widget.currentLink,
+  );
+  late final TextEditingController _note = TextEditingController(
+    text: widget.aggregate.note,
+  );
   bool _busy = false;
   String _error = '';
 
@@ -643,7 +651,7 @@ class _TvboxAggregateLinkDialogState extends State<TvboxAggregateLinkDialog> {
               ),
             ),
             const SizedBox(height: Sp.x1),
-            TextField(
+            ui.TextField(
               key: const ValueKey<String>('agg-link-input'),
               controller: _link,
               enabled: !_busy,
@@ -654,7 +662,7 @@ class _TvboxAggregateLinkDialogState extends State<TvboxAggregateLinkDialog> {
               style: const TextStyle(fontSize: FontSizes.cap),
             ),
             const SizedBox(height: Sp.x2),
-            TextField(
+            ui.TextField(
               key: const ValueKey<String>('agg-note-input'),
               controller: _note,
               enabled: !_busy,
@@ -708,7 +716,8 @@ class TvboxAggregateSitesDialog extends StatefulWidget {
   final TvboxSourceInfo? Function(String id) sourceOf;
 
   /// 测试缝：替换管理区每行的面板（生产恒 null）
-  final Widget Function(String id, String name, String? sourceUrl)? panelBuilder;
+  final Widget Function(String id, String name, String? sourceUrl)?
+  panelBuilder;
 
   @override
   State<TvboxAggregateSitesDialog> createState() =>
@@ -729,7 +738,11 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
   bool? _siteEnabledFilter;
 
   List<TvboxAggregateSite> get _visibleSites => filterManagedSites(
-      _agg.sites, selected: _selected, query: _siteQuery, enabled: _siteEnabledFilter);
+    _agg.sites,
+    selected: _selected,
+    query: _siteQuery,
+    enabled: _siteEnabledFilter,
+  );
 
   void _selectVisible(bool on) {
     if (_busy) return;
@@ -830,9 +843,10 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
         _agg = a;
         _selected
           ..clear()
-          ..addAll(a.sites.where((s) => s.implemented && s.enabled).map((s) => s.id));
-        _dedupeMsg =
-            r.duplicates == 0 ? '没有重复子源' : '已停用 ${r.duplicates} 个重复子源';
+          ..addAll(
+            a.sites.where((s) => s.implemented && s.enabled).map((s) => s.id),
+          );
+        _dedupeMsg = r.duplicates == 0 ? '没有重复子源' : '已停用 ${r.duplicates} 个重复子源';
         _busy = false;
       });
     } catch (e) {
@@ -876,7 +890,7 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              TextField(
+              ui.TextField(
                 key: const ValueKey<String>('agg-sites-search'),
                 onChanged: (query) => setState(() => _siteQuery = query),
                 decoration: const InputDecoration(
@@ -889,30 +903,55 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
                 spacing: 8,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  DropdownButton<bool>(
-                    value: _siteEnabledFilter,
-                    hint: const Text('全部状态'),
-                    onChanged: (enabled) =>
-                        setState(() => _siteEnabledFilter = enabled),
-                    items: const [
-                      DropdownMenuItem<bool>(value: null, child: Text('全部状态')),
-                      DropdownMenuItem<bool>(value: true, child: Text('已选择')),
-                      DropdownMenuItem<bool>(value: false, child: Text('未选择')),
-                    ],
+                  SizedBox(
+                    width: 180,
+                    child: miuix.MiuixWindowDropdownMenu(
+                      title: switch (_siteEnabledFilter) {
+                        true => '已选择',
+                        false => '未选择',
+                        null => '全部状态',
+                      },
+                      enabled: !_busy,
+                      insideMargin: const EdgeInsets.symmetric(
+                        horizontal: Sp.x3,
+                        vertical: Sp.x2,
+                      ),
+                      entry: miuix.MiuixDropdownEntry(
+                        items: [
+                          for (final (value, label) in const [
+                            (null, '全部状态'),
+                            (true, '已选择'),
+                            (false, '未选择'),
+                          ])
+                            miuix.MiuixDropdownItem(
+                              text: label,
+                              selected: _siteEnabledFilter == value,
+                              onClick: () =>
+                                  setState(() => _siteEnabledFilter = value),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
-                  TextButton.icon(
+                  ui.TextButton.icon(
                     key: const ValueKey<String>('agg-sites-select-visible'),
-                    onPressed: _busy || _visibleSites.isEmpty ? null : () => _selectVisible(true),
+                    onPressed: _busy || _visibleSites.isEmpty
+                        ? null
+                        : () => _selectVisible(true),
                     icon: const Icon(Icons.select_all),
                     label: const Text('全选当前结果'),
                   ),
-                  TextButton.icon(
+                  ui.TextButton.icon(
                     key: const ValueKey<String>('agg-sites-clear-visible'),
-                    onPressed: _busy || _visibleSites.isEmpty ? null : () => _selectVisible(false),
+                    onPressed: _busy || _visibleSites.isEmpty
+                        ? null
+                        : () => _selectVisible(false),
                     icon: const Icon(Icons.deselect),
                     label: const Text('清空当前结果'),
                   ),
-                  Text('${_visibleSites.length}/${_agg.sites.length} · 已选 ${_selected.length}'),
+                  Text(
+                    '${_visibleSites.length}/${_agg.sites.length} · 已选 ${_selected.length}',
+                  ),
                 ],
               ),
               TvboxAggregateSitesList(
@@ -938,7 +977,7 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
                */
               Material(
                 type: MaterialType.transparency,
-                child: SwitchListTile(
+                child: ui.SwitchListTile(
                   key: const ValueKey<String>('agg-solo'),
                   value: _solo,
                   onChanged: _busy ? null : _toggleSolo,
@@ -951,9 +990,9 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
                       color: colors.onSurface,
                     ),
                   ),
-                  // ★ 这句不是装饰：solo 容易被误解成"把子站关掉"，而真相是相反
+                  // 与实际搜索范围一致；临时范围不会重写各源的启用偏好。
                   subtitle: Text(
-                    '子站仍参与搜索，只是列表里不显示',
+                    '搜索仅使用已启用且已导入的聚合子源',
                     key: const ValueKey<String>('agg-solo-hint'),
                     style: TextStyle(
                       fontSize: FontSizes.cap,
@@ -984,7 +1023,10 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
                 Text(
                   _error,
                   key: const ValueKey<String>('agg-sites-error'),
-                  style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.error,
+                  ),
                 ),
             ],
           ),
@@ -1001,14 +1043,23 @@ List<TvboxAggregateSite> filterManagedSites(
   bool? enabled,
 }) {
   final needle = query.trim().toLowerCase();
-  return sites.where((s) =>
-      (enabled == null || selected.contains(s.id) == enabled) &&
-      (needle.isEmpty || '${s.name} ${s.id} ${s.kindTag}'.toLowerCase().contains(needle)))
+  return sites
+      .where(
+        (s) =>
+            (enabled == null || selected.contains(s.id) == enabled) &&
+            (needle.isEmpty ||
+                '${s.name} ${s.id} ${s.kindTag}'.toLowerCase().contains(
+                  needle,
+                )),
+      )
       .toList(growable: false);
 }
 
 Set<String> selectionForVisibleSites(
-    Set<String> selected, List<TvboxAggregateSite> visible, bool on) {
+  Set<String> selected,
+  List<TvboxAggregateSite> visible,
+  bool on,
+) {
   final next = {...selected};
   final ids = visible.where((s) => s.implemented).map((s) => s.id);
   if (on) {
@@ -1073,7 +1124,8 @@ class TvboxAggregateManageSection extends StatelessWidget {
   final TvboxSourceInfo? Function(String id) sourceOf;
 
   /// 测试缝：自定义每行的面板（生产恒 null）
-  final Widget Function(String id, String name, String? sourceUrl)? panelBuilder;
+  final Widget Function(String id, String name, String? sourceUrl)?
+  panelBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -1086,8 +1138,8 @@ class TvboxAggregateManageSection extends StatelessWidget {
      *   Dart 对公开字段不做类型提升（`panelBuilder != null` 之后
      *   直接调它会报 unchecked_use_of_nullable_value）。
      */
-    final Widget Function(String id, String name, String? sourceUrl)? buildPanel =
-        panelBuilder;
+    final Widget Function(String id, String name, String? sourceUrl)?
+    buildPanel = panelBuilder;
 
     /*
      * ★ 每一行的 id/name 用什么？
@@ -1110,8 +1162,9 @@ class TvboxAggregateManageSection extends StatelessWidget {
           .where((s) => s.id == repId)
           .map((s) => s.name)
           .join();
-      final displayName =
-          (info?.name.trim().isEmpty ?? true) ? siteName : info!.name;
+      final displayName = (info?.name.trim().isEmpty ?? true)
+          ? siteName
+          : info!.name;
 
       rows.add(
         Padding(
@@ -1204,54 +1257,61 @@ class TvboxAggregateSitesList extends StatelessWidget {
         for (final s in sites)
           Padding(
             padding: const EdgeInsets.only(bottom: Sp.x1),
-            child: Row(
+            child: miuix.MiuixCard(
               key: ValueKey<String>('agg-site-${s.id}'),
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Checkbox(
-                  key: ValueKey<String>('agg-site-check-${s.id}'),
-                  value: s.implemented && selected.contains(s.id),
-                  onChanged:
-                      s.implemented ? (v) => onToggle(s.id, v == true) : null,
-                ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      Text(
-                        s.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: FontSizes.sm,
-                          color: s.implemented
-                              ? colors.onSurface
-                              : colors.onSurface.withValues(alpha: 0.45),
-                        ),
-                      ),
-                      GithubSourceOrigin(providerId: s.id),
-                      if (s.kindTag.isNotEmpty)
-                        Text(
-                          s.kindTag,
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                      if (!s.implemented && (s.reason ?? '').isNotEmpty)
-                        Text(
-                          s.reason!,
-                          key: ValueKey<String>('agg-site-reason-${s.id}'),
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                    ],
+              insideMargin: const EdgeInsets.all(Sp.x2),
+              onPressed: s.implemented
+                  ? () => onToggle(s.id, !selected.contains(s.id))
+                  : null,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  ui.Checkbox(
+                    key: ValueKey<String>('agg-site-check-${s.id}'),
+                    value: s.implemented && selected.contains(s.id),
+                    onChanged: s.implemented
+                        ? (v) => onToggle(s.id, v == true)
+                        : null,
                   ),
-                ),
-              ],
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Text(
+                          s.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: FontSizes.sm,
+                            color: s.implemented
+                                ? colors.onSurface
+                                : colors.onSurface.withValues(alpha: 0.45),
+                          ),
+                        ),
+                        GithubSourceOrigin(providerId: s.id),
+                        if (s.kindTag.isNotEmpty)
+                          Text(
+                            s.kindTag,
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        if (!s.implemented && (s.reason ?? '').isNotEmpty)
+                          Text(
+                            s.reason!,
+                            key: ValueKey<String>('agg-site-reason-${s.id}'),
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
       ],
@@ -1268,14 +1328,9 @@ class TvboxAggregateEmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Container(
+    return miuix.MiuixCard(
       key: const ValueKey<String>('agg-empty'),
-      padding: const EdgeInsets.all(Sp.x4),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
-        borderRadius: Radii.rLg,
-        border: Border.all(color: colors.outlineVariant),
-      ),
+      insideMargin: const EdgeInsets.all(Sp.x4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -1286,7 +1341,7 @@ class TvboxAggregateEmptyState extends StatelessWidget {
             style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
           ),
           const SizedBox(height: Sp.x2),
-          FilledButton.icon(
+          ui.FilledButton.icon(
             key: const ValueKey<String>('agg-empty-import'),
             onPressed: onImport,
             icon: const Icon(AppIcons.download, size: 16),
@@ -1354,7 +1409,7 @@ class _PanShareBodyState extends State<PanShareBody> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        TextField(
+        ui.TextField(
           key: const ValueKey<String>('pan-share-body-input'),
           controller: _text,
           enabled: !_busy,
@@ -1427,13 +1482,13 @@ class TvboxAggregateCredentialsSection extends StatelessWidget {
         const SizedBox(height: Sp.x3),
         Text(
           '该源的登录凭据',
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x1),
-        ProviderLoginPanel(
-          providerId: aggregateId,
-          providerName: 'TVBox 聚合',
-        ),
+        ProviderLoginPanel(providerId: aggregateId, providerName: 'TVBox 聚合'),
         Row(
           children: <Widget>[
             const AppTextButton(
@@ -1456,7 +1511,10 @@ class TvboxAggregateCredentialsSection extends StatelessWidget {
         const SizedBox(height: Sp.x3),
         Text(
           '代理',
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x1),
         ProxyPanel(providerId: aggregateId, providerName: 'TVBox 聚合'),
@@ -1505,7 +1563,10 @@ class TvboxAggregateUnimplementedNote extends StatelessWidget {
       child: Text(
         '另有 $diff 个源在本机未实现，导入报告里有逐条原因',
         key: const ValueKey<String>('tvbox-agg-unimplemented-note'),
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       ),
     );
   }

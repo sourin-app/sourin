@@ -135,6 +135,8 @@
 // 「定时轮询」看到的是同一串东西，而前者没有常驻成本，也不会出现
 // "面板已经 dispose、定时器还在 setState"这种失败模式。
 
+import 'miuix_controls.dart' as ui;
+
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -421,9 +423,9 @@ class _BackupPanelState extends State<BackupPanel> {
     final dir = await writableExportDir();
     _exportHint = dir.userVisible
         ? '本平台不支持系统「保存」对话框，已存到 ${dir.path}。'
-            '可以到系统文件管理器里按下面的路径找到它。'
+              '可以到系统文件管理器里按下面的路径找到它。'
         : '本平台不支持系统「保存」对话框，已存到应用目录'
-            '（系统文件管理器看不到）。完整路径：${dir.path}';
+              '（系统文件管理器看不到）。完整路径：${dir.path}';
     return _join(dir.path, suggestedName);
   }
 
@@ -480,9 +482,11 @@ class _BackupPanelState extends State<BackupPanel> {
       final stepSw = Stopwatch()..start();
       final r = await SourinApi.backupExport(path, passphrase: consent.pass);
       if (!mounted) return;
-      _log('导出：成功 ${_fileName(r.path)}（${_fmtBytes(r.bytes)}）—— '
-          '凭据 ${r.credentialsIncluded ? "已加密包含 ${r.credentialsProviders} 个源" : "未包含"}'
-          ' / 打包 ${stepSw.elapsedMilliseconds} ms / 全程 ${sw.elapsedMilliseconds} ms');
+      _log(
+        '导出：成功 ${_fileName(r.path)}（${_fmtBytes(r.bytes)}）—— '
+        '凭据 ${r.credentialsIncluded ? "已加密包含 ${r.credentialsProviders} 个源" : "未包含"}'
+        ' / 打包 ${stepSw.elapsedMilliseconds} ms / 全程 ${sw.elapsedMilliseconds} ms',
+      );
       setState(() {
         /*
          * ★ 凭据**没进包**时必须说出来。
@@ -493,8 +497,8 @@ class _BackupPanelState extends State<BackupPanel> {
         final credNote = r.credentialsIncluded
             ? '（含 ${r.credentialsProviders} 个源的登录态，已加密；导入时要口令）'
             : '';
-        final warn = (!r.credentialsIncluded &&
-                (r.credentialsNote?.isNotEmpty ?? false))
+        final warn =
+            (!r.credentialsIncluded && (r.credentialsNote?.isNotEmpty ?? false))
             ? '\n⚠️ ${r.credentialsNote}'
             : '';
         _ok = '已导出到 ${r.path}（${_fmtBytes(r.bytes)}）$credNote$warn';
@@ -588,18 +592,24 @@ class _BackupPanelState extends State<BackupPanel> {
       body
         ..writeln('⚠️ 「特别注意」：下面这些源把「账号密码明文」存在本机 ——')
         ..writeln('   ${c.plaintextPasswordProviders.join('、')}')
-        ..writeln('   泄露的是「密码」（不是会过期的令牌），'
-            '如果你在别处也用同一个密码，请务必小心。')
+        ..writeln(
+          '   泄露的是「密码」（不是会过期的令牌），'
+          '如果你在别处也用同一个密码，请务必小心。',
+        )
         ..writeln();
     }
 
     body
       ..writeln('要加密这些登录态吗？')
       ..writeln()
-      ..writeln('· 加密：设一个口令，登录态会被加密后放进包里'
-          '（口令「不会」进包，导入时要重新输入）')
-      ..writeln('· 不含：包里只有收藏 / 进度 / 源配置 / 插件，'
-          '不含任何登录态');
+      ..writeln(
+        '· 加密：设一个口令，登录态会被加密后放进包里'
+        '（口令「不会」进包，导入时要重新输入）',
+      )
+      ..writeln(
+        '· 不含：包里只有收藏 / 进度 / 源配置 / 插件，'
+        '不含任何登录态',
+      );
 
     final choice = await showAppDialog<String>(
       context: context,
@@ -705,9 +715,11 @@ class _BackupPanelState extends State<BackupPanel> {
        *   出了问题（比如某个包读不了）时，日志里必须有它的设备/版本/条数。
        * ⚠️ 只写文件名，不写完整路径（理由见文件头）。
        */
-      _log('导入：已读取 ${_fileName(f.path)} —— 来自设备 ${info.deviceId}'
-          ' · 导出 ${_fmtTime(info.exportedAt)} · 格式 v${info.version}'
-          ' · 插件 ${info.plugins.length} 个（${sw.elapsedMilliseconds} ms）');
+      _log(
+        '导入：已读取 ${_fileName(f.path)} —— 来自设备 ${info.deviceId}'
+        ' · 导出 ${_fmtTime(info.exportedAt)} · 格式 v${info.version}'
+        ' · 插件 ${info.plugins.length} 个（${sw.elapsedMilliseconds} ms）',
+      );
       setState(() {
         _picked = (path: f.path, info: info);
         _busy = '';
@@ -779,12 +791,14 @@ class _BackupPanelState extends State<BackupPanel> {
        *   `skipped` 有内容时必须记 —— 那代表**有东西没进来**（原版语义），
        *   是最容易被误读成"都导入了"的一种情况。
        */
-      _log('导入：完成 ${_fileName(p.path)}（${sw.elapsedMilliseconds} ms）'
-          ' 收藏 +${s.favoritesAdded}/~${s.favoritesUpdated}'
-          ' 追更 +${s.followingAdded} 进度 ~${s.progressUpdated}'
-          ' 历史 +${s.historyAdded} 片头片尾 ~${s.skipUpdated}'
-          ' 内容源 +${s.providersImported}'
-          ' 插件写 ${s.pluginsWritten.length}/改名 ${s.pluginsRenamed.length}');
+      _log(
+        '导入：完成 ${_fileName(p.path)}（${sw.elapsedMilliseconds} ms）'
+        ' 收藏 +${s.favoritesAdded}/~${s.favoritesUpdated}'
+        ' 追更 +${s.followingAdded} 进度 ~${s.progressUpdated}'
+        ' 历史 +${s.historyAdded} 片头片尾 ~${s.skipUpdated}'
+        ' 内容源 +${s.providersImported}'
+        ' 插件写 ${s.pluginsWritten.length}/改名 ${s.pluginsRenamed.length}',
+      );
       if (s.skipped.isNotEmpty) {
         _log('导入：有 ${s.skipped.length} 项被跳过 —— 这些数据「没有」进来');
       }
@@ -811,14 +825,14 @@ class _BackupPanelState extends State<BackupPanel> {
   /// ⚠️ 键名与后端 `BackupPreview.counts` 的键一一对应 ——
   ///    写错就显示 0（而不是报错），所以这里集中一处。
   static List<({String label, int n})> _describe(Map<String, int> c) => [
-        (label: '收藏', n: c['favorites'] ?? 0),
-        (label: '追更', n: c['following'] ?? 0),
-        (label: '播放进度', n: c['progress'] ?? 0),
-        (label: '观看历史', n: c['history'] ?? 0),
-        (label: '片头片尾', n: c['skip_markers'] ?? 0),
-        (label: '内容源', n: c['providers'] ?? 0),
-        (label: '插件', n: c['plugins'] ?? 0),
-      ];
+    (label: '收藏', n: c['favorites'] ?? 0),
+    (label: '追更', n: c['following'] ?? 0),
+    (label: '播放进度', n: c['progress'] ?? 0),
+    (label: '观看历史', n: c['history'] ?? 0),
+    (label: '片头片尾', n: c['skip_markers'] ?? 0),
+    (label: '内容源', n: c['providers'] ?? 0),
+    (label: '插件', n: c['plugins'] ?? 0),
+  ];
 
   static String _fmtBytes(int n) {
     if (n < 1024) return '$n B';
@@ -846,7 +860,7 @@ class _BackupPanelState extends State<BackupPanel> {
           icon: AppIcons.file_download_outlined,
           title: '导出备份',
           subtitle: '打包成 .zip —— 解压开就能看到插件源码，能自己改完再打回去',
-          action: FilledButton(
+          action: ui.FilledButton(
             onPressed: (_busy.isNotEmpty || _loading) ? null : _doExport,
             child: Text(_busy == 'export' ? '导出中…' : '导出'),
           ),
@@ -857,16 +871,20 @@ class _BackupPanelState extends State<BackupPanel> {
               text: _defaultNameText.isEmpty
                   ? '点「导出」→ 弹出「系统保存对话框」，自己选存到哪'
                   : '点「导出」→ 弹出「系统保存对话框」'
-                      '（默认文件名 $_defaultNameText）',
+                        '（默认文件名 $_defaultNameText）',
             ),
             const SizedBox(height: Sp.x3),
             // 会导出什么（点导出前先看到）
             if (_preview != null)
               _countsRow(_describe(_preview!.counts), colors)
             else if (_loading)
-              Text('读取中…',
-                  style: TextStyle(
-                      fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+              Text(
+                '读取中…',
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
             // 插件清单（让用户知道哪些会被打包）
             if (_preview != null && _preview!.plugins.isNotEmpty)
               _pluginList(_preview!.plugins, colors),
@@ -881,14 +899,15 @@ class _BackupPanelState extends State<BackupPanel> {
           icon: AppIcons.file_upload_outlined,
           title: '导入备份',
           subtitle: '合并进来，不会覆盖本机已有的数据',
-          action: OutlinedButton(
+          action: ui.OutlinedButton(
             onPressed: _busy.isNotEmpty ? null : _doPick,
             child: Text(_busy == 'pick' ? '读取中…' : '选择文件'),
           ),
           children: [
             _dialogHint(
               colors: colors,
-              text: '点「选择文件」→ 弹出「系统打开对话框」，'
+              text:
+                  '点「选择文件」→ 弹出「系统打开对话框」，'
                   '选中备份包（.zip）后先看内容，再决定导不导',
             ),
 
@@ -961,16 +980,22 @@ class _BackupPanelState extends State<BackupPanel> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title,
-                        style: TextStyle(
-                            fontSize: FontSizes.base,
-                            fontWeight: FontWeight.w600,
-                            color: colors.onSurface)),
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: FontSizes.base,
+                        fontWeight: FontWeight.w600,
+                        color: colors.onSurface,
+                      ),
+                    ),
                     const SizedBox(height: 2),
-                    Text(subtitle,
-                        style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant)),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -993,16 +1018,20 @@ class _BackupPanelState extends State<BackupPanel> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(AppIcons.folder_open_outlined,
-            size: 15, color: colors.onSurfaceVariant),
+        Icon(
+          AppIcons.folder_open_outlined,
+          size: 15,
+          color: colors.onSurfaceVariant,
+        ),
         const SizedBox(width: Sp.x2),
         Expanded(
           child: Text(
             text,
             style: TextStyle(
-                fontSize: FontSizes.cap,
-                height: 1.5,
-                color: colors.onSurfaceVariant),
+              fontSize: FontSizes.cap,
+              height: 1.5,
+              color: colors.onSurfaceVariant,
+            ),
           ),
         ),
       ],
@@ -1025,16 +1054,22 @@ class _BackupPanelState extends State<BackupPanel> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(d.label,
-                    style: TextStyle(
-                        fontSize: FontSizes.cap,
-                        color: colors.onSurfaceVariant)),
+                Text(
+                  d.label,
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
                 const SizedBox(width: 4),
-                Text('${d.n}',
-                    style: TextStyle(
-                        fontSize: FontSizes.cap,
-                        fontWeight: FontWeight.w600,
-                        color: colors.onSurface)),
+                Text(
+                  '${d.n}',
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
+                  ),
+                ),
               ],
             ),
           ),
@@ -1047,15 +1082,15 @@ class _BackupPanelState extends State<BackupPanel> {
     final total = plugins.fold<int>(0, (a, x) => a + x.$2);
     return Padding(
       padding: const EdgeInsets.only(top: Sp.x3),
-      child: ExpansionTile(
+      child: ui.ExpansionTile(
         tilePadding: EdgeInsets.zero,
         childrenPadding: const EdgeInsets.only(left: Sp.x4, bottom: Sp.x2),
-        shape: const Border(),
-        collapsedShape: const Border(),
         title: Text(
           '查看插件清单（${plugins.length} 个 · 合计 ${_fmtBytes(total)}）',
           style: TextStyle(
-              fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         children: [
           for (final p in plugins)
@@ -1064,15 +1099,21 @@ class _BackupPanelState extends State<BackupPanel> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text(p.$1,
-                        style: const TextStyle(
-                            fontSize: FontSizes.cap,
-                            fontFamily: 'monospace')),
+                    child: Text(
+                      p.$1,
+                      style: const TextStyle(
+                        fontSize: FontSizes.cap,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
                   ),
-                  Text(_fmtBytes(p.$2),
-                      style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          color: colors.onSurfaceVariant)),
+                  Text(
+                    _fmtBytes(p.$2),
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1082,8 +1123,10 @@ class _BackupPanelState extends State<BackupPanel> {
   }
 
   /// 导入确认区（**视觉上"抬起来"，提示这是要用户拍板的一步**）
-  Widget _confirmBox(({String path, BackupPreview info}) picked,
-      ColorScheme colors) {
+  Widget _confirmBox(
+    ({String path, BackupPreview info}) picked,
+    ColorScheme colors,
+  ) {
     final info = picked.info;
     final fname = picked.path.split(RegExp(r'[\\/]')).last;
     return Container(
@@ -1099,16 +1142,22 @@ class _BackupPanelState extends State<BackupPanel> {
           Row(
             children: [
               Expanded(
-                child: Text('这个包里有什么',
-                    style: TextStyle(
-                        fontSize: FontSizes.sm,
-                        fontWeight: FontWeight.w600,
-                        color: colors.onSurface)),
-              ),
-              Text(fname,
+                child: Text(
+                  '这个包里有什么',
                   style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      color: colors.onSurfaceVariant)),
+                    fontSize: FontSizes.sm,
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
+                  ),
+                ),
+              ),
+              Text(
+                fname,
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: Sp.x2),
@@ -1116,7 +1165,9 @@ class _BackupPanelState extends State<BackupPanel> {
             '来自设备 ${info.deviceId} · 导出于 ${_fmtTime(info.exportedAt)}'
             ' · 格式 v${info.version}',
             style: TextStyle(
-                fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: Sp.x3),
           _countsRow(_describe(info.counts), colors),
@@ -1136,21 +1187,22 @@ class _BackupPanelState extends State<BackupPanel> {
               '导入是合并：收藏按并集加、进度按时间戳取更新的那次。'
               '不会删除本机任何数据；插件同名时会改名保存，不覆盖原文件。',
               style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  height: 1.6,
-                  color: colors.onSurfaceVariant),
+                fontSize: FontSizes.cap,
+                height: 1.6,
+                color: colors.onSurfaceVariant,
+              ),
             ),
           ),
           const SizedBox(height: Sp.x2),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton(
+              ui.TextButton(
                 onPressed: () => setState(() => _picked = null),
                 child: const Text('取消'),
               ),
               const SizedBox(width: Sp.x2),
-              FilledButton(
+              ui.FilledButton(
                 onPressed: _busy == 'import' ? null : _doImport,
                 child: Text(_busy == 'import' ? '导入中…' : '确认导入'),
               ),
@@ -1184,23 +1236,34 @@ class _BackupPanelState extends State<BackupPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('导入完成',
-              style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  fontWeight: FontWeight.w600,
-                  color: colors.onSurface)),
+          Text(
+            '导入完成',
+            style: TextStyle(
+              fontSize: FontSizes.sm,
+              fontWeight: FontWeight.w600,
+              color: colors.onSurface,
+            ),
+          ),
           const SizedBox(height: 6),
           if (lines.isEmpty)
-            Text('没有新增内容（本机数据已是最新）',
-                style: TextStyle(
-                    fontSize: FontSizes.cap, color: colors.onSurfaceVariant))
+            Text(
+              '没有新增内容（本机数据已是最新）',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
+            )
           else
             for (final l in lines)
               Padding(
                 padding: const EdgeInsets.only(bottom: 3),
-                child: Text(l,
-                    style: TextStyle(
-                        fontSize: FontSizes.sm, color: colors.onSurface)),
+                child: Text(
+                  l,
+                  style: TextStyle(
+                    fontSize: FontSizes.sm,
+                    color: colors.onSurface,
+                  ),
+                ),
               ),
 
           /*
@@ -1210,11 +1273,12 @@ class _BackupPanelState extends State<BackupPanel> {
            */
           if (s.skipped.isNotEmpty) ...[
             const SizedBox(height: Sp.x2),
-            ExpansionTile(
+            ui.ExpansionTile(
               tilePadding: EdgeInsets.zero,
-              childrenPadding: const EdgeInsets.only(left: Sp.x4, bottom: Sp.x2),
-              shape: const Border(),
-              collapsedShape: const Border(),
+              childrenPadding: const EdgeInsets.only(
+                left: Sp.x4,
+                bottom: Sp.x2,
+              ),
               title: Text(
                 '有 ${s.skipped.length} 项被跳过',
                 style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
@@ -1223,10 +1287,13 @@ class _BackupPanelState extends State<BackupPanel> {
                 for (final x in s.skipped)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 3),
-                    child: Text(x,
-                        style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant)),
+                    child: Text(
+                      x,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -1234,32 +1301,39 @@ class _BackupPanelState extends State<BackupPanel> {
 
           if (s.pluginsRenamed.isNotEmpty) ...[
             const SizedBox(height: Sp.x2),
-            ExpansionTile(
+            ui.ExpansionTile(
               tilePadding: EdgeInsets.zero,
-              childrenPadding: const EdgeInsets.only(left: Sp.x4, bottom: Sp.x2),
-              shape: const Border(),
-              collapsedShape: const Border(),
+              childrenPadding: const EdgeInsets.only(
+                left: Sp.x4,
+                bottom: Sp.x2,
+              ),
               title: Text(
                 '${s.pluginsRenamed.length} 个插件因同名被改名保存',
                 style: TextStyle(
-                    fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
               ),
               children: [
                 for (final n in s.pluginsRenamed)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 3),
-                    child: Text(n,
-                        style: const TextStyle(
-                            fontSize: FontSizes.cap,
-                            fontFamily: 'monospace')),
+                    child: Text(
+                      n,
+                      style: const TextStyle(
+                        fontSize: FontSizes.cap,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
                   ),
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text(
                     '原文件仍在 —— 两个都留着，你在插件列表里挑要哪个',
                     style: TextStyle(
-                        fontSize: FontSizes.cap,
-                        color: colors.onSurfaceVariant),
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
+                    ),
                   ),
                 ),
               ],
@@ -1298,7 +1372,9 @@ class _BackupPanelState extends State<BackupPanel> {
       action: Text(
         '${_logLines.length} 行',
         style: TextStyle(
-            fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       ),
       children: [
         if (_logLines.isEmpty)
@@ -1310,9 +1386,10 @@ class _BackupPanelState extends State<BackupPanel> {
             '还没有记录。点上面的「导出」或「选择文件」，'
             '这里会逐步显示做了什么、成功还是失败、花了多久。',
             style: TextStyle(
-                fontSize: FontSizes.cap,
-                height: 1.6,
-                color: colors.onSurfaceVariant),
+              fontSize: FontSizes.cap,
+              height: 1.6,
+              color: colors.onSurfaceVariant,
+            ),
           )
         else
           Container(
@@ -1352,11 +1429,10 @@ class _BackupPanelState extends State<BackupPanel> {
   }
 
   Widget _msg(String text, Color color) => Text(
-        text,
-        style: TextStyle(fontSize: FontSizes.sm, color: color, height: 1.6),
-      );
+    text,
+    style: TextStyle(fontSize: FontSizes.sm, color: color, height: 1.6),
+  );
 }
-
 
 /// 导出用的口令输入框（只输入一次 —— 不需要确认，因为输错只是解不开，
 /// 不会有"把账号锁死"这类后果；而**导出时**没有"再输一次"的语义）
@@ -1373,7 +1449,8 @@ class _ExportPassphraseDialog extends StatefulWidget {
   const _ExportPassphraseDialog();
 
   @override
-  State<_ExportPassphraseDialog> createState() => _ExportPassphraseDialogState();
+  State<_ExportPassphraseDialog> createState() =>
+      _ExportPassphraseDialogState();
 }
 
 class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
@@ -1444,7 +1521,7 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
               ),
             ),
             const SizedBox(height: Sp.x3),
-            TextField(
+            ui.TextField(
               autofocus: true,
               obscureText: true,
               decoration: const InputDecoration(labelText: '口令（至少 8 位）'),
@@ -1488,7 +1565,6 @@ class _ExportPassphraseDialogState extends State<_ExportPassphraseDialog> {
   }
 }
 
-
 /// 导入含登录态的备份包时，让用户输入**导出时设的那个口令**
 ///
 /// # 为什么这里**不给**"跳过凭据"按钮
@@ -1502,7 +1578,8 @@ class _ImportPassphraseDialog extends StatefulWidget {
   const _ImportPassphraseDialog();
 
   @override
-  State<_ImportPassphraseDialog> createState() => _ImportPassphraseDialogState();
+  State<_ImportPassphraseDialog> createState() =>
+      _ImportPassphraseDialogState();
 }
 
 class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
@@ -1551,7 +1628,7 @@ class _ImportPassphraseDialogState extends State<_ImportPassphraseDialog> {
               ),
             ),
             const SizedBox(height: Sp.x3),
-            TextField(
+            ui.TextField(
               autofocus: true,
               obscureText: true,
               decoration: const InputDecoration(labelText: '口令'),

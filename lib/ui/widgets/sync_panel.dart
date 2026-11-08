@@ -119,6 +119,8 @@
 // ⚠️ 「改小保留份数」不会立刻删 —— 后端是在**下一次上传成功后**才跑清理。
 //    所以胶囊下面那句提示写的是「下次备份时自动删掉多出来的」。
 
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
@@ -355,11 +357,8 @@ class _SyncPanelState extends State<SyncPanel> {
       try {
         final r = await SourinApi.syncBackupNow();
         await _reloadBackups();
-        final pruned =
-            r.pruned.isEmpty ? '' : '，并清理了 ${r.pruned.length} 份旧备份';
-        _sayOk(
-          '已备份 ${_fmtBytes(r.bytes)}，云端现有 ${r.total} 份$pruned',
-        );
+        final pruned = r.pruned.isEmpty ? '' : '，并清理了 ${r.pruned.length} 份旧备份';
+        _sayOk('已备份 ${_fmtBytes(r.bytes)}，云端现有 ${r.total} 份$pruned');
       } catch (e) {
         _sayErr('备份失败：$e');
       }
@@ -461,23 +460,22 @@ class _SyncPanelState extends State<SyncPanel> {
   Future<void> _setPassphrase() async {
     final r = await showAppDialog<({String pass, bool clear})>(
       context: context,
-      builder: (_) => _PassphraseDialog(hasExisting: _cred?.passphraseSet == true),
+      builder: (_) =>
+          _PassphraseDialog(hasExisting: _cred?.passphraseSet == true),
     );
     if (r == null) return;
 
     await _busy('正在保存口令…', () async {
       try {
-        final c = await SourinApi.setCredentialsPassphrase(r.clear ? '' : r.pass);
+        final c = await SourinApi.setCredentialsPassphrase(
+          r.clear ? '' : r.pass,
+        );
         if (!mounted) return;
         setState(() => _cred = c);
         if (r.clear) {
           _sayOk('口令已清除 —— 凭据将不再同步');
         } else {
-          _sayOk(
-            c.enabled
-                ? '口令已设置，下次同步会带上登录态'
-                : '口令已设置（凭据同步开关还关着）',
-          );
+          _sayOk(c.enabled ? '口令已设置，下次同步会带上登录态' : '口令已设置（凭据同步开关还关着）');
         }
       } catch (e) {
         _sayErr('口令保存失败：$e');
@@ -594,15 +592,13 @@ class _SyncPanelState extends State<SyncPanel> {
           spacing: Sp.x2,
           runSpacing: Sp.x2,
           children: [
-            OutlinedButton.icon(
+            ui.OutlinedButton.icon(
               onPressed: _syncBusy ? null : _setPassphrase,
               icon: const Icon(AppIcons.lock_outline, size: 16),
-              label: Text(
-                (c?.passphraseSet ?? false) ? '修改口令' : '设置口令',
-              ),
+              label: Text((c?.passphraseSet ?? false) ? '修改口令' : '设置口令'),
             ),
             if (c?.passphraseSet ?? false)
-              OutlinedButton.icon(
+              ui.OutlinedButton.icon(
                 onPressed: _syncBusy ? null : _clearPassphrase,
                 icon: const Icon(AppIcons.delete_outline, size: 16),
                 label: const Text('清除口令'),
@@ -616,7 +612,8 @@ class _SyncPanelState extends State<SyncPanel> {
   Future<void> _clearPassphrase() async {
     final ok = await _confirm(
       title: '清除凭据同步口令',
-      message: '清除后：\n\n'
+      message:
+          '清除后：\n\n'
           '· 登录态「不再」同步（云端已有的那份不会被删）\n'
           '· 已导出的含凭据的备份包「仍然需要」那个口令才能导入\n\n'
           '忘记口令时也只能清除后重新设一个（旧包就解不开了）。',
@@ -713,37 +710,34 @@ class _SyncPanelState extends State<SyncPanel> {
         ),
         // ★ 已连接时把「连的是哪、账号是谁、目录在哪、上次什么时候同步过」
         //   摆出来 —— 换到第二台设备后用户要靠这三行确认自己没连错地方。
-        if (connected) ...[
-          const SizedBox(height: Sp.x3),
-          _connInfo(colors, s),
-        ],
+        if (connected) ...[const SizedBox(height: Sp.x3), _connInfo(colors, s)],
         const SizedBox(height: Sp.x4),
         Wrap(
           spacing: Sp.x2,
           runSpacing: Sp.x2,
           children: [
-            FilledButton.tonalIcon(
+            ui.FilledButton.tonalIcon(
               onPressed: _syncBusy ? null : _configureWebdav,
               icon: const Icon(AppIcons.cloud_outlined, size: 16),
               label: Text(connected ? '重新配置' : '配置云盘'),
             ),
             if (connected) ...[
-              OutlinedButton.icon(
+              ui.OutlinedButton.icon(
                 onPressed: _syncBusy ? null : _testSync,
                 icon: const Icon(AppIcons.network_check, size: 16),
                 label: const Text('测试连接'),
               ),
-              OutlinedButton.icon(
+              ui.OutlinedButton.icon(
                 onPressed: _syncBusy ? null : _syncNow,
                 icon: const Icon(AppIcons.sync, size: 16),
                 label: const Text('立即同步'),
               ),
-              FilledButton.tonalIcon(
+              ui.FilledButton.tonalIcon(
                 onPressed: _syncBusy ? null : _backupNow,
                 icon: const Icon(AppIcons.backup_outlined, size: 16),
                 label: const Text('立即备份'),
               ),
-              OutlinedButton.icon(
+              ui.OutlinedButton.icon(
                 onPressed: _syncBusy ? null : _disconnectSync,
                 icon: const Icon(AppIcons.link_off, size: 16),
                 label: const Text('断开'),
@@ -764,10 +758,7 @@ class _SyncPanelState extends State<SyncPanel> {
         // ★ 忙时给一行明确的进度文案 ——
         //   网络操作要好几秒到几十秒（整包备份更大），按钮变灰但页面
         //   毫无变化的话，用户会以为「点了没反应」而去连点。
-        if (_syncBusy) ...[
-          const SizedBox(height: Sp.x3),
-          _busyLine(colors),
-        ],
+        if (_syncBusy) ...[const SizedBox(height: Sp.x3), _busyLine(colors)],
         if (connected && s != null) ...[
           const SizedBox(height: Sp.x5),
           _autoSection(colors, s),
@@ -796,12 +787,9 @@ class _SyncPanelState extends State<SyncPanel> {
       if (backend != null && backend.isNotEmpty) ('服务', backend),
       if (s != null && s.baseUrl.isNotEmpty) ('地址', s.baseUrl),
       if (s != null && s.username.isNotEmpty) ('账号', s.username),
-      if (s != null)
-        ('目录', s.remoteDir.isEmpty ? '网盘根目录' : s.remoteDir),
-      if (s != null && s.lastSyncAt > 0)
-        ('上次同步', _fmtTime(s.lastSyncAt)),
-      if (s != null && s.lastBackupAt > 0)
-        ('上次备份', _fmtTime(s.lastBackupAt)),
+      if (s != null) ('目录', s.remoteDir.isEmpty ? '网盘根目录' : s.remoteDir),
+      if (s != null && s.lastSyncAt > 0) ('上次同步', _fmtTime(s.lastSyncAt)),
+      if (s != null && s.lastBackupAt > 0) ('上次备份', _fmtTime(s.lastBackupAt)),
     ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -834,23 +822,26 @@ class _SyncPanelState extends State<SyncPanel> {
   /// 用固定尺寸的进度圈而不是 `setState` 里的第二个状态 ——
   /// 动画交给 widget 自己跑，避免每次 `setState` 都重建整页。
   Widget _busyLine(ColorScheme colors) => Row(
-        children: [
-          SizedBox(
-            width: 14,
-            height: 14,
-            // T27-07：onSurface 随主题（dark #FAFAFA / light 近黑）。
-            child: CircularProgressIndicator(color: colors.onSurface, strokeWidth: 2),
-          ),
-          const SizedBox(width: Sp.x2),
-          Text(
-            _busyHint,
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              color: colors.onSurfaceVariant,
-            ),
-          ),
-        ],
-      );
+    children: [
+      SizedBox(
+        width: 14,
+        height: 14,
+        // T27-07：onSurface 随主题（dark #FAFAFA / light 近黑）。
+        child: ui.CircularProgressIndicator(
+          color: colors.onSurface,
+          strokeWidth: 2,
+        ),
+      ),
+      const SizedBox(width: Sp.x2),
+      Text(
+        _busyHint,
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
+      ),
+    ],
+  );
 
   /// 自动同步 / 备份设置（只在已连接时显示 —— 这些参数由云端那一路用）
   Widget _autoSection(ColorScheme colors, SyncSettings s) {
@@ -986,7 +977,7 @@ class _SyncPanelState extends State<SyncPanel> {
               ],
             ),
           ),
-          IconButton(
+          ui.IconButton(
             onPressed: _syncBusy ? null : () => _deleteBackup(e),
             icon: const Icon(AppIcons.delete_outline, size: 18),
             tooltip: '删除这一份',
@@ -1257,7 +1248,7 @@ class _WebdavDialogState extends State<_WebdavDialog> {
               const SizedBox(height: Sp.x3),
               const Text('地址', style: TextStyle(fontSize: FontSizes.sm)),
               const SizedBox(height: Sp.x1),
-              TextField(
+              ui.TextField(
                 controller: _url,
                 onChanged: (_) {
                   // 每次输入都要重建：预设胶囊的「选中」是按当前地址算的
@@ -1274,7 +1265,7 @@ class _WebdavDialogState extends State<_WebdavDialog> {
               const SizedBox(height: Sp.x3),
               const Text('用户名', style: TextStyle(fontSize: FontSizes.sm)),
               const SizedBox(height: Sp.x1),
-              TextField(
+              ui.TextField(
                 controller: _user,
                 decoration: InputDecoration(
                   hintText: p?.userHint ?? '',
@@ -1284,7 +1275,7 @@ class _WebdavDialogState extends State<_WebdavDialog> {
               const SizedBox(height: Sp.x3),
               const Text('密码', style: TextStyle(fontSize: FontSizes.sm)),
               const SizedBox(height: Sp.x1),
-              TextField(
+              ui.TextField(
                 controller: _pass,
                 obscureText: true,
                 decoration: InputDecoration(
@@ -1295,7 +1286,7 @@ class _WebdavDialogState extends State<_WebdavDialog> {
               const SizedBox(height: Sp.x3),
               const Text('远程目录', style: TextStyle(fontSize: FontSizes.sm)),
               const SizedBox(height: Sp.x1),
-              TextField(
+              ui.TextField(
                 controller: _dir,
                 /*
                  * ★ 用户一动手，这个框就归用户了
@@ -1351,25 +1342,25 @@ class _WebdavDialogState extends State<_WebdavDialog> {
         // 与 settings_page._confirm 同一口径（本仓无自建填充按钮）。
         confirmIsDestructive: false,
         onConfirm: () {
-            final url = _url.text.trim();
-            if (url.isEmpty || _user.text.trim().isEmpty) return;
-            /*
+          final url = _url.text.trim();
+          if (url.isEmpty || _user.text.trim().isEmpty) return;
+          /*
              * ★ 占位符没替换就拦下来
              *
              * 预设里带 `<主机>` / `<用户名>` / `<UserID>` 的那几个是模板 ——
              * 直接保存必然连接失败（后端会报「无法连接（检查地址与网络）」），
              * 用户只会以为是自己密码错了。这里当场说清楚。
              */
-            if (url.contains('<') || url.contains('>')) {
-              setState(() => _hint = '地址里还有 <…> 占位符，请先替换成你自己的信息。');
-              return;
-            }
-            Navigator.pop(context, (
-              url: url,
-              user: _user.text.trim(),
-              pass: _pass.text,
-              dir: _dir.text.trim(),
-            ));
+          if (url.contains('<') || url.contains('>')) {
+            setState(() => _hint = '地址里还有 <…> 占位符，请先替换成你自己的信息。');
+            return;
+          }
+          Navigator.pop(context, (
+            url: url,
+            user: _user.text.trim(),
+            pass: _pass.text,
+            dir: _dir.text.trim(),
+          ));
         },
       ),
     );
@@ -1480,9 +1471,9 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
             Text(
               widget.hasExisting
                   ? '改口令只会影响「以后」的同步与导出；'
-                      '云端已有的那份、以及之前导出的备份包仍需要「旧口令」才能解开。'
+                        '云端已有的那份、以及之前导出的备份包仍需要「旧口令」才能解开。'
                   : '这个口令用来加密登录态（各内容源已保存的登录态）。'
-                      '它只存在系统钥匙串里，不会上传、也不会写进备份包。',
+                        '它只存在系统钥匙串里，不会上传、也不会写进备份包。',
               textAlign: TextAlign.left,
               style: TextStyle(
                 fontSize: FontSizes.cap,
@@ -1491,7 +1482,7 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
               ),
             ),
             const SizedBox(height: Sp.x3),
-            TextField(
+            ui.TextField(
               controller: _ctl,
               autofocus: true,
               obscureText: true,
@@ -1499,7 +1490,7 @@ class _PassphraseDialogState extends State<_PassphraseDialog> {
               onSubmitted: (_) => _submit(),
             ),
             const SizedBox(height: Sp.x2),
-            TextField(
+            ui.TextField(
               controller: _ctl2,
               obscureText: true,
               decoration: const InputDecoration(labelText: '再输一次'),

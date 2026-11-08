@@ -107,11 +107,12 @@ Future<void> _openSources(
   )));
   await t.pumpAndSettle();
   await t.tap(find.descendant(
-    of: find.byType(SegmentedButton<DanmakuPanelTab>),
-    // 第12项将来源选择移入高级；继续驱动真实开关验证合并结果。
-    matching: find.text('高级'),
+    of: find.byKey(const ValueKey('danmaku-settings-tabs')),
+    matching: find.text('弹幕来源'),
   ));
   await t.pumpAndSettle();
+  expect(find.byKey(const ValueKey('danmaku-feed-biliSource')), findsOneWidget,
+      reason: '真实页签点击必须打开来源列表，之后才验证勾选与合并');
 }
 
 /// 点某一路的勾选框（整行可点，按**文案**定位那一行）
@@ -123,7 +124,7 @@ Future<void> _toggleRow(WidgetTester t, String label) async {
 
 /// 从「当前生效」那一行读出读数（面板里唯一以「当前生效：」开头的文案）
 String _activeLine(WidgetTester t) {
-  // 高级页同时显示服务端地址状态；限定真实合并读数，避免同名文案冲突。
+  // 限定真实合并读数，避免其它状态提示里的同名文案干扰。
   final f = find.descendant(
     of: find.byKey(const ValueKey('danmaku-active-feed-summary')),
     matching: find.textContaining('当前生效：'),

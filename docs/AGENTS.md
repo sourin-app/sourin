@@ -125,8 +125,7 @@ flutter analyze lib            # 0 error；不要新增 warning
 ```
 
 间距一律 Sp.x*、圆角一律 Radii.*、字号一律 FontSizes.*，禁硬编码。
-新增控件优先用 material_ui 框架控件，SwitchListTile / ChoiceChip / FilterChip 等，
-非必要不手写。
+新增可见控件使用 flutter_miuix 实际组件或 `miuix_controls.dart` 兼容层；底层必须真实渲染 Miuix 控件。用户 2026-11-08 要求覆盖此前的 Material / 玻璃组件选型。
 
 背景：改前 7 个弹窗宽度有 460 / 560 / 620 / 820 四种、高度有 620 / 640 / 740 三种，
 全凭各写各的；showAppDialog 只统一动效、不管样式，所以样式必须靠外壳组件收拢。
@@ -136,7 +135,7 @@ flutter analyze lib            # 0 error；不要新增 warning
 
 | 约束 | 判据 / 门禁 |
 |---|---|
-| Material 一律 `import 'package:material_ui/material_ui.dart';` | `lib/` 里**不许出现** `package:flutter/material.dart` 这个字面量（注释里写也算，必须用反引号包住） |
+| Material 基础类型统一 `material_ui` | 唯一 SDK Material 导入边界为 `lib/ui/theme/miuix_framework_bridge.dart`，只桥接 Miuix 内部输入/弹层所需 Theme、Localizations 和透明宿主；业务可见控件必须用 Miuix。其他文件不许导入 `package:flutter/material.dart`。 |
 | 不再新增 forui 用法（FTheme / FScaffold / FButton…） | 取色走 `Theme.of(context).colorScheme` 或 `lib/ui/tokens.dart` |
 | 间距 / 圆角 / 字号 / 动效走 token | 不许硬编码 `Duration`；弹窗统一走 `showAppDialog`，不用裸 `showDialog` |
 | 用户可见文案不许出现开发过程用语 | 「修复」「缺陷」「task-xx」「Owner」「探针」「踩坑」「已知问题」等 |

@@ -1375,9 +1375,9 @@ void main() {
               '（起点矩形 = 整屏，任何方向都没有合法邻居）。'
               '第 ① 步已经证明"没有 prime 时就是容器"，'
               '这一条就是那个差值的另一半');
-      expect(after!.children.isEmpty, isTrue,
-          reason: '★ 必须是**叶子**（`_isLeafFocusTarget` 的判据），'
-              '否则它不会被 `_collect()` 当成候选，导航照样走不通');
+      expect(after!.descendants.any((node) => node.canRequestFocus), isFalse,
+          reason: '★ 控件下面不能还有独立可聚焦目标；'
+              '被 ExcludeFocus 排除的包内节点不改变控件的可导航身份');
       expect(after, same(a),
           reason: '★ 必须是几何上"最靠上最靠左"的那个控件（冷A）。'
               '身份断言 —— 不是"某个矩形差不多的东西"');
@@ -1524,24 +1524,35 @@ void main() {
        *
        * # ⚠️ 为什么断言"最靠上"而不是只断言"是叶子"（实测踩到）
        *
-       * 真实 `ShellPage` 的底栏 `_BottomItem` 带 `autofocus: on`
-       * （`shell.dart:3815`）—— 它**自己**就会把焦点放到当前 tab 上。
-       * 所以"焦点是叶子"这个弱断言**在撤掉 `primeFocusSoon()` 之后
-       * 依然成立**，属于**不可证伪**的空断言（我第一次就是这么写的，
-       * 用 redness proof 才抓到）。
-       *
-       * 而 `primeFocus()` 的落点规则是"几何上最靠上再最靠左"
-       * （原版 `focusFirst` 语义）—— 在错误页布局下，最靠上的是
-       * 内容区那个"重新尝试启动"按钮（y≈436），
-       * 而底栏 tab 在 y≈450。**两者相差 14px，可判读**。
-       * 所以"落点 = 候选里最靠上的那个"才能把
-       * `primeFocusSoon()` 的贡献单独指认出来。
+        * 当前 960px 布局使用 Miuix 侧栏，最上方是首页导航按钮；
+        * 它的应用 Focus 下还有被 ExcludeFocus 排除的包内节点。
+        * 因此“没有物理子节点”不能作为控件判据。
+        *
+        * 保留最上最左候选的几何契约，并确认焦点属于真实首页按钮、
+        * 内部节点不可独立聚焦，以及一次 Down 只到相邻直播按钮。
+        * 首页也有 autofocus，所以本例不再单独证明 prime 的贡献；
+        * ④-A / ④-B 继续用无 autofocus 的控件区分 prime 前后行为。
        */
       expect(focus, isNotNull, reason: '★ 冷启动后不能没有焦点');
       expect(focus, isNot(isA<FocusScopeNode>()),
           reason: '★ 不能停在容器上 —— 那等于"遥控器失灵"');
-      expect(focus!.children.isEmpty, isTrue,
-          reason: '★ 必须是叶子（可导航的起点）');
+      expect(focus!.canRequestFocus, isTrue);
+      expect(focus.children, isNotEmpty,
+          reason: '★ 必须覆盖真实 Miuix 适配器的被排除内部节点');
+      expect(focus.descendants.any((node) => node.canRequestFocus), isFalse,
+          reason: '★ 应用控件下面没有独立可聚焦目标，仍是可导航的叶子');
+
+      final home = find.byKey(const ValueKey('shell-nav-home'));
+      final live = find.byKey(const ValueKey('shell-nav-live'));
+      expect(home, findsOneWidget);
+      expect(live, findsOneWidget);
+      expect(
+          find.ancestor(
+              of: find.byElementPredicate(
+                  (element) => identical(element, focus.context)),
+              matching: home),
+          findsOneWidget,
+          reason: '★ 焦点必须属于真实首页导航控件，不能只碰巧有相同矩形');
 
       final candidates = List<Rect>.from(spatialNavCandidates);
       expect(candidates, isNotEmpty,
@@ -1557,9 +1568,28 @@ void main() {
 
       expect(focusRect, topMost,
           reason: '★ `primeFocusSoon()` 的落点是"最靠上最靠左"的候选。'
-              '若这里落在底栏 tab 上，说明 shell 开机那次 prime 没生效，'
-              '焦点是被底栏的 `autofocus` 拿走的 —— '
-              '那正是自锁修复缺失时的表现');
+              '真实侧栏控件必须出现在候选池中');
+      expect(focusRect, t.getRect(home));
+      expect(focusRect!.width, greaterThan(0));
+      expect(focusRect.height, greaterThan(0));
+      expect(primeFocus(), isFalse,
+          reason: '★ 已有真实控件焦点时不能重新播种或抢走焦点');
+      expect(FocusManager.instance.primaryFocus, same(focus));
+
+      await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await t.pump();
+      final next = FocusManager.instance.primaryFocus;
+      expect(next, isNotNull);
+      expect(next, isNot(same(focus)));
+      expect(
+          find.ancestor(
+              of: find.byElementPredicate(
+                  (element) => identical(element, next!.context)),
+              matching: live),
+          findsOneWidget,
+          reason: '★ 一次 Down 必须只到紧邻的直播按钮，不能跳过或二次步进');
+      expect(_rectOf(next!), t.getRect(live));
+      expect(t.takeException(), isNull);
     });
   });
 }

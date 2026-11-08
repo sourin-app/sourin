@@ -44,11 +44,14 @@
 //     而不是永久剔除 —— 用户可能就想听广播
 // ```
 
+import 'miuix_controls.dart' as ui;
+
 import 'dart:async';
 
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:flutter/foundation.dart' show ValueListenable, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 
@@ -213,7 +216,8 @@ abstract class LivePlaybackTarget {
 /// 其余 ⇒ null（调用方必须 return false，把键放行给别处）
 /// ```
 LivePlaybackAction? livePlaybackActionForKey(LogicalKeyboardKey key) {
-  if (key == LogicalKeyboardKey.space) return LivePlaybackAction.togglePlayPause;
+  if (key == LogicalKeyboardKey.space)
+    return LivePlaybackAction.togglePlayPause;
   if (key == LogicalKeyboardKey.keyM) return LivePlaybackAction.toggleMute;
   return null;
 }
@@ -232,7 +236,6 @@ Future<bool> dispatchLivePlaybackAction(
   }
   return true;
 }
-
 
 /// ★★★ 第 66 轮 R6：一个可切换的清晰度档（值 + 用户可见标签）
 ///
@@ -536,13 +539,13 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
 
   /// 控件层的"可见 + 可点"包装（见 [_controlsVisible] 的长注释）
   Widget _controlsChrome(Widget child) => IgnorePointer(
-        ignoring: !_controlsVisible,
-        child: AnimatedOpacity(
-          opacity: _controlsVisible ? 1 : 0,
-          duration: const Duration(milliseconds: 160),
-          child: child,
-        ),
-      );
+    ignoring: !_controlsVisible,
+    child: AnimatedOpacity(
+      opacity: _controlsVisible ? 1 : 0,
+      duration: const Duration(milliseconds: 160),
+      child: child,
+    ),
+  );
 
   /// 控件当前是否可见（门禁断言隐藏/唤起真的发生）
   @visibleForTesting
@@ -870,8 +873,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
        *   而我会以为"有行为证据"。已实测：121 个极产物里 `app| ` 行 451 条，
        *   含 `[LIVE]` 的 301 条，含 `LIVE-EMBED` 的 **0** 条。
        */
-      debugPrint('[LIVE] 延迟建播放器 实际等待='
-          '${DateTime.now().difference(t0).inMilliseconds}ms');
+      debugPrint(
+        '[LIVE] 延迟建播放器 实际等待='
+        '${DateTime.now().difference(t0).inMilliseconds}ms',
+      );
       unawaited(_create());
     });
     // ★ task-74 ⑤ 回归修复：订阅可见性（`dispose()` 必须移除）。
@@ -891,9 +896,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
      * ⚠️ 直播**不开** libass：直播没有字幕轨，开了只是白占内存。
      */
     final p = Player(
-      configuration: const PlayerConfiguration(
-        bufferSize: 16 * 1024 * 1024,
-      ),
+      configuration: const PlayerConfiguration(bufferSize: 16 * 1024 * 1024),
     );
     final c = VideoController(p);
     _player = p;
@@ -1184,8 +1187,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       }
       // ★ 计时：首次起播的 open+play 耗时。
       //   留着是因为它是**下一次定位起播慢的唯一数据源**（Owner 报过 8 秒）。
-      debugPrint('[LIVE] 首次 open+play = '
-          '${DateTime.now().difference(tOpen0).inMilliseconds}ms');
+      debugPrint(
+        '[LIVE] 首次 open+play = '
+        '${DateTime.now().difference(tOpen0).inMilliseconds}ms',
+      );
       /*
        * ★★ task-91：起播成功 ⇒ 起**画面输出层看门狗**。
        *
@@ -1306,8 +1311,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
        *   `open()`+`play()` 只是**下发 loadfile**（不等流打开）⇒ 这行数值很小是正常的。
        *   真正的加载在 mpv 侧异步进行（见 _applyLiveFastStart 的测量）。
        */
-      debugPrint('[LIVE] 换台 open+play = '
-          '${DateTime.now().difference(tSwitch).inMilliseconds}ms');
+      debugPrint(
+        '[LIVE] 换台 open+play = '
+        '${DateTime.now().difference(tSwitch).inMilliseconds}ms',
+      );
       /*
        * ★★ task-91：起播成功 ⇒ 起**画面输出层看门狗**。
        *
@@ -1490,10 +1497,12 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
        * ⚠️ 与"快路径判就绪"一样，上面的代次号复查已经覆盖本轮。
        */
       if (_noVideoTrackAuthoritative) {
-        debugPrint('[LIVE] 本条流没有视频轨（权威：轨道列表里只有哨兵、'
-            '且有真音频轨，等了 '
-            '${DateTime.now().difference(t0).inMilliseconds}ms）'
-            ' —— 纯音频播放，画面本来就没有');
+        debugPrint(
+          '[LIVE] 本条流没有视频轨（权威：轨道列表里只有哨兵、'
+          '且有真音频轨，等了 '
+          '${DateTime.now().difference(t0).inMilliseconds}ms）'
+          ' —— 纯音频播放，画面本来就没有',
+        );
         if (mounted) setState(() => _noVideoTrackSettled = true);
         return;
       }
@@ -1503,9 +1512,11 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
         final ok = await voConfigured();
         if (token != _videoOutputToken || !mounted || _disposed) return;
         if (ok) {
-          debugPrint('[LIVE] 画面输出层就绪'
-              '（vo-configured=yes，等了 ${DateTime.now().difference(t0).inMilliseconds}ms，'
-              '事件驱动=${_lastVoConfigured != null}）');
+          debugPrint(
+            '[LIVE] 画面输出层就绪'
+            '（vo-configured=yes，等了 ${DateTime.now().difference(t0).inMilliseconds}ms，'
+            '事件驱动=${_lastVoConfigured != null}）',
+          );
           return;
         }
       }
@@ -1567,15 +1578,19 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
          *   「预算用尽 + 证据不足」时到达，属极端兜底；真·纯音频台
          *   在轨道列表到达时就走快路径收口了（见上面的 `_noVideoTrackAuthoritative`）。
          */
-        debugPrint('[LIVE] 预算用尽仍未见画面，但**没有**“本条流没有视频轨”'
-            '的权威证据（tracks.video=$tv，真音频轨=$_realAudioTrackSeen）'
-            ' ⇒ 保持加载提示、不判故障（等了 '
-            '${DateTime.now().difference(t0).inMilliseconds}ms）');
+        debugPrint(
+          '[LIVE] 预算用尽仍未见画面，但**没有**“本条流没有视频轨”'
+          '的权威证据（tracks.video=$tv，真音频轨=$_realAudioTrackSeen）'
+          ' ⇒ 保持加载提示、不判故障（等了 '
+          '${DateTime.now().difference(t0).inMilliseconds}ms）',
+        );
         return;
       }
-      debugPrint('[LIVE] 本条流没有视频轨（权威：轨道列表里只有哨兵、'
-          '且有真音频轨，等了 ${DateTime.now().difference(t0).inMilliseconds}ms）'
-          ' —— 纯音频播放，画面本来就没有');
+      debugPrint(
+        '[LIVE] 本条流没有视频轨（权威：轨道列表里只有哨兵、'
+        '且有真音频轨，等了 ${DateTime.now().difference(t0).inMilliseconds}ms）'
+        ' —— 纯音频播放，画面本来就没有',
+      );
       if (mounted) setState(() => _noVideoTrackSettled = true);
       return;
     }
@@ -1589,10 +1604,12 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
      *   （`[LIVE` 后面是 `-` 不是 `]`）⇒ 写成 `[LIVE-EMBED]` 这行
      *   **永远不会**出现在产物里（`initState` 里记着同一个坑）。
      */
-    debugPrint('[LIVE] ★ 画面输出层未能初始化'
-        '（有视频轨但 vo-configured≠yes，等了 '
-        '${DateTime.now().difference(t0).inMilliseconds}ms）'
-        ' —— 音频正常，画面不会有');
+    debugPrint(
+      '[LIVE] ★ 画面输出层未能初始化'
+      '（有视频轨但 vo-configured≠yes，等了 '
+      '${DateTime.now().difference(t0).inMilliseconds}ms）'
+      ' —— 音频正常，画面不会有',
+    );
     setState(() => _videoOutputDead = true);
   }
 
@@ -1692,7 +1709,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       // ① 握手/读取失败时别干等 5 秒（media_kit 默认 network-timeout=5）
       'network-timeout': '3',
       // ② 分片失败别重试 5 次（每次重试都要重新握手 1~2 秒）
-      'demuxer-lavf-o': 'seg_max_retry=2,strict=experimental,'
+      'demuxer-lavf-o':
+          'seg_max_retry=2,strict=experimental,'
           'allowed_extensions=ALL,protocol_whitelist=[file,http,https,tcp,tls,crypto]',
       // 与播放页一致（`player_page.dart:2784`），硬解起首帧更快
       'hwdec': 'auto-safe',
@@ -1891,8 +1909,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// 生产代码无调用点。
   /// ```
   @visibleForTesting
-  void debugSetVideoTrackSeen(bool v) =>
-      setState(() => _videoTrackSeen = v);
+  void debugSetVideoTrackSeen(bool v) => setState(() => _videoTrackSeen = v);
 
   /// ★★ 探针钩子（task-92b）：直接喂一份"轨道列表证据"。
   ///
@@ -1991,8 +2008,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       final cur = p.state.volume;
       if (cur > 0) _volumeBeforeHide = cur;
       await p.setVolume(0);
-      debugPrint('[LIVE] 不可见 ⇒ 压音量到 0（原 $_volumeBeforeHide，'
-          'playing=${p.state.playing}）');
+      debugPrint(
+        '[LIVE] 不可见 ⇒ 压音量到 0（原 $_volumeBeforeHide，'
+        'playing=${p.state.playing}）',
+      );
     }
     await p?.pause();
   }
@@ -2042,10 +2061,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   double get volume => _player?.state.volume ?? 100;
 
   LivePlaybackSnapshot get playbackSnapshot => LivePlaybackSnapshot(
-        playing: isPlaying,
-        muted: muted,
-        volume: desiredVolume,
-      );
+    playing: isPlaying,
+    muted: muted,
+    volume: desiredVolume,
+  );
 
   /// Restore user intent before playback; hidden players remain silent.
   Future<void> applyPlaybackSnapshot(
@@ -2057,7 +2076,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     _volumeBeforeHide = _visibleNow ? null : snapshot.volume;
     if (mounted) setState(() => _muted = snapshot.muted);
     await _player?.setVolume(
-        snapshot.muted || !_visibleNow ? 0 : snapshot.volume);
+      snapshot.muted || !_visibleNow ? 0 : snapshot.volume,
+    );
     if (!restorePlaying || _disposed) return;
     if (snapshot.playing && _visibleNow) {
       await resume();
@@ -2069,11 +2089,16 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// User-requested volume, independent of temporary visibility muting.
   double get desiredVolume {
     final preferred = double.tryParse(
-        UiPrefs.get('dsh.playprefs.lastVolume') ?? '');
-    return (_volumeBeforeMute ?? _volumeBeforeHide ??
-        _player?.state.volume ??
-        ((preferred != null && preferred >= 0 && preferred <= 1)
-            ? preferred * 100 : 100)).clamp(0, 100).toDouble();
+      UiPrefs.get('dsh.playprefs.lastVolume') ?? '',
+    );
+    return (_volumeBeforeMute ??
+            _volumeBeforeHide ??
+            _player?.state.volume ??
+            ((preferred != null && preferred >= 0 && preferred <= 1)
+                ? preferred * 100
+                : 100))
+        .clamp(0, 100)
+        .toDouble();
   }
 
   Future<void> setVolume(double v) async {
@@ -2122,8 +2147,11 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   Future<void> toggleMute() async {
     if (_disposed) return;
     final p = _player;
-    AppLog.write('LIVE', '静音按钮被点击：_muted=$_muted '
-        'volume=${p?.state.volume}');
+    AppLog.write(
+      'LIVE',
+      '静音按钮被点击：_muted=$_muted '
+          'volume=${p?.state.volume}',
+    );
     if (_muted) {
       /*
        * 取消静音：三级瀑布求恢复目标（**绝不下发 0**）
@@ -2141,7 +2169,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       var restore = _volumeBeforeMute ?? 0;
       if (restore <= 0) {
         final v = double.tryParse(
-            UiPrefs.get('dsh.playprefs.lastVolume') ?? '');
+          UiPrefs.get('dsh.playprefs.lastVolume') ?? '',
+        );
         restore = (v != null && v >= 0 && v <= 1) ? v * 100 : 100;
       }
       if (restore <= 0) restore = 100;
@@ -2344,8 +2373,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
      */
     final isTouch = widget.isTouchOnly;
     // ★ 与播放页同源：触摸端 != 全屏；PC/TV = 全屏
-    final doubleTapToFullscreen =
-        !isTouch && widget.onToggleFullscreen != null;
+    final doubleTapToFullscreen = !isTouch && widget.onToggleFullscreen != null;
 
     return MouseRegion(
       /*
@@ -2357,22 +2385,22 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
        */
       onHover: (_) => revealControls(),
       child: ClipRRect(
-      borderRadius: Radii.rLg,
-      child: GestureDetector(
-        // ★ 只在"全屏可用且非触摸端"时挂 —— 否则为 null（见上面互斥说明）
-        onDoubleTap: doubleTapToFullscreen
-            ? () {
-                debugPrint('[LIVE] 双击 ⇒ 进入全屏');
-                widget.onToggleFullscreen!();
-              }
-            : null,
-        child: ColoredBox(
-        key: liveVideoGroundKey,
-        color: Colors.black,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            /*
+        borderRadius: Radii.rLg,
+        child: GestureDetector(
+          // ★ 只在"全屏可用且非触摸端"时挂 —— 否则为 null（见上面互斥说明）
+          onDoubleTap: doubleTapToFullscreen
+              ? () {
+                  debugPrint('[LIVE] 双击 ⇒ 进入全屏');
+                  widget.onToggleFullscreen!();
+                }
+              : null,
+          child: ColoredBox(
+            key: liveVideoGroundKey,
+            color: Colors.black,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                /*
              * ══════════════════════════════════════════════════════════
              *  第 17 项验收：视频槽位（**无论有没有解码器都存在**）
              * ══════════════════════════════════════════════════════════
@@ -2393,56 +2421,58 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
              *   它**不绘制、不命中**（`RenderConstrainedBox` 无 child ⇒
              *   `hitTestSelf` 为 false）⇒ 不会吃掉播放器的双击。
              */
-            Positioned.fill(
-              key: liveVideoSlotKey,
-              child: debugVideoSlotOverride ??
-                  (c == null
-                  ? const SizedBox.expand()
-                  : Video(
-                      controller: c,
-                      /*
+                Positioned.fill(
+                  key: liveVideoSlotKey,
+                  child:
+                      debugVideoSlotOverride ??
+                      (c == null
+                          ? const SizedBox.expand()
+                          : Video(
+                              controller: c,
+                              /*
                        * ⚠️ 不拉伸：直播分辨率杂，拉伸会让画面变形
                        *    （与 PlayerPage 的取舍一致）。
                        * ★ 第 17 项要求"fit 策略"可核 ⇒ 抽成**单点常量**
                        *   [liveEmbeddedVideoFit]，测试直接断言它的值，
                        *   而不是去信一条注释（注释不会因为改代码而变红）。
                        */
-                      fit: liveEmbeddedVideoFit,
-                      controls: NoVideoControls,
-                    )),
-            ),
+                              fit: liveEmbeddedVideoFit,
+                              controls: NoVideoControls,
+                            )),
+                ),
 
-            // ── 加载 / 缓冲 ──
-            /*
+                // ── 加载 / 缓冲 ──
+                /*
              * ★ task-74 ⑤ 方向 B：`c == null` 也必须画占位。
              *
              * 延迟期间 `_controller` 还是 null ⇒ 上面的 `Video` 不画；
              * 若这里也不画，Stack 里就只剩黑色 `ColoredBox`
              * ⇒ 用户看到**纯黑框**（视觉回归，看起来像播放器挂了）。
              */
-            /*
+                /*
              * ★ task-91：输出层已死时**不画转圈** —— 转圈暗示“在加载、马上就有”，
              *   而这种情况下永远不会有画面。下面那条提示才是真相。
              */
-            if (!_videoOutputDead &&
-                (c == null ||
-                    widget.stream == null ||
-                    (_buffering && !_ready) ||
-                    // ★★ task-92：START_FILE 之后、首帧之前的那一整段
-                    //   （实测 6.5~13.4s）原来**没有任何提示** —— 纯黑。
-                    //   详见 [_awaitingFirstVideoFrame] 与字段 [_videoTrackSeen]。
-                    _awaitingFirstVideoFrame))
-              const _EmbedLoading(),
+                if (!_videoOutputDead &&
+                    (c == null ||
+                        widget.stream == null ||
+                        (_buffering && !_ready) ||
+                        // ★★ task-92：START_FILE 之后、首帧之前的那一整段
+                        //   （实测 6.5~13.4s）原来**没有任何提示** —— 纯黑。
+                        //   详见 [_awaitingFirstVideoFrame] 与字段 [_videoTrackSeen]。
+                        _awaitingFirstVideoFrame))
+                  const _EmbedLoading(),
 
-            // ── 错误 ──
-            if (_error != null) _EmbedError(message: _error!, onRetry: retry),
+                // ── 错误 ──
+                if (_error != null)
+                  _EmbedError(message: _error!, onRetry: retry),
 
-            // ── 仅音频提示（srcl）──
-            //   ★ task-91：与“输出层已死”互斥 —— 两者都是居中卡片，同时出现会叠字。
-            if (widget.audioOnly && _error == null && !_videoOutputDead)
-              const _AudioOnlyBadge(),
+                // ── 仅音频提示（srcl）──
+                //   ★ task-91：与“输出层已死”互斥 —— 两者都是居中卡片，同时出现会叠字。
+                if (widget.audioOnly && _error == null && !_videoOutputDead)
+                  const _AudioOnlyBadge(),
 
-            /*
+                /*
              * ── ★★ task-91：画面输出层没能初始化 ──
              *
              * 由 `_watchVideoOutput()` 立旗（判据：有视频轨 &&
@@ -2454,62 +2484,66 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
              * ★ 为什么用**居中卡片**而不是 `player_page` 那种 `bottom: 0` 横幅：
              *   内嵌区域小，底部 `_EmbedBar`（播放/静音）**不能被挤没**。
              */
-            if (_videoOutputDead && _error == null)
-              const _EmbedVideoOutputDead(),
+                if (_videoOutputDead && _error == null)
+                  const _EmbedVideoOutputDead(),
 
-            // ── 右上角：标题 + 全屏 ──
-            Positioned(
-              top: Sp.x3,
-              right: Sp.x3,
-              child: Row(
-                children: [
-                  if (widget.onToggleFullscreen != null)
-                    _controlsChrome(_RoundBtn(
-                      icon: AppIcons.fullscreen,
-                      tooltip: '全屏播放',
-                      onTap: widget.onToggleFullscreen!,
-                    )),
-                ],
-              ),
-            ),
-            Positioned(
-              left: Sp.x3,
-              top: Sp.x3,
-              right: 56,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: FontSizes.base,
-                      fontWeight: FontWeight.w600,
-                      shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
-                    ),
+                // ── 右上角：标题 + 全屏 ──
+                Positioned(
+                  top: Sp.x3,
+                  right: Sp.x3,
+                  child: Row(
+                    children: [
+                      if (widget.onToggleFullscreen != null)
+                        _controlsChrome(
+                          _RoundBtn(
+                            icon: AppIcons.fullscreen,
+                            tooltip: '全屏播放',
+                            onTap: widget.onToggleFullscreen!,
+                          ),
+                        ),
+                    ],
                   ),
-                  if (widget.subtitle != null)
-                    Text(
-                      widget.subtitle!,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.72),
-                        fontSize: FontSizes.cap,
-                        shadows: const [
-                          Shadow(blurRadius: 6, color: Colors.black54),
-                        ],
+                ),
+                Positioned(
+                  left: Sp.x3,
+                  top: Sp.x3,
+                  right: 56,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: FontSizes.base,
+                          fontWeight: FontWeight.w600,
+                          shadows: [
+                            Shadow(blurRadius: 6, color: Colors.black54),
+                          ],
+                        ),
                       ),
-                    ),
-                ],
-              ),
-            ),
+                      if (widget.subtitle != null)
+                        Text(
+                          widget.subtitle!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.72),
+                            fontSize: FontSizes.cap,
+                            shadows: const [
+                              Shadow(blurRadius: 6, color: Colors.black54),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
 
-            // ── 底部：播放/暂停 + 静音（直播必需的最小控制）──
-            Positioned(
-              /*
+                // ── 底部：播放/暂停 + 静音（直播必需的最小控制）──
+                Positioned(
+                  /*
                * ★★★ 第 17 项验收：控制条的 key
                *
                * # 为什么必须能单独量它
@@ -2523,26 +2557,28 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
                * ⇒ 有了 key，测试可以对槽位与控制条分别取 `getRect` 做包含判断。
                * ```
                */
-              key: liveEmbedBarKey,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: _controlsChrome(_EmbedBar(
-                playing: _ready,
-                muted: muted,
-                volume: muted ? 0 : desiredVolume,
-                onVolumeChanged: (value) => unawaited(setVolume(value)),
-                onTogglePlay: toggleUserPlaybackForProbe,
-                onMute: toggleMute,
-                accent: colors.primary,
-                // ★ R6：清晰度下拉（≥2 可选档才画，判据在上面一次算清）
-                qualityOptions: selectableQuality,
-                currentQuality: currentQuality,
-                onQualityChanged: widget.onQualityChanged,
-              )),
-            ),
+                  key: liveEmbedBarKey,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _controlsChrome(
+                    _EmbedBar(
+                      playing: _ready,
+                      muted: muted,
+                      volume: muted ? 0 : desiredVolume,
+                      onVolumeChanged: (value) => unawaited(setVolume(value)),
+                      onTogglePlay: toggleUserPlaybackForProbe,
+                      onMute: toggleMute,
+                      accent: colors.primary,
+                      // ★ R6：清晰度下拉（≥2 可选档才画，判据在上面一次算清）
+                      qualityOptions: selectableQuality,
+                      currentQuality: currentQuality,
+                      onQualityChanged: widget.onQualityChanged,
+                    ),
+                  ),
+                ),
 
-            /*
+                /*
              * ── ★★★ R6：直播弹幕「不可用」的说明句（裁决① 的另一半）──
              *
              * # 为什么要有这一行
@@ -2564,23 +2600,23 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
              *   （「修复」「缺陷」「task-xx」「探针」「Owner」…），
              *   也不许出现任何具体站点名（见 `t98_no_site_names_test.dart`）。
              */
-            /*
+                /*
              * ★ 显示条件用 `widget.stream != null`（**本台已选中**），
              *   不是 `c != null`（解码器已就绪）：
              *   后者要真的初始化解码器才有值（真 IO），而「这一台没有弹幕」
              *   是**取流那一刻**就知道的事实，不该等解码器起来才说。
              */
-            if (widget.showDanmakuNote && widget.stream != null)
-              const Positioned(
-                left: Sp.x3,
-                right: Sp.x3,
-                bottom: Sp.x8,
-                child: _DanmakuUnavailableNote(),
-              ),
-          ],
+                if (widget.showDanmakuNote && widget.stream != null)
+                  const Positioned(
+                    left: Sp.x3,
+                    right: Sp.x3,
+                    bottom: Sp.x8,
+                    child: _DanmakuUnavailableNote(),
+                  ),
+              ],
+            ),
+          ),
         ),
-        ),
-      ),
       ),
     );
   }
@@ -2621,24 +2657,27 @@ class _EmbedError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(Sp.x5),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(AppIcons.error_outline, color: Colors.white70, size: 32),
-              const SizedBox(height: Sp.x3),
-              Text(
-                message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white70, fontSize: FontSizes.cap),
-              ),
-              const SizedBox(height: Sp.x3),
-              TextButton(onPressed: onRetry, child: const Text('重试')),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.all(Sp.x5),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(AppIcons.error_outline, color: Colors.white70, size: 32),
+          const SizedBox(height: Sp.x3),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: FontSizes.cap,
+            ),
           ),
-        ),
-      );
+          const SizedBox(height: Sp.x3),
+          ui.TextButton(onPressed: onRetry, child: const Text('重试')),
+        ],
+      ),
+    ),
+  );
 }
 
 /// 「仅音频」角标 —— srcl 的实际情况（视频线全 DRM，只剩音频）
@@ -2650,38 +2689,35 @@ class _AudioOnlyBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: Sp.x4,
-            vertical: Sp.x3,
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: Radii.rMd,
+      ),
+      child: const Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(AppIcons.volume_up_outlined, color: Colors.white70, size: 30),
+          SizedBox(height: Sp.x2),
+          Text(
+            '仅音频',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: FontSizes.base,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.55),
-            borderRadius: Radii.rMd,
+          SizedBox(height: 2),
+          Text(
+            '视频线路受内容方保护，客户端无法播放',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70, fontSize: FontSizes.cap),
           ),
-          child: const Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(AppIcons.volume_up_outlined, color: Colors.white70, size: 30),
-              SizedBox(height: Sp.x2),
-              Text(
-                '仅音频',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: FontSizes.base,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              SizedBox(height: 2),
-              Text(
-                '视频线路受内容方保护，客户端无法播放',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white70, fontSize: FontSizes.cap),
-              ),
-            ],
-          ),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 }
 
 /// ★★ task-91：「画面无法显示」提示（内嵌版）
@@ -2701,49 +2737,43 @@ class _EmbedVideoOutputDead extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: Sp.x4),
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Sp.x4,
-              vertical: Sp.x3,
-            ),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.72),
-              borderRadius: Radii.rMd,
-            ),
-            child: const Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  AppIcons.warning_amber_outlined,
-                  color: Colors.white70,
-                  size: 30,
-                ),
-                SizedBox(height: Sp.x2),
-                Text(
-                  '画面无法显示',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: FontSizes.base,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                SizedBox(height: 2),
-                Text(
-                  '本机图形输出层没能初始化，声音是正常的。'
-                  '可以换一条线路或换一个源再试。',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: FontSizes.cap,
-                  ),
-                ),
-              ],
-            ),
-          ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x4),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.72),
+          borderRadius: Radii.rMd,
         ),
-      );
+        child: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              AppIcons.warning_amber_outlined,
+              color: Colors.white70,
+              size: 30,
+            ),
+            SizedBox(height: Sp.x2),
+            Text(
+              '画面无法显示',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: FontSizes.base,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: 2),
+            Text(
+              '本机图形输出层没能初始化，声音是正常的。'
+              '可以换一条线路或换一个源再试。',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70, fontSize: FontSizes.cap),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 class _EmbedBar extends StatelessWidget {
@@ -2788,29 +2818,23 @@ class _EmbedBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x2,
+    padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: [Colors.black.withValues(alpha: 0.62), Colors.transparent],
+      ),
+    ),
+    child: Row(
+      children: [
+        _RoundBtn(
+          icon: playing ? AppIcons.pause : AppIcons.play_arrow,
+          tooltip: playing ? '暂停' : '播放',
+          onTap: () => unawaited(onTogglePlay()),
         ),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: [
-              Colors.black.withValues(alpha: 0.62),
-              Colors.transparent,
-            ],
-          ),
-        ),
-        child: Row(
-          children: [
-            _RoundBtn(
-              icon: playing ? AppIcons.pause : AppIcons.play_arrow,
-              tooltip: playing ? '暂停' : '播放',
-              onTap: () => unawaited(onTogglePlay()),
-            ),
-            const SizedBox(width: Sp.x2),
-            /*
+        const SizedBox(width: Sp.x2),
+        /*
              * ★★★ 2026-10-09 修复（Owner 缺陷 ①：「默认显示的是静音，**但实际还是有声音**」）
              *
              * # ★ 我第一次理解错了（如实记录，防止后人重踩）
@@ -2831,29 +2855,31 @@ class _EmbedBar extends StatelessWidget {
              *    再点一下 ⇒ 静音。★ 图标每次都跟着变（这是原来缺的）。
              * ```
              */
-            _RoundBtn(
-              icon: muted ? AppIcons.volume_off_outlined : AppIcons.volume_up_outlined,
-              tooltip: muted ? '取消静音' : '静音',
-              onTap: () => unawaited(onMute()),
-            ),
-            Flexible(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 120),
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: Slider(
-                    key: const ValueKey('live-volume-slider'),
-                    value: volume.clamp(0, 100).toDouble(),
-                    min: 0,
-                    max: 100,
-                    label: '${volume.round()}%',
-                    onChanged: onVolumeChanged,
-                  ),
-                ),
+        _RoundBtn(
+          icon: muted
+              ? AppIcons.volume_off_outlined
+              : AppIcons.volume_up_outlined,
+          tooltip: muted ? '取消静音' : '静音',
+          onTap: () => unawaited(onMute()),
+        ),
+        Flexible(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 120),
+            child: Material(
+              type: MaterialType.transparency,
+              child: ui.Slider(
+                key: const ValueKey('live-volume-slider'),
+                value: volume.clamp(0, 100).toDouble(),
+                min: 0,
+                max: 100,
+                label: '${volume.round()}%',
+                onChanged: onVolumeChanged,
               ),
             ),
+          ),
+        ),
 
-            /*
+        /*
              * ★★★ R6：清晰度按钮 —— **≥2 可选档才画**
              *
              * # 为什么放在这里（和播放/静音并排）
@@ -2866,17 +2892,17 @@ class _EmbedBar extends StatelessWidget {
              * ★ 关键：`qualityOptions` 传进来时**已经筛过**（见 build 顶部），
              *   所以这里只需要判 `length >= 2` ⇒ 不够就不画。
              */
-            if (qualityOptions.length >= 2) ...[
-              const SizedBox(width: Sp.x2),
-              _LiveQualityButton(
-                options: qualityOptions,
-                current: currentQuality,
-                onPick: (o) => onQualityChanged?.call(o),
-              ),
-            ],
-          ],
-        ),
-      );
+        if (qualityOptions.length >= 2) ...[
+          const SizedBox(width: Sp.x2),
+          _LiveQualityButton(
+            options: qualityOptions,
+            current: currentQuality,
+            onPick: (o) => onQualityChanged?.call(o),
+          ),
+        ],
+      ],
+    ),
+  );
 }
 
 /// ★★★ R6：直播「弹幕不可用」说明句（裁决① 的「不能静默」那一半）
@@ -2896,34 +2922,32 @@ class _DanmakuUnavailableNote extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => IgnorePointer(
-        // ★ 说明文字不该挡控件（点击穿透到播放/静音/清晰度）
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            Flexible(
-              child: Text(
-                '这个来源暂无弹幕',
-                textAlign: TextAlign.end,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.72),
-                  fontSize: FontSizes.cap,
-                  shadows: const [
-                    Shadow(blurRadius: 6, color: Colors.black54),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: Sp.x2),
-            Icon(
-              AppIcons.comments_disabled,
-              size: 14,
+    // ★ 说明文字不该挡控件（点击穿透到播放/静音/清晰度）
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        Flexible(
+          child: Text(
+            '这个来源暂无弹幕',
+            textAlign: TextAlign.end,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
               color: Colors.white.withValues(alpha: 0.72),
+              fontSize: FontSizes.cap,
+              shadows: const [Shadow(blurRadius: 6, color: Colors.black54)],
             ),
-          ],
+          ),
         ),
-      );
+        const SizedBox(width: Sp.x2),
+        Icon(
+          AppIcons.comments_disabled,
+          size: 14,
+          color: Colors.white.withValues(alpha: 0.72),
+        ),
+      ],
+    ),
+  );
 }
 
 /// ★★★ R6：清晰度下拉按钮（`MenuAnchor`，与 `live_page._BarDropdown` 同款）
@@ -2943,51 +2967,49 @@ class _LiveQualityButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MenuAnchor(
-        menuChildren: [
-          // ★★ 2026-10-19（Lead 修自审 P1-4）：key 里**加序号**。
-          //
-          // 改前只用 `o.value` ⇒ 上游一旦返回**两条相同 url** 的档位
-          // （`get_live_stream` 在 Rust 侧不去重，`_streams` 原样落），
-          // 就会抛 `Duplicate keys found`，**整个下拉打不开**。
-          //
-          // ⇒ 这里用 `indexed` 而不是循环变量，是为了让 key 与**列表位置**绑定
-          //   而不是与内容绑定；即使 url 重复也能区分。
-          for (final (i, o) in options.indexed)
-            MenuItemButton(
-              key: ValueKey('live-quality-opt-$i-${o.value}'),
-              onPressed: () => onPick(o),
-              style: MenuItemButton.styleFrom(
-                visualDensity: VisualDensity.compact,
+    menuChildren: [
+      // ★★ 2026-10-19（Lead 修自审 P1-4）：key 里**加序号**。
+      //
+      // 改前只用 `o.value` ⇒ 上游一旦返回**两条相同 url** 的档位
+      // （`get_live_stream` 在 Rust 侧不去重，`_streams` 原样落），
+      // 就会抛 `Duplicate keys found`，**整个下拉打不开**。
+      //
+      // ⇒ 这里用 `indexed` 而不是循环变量，是为了让 key 与**列表位置**绑定
+      //   而不是与内容绑定；即使 url 重复也能区分。
+      for (final (i, o) in options.indexed)
+        MenuItemButton(
+          key: ValueKey('live-quality-opt-$i-${o.value}'),
+          onPressed: () => onPick(o),
+          style: MenuItemButton.styleFrom(visualDensity: VisualDensity.compact),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 16,
+                child: o.value == current.value
+                    ? const Icon(AppIcons.check, size: 13)
+                    : null,
               ),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 16,
-                    child: o.value == current.value
-                        ? const Icon(AppIcons.check, size: 13)
-                        : null,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(o.label, style: const TextStyle(fontSize: FontSizes.cap)),
-                ],
-              ),
-            ),
-        ],
-        builder: (ctx, controller, _) => Tooltip(
-          message: '清晰度',
-          child: AppInkWell(
-            onTap: () => controller.isOpen ? controller.close() : controller.open(),
-            child: AppSurface(
-              color: Colors.black.withValues(alpha: 0.42),
-              borderRadius: BorderRadius.circular(999),
-              child: const Padding(
-                padding: EdgeInsets.all(6),
-                child: Icon(AppIcons.high_quality, color: Colors.white, size: 20),
-              ),
-            ),
+              const SizedBox(width: 4),
+              Text(o.label, style: const TextStyle(fontSize: FontSizes.cap)),
+            ],
           ),
         ),
-      );
+    ],
+    builder: (ctx, controller, _) => ui.Tooltip(
+      message: '清晰度',
+      child: AppInkWell(
+        onTap: () => controller.isOpen ? controller.close() : controller.open(),
+        child: AppSurface(
+          color: Colors.black.withValues(alpha: 0.42),
+          borderRadius: BorderRadius.circular(999),
+          child: const Padding(
+            padding: EdgeInsets.all(6),
+            child: Icon(AppIcons.high_quality, color: Colors.white, size: 20),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _RoundBtn extends StatelessWidget {
@@ -3002,20 +3024,20 @@ class _RoundBtn extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Tooltip(
-        message: tooltip,
-        // ★ 去 Material（真 B 类：black@42% 圆形底 + 水波）
-        //   ⚠️ 原来用 CircleBorder，AppSurface 只吃半径 ⇒ 用边长一半换算成圆。
-        child: AppSurface(
-          color: Colors.black.withValues(alpha: 0.42),
-          borderRadius: BorderRadius.circular(999),
-          child: AppInkWell(
-            onTap: onTap,
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: Icon(icon, color: Colors.white, size: 20),
-            ),
-          ),
+  Widget build(BuildContext context) => ui.Tooltip(
+    message: tooltip,
+    // ★ 去 Material（真 B 类：black@42% 圆形底 + 水波）
+    //   ⚠️ 原来用 CircleBorder，AppSurface 只吃半径 ⇒ 用边长一半换算成圆。
+    child: AppSurface(
+      color: Colors.black.withValues(alpha: 0.42),
+      borderRadius: BorderRadius.circular(999),
+      child: AppInkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, color: Colors.white, size: 20),
         ),
-      );
+      ),
+    ),
+  );
 }

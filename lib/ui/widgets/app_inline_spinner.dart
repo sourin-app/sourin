@@ -1,3 +1,4 @@
+import 'miuix_controls.dart' as ui;
 // ═══════════════════════════════════════════════════════════════════════
 //  行内小转圈 —— 按钮 icon 位 / SwitchListTile trailing / 行内状态
 // ═══════════════════════════════════════════════════════════════════════
@@ -45,8 +46,6 @@
 //   而 Owner 只批了「新增组件」这一个方案）。
 // ```
 
-import 'dart:math' as math;
-
 import 'package:flutter/widgets.dart';
 
 /// 描边占直径的比例 —— 见文件头的实测表
@@ -81,11 +80,7 @@ const double _kMaxStroke = 4.0;
 /// [color] 不传时取 `DefaultTextStyle` 的当前色 —— 与 Material 的
 /// `CircularProgressIndicator` 在按钮里的默认取色习惯一致（跟随前景色）。
 class AppInlineSpinner extends StatelessWidget {
-  const AppInlineSpinner({
-    this.size = 16,
-    this.color,
-    super.key,
-  });
+  const AppInlineSpinner({this.size = 16, this.color, super.key});
 
   /// 外圈直径（px）
   ///
@@ -113,104 +108,15 @@ class AppInlineSpinner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = color ?? DefaultTextStyle.of(context).style.color ?? const Color(0xFFE6E6E6);
+    final c =
+        color ??
+        DefaultTextStyle.of(context).style.color ??
+        const Color(0xFFE6E6E6);
     final s = _effectiveSize;
     return SizedBox(
       width: s,
       height: s,
-      child: _InlineSpinner(
-        color: c,
-        stroke: _stroke,
-      ),
+      child: ui.CircularProgressIndicator(color: c, strokeWidth: _stroke),
     );
   }
-}
-
-/// 自绘转圈 —— 与 `app_loading.dart` 的 `_SpinnerPainter` **同源画法**
-///
-/// ⚠️ 故意不共用那个私有类：共用要么得把它公开（动公共组件），
-///   要么得把 stroke 传进去（那 AppLoading 也得改）。
-///   Owner 只批了「新增组件」，所以这里独立实现，画法逐字照抄。
-class _InlineSpinner extends StatefulWidget {
-  const _InlineSpinner({required this.color, required this.stroke});
-
-  final Color color;
-  final double stroke;
-
-  @override
-  State<_InlineSpinner> createState() => _InlineSpinnerState();
-}
-
-class _InlineSpinnerState extends State<_InlineSpinner>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 900),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _c,
-      builder: (context, _) => CustomPaint(
-        painter: _InlineSpinnerPainter(
-          progress: _c.value,
-          color: widget.color,
-          stroke: widget.stroke,
-        ),
-      ),
-    );
-  }
-}
-
-class _InlineSpinnerPainter extends CustomPainter {
-  _InlineSpinnerPainter({
-    required this.progress,
-    required this.color,
-    required this.stroke,
-  });
-
-  final double progress;
-  final Color color;
-  final double stroke;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // 半径 = (直径 − 描边) / 2 ⇒ 描边**完整落在盒内**，不会被裁
-    final r = (math.min(size.width, size.height) - stroke) / 2;
-    if (r <= 0) return;
-    final center = Offset(size.width / 2, size.height / 2);
-    final rect = Rect.fromCircle(center: center, radius: r);
-
-    // ① 轨道：同色极低透明度 —— 让人看出"这是个圆"
-    final track = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round
-      ..isAntiAlias = true
-      ..color = color.withValues(alpha: 0.18);
-    canvas.drawCircle(center, r, track);
-
-    // ② 亮弧：绕圈跑（0.4 圈 = 144°，与 AppLoading 一致 —— 见那边的说明）
-    final arc = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.round
-      ..isAntiAlias = true
-      ..color = color;
-
-    const sweep = math.pi * 2 * 0.4;
-    final start = progress * math.pi * 2 - math.pi / 2;
-    canvas.drawArc(rect, start, sweep, false, arc);
-  }
-
-  @override
-  bool shouldRepaint(_InlineSpinnerPainter old) =>
-      old.progress != progress || old.color != color || old.stroke != stroke;
 }

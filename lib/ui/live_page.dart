@@ -49,21 +49,25 @@
 // > 频道列表本身会变：启用/停用源、源新增频道、源失效被剔除。
 // > 实测确认过问题：切走再切回，完全没有重新请求。
 
-import '../ui/app_scaffold.dart';
-
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show ValueListenable, visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 // ★ 2026-09-25：不再需要 `HardwareKeyboard`（改用
 //   `FocusManager.instance.addEarlyKeyEventHandler`）—— 见 `initState` 的长注释。
 //   `KeyEventResult` 由 `material_ui`（widgets）导出，不在这里 show。
 import 'package:flutter/services.dart'
     show KeyDownEvent, KeyEvent, LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
+
+import 'widgets/miuix_controls.dart' as ui;
+
 // ★★★ 第 66 轮 M 批次：玻璃组件（Owner：「彻底不用 Material 组件，全部自建/玻璃」）
 //   ⚠️ 实际版本 **1.11.0**（pubspec 写 ^1.7.2，锁到 1.11.0）——
-//      `GlassChip` 在 1.11.0 没有 `shape` 参数，`GlassIconButton` 用 `onPressed`。
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+// Miuix owns the filter surface and shared controls own menu/keyboard behavior.
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'widgets/app_menu.dart';
 
 import '../core/device.dart';
 // ★★★ 第 65 轮批次 D：冷启动磁盘快照（第二次打开秒开，见 `_hydrateFromCache`）
@@ -122,8 +126,10 @@ class LiveRoundtripReceipt {
   }
 
   /// Runs the original operation; exceptions remain visible to its caller.
-  Future<void> observe(Future<void> Function() operation,
-      {bool Function()? restored}) async {
+  Future<void> observe(
+    Future<void> Function() operation, {
+    bool Function()? restored,
+  }) async {
     try {
       await operation();
       if (_routeReturnedAt != null && (restored?.call() ?? true)) {
@@ -210,8 +216,7 @@ bool liveGroupContainsSource(
   Map<String, List<String>> allGroups,
   String group,
   String provider,
-) =>
-    (allGroups[group] ?? const <String>[]).contains(provider);
+) => (allGroups[group] ?? const <String>[]).contains(provider);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ★★★ 第 65 轮批次 D：分组成员 = **频道**（不再是源）
@@ -244,8 +249,7 @@ bool liveGroupContainsSource(
 List<LiveChannelRef>? liveChannelGroupMembers(
   Map<String, List<LiveChannelRef>> groups,
   String group,
-) =>
-    groups[group];
+) => groups[group];
 
 /// ★★★ 分组筛选的**唯一判据**：一个频道该不该出现在当前分组里
 ///
@@ -344,8 +348,7 @@ bool liveGroupAllowsChannel(
 bool liveChannelMatchesQuery(String query, String channelName, String tag) {
   final q = query.trim().toLowerCase();
   if (q.isEmpty) return true;
-  return channelName.toLowerCase().contains(q) ||
-      tag.toLowerCase().contains(q);
+  return channelName.toLowerCase().contains(q) || tag.toLowerCase().contains(q);
 }
 
 /// ★★★ 冷启动"还没准备好"与"真的没有源"必须分开（Owner 第 5 条前半）
@@ -440,11 +443,8 @@ class LivePage extends StatefulWidget {
   /// false = "他明确表达了要播放"
   /// 混为一谈会让"未知"意外变成"续播" —— 正是本次要修的 bug 的同类错误。
   /// ```
-  final Future<bool?> Function(
-    String provider,
-    String channelId,
-    String name,
-  )? onWatchLive;
+  final Future<bool?> Function(String provider, String channelId, String name)?
+  onWatchLive;
 
   /// Fullscreen handoff preserving playback and audio intent.
   final Future<LivePlaybackSnapshot?> Function(
@@ -452,7 +452,8 @@ class LivePage extends StatefulWidget {
     String channelId,
     String name,
     LivePlaybackSnapshot initialPlayback,
-  )? onWatchLivePlayback;
+  )?
+  onWatchLivePlayback;
 
   /// 回看某条节目 → 进播放器
   final void Function(
@@ -460,7 +461,8 @@ class LivePage extends StatefulWidget {
     String channelId,
     String title,
     String episodeTitle,
-  )? onWatchReplay;
+  )?
+  onWatchReplay;
 
   final bool isTv;
 
@@ -1228,8 +1230,10 @@ class LivePageState extends State<LivePage> {
      * ⚠️ 只在 KeyDownEvent 打（避免按下+抬起两行噪音）。
      */
     if (event is KeyDownEvent) {
-      debugPrint('[LIVE-KEY] ⓪ 入口：硬件 handler 收到 '
-          '${event.logicalKey.keyLabel}（可见=${_isVisibleForKeys()}）');
+      debugPrint(
+        '[LIVE-KEY] ⓪ 入口：硬件 handler 收到 '
+        '${event.logicalKey.keyLabel}（可见=${_isVisibleForKeys()}）',
+      );
     }
     if (event is! KeyDownEvent) return false;
     if (!mounted) return false;
@@ -1329,8 +1333,7 @@ class LivePageState extends State<LivePage> {
      *      只能靠**追一遍控制流**发现。
      */
     final k = event.logicalKey;
-    if (k == LogicalKeyboardKey.escape ||
-        k == LogicalKeyboardKey.goBack) {
+    if (k == LogicalKeyboardKey.escape || k == LogicalKeyboardKey.goBack) {
       if (_allChannelsOpen) {
         setState(() => _allChannelsOpen = false);
         return true;
@@ -1472,7 +1475,9 @@ class LivePageState extends State<LivePage> {
   String _focusOwner() {
     final f = FocusManager.instance.primaryFocus;
     if (f == null) return '无';
-    return f.debugLabel ?? f.context?.widget.runtimeType.toString() ?? '${f.hashCode}';
+    return f.debugLabel ??
+        f.context?.widget.runtimeType.toString() ??
+        '${f.hashCode}';
   }
 
   @override
@@ -1607,12 +1612,12 @@ class LivePageState extends State<LivePage> {
      */
     final t0 = DateTime.now();
     void mark(String what) => AppLog.write(
-          'LIVE',
-          '[TIMING] $what  '
-              '自 loadAll 起 ${DateTime.now().difference(t0).inMilliseconds} ms'
-              ' / 自本页挂载起 '
-              '${DateTime.now().difference(_mountedAt).inMilliseconds} ms',
-        );
+      'LIVE',
+      '[TIMING] $what  '
+          '自 loadAll 起 ${DateTime.now().difference(t0).inMilliseconds} ms'
+          ' / 自本页挂载起 '
+          '${DateTime.now().difference(_mountedAt).inMilliseconds} ms',
+    );
 
     /*
      * ★ 第 15 项缺口：恢复选中要用**选中身份**（provider:id）。
@@ -1626,10 +1631,13 @@ class LivePageState extends State<LivePage> {
     final prevId = keepSelection ? _selected?.id : null;
     try {
       // ★ 第 16 项验收：`debugLiveGroupsFetcher` 只在测试里非 null（生产恒走 FFI）
-      final groups = await (LivePageState.debugLiveGroupsFetcher?.call() ??
-          SourinApi.getLiveChannels());
-      mark('真数据就绪（${groups.length} 个源 / '
-          '${groups.fold<int>(0, (n, g) => n + g.channels.length)} 个频道）');
+      final groups =
+          await (LivePageState.debugLiveGroupsFetcher?.call() ??
+              SourinApi.getLiveChannels());
+      mark(
+        '真数据就绪（${groups.length} 个源 / '
+        '${groups.fold<int>(0, (n, g) => n + g.channels.length)} 个频道）',
+      );
       if (!mounted) return;
       setState(() {
         _groups = groups;
@@ -1745,7 +1753,8 @@ class LivePageState extends State<LivePage> {
   /// ```
   String _describeLoadError(Object e) {
     final s = e.toString();
-    final coreNotReady = s.contains('核心尚未启动') ||
+    final coreNotReady =
+        s.contains('核心尚未启动') ||
         s.contains('sourin_core') ||
         s.contains('Failed to load dynamic library');
     if (coreNotReady) {
@@ -1795,8 +1804,10 @@ class LivePageState extends State<LivePage> {
         _loading = false; // ★ 有内容 ⇒ 立刻退出骨架态
         if (groups.isNotEmpty) _activeProvider = groups.first.provider;
       });
-      debugPrint('[LIVE] 磁盘快照命中：${groups.length} 个源'
-          '（存于 ${entry.at}，${entry.ageFrom(DateTime.now()).inMinutes} 分钟前）');
+      debugPrint(
+        '[LIVE] 磁盘快照命中：${groups.length} 个源'
+        '（存于 ${entry.at}，${entry.ageFrom(DateTime.now()).inMinutes} 分钟前）',
+      );
       // ★ Lead 要的读数：快照路径下"页被挂载 → 首屏有内容"的毫秒数
       AppLog.write(
         'LIVE',
@@ -2034,7 +2045,7 @@ class LivePageState extends State<LivePage> {
       debugPrint('[LIVE] 可用性缓存命中 ${fresh.length} 条 ⇒ **跳过全量探测**');
       if (mounted) {
         setState(() {
-          _probed = true;        // 已经有结论，不再显示"正在检查"
+          _probed = true; // 已经有结论，不再显示"正在检查"
           _probeScheduled = false;
           _probeTotal = 0;
         });
@@ -2136,8 +2147,9 @@ class LivePageState extends State<LivePage> {
   }
 
   /// 当前选中身份（null = 没选中）—— 给列表做"哪一行是高亮"的判据
-  LiveChannelSel? get _selectedSel =>
-      _selected == null ? null : LiveChannelSel(_selectedProvider, _selected!.id);
+  LiveChannelSel? get _selectedSel => _selected == null
+      ? null
+      : LiveChannelSel(_selectedProvider, _selected!.id);
 
   // ══════════════════════════════════════════════════════════════════════
   //  N15：播放结果回写 + 定时刷新
@@ -2262,8 +2274,9 @@ class LivePageState extends State<LivePage> {
   /// unavailable → 不显示
   /// unknown     → ★ 显示（探不到 ≠ 不可用 —— 铁律 51 的对偶）
   /// ```
-  List<LiveChannel> get _visibleChannels =>
-      [for (final e in _visibleEntries) e.channel];
+  List<LiveChannel> get _visibleChannels => [
+    for (final e in _visibleEntries) e.channel,
+  ];
 
   /// 与 [_visibleChannels] **同一套判据**，但带上 provider
   ///
@@ -2544,12 +2557,15 @@ class LivePageState extends State<LivePage> {
       setState(() {
         _streams = list;
         // ★ 优先带视频的线路；都没有才退回音频线（至少能听）
-        _stream = playable.where((s) => !isAudioOnlyLine(s)).firstOrNull ??
+        _stream =
+            playable.where((s) => !isAudioOnlyLine(s)).firstOrNull ??
             playable.firstOrNull;
         _streamLoading = false;
       });
-      debugPrint('[LIVE] $channelId 取到 ${list.length} 条线路，'
-          '可播 ${playable.length}，选用 ${_stream?.displayName ?? "无"}');
+      debugPrint(
+        '[LIVE] $channelId 取到 ${list.length} 条线路，'
+        '可播 ${playable.length}，选用 ${_stream?.displayName ?? "无"}',
+      );
     } catch (e) {
       debugPrint('[LIVE] 取流失败 $channelId: $e');
       if (!mounted ||
@@ -2617,8 +2633,10 @@ class LivePageState extends State<LivePage> {
   ({LiveChannel channel, String provider})? _neighborEntry(int delta) {
     final list = _visibleEntries;
     // ③ 逻辑层
-    debugPrint('[LIVE-KEY] ③ 逻辑层：cycleChannel($delta) 列表=${list.length} 个'
-        '（当前选中身份=${_selectedSel?.rowKey ?? "无"}）');
+    debugPrint(
+      '[LIVE-KEY] ③ 逻辑层：cycleChannel($delta) 列表=${list.length} 个'
+      '（当前选中身份=${_selectedSel?.rowKey ?? "无"}）',
+    );
     if (list.isEmpty) return null;
     final cur = _selectedSel;
     var i = cur == null
@@ -2633,8 +2651,10 @@ class LivePageState extends State<LivePage> {
       // ★ 取模实现循环（Dart 的 % 对负数返回非负，正是我们要的）
       i = (i + delta) % list.length;
     }
-    debugPrint('[LIVE-KEY]    ⇒ 切到第 $i 个：${list[i].channel.name}'
-        '（provider=${list[i].provider}）');
+    debugPrint(
+      '[LIVE-KEY]    ⇒ 切到第 $i 个：${list[i].channel.name}'
+      '（provider=${list[i].provider}）',
+    );
     return list[i];
   }
 
@@ -2651,7 +2671,9 @@ class LivePageState extends State<LivePage> {
   /// ⇒ 所以：改 `_selected` + **清掉 `_stream`**（让内嵌播放器停掉旧台的声）
   ///    并记下 `_pendingFullscreenChannel`，等 pop 回来再接手播放。
   /// ```
-  ({String provider, LiveChannel channel})? stepChannelForFullscreen(int delta) {
+  ({String provider, LiveChannel channel})? stepChannelForFullscreen(
+    int delta,
+  ) {
     final next = _neighborEntry(delta);
     if (next == null) return null;
     return _adoptChannelForFullscreen(next.channel, provider: next.provider);
@@ -2723,8 +2745,10 @@ class LivePageState extends State<LivePage> {
     String? provider,
   }) {
     final prov = provider ?? _providerOf(next);
-    debugPrint('[LIVE-KEY] 全屏切台 ⇒ ${next.name}（provider=$prov）'
-        '：本页只改选中，起播交给播放页');
+    debugPrint(
+      '[LIVE-KEY] 全屏切台 ⇒ ${next.name}（provider=$prov）'
+      '：本页只改选中，起播交给播放页',
+    );
 
     setState(() {
       _selected = next;
@@ -2770,9 +2794,8 @@ class LivePageState extends State<LivePage> {
   ///      （`LiveEmbeddedPlayerState` 里有 `_disposed` 守卫，但这里也要防）
   /// ```
   /// Probe wrapper awaits the original navigation and restoration operation.
-  Future<void> watchLiveForProbe(LiveRoundtripReceipt receipt) =>
-      receipt.observe(() => _watchLive(receipt: receipt),
-          restored: () => mounted);
+  Future<void> watchLiveForProbe(LiveRoundtripReceipt receipt) => receipt
+      .observe(() => _watchLive(receipt: receipt), restored: () => mounted);
 
   /// ★★★ 第 16 项验收用的**频道注入口**（生产路径永不调用）
   ///
@@ -2796,10 +2819,7 @@ class LivePageState extends State<LivePage> {
   ///   （真实起播/双播放器音频释放）正好对应，如实写进交付说明。
   /// ```
   @visibleForTesting
-  Future<void> selectChannelForProbe(
-    LiveChannel channel, {
-    String? provider,
-  }) =>
+  Future<void> selectChannelForProbe(LiveChannel channel, {String? provider}) =>
       _select(channel, provider: provider);
 
   Future<void> _watchLive({LiveRoundtripReceipt? receipt}) async {
@@ -2810,11 +2830,9 @@ class LivePageState extends State<LivePage> {
     if (legacyCallback == null && playbackCallback == null) return;
 
     final embedded = _embedKey.currentState;
-    final initialPlayback = embedded?.playbackSnapshot ?? LivePlaybackSnapshot(
-      playing: !_userPaused,
-      muted: true,
-      volume: 100,
-    );
+    final initialPlayback =
+        embedded?.playbackSnapshot ??
+        LivePlaybackSnapshot(playing: !_userPaused, muted: true, volume: 100);
 
     // ① 跳转前暂停内嵌（只在它真的在放时才暂停/记标记）
     final wasPlaying = embedded?.isPlaying ?? false;
@@ -2838,6 +2856,7 @@ class LivePageState extends State<LivePage> {
       }
       return returnedPlayback == null ? null : !returnedPlayback.playing;
     }
+
     final pausedInFullscreen = await cb(_providerOf(s), s.id, s.name);
     receipt?._markRouteReturned();
 
@@ -2887,9 +2906,11 @@ class LivePageState extends State<LivePage> {
      */
     if (pausedInFullscreen != null) {
       _userPaused = pausedInFullscreen;
-      debugPrint(pausedInFullscreen
-          ? '[LIVE] 全屏里用户暂停过 ⇒ _userPaused=true，返回后不自动续播'
-          : '[LIVE] 全屏里用户恢复播放过 ⇒ _userPaused=false，返回后照旧续播');
+      debugPrint(
+        pausedInFullscreen
+            ? '[LIVE] 全屏里用户暂停过 ⇒ _userPaused=true，返回后不自动续播'
+            : '[LIVE] 全屏里用户恢复播放过 ⇒ _userPaused=false，返回后照旧续播',
+      );
     }
 
     /*
@@ -2924,8 +2945,10 @@ class LivePageState extends State<LivePage> {
       _pausedForFullscreen = false;
       final visible0 = widget.visible?.value ?? true;
       if (!visible0) {
-        debugPrint('[LIVE] 从全屏返回，但本页已不可见 ⇒ 不接手播放'
-            '（${pending.name}）');
+        debugPrint(
+          '[LIVE] 从全屏返回，但本页已不可见 ⇒ 不接手播放'
+          '（${pending.name}）',
+        );
         return;
       }
       debugPrint('[LIVE] 从全屏返回 ⇒ 接手播放全屏里切到的台：${pending.name}');
@@ -3015,11 +3038,9 @@ class LivePageState extends State<LivePage> {
           //   自身**没有**横向内边距（`LiveView.vue` 的 28 条 scoped 规则里无 horizontal
           //   padding）⇒ 本页是 **×1**，不像首页分区轨道那样 ×2。
           //   `Layout.horizontalInsetOf` 一次给出两层：居中留白 + 容器内边距。
-          padding: Layout.horizontalInsetOf(context) +
-              EdgeInsets.only(
-                top: Sp.x8,
-                bottom: Sp.bottomBarInset,
-              ),
+          padding:
+              Layout.horizontalInsetOf(context) +
+              EdgeInsets.only(top: Sp.x8, bottom: Sp.bottomBarInset),
           children: [
             const _PageHead(channelCount: 0, showEpgHint: false),
             const SizedBox(height: Sp.x5),
@@ -3191,11 +3212,12 @@ class LivePageState extends State<LivePage> {
       subtitle: _selected == null
           ? null
           : (_streamLoading
-              ? '取流中…'
-              : _isAudioOnly(_selected!)
-                  ? '仅音频'
-                  : _selected!.group),
-      audioOnly: _selected != null && !_streamLoading && _isAudioOnly(_selected!),
+                ? '取流中…'
+                : _isAudioOnly(_selected!)
+                ? '仅音频'
+                : _selected!.group),
+      audioOnly:
+          _selected != null && !_streamLoading && _isAudioOnly(_selected!),
       onToggleFullscreen: _selected == null ? null : _watchLive,
       /*
        * ★★★ N15 ③：**动态标记**（用户原话「打开如果不能播放,动态标记」）
@@ -3309,10 +3331,7 @@ class LivePageState extends State<LivePage> {
       qualityOptions: [
         for (final s in _streams)
           if (s.isPlayable)
-            LiveQualityOption(
-              value: s.url,
-              label: s.displayName,
-            ),
+            LiveQualityOption(value: s.url, label: s.displayName),
       ],
       onQualityChanged: (o) {
         final picked = _streams.where((s) => s.url == o.value).firstOrNull;
@@ -3394,7 +3413,8 @@ class LivePageState extends State<LivePage> {
         Episode(
           id: allChannelEntries[i].channel.id,
           // ★ 带来源 tag —— 与左栏列表同一口径（`LiveFlatEntry.tag`）
-          title: '${allChannelEntries[i].channel.name}'
+          title:
+              '${allChannelEntries[i].channel.name}'
               '  · ${allChannelEntries[i].tag}',
           index: i,
         ),
@@ -3490,8 +3510,8 @@ class LivePageState extends State<LivePage> {
       //   （见下面 `Positioned.fill` 那段的长注释）
       child: Stack(
         children: [
-      Padding(
-        /*
+          Padding(
+            /*
          * ══════════════════════════════════════════════════════════════
          * ★★★ 用户要求【A】：「左侧固定，右侧就一个播放器也固定」
          * ══════════════════════════════════════════════════════════════
@@ -3507,31 +3527,29 @@ class LivePageState extends State<LivePage> {
          * ⚠️ 为什么不是 `SingleChildScrollView`：那仍然"整页可滚"，
          *    只是把溢出交给它 —— 用户要的是**不滚**（两栏各自固定）。
          */
-        // ★ 内容带（t509）：原版 `LiveView.vue:153 <div class="container">`
-        //   —— 本页**只有一个** `.container`，`.page-head`（:154）与
-        //   `.live-layout`（:174）都是它的子节点、自身无横向内边距
-        //   ⇒ 本页是 **×1**（首页分区轨道才是 ×2）。
-        //   `Layout.horizontalInsetOf` = 居中留白 + 容器内边距（一次给全）。
-        padding: Layout.horizontalInsetOf(context) +
-            EdgeInsets.only(
-              top: Sp.x8,
-              bottom: Sp.bottomBarInset,
-            ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ── 页头 ──
-            _PageHead(
-              channelCount: _visibleChannels.length,
-              // ★ 节目单已删 ⇒ 不再显示"支持节目单与回看"提示
-              showEpgHint: false,
-              // ★★【C】"所有直播"入口（有频道才给 —— 没频道时点开是空面板）
-              onShowAll: allEpisodes.isEmpty
-                  ? null
-                  : () => setState(() => _allChannelsOpen = true),
-            ),
+            // ★ 内容带（t509）：原版 `LiveView.vue:153 <div class="container">`
+            //   —— 本页**只有一个** `.container`，`.page-head`（:154）与
+            //   `.live-layout`（:174）都是它的子节点、自身无横向内边距
+            //   ⇒ 本页是 **×1**（首页分区轨道才是 ×2）。
+            //   `Layout.horizontalInsetOf` = 居中留白 + 容器内边距（一次给全）。
+            padding:
+                Layout.horizontalInsetOf(context) +
+                EdgeInsets.only(top: Sp.x8, bottom: Sp.bottomBarInset),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // ── 页头 ──
+                _PageHead(
+                  channelCount: _visibleChannels.length,
+                  // ★ 节目单已删 ⇒ 不再显示"支持节目单与回看"提示
+                  showEpgHint: false,
+                  // ★★【C】"所有直播"入口（有频道才给 —— 没频道时点开是空面板）
+                  onShowAll: allEpisodes.isEmpty
+                      ? null
+                      : () => setState(() => _allChannelsOpen = true),
+                ),
 
-            /*
+                /*
              * ★★★ 2026-10-18：频道搜索框**已从页头移到右栏列表上方**
              *
              * # Owner 逐字
@@ -3545,7 +3563,7 @@ class LivePageState extends State<LivePage> {
              *   搜索框与命中统计属于**列表**语义 ⇒ 跟着列表走。
              */
 
-            /*
+                /*
              * ★★★ P0：**还没开始**检查时的提示（Lead 要求）
              *
              * # 为什么必须有这一段
@@ -3561,32 +3579,32 @@ class LivePageState extends State<LivePage> {
              *    "看起来在检查、其实什么都没做"的假象。
              * ```
              */
-            if (_probeScheduled)
-              Padding(
-                padding: const EdgeInsets.only(top: Sp.x2),
-                child: Text(
-                  '可用性检查将稍后开始（不影响播放）…',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                if (_probeScheduled)
+                  Padding(
+                    padding: const EdgeInsets.only(top: Sp.x2),
+                    child: Text(
+                      '可用性检查将稍后开始（不影响播放）…',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            // ── 探测进度（列表会陆续出现，必须让用户知道为什么）──
-            if (_probed == false && _probeTotal > 0)
-              Padding(
-                padding: const EdgeInsets.only(top: Sp.x2),
-                child: Text(
-                  '正在检查频道可用性 $_probeDone/$_probeTotal …',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                // ── 探测进度（列表会陆续出现，必须让用户知道为什么）──
+                if (_probed == false && _probeTotal > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: Sp.x2),
+                    child: Text(
+                      '正在检查频道可用性 $_probeDone/$_probeTotal …',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            /*
+                /*
              * ★★★ 第 65 轮批次 D：**"这是缓存，正在刷新"** 的诚实提示
              *
              * # 为什么必须显示（而不是默默用缓存）
@@ -3599,34 +3617,34 @@ class LivePageState extends State<LivePage> {
              *   （见 `_probeAll` 收尾那个 setState）。
              * ```
              */
-            if (_cacheHit && _cacheAt != null && !_probed)
-              Padding(
-                padding: const EdgeInsets.only(top: Sp.x1),
-                child: Text(
-                  '正在刷新…（列表是 ${_cacheAgeText()}的快照）',
-                  key: const ValueKey('live-cache-hint'),
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                if (_cacheHit && _cacheAt != null && !_probed)
+                  Padding(
+                    padding: const EdgeInsets.only(top: Sp.x1),
+                    child: Text(
+                      '正在刷新…（列表是 ${_cacheAgeText()}的快照）',
+                      key: const ValueKey('live-cache-hint'),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            const SizedBox(height: Sp.x5),
+                const SizedBox(height: Sp.x5),
 
-            /*
+                /*
              * ★★ 主体：`Expanded` 让它吃掉剩余高度 ⇒ 两栏**都固定**在视口内
              *    （没有 Expanded 时 Column 会按内容高度铺，可能溢出）
              */
-            Expanded(
-              child: isNarrow
-                  ? _buildNarrowBody(list, player, lineSwitcher)
-                  : _buildWideBody(list, player, lineSwitcher),
+                Expanded(
+                  child: isNarrow
+                      ? _buildNarrowBody(list, player, lineSwitcher)
+                      : _buildWideBody(list, player, lineSwitcher),
+                ),
+              ],
             ),
-          ],
-        ),
-        ),
-        /*
+          ),
+          /*
          * ══════════════════════════════════════════════════════════════
          * ★★★ 2026-09-26【C】"所有直播"面板（覆盖层）
          * ══════════════════════════════════════════════════════════════
@@ -3650,28 +3668,28 @@ class LivePageState extends State<LivePage> {
          *    `didUpdateWidget` 自动滚动 —— 实测它在两处都实现了）
          * ```
          */
-        Positioned.fill(
-          child: SheetTransition(
-            visible: _allChannelsOpen,
-            slideFrom: Device.isDesktop
-                ? const Offset(24, 0)
-                : const Offset(0, 24),
-            child: EpisodePanel(
-              episodes: allEpisodes,
-              currentIndex: curIdx,
-              onPick: (ep) {
-                // ★ 选中 ⇒ 切台 + 关面板（与"选集"点一下就走同一体验）
-                final hit = allChannelEntries
-                    .where((e) => e.channel.id == ep.id)
-                    .firstOrNull;
-                setState(() => _allChannelsOpen = false);
-                if (hit != null) unawaited(_select(hit.channel));
-              },
-              onClose: () => setState(() => _allChannelsOpen = false),
+          Positioned.fill(
+            child: SheetTransition(
+              visible: _allChannelsOpen,
+              slideFrom: Device.isDesktop
+                  ? const Offset(24, 0)
+                  : const Offset(0, 24),
+              child: EpisodePanel(
+                episodes: allEpisodes,
+                currentIndex: curIdx,
+                onPick: (ep) {
+                  // ★ 选中 ⇒ 切台 + 关面板（与"选集"点一下就走同一体验）
+                  final hit = allChannelEntries
+                      .where((e) => e.channel.id == ep.id)
+                      .firstOrNull;
+                  setState(() => _allChannelsOpen = false);
+                  if (hit != null) unawaited(_select(hit.channel));
+                },
+                onClose: () => setState(() => _allChannelsOpen = false),
+              ),
             ),
           ),
-        ),
-      ],
+        ],
       ),
     );
   }
@@ -3938,8 +3956,9 @@ Key liveChannelTileKey(String provider, String channelId) =>
     ValueKey('live-channel-tile-${liveChannelRowKey(provider, channelId)}');
 
 /// 行内**高亮块**（`Container.decoration`）的 key —— 与行分开，几何可分别量
-Key liveChannelHighlightKey(String provider, String channelId) =>
-    ValueKey('live-channel-highlight-${liveChannelRowKey(provider, channelId)}');
+Key liveChannelHighlightKey(String provider, String channelId) => ValueKey(
+  'live-channel-highlight-${liveChannelRowKey(provider, channelId)}',
+);
 
 /// **选中身份** = `(provider, id)` —— 能区分"两个源里的同一个频道 id"
 ///
@@ -3980,7 +3999,6 @@ class LiveChannelSel {
   @override
   String toString() => rowKey;
 }
-
 
 /// ★★★ 源 / 分类**筛选**后的频道列表（task-1013 用户要求）
 ///
@@ -4295,8 +4313,9 @@ class LiveChannelListState extends State<LiveChannelList> {
   List<LiveGroup> get _visibleSources {
     if (_sourceGroupFilter == null) return widget.providers;
     final keep = _groupVisibleProviders;
-    final picked =
-        widget.providers.where((g) => keep.contains(g.provider)).toList();
+    final picked = widget.providers
+        .where((g) => keep.contains(g.provider))
+        .toList();
     // ★ 兜底：一个都不剩 ⇒ 返回全部（绝不筛成空，与 v1 同一条纪律）
     return picked.isEmpty ? widget.providers : picked;
   }
@@ -4310,6 +4329,7 @@ class LiveChannelListState extends State<LiveChannelList> {
     if (_visibleSources.any((g) => g.provider == _sourceFilter)) return;
     _sourceFilter = null;
   }
+
   /// 只过了**分组 + 源筛选**（+ 可用性）的频道
   ///
   /// ⚠️ 分组在前：它是「有哪些源」这一层的收窄，
@@ -4319,13 +4339,15 @@ class LiveChannelListState extends State<LiveChannelList> {
     final byGroup = _sourceGroupFilter == null
         ? widget.channels
         : widget.channels
-              .where((e) => liveGroupAllowsChannel(
-                    widget.channelGroups,
-                    widget.sourceGroups,
-                    _sourceGroupFilter,
-                    e.provider,
-                    e.channel.id,
-                  ))
+              .where(
+                (e) => liveGroupAllowsChannel(
+                  widget.channelGroups,
+                  widget.sourceGroups,
+                  _sourceGroupFilter,
+                  e.provider,
+                  e.channel.id,
+                ),
+              )
               .toList();
     if (_sourceFilter == null) return byGroup;
     return byGroup.where((e) => e.provider == _sourceFilter).toList();
@@ -4347,11 +4369,13 @@ class LiveChannelListState extends State<LiveChannelList> {
      */
     if (widget.searchQuery.trim().isNotEmpty) {
       out = out
-          .where((e) => liveChannelMatchesQuery(
-                widget.searchQuery,
-                e.channel.name,
-                e.tag,
-              ))
+          .where(
+            (e) => liveChannelMatchesQuery(
+              widget.searchQuery,
+              e.channel.name,
+              e.tag,
+            ),
+          )
           .toList();
     }
     return out;
@@ -4437,7 +4461,8 @@ class LiveChannelListState extends State<LiveChannelList> {
      * ⚠️ 判据只看"组名存在 + 两套数据都没成员"，不看筛选后的结果，
      *   这样即使同时开了源/分类筛选，文案也指向真正的原因（分组是空的）。
      */
-    final groupIsEmpty = _sourceGroupFilter != null &&
+    final groupIsEmpty =
+        _sourceGroupFilter != null &&
         (widget.channelGroups[_sourceGroupFilter]?.isEmpty ?? true) &&
         (widget.sourceGroups[_sourceGroupFilter]?.isEmpty ?? true);
 
@@ -4548,7 +4573,8 @@ class LiveChannelListState extends State<LiveChannelList> {
              *   「这句话在源码里恰好出现 2 次（1 tooltip + 1 注释）」钉住同步；
              *   下面那行注释就是第 2 处，**两处要一起改**。
              */
-            sourceTooltip: '只看来自这个源的频道'
+            sourceTooltip:
+                '只看来自这个源的频道'
                 '（只改显示，不改配置；配置请去 设置 → 源）',
             onPickSource: (v) => _pickSource(v.isEmpty ? null : v),
             // ── 分类维度（value 用分类名本身）──
@@ -4597,10 +4623,10 @@ class LiveChannelListState extends State<LiveChannelList> {
             sourceDisplay: _sourceFilter == null
                 ? '源'
                 : (_visibleSources
-                        .where((g) => g.provider == _sourceFilter)
-                        .map((g) => g.providerName)
-                        .firstOrNull ??
-                    '源'),
+                          .where((g) => g.provider == _sourceFilter)
+                          .map((g) => g.providerName)
+                          .firstOrNull ??
+                      '源'),
             // ★ P1-L1（B）：同上
             categoryDisplay: _groupFilter ?? '分类',
           ),
@@ -4664,10 +4690,11 @@ class LiveChannelListState extends State<LiveChannelList> {
                      */
                     active: widget.selectedRow != null
                         ? liveChannelRowKey(entry.provider, entry.channel.id) ==
-                            widget.selectedRow
+                              widget.selectedRow
                         : entry.channel.id == widget.selectedId,
                     // ★ N15：播放结果状态（null 回调 ⇒ unknown ⇒ 不显示徽标）
-                    health: widget.healthOf?.call(entry.channel) ??
+                    health:
+                        widget.healthOf?.call(entry.channel) ??
                         LivePlaybackHealth.unknown,
                     onTap: () => widget.onPickEntry != null
                         ? widget.onPickEntry!(entry)
@@ -4693,21 +4720,21 @@ class LiveChannelListState extends State<LiveChannelList> {
                       //   （后者会让他以为要去改筛选，其实改筛选也没用）。
                       widget.searchQuery.trim().isNotEmpty
                           ? '没有频道名匹配「${widget.searchQuery.trim()}」。\n'
-                              '换个关键词试试，或清空搜索框看全部频道。'
+                                '换个关键词试试，或清空搜索框看全部频道。'
                           : groupIsEmpty
-                              /*
+                          /*
                                * ★★★ 2026-10-18：分组存在但没成员 —— 说清
                                *   "是你这个组还是空的"，并直接给出**怎么加**。
                                *   改前这种情况会被兜底成"显示全部"，用户根本
                                *   不知道自己的分组是空的（Owner 的投诉正是这个）。
                                */
-                              ? '「$_sourceGroupFilter」这个分组里还没有频道。\n'
-                                  '点筛选条右侧的管理按钮，把常看的频道挑进来。'
-                              : filtering
-                                  ? '这个筛选下没有频道。\n'
-                                      '换一个源或分类，或点「全部源」「全部分类」看全部。'
-                                  : '这些直播源的频道都没有可播放的画面'
-                                      '（视频线路受内容方保护）。',
+                          ? '「$_sourceGroupFilter」这个分组里还没有频道。\n'
+                                '点筛选条右侧的管理按钮，把常看的频道挑进来。'
+                          : filtering
+                          ? '这个筛选下没有频道。\n'
+                                '换一个源或分类，或点「全部源」「全部分类」看全部。'
+                          : '这些直播源的频道都没有可播放的画面'
+                                '（视频线路受内容方保护）。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: FontSizes.cap,
@@ -4781,15 +4808,17 @@ class LiveChannelListState extends State<LiveChannelList> {
          */
         final visible = {
           for (final g in widget.providers)
-            if (widget.channels.any((e) =>
-                e.provider == g.provider &&
-                liveGroupAllowsChannel(
-                  widget.channelGroups,
-                  widget.sourceGroups,
-                  name,
-                  e.provider,
-                  e.channel.id,
-                )))
+            if (widget.channels.any(
+              (e) =>
+                  e.provider == g.provider &&
+                  liveGroupAllowsChannel(
+                    widget.channelGroups,
+                    widget.sourceGroups,
+                    name,
+                    e.provider,
+                    e.channel.id,
+                  ),
+            ))
               g.provider,
         };
         if (!visible.contains(_sourceFilter)) _sourceFilter = null;
@@ -4798,7 +4827,6 @@ class LiveChannelListState extends State<LiveChannelList> {
     widget.onPickGroupFilter?.call(name);
   }
 }
-
 
 /// ★★★ task-34（Owner 第 12 条）：直播页右栏的**筛选条**
 ///
@@ -4841,6 +4869,7 @@ class _FilterBar extends StatelessWidget {
 
   /// false = 没建过组 ⇒ 不画分组那一格（老用户零感知）
   final bool groupVisible;
+
   /// 选中**值**（空串 = 不筛）
   final String groupValue;
   final List<_BarOption> groupOptions;
@@ -4868,78 +4897,25 @@ class _FilterBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★★★ 第 66 轮 M 批次：筛选条外壳玻璃化
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * # 为什么玻璃化**这一层**（而不是列表行、不是搜索框）
-     * ```text
-     * 我实测了三种方案的**像素变化率**（`.probe/shots/t66/`）：
-     *   A 全部行玻璃    46.8%  ⇒ 每行成了独立圆角条，行间出现缝隙，
-     *                            1178 个台的扫视变慢（眼睛要跳过缝隙）
-     *   B 只选中行玻璃   0.8%  ⇒ 几乎看不见，等于没做
-     *   C 筛选条外壳    20.0%  ⇒ 看得见，且列表零改动（扫视不受影响）
-     * ⇒ 选 C。
-     * ```
-     *
-     * # 纯色底下的可见度（这一步很关键，不能拿渐变底糊弄）
-     * ```text
-     * 真实直播页是**纯色底**（无渐变）。实测（`.probe/t66_glass_solid.png`）：
-     *   背景 (21,22,28) / 玻璃卡片内部 (49,52,60) ⇒ **亮 +28，肉眼明显**
-     *   玻璃区域像素变化率 = **38.2%**（远高于"无效"的 5% 门槛）
-     * ⇒ 纯色底下玻璃表现为"更亮的磨砂浮层 + 边缘高光"（少了"透出内容"
-     *   那一层，但仍是玻璃的观感）⇒ 本页玻璃化**有效**。
-     * ```
-     *
-     * # ⚠️ 为什么**不**玻璃化列表行（反向说明，防止将来有人改）
-     * ```text
-     * `_ChannelTile` 未选中时 `color: null`（**没有背景**）。
-     * 给它加玻璃 ⇒ 20 行都会有半透明底 ⇒ 列表从"一个整体"变成"一叠卡片"。
-     * 直播页的核心是**快速扫视大量频道**，行背景越淡越好扫。
-     * ⇒ 行背景保持原样。门禁里有一条**反向断言**钉住这一点。
-     * ```
-     *
-     * # ⚠️ 为什么**不**玻璃化吸顶条（`_StickySearchBar`）
-     * ```text
-     * 它本来就该"不透明" —— 否则内容从它下面滚过会糊在一起。
-     * ★ 这是**视觉正确性**问题，不是性能问题。
-     * ```
-     */
-    return GlassCard(
-      /*
-       * ★ 高度**写死 36**（原有约束，见类注释）—— 玻璃化不许改它。
-       * ⚠️ 不要改成 mainAxisSize.min —— 那样在下拉展开/字体放大时仍会变高，
-       *    又回到「筛选器吃掉列表」的老问题。
-       *
-       * ⚠️ `GlassCard` 自带 `padding: EdgeInsets.all(16)`，必须显式清零，
-       *    否则 36 的高度会被撑成 68（16×2 + 36）。
-       */
-      padding: EdgeInsets.zero,
-      margin: EdgeInsets.zero,
-      height: 36,
-      /*
-       * 默认档 `standard`：包文档明确写它是给 scrollable list 用的
-       * （"5-10x faster than BackdropFilter" / "Works correctly during scrolling"）。
-       * premium 档是静态头图用的高开销档，这里不用。
-       */
-      quality: GlassQuality.standard,
-      shape: const LiquidRoundedRectangle(borderRadius: 8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
-        /*
+    return miuix.MiuixCard(
+      cornerRadius: Radii.sm,
+      child: SizedBox(
+        height: Sp.x8 + Sp.x1,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
+          /*
          * ★ 原来的下边框保留：它是"筛选条与列表之间的分隔线"。
          *   玻璃化后这条线仍然有用（玻璃本身有边缘高光，但那条高光
          *   是**贴边**的，不足以替代一条明确的分隔）。
          */
-        decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-          /*
+          child: Row(
+            children: [
+              /*
            * ★ task-34 修：三格 + 管理按钮原样排会**溢出 18px**
            * （实测 92 + 79.8 + 92 + 28 + 间距 = 300 > 282 可用宽，见
            *  .probe/probe_tests/zz_t64_barwidth_probe_test.dart）。
@@ -4947,63 +4923,64 @@ class _FilterBar extends StatelessWidget {
            *   「全部源」「综合」看得懂，图标只是占宽）。
            * ⚠️ 不给 Expanded 的话，长分组名会把工具条顶爆（又变成溢出）。
            */
-          if (groupVisible) ...<Widget>[
-            Expanded(
-              child: _BarDropdown(
-                key: const ValueKey('live-bar-group'),
-                display: groupDisplay,
-                value: groupValue,
-                options: groupOptions,
-                onPick: onPickGroup,
+              if (groupVisible) ...<Widget>[
+                Expanded(
+                  child: _BarDropdown(
+                    key: const ValueKey('live-bar-group'),
+                    display: groupDisplay,
+                    value: groupValue,
+                    options: groupOptions,
+                    onPick: onPickGroup,
+                  ),
+                ),
+                const SizedBox(width: Sp.x1),
+              ],
+              Expanded(
+                child: _BarDropdown(
+                  key: const ValueKey('live-bar-source'),
+                  display: sourceDisplay,
+                  tooltip: sourceTooltip,
+                  value: sourceValue,
+                  options: sourceOptions,
+                  onPick: onPickSource,
+                ),
               ),
-            ),
-            const SizedBox(width: Sp.x1),
-          ],
-          Expanded(
-            child: _BarDropdown(
-              key: const ValueKey('live-bar-source'),
-              display: sourceDisplay,
-              tooltip: sourceTooltip,
-              value: sourceValue,
-              options: sourceOptions,
-              onPick: onPickSource,
-            ),
-          ),
-          if (categoryOptions.isNotEmpty) ...<Widget>[
-            const SizedBox(width: Sp.x1),
-            Expanded(
-              child: _BarDropdown(
-                key: const ValueKey('live-bar-category'),
-                display: categoryDisplay,
-                value: categoryValue,
-                options: categoryOptions,
-                onPick: onPickCategory,
-              ),
-            ),
-          ],
-          const SizedBox(width: Sp.x1),
-          /*
+              if (categoryOptions.isNotEmpty) ...<Widget>[
+                const SizedBox(width: Sp.x1),
+                Expanded(
+                  child: _BarDropdown(
+                    key: const ValueKey('live-bar-category'),
+                    display: categoryDisplay,
+                    value: categoryValue,
+                    options: categoryOptions,
+                    onPick: onPickCategory,
+                  ),
+                ),
+              ],
+              const SizedBox(width: Sp.x1),
+              /*
            * ★★★ Owner 第 12 条第 ② 半：建组入口在**直播页内**
            * （原来藏在 设置 → 直播分组，Owner 说「配置的地方没有」）
            */
-          Tooltip(
-            message: hasGroups ? '管理分组（建组 / 改名 / 删组 / 归组）' : '新建分组',
-            child: InkResponse(
-              key: const ValueKey('live-manage-groups'),
-              onTap: onManageGroups,
-              radius: 18,
-              child: SizedBox(
-                width: 28,
-                height: 28,
-                child: Icon(
-                  hasGroups ? AppIcons.tune : AppIcons.add,
-                  size: 16,
-                  color: colors.onSurfaceVariant,
+              ui.Tooltip(
+                message: hasGroups ? '管理分组（建组 / 改名 / 删组 / 归组）' : '新建分组',
+                child: ui.InkWell(
+                  key: const ValueKey('live-manage-groups'),
+                  onTap: onManageGroups,
+                  borderRadius: Radii.rSm,
+                  child: SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: Icon(
+                      hasGroups ? AppIcons.tune : AppIcons.add,
+                      size: 16,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
                 ),
               ),
-            ),
+            ],
           ),
-          ],
         ),
       ),
     );
@@ -5029,7 +5006,7 @@ class _BarOption {
 ///
 /// # ★★★ 为什么要单独写一个（第一版直接用 FilterChip 是**坏的**）
 /// ```text
-/// 第一版：`FilterChip(selected: ..., showCheckmark: false)`
+/// 第一版：`ui.FilterChip(selected: ..., showCheckmark: false)`
 /// 截图（.probe/shots/t64_after_group_manager.png 初版）里
 /// **每一颗胶囊长得一模一样** —— 因为 `showCheckmark: false` 把
 /// FilterChip 唯一的选中标识去掉了，只剩极淡的底色差，在深色主题下看不出来。
@@ -5046,7 +5023,7 @@ class _BarOption {
 ///
 /// # ★★★ 三次迭代，读懂了再动
 /// ```text
-/// ① 第一版：`FilterChip(selected: ..., showCheckmark: false)`
+/// ① 第一版：`ui.FilterChip(selected: ..., showCheckmark: false)`
 ///    截图里**每一颗胶囊长得一模一样** —— `showCheckmark: false` 把
 ///    FilterChip 唯一的选中标识去掉了，只剩极淡底色，深色主题下看不出来。
 ///    ⇒ 用户分不清哪些源已在组里，配置界面等于不可用。
@@ -5084,7 +5061,7 @@ class _MemberChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return FilterChip(
+    return ui.FilterChip(
       label: Text(
         label,
         style: TextStyle(
@@ -5110,10 +5087,8 @@ class _MemberChip extends StatelessWidget {
     );
   }
 }
-/// 工具条里的一格下拉（当前值 + ▾）
-///
-/// ⚠️ 用 `MenuAnchor` 而不是 `PopupMenuButton`：前者能**贴在本格下方**弹出，
-///   后者会以点按处为中心、且宽度不可控（在 300px 栏里会跑出边界）。
+
+/// Compact menu trigger keeps the full selected name in its tooltip.
 class _BarDropdown extends StatelessWidget {
   const _BarDropdown({
     super.key,
@@ -5123,12 +5098,8 @@ class _BarDropdown extends StatelessWidget {
     required this.options,
     required this.onPick,
   });
-
-  /// 按钮上显示的文字（= 选中项的 label）
   final String display;
-  /// 悬停提示（**用户可见** —— 写给用户看的那一句就放这里）
   final String? tooltip;
-  /// 当前**选中值**（不是显示名 —— 见 [_BarOption] 的说明）
   final String value;
   final List<_BarOption> options;
   final ValueChanged<String> onPick;
@@ -5136,110 +5107,70 @@ class _BarDropdown extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return MenuAnchor(
-      menuChildren: [
-        for (final o in options)
-          MenuItemButton(
-            key: ValueKey('live-bar-opt-${o.value}'),
-            onPressed: () => onPick(o.value),
-            style: MenuItemButton.styleFrom(
-              visualDensity: VisualDensity.compact,
+    return Builder(
+      builder: (anchor) => ui.Tooltip(
+        message: (tooltip?.isNotEmpty ?? false) ? tooltip! : display,
+        child: ui.InkWell(
+          onTap: () async {
+            final box = anchor.findRenderObject() as RenderBox?;
+            final overlay =
+                Overlay.of(anchor).context.findRenderObject() as RenderBox?;
+            if (box == null || overlay == null) return;
+            final picked = await showAppMenu<String>(
+              context: anchor,
+              position: RelativeRect.fromRect(
+                box.localToGlobal(Offset.zero, ancestor: overlay) & box.size,
+                Offset.zero & overlay.size,
+              ),
+              initialValue: value,
+              items: [
+                for (final option in options)
+                  AppMenuItem(
+                    value: option.value,
+                    child: Text(
+                      option.label,
+                      key: ValueKey('live-bar-opt-${option.value}'),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            );
+            if (anchor.mounted && picked != null) onPick(picked);
+          },
+          borderRadius: Radii.rSm,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Sp.x2,
+              vertical: Sp.x1,
             ),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                SizedBox(
-                  width: 16,
-                  child: o.value == value
-                      ? Icon(AppIcons.check, size: 13, color: colors.primary)
-                      : null,
+                Flexible(
+                  child: Text(
+                    display,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurface,
+                    ),
+                  ),
                 ),
-                const SizedBox(width: 4),
-                Text(o.label, style: const TextStyle(fontSize: FontSizes.cap)),
+                Icon(
+                  AppIcons.arrow_drop_down,
+                  size: Sp.x4,
+                  color: colors.onSurfaceVariant,
+                ),
               ],
             ),
           ),
-      ],
-      builder: (ctx, controller, _) => Tooltip(
-        /*
-         * ★★★ P1-L1 修复（Owner：「直播页面,右侧搜索框显示很奇怪」/「菜」）：
-         *   Tooltip 必须显示**当前选中的完整名字**，不能是固定文案。
-         *
-         * # 为什么（这是"截断后用户看不全"的唯一补偿）
-         * ```text
-         * 300px 右栏里每格只有 ~80.7px，8 字分类名需要 96px ⇒ 必然截断。
-         * 本轮**不做**布局重构（方案 C 需要改信息架构，Lead 明确本轮不做），
-         * ⇒ 截断保留，但必须让用户能**悬停看到全名**。
-         *
-         * ⚠️ 第一版这里是 `message: tooltip ?? ''` ——
-         *    `tooltip` 只有「源」那一格传了值（"只看来自这个源的频道…"），
-         *    分组/分类两格的 `tooltip` 是 **null** ⇒ 悬停**什么都不显示**。
-         * ⇒ 改成：有 tooltip 用 tooltip，没有就显示**当前值** `display`。
-         * ```
-         */
-        message: (tooltip != null && tooltip!.isNotEmpty) ? tooltip! : display,
-        child: InkWell(
-        onTap: () => controller.isOpen ? controller.close() : controller.open(),
-        borderRadius: Radii.rSm,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              /*
-               * ★★★ P1-L1 修复核心：`ConstrainedBox(maxWidth: 88)` → `Flexible`
-               *
-               * # 改前为什么坏（真机复现，`.probe/shots/t66/t66_zoom_third_cell.png`）
-               * ```text
-               * 结构是：ConstrainedBox(maxWidth: 88) > Text(ellipsis)，然后**硬跟**一个 Icon。
-               * Row 的默认行为是：**非 flexible 子项先按自己的意愿要空间**。
-               * ⇒ Icon(15px) 是固定的、**不可压缩**的；
-               *    Text 拿到 88px 上限后仍然可能超（8 字需要 96px）
-               * ⇒ Row 总宽 = 88 + 15 = 103px，但 Expanded 只给 80.7px
-               * ⇒ **溢出 22.3px** ⇒ Icon 被推出格子的右边界
-               *    ⇒ 箭头压到相邻格，与「管理」图标重叠
-               *    ⇒ 视觉上像一个「菜」字（Owner 报的那个）
-               * ```
-               *
-               * # 改法：`Flexible` 让文字**先让步**，箭头永不压缩
-               * ```text
-               * `Flexible` 的 fit 默认是 loose ⇒ Text 只拿"剩余可用宽"，
-               * 拿了多少就 ellipsis 多少 ⇒ Row 永远不会超。
-               * 箭头保持 15px 固定 ⇒ **永远可见、永远不出格**。
-               * ```
-               *
-               * # ⚠️ 80px 上限不再需要
-               * ```text
-               * 原来那个 `maxWidth: 88` 是"防止把工具条顶爆"的土办法 ——
-               * 但它在窄格子里**比可用宽还大**（80.7 < 88）⇒ 完全没起作用，
-               * 只是让溢出发生在 Row 而不是 Text。
-               * `Flexible` 天然以上一级约束为上限 ⇒ 删掉它。
-               * ```
-               */
-              Flexible(
-                child: Text(
-                  display,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurface,
-                  ),
-                ),
-              ),
-              /*
-               * ★ 箭头**不可压缩**：它是"这里能点开"的唯一视觉提示，
-               *   被挤掉用户就不知道那格能下拉（Owner 截图里正是缺了它）。
-               */
-              Icon(AppIcons.arrow_drop_down, size: 15, color: colors.onSurfaceVariant),
-            ],
-          ),
-        ),
         ),
       ),
     );
   }
 }
-
 
 /// ★★★ 第 65 轮批次 D：**直播页内**的分组管理器 —— 逐**频道**勾选
 ///
@@ -5300,8 +5231,7 @@ class _SourceGroupManagerDialog extends StatefulWidget {
       _SourceGroupManagerDialogState();
 }
 
-class _SourceGroupManagerDialogState
-    extends State<_SourceGroupManagerDialog> {
+class _SourceGroupManagerDialogState extends State<_SourceGroupManagerDialog> {
   /// 本地草稿：组名 → **频道引用**列表（取消即丢弃）
   late Map<String, List<LiveChannelRef>> _draft;
 
@@ -5390,11 +5320,11 @@ class _SourceGroupManagerDialogState
   }
 
   void _remove(String n) => setState(() {
-        _draft.remove(n);
-        _sourceDraft.remove(n);
-        _filterCtrl.remove(n)?.dispose();
-        if (_renaming == n) _renaming = null;
-      });
+    _draft.remove(n);
+    _sourceDraft.remove(n);
+    _filterCtrl.remove(n)?.dispose();
+    if (_renaming == n) _renaming = null;
+  });
 
   void _commitRename(String oldName) {
     final n = _renameCtrl.text.trim();
@@ -5522,13 +5452,13 @@ class _SourceGroupManagerDialogState
       actions: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          TextButton(
+          ui.TextButton(
             key: const ValueKey('live-mgr-cancel'),
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('取消'),
           ),
           const SizedBox(width: Sp.x2),
-          FilledButton(
+          ui.FilledButton(
             key: const ValueKey('live-mgr-save'),
             onPressed: _save,
             child: const Text('保存'),
@@ -5546,14 +5476,17 @@ class _SourceGroupManagerDialogState
             //   强调用「」，不用星号。
             '把常看的「频道」挑进一组，直播页工具栏就能一键只看这一组。'
             '分组只是筛选器 —— 删掉某个组，里面的频道会回到全部频道，不会消失。',
-            style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.sm,
+              color: colors.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: Sp.x4),
           // ── 新建 ──
           Row(
             children: [
               Expanded(
-                child: TextField(
+                child: ui.TextField(
                   key: const ValueKey('live-mgr-name'),
                   controller: _nameCtrl,
                   decoration: const InputDecoration(
@@ -5564,7 +5497,7 @@ class _SourceGroupManagerDialogState
                 ),
               ),
               const SizedBox(width: Sp.x3),
-              FilledButton(
+              ui.FilledButton(
                 key: const ValueKey('live-mgr-add'),
                 onPressed: _add,
                 child: const Text('新建'),
@@ -5573,14 +5506,20 @@ class _SourceGroupManagerDialogState
           ),
           if (_error != null) ...[
             const SizedBox(height: Sp.x2),
-            Text(_error!, style: TextStyle(fontSize: FontSizes.cap, color: colors.error)),
+            Text(
+              _error!,
+              style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+            ),
           ],
           const SizedBox(height: Sp.x4),
           // ── 现有分组 ──
           if (_draft.isEmpty)
             Text(
               '还没有分组。上面输入一个名字点「新建」即可。',
-              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                color: colors.onSurfaceVariant,
+              ),
             ),
           /*
            * ⚠️ 这里**不再**套 `Flexible` + 内层 `SingleChildScrollView`
@@ -5599,10 +5538,7 @@ class _SourceGroupManagerDialogState
   Widget _groupTile(String name, ColorScheme colors) {
     final members = _draft[name] ?? const <LiveChannelRef>[];
     final renaming = _renaming == name;
-    final filterCtrl = _filterCtrl.putIfAbsent(
-      name,
-      TextEditingController.new,
-    );
+    final filterCtrl = _filterCtrl.putIfAbsent(name, TextEditingController.new);
     final q = filterCtrl.text.trim().toLowerCase();
     return Container(
       margin: const EdgeInsets.only(bottom: Sp.x3),
@@ -5618,7 +5554,7 @@ class _SourceGroupManagerDialogState
             Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: ui.TextField(
                     key: ValueKey('live-mgr-renamefield-$name'),
                     controller: _renameCtrl,
                     autofocus: true,
@@ -5626,7 +5562,7 @@ class _SourceGroupManagerDialogState
                     onSubmitted: (_) => _commitRename(name),
                   ),
                 ),
-                TextButton(
+                ui.TextButton(
                   key: ValueKey('live-mgr-renameok-$name'),
                   onPressed: () => _commitRename(name),
                   child: const Text('确定'),
@@ -5654,7 +5590,7 @@ class _SourceGroupManagerDialogState
                   ),
                 ),
                 const SizedBox(width: Sp.x2),
-                TextButton(
+                ui.TextButton(
                   key: ValueKey('live-mgr-rename-$name'),
                   onPressed: () {
                     setState(() {
@@ -5665,7 +5601,7 @@ class _SourceGroupManagerDialogState
                   },
                   child: const Text('改名'),
                 ),
-                TextButton(
+                ui.TextButton(
                   key: ValueKey('live-mgr-del-$name'),
                   onPressed: () => _remove(name),
                   child: const Text('删除'),
@@ -5676,11 +5612,14 @@ class _SourceGroupManagerDialogState
           if (widget.providers.isEmpty)
             Text(
               '（本机还没探测到直播源，暂时无法选频道）',
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
             )
           else ...[
             // ── 组内频道搜索（100+ 颗胶囊时是必需品）──
-            TextField(
+            ui.TextField(
               key: ValueKey('live-mgr-filter-$name'),
               controller: filterCtrl,
               decoration: const InputDecoration(
@@ -5730,7 +5669,9 @@ class _SourceGroupManagerDialogState
     final shown = _channelsOfProvider(g.provider, q);
     final all = _channelsOfProvider(g.provider, '');
     final selectedCount = all
-        .where((e) => members.contains(LiveChannelRef(e.provider, e.channel.id)))
+        .where(
+          (e) => members.contains(LiveChannelRef(e.provider, e.channel.id)),
+        )
         .length;
     final allSelected = all.isNotEmpty && selectedCount == all.length;
     return Column(
@@ -5755,7 +5696,7 @@ class _SourceGroupManagerDialogState
               ),
             ),
             const Spacer(),
-            TextButton(
+            ui.TextButton(
               key: ValueKey('live-mgr-all-$groupName-${g.provider}'),
               onPressed: () => _toggleProviderAll(groupName, g.provider),
               child: Text(allSelected ? '全不选' : '全选'),
@@ -5765,7 +5706,10 @@ class _SourceGroupManagerDialogState
         if (shown.isEmpty)
           Text(
             '（这个源里没有匹配「$q」的频道）',
-            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           )
         else
           Wrap(
@@ -5778,8 +5722,9 @@ class _SourceGroupManagerDialogState
                     'live-mgr-ch-$groupName-${e.provider}-${e.channel.id}',
                   ),
                   label: e.channel.name,
-                  selected:
-                      members.contains(LiveChannelRef(e.provider, e.channel.id)),
+                  selected: members.contains(
+                    LiveChannelRef(e.provider, e.channel.id),
+                  ),
                   onTap: () => _toggleChannel(
                     groupName,
                     LiveChannelRef(e.provider, e.channel.id),
@@ -5813,7 +5758,7 @@ class _LineChip extends StatelessWidget {
      * 所以用 `ChoiceChip` 而不是 FilterChip。颜色 / 描边 / 圆角 / 内边距
      * 显式给死 ⇒ 长相与改前一致。
      */
-    return ChoiceChip(
+    return ui.ChoiceChip(
       label: Text(
         label,
         style: TextStyle(
@@ -5826,9 +5771,7 @@ class _LineChip extends StatelessWidget {
       showCheckmark: false,
       backgroundColor: Colors.transparent,
       selectedColor: colors.primary.withValues(alpha: 0.16),
-      side: BorderSide(
-        color: active ? colors.primary : colors.outlineVariant,
-      ),
+      side: BorderSide(color: active ? colors.primary : colors.outlineVariant),
       shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
       padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
       labelPadding: EdgeInsets.zero,
@@ -5984,7 +5927,7 @@ class _ChannelTileState extends State<_ChannelTile> {
     final channel = widget.channel;
     final active = widget.active;
 
-    return InkWell(
+    return ui.InkWell(
       /*
        * ★★★ 第 15 项验收：给**行本身**一个稳定 key
        *
@@ -6045,10 +5988,7 @@ class _ChannelTileState extends State<_ChannelTile> {
          * ⚠️ 为什么不把 padding 砍到 0：那会让行贴在一起，
          *   选中高亮块之间没有缝隙 ⇒ 视觉上糊成一片，比挤更难用。
          */
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x2,
-          vertical: Sp.x1,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: Sp.x1),
         margin: const EdgeInsets.only(bottom: 2),
         decoration: BoxDecoration(
           color: active ? colors.primary.withValues(alpha: 0.14) : null,
@@ -6111,10 +6051,7 @@ class _ChannelTileState extends State<_ChannelTile> {
             if (widget.tag != null && widget.tag!.isNotEmpty) ...[
               const SizedBox(width: Sp.x2),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 6,
-                  vertical: 2,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
                   color: colors.surfaceContainerHighest.withValues(alpha: 0.8),
                   borderRadius: Radii.rSm,
@@ -6158,7 +6095,7 @@ class _ChannelTileState extends State<_ChannelTile> {
              */
             if (_healthLabel.isNotEmpty) ...[
               const SizedBox(width: Sp.x2),
-              Tooltip(
+              ui.Tooltip(
                 message: _healthLabel,
                 child: Container(
                   key: ValueKey('live-health-${widget.channel.id}'),
@@ -6217,11 +6154,11 @@ class _ChannelTileState extends State<_ChannelTile> {
   /// ★ 只用 `ColorScheme` 里的语义色，不硬编码色值：
   ///   主题（含 M 批次玻璃化）换了以后这两种状态仍然可辨。
   Color _healthColor(ColorScheme colors) => switch (widget.health) {
-        LivePlaybackHealth.broken => colors.error,
-        // idle 是"不确定"，不是"错" —— 用中性色才不会吓到用户
-        LivePlaybackHealth.idle => colors.onSurfaceVariant,
-        _ => colors.onSurfaceVariant,
-      };
+    LivePlaybackHealth.broken => colors.error,
+    // idle 是"不确定"，不是"错" —— 用中性色才不会吓到用户
+    LivePlaybackHealth.idle => colors.onSurfaceVariant,
+    _ => colors.onSurfaceVariant,
+  };
 
   Widget _logoText(ColorScheme colors) {
     // ⚠️ 用 `widget.channel`（本类是 StatefulWidget，字段在 widget 上）
@@ -6261,7 +6198,6 @@ class _ChannelTileState extends State<_ChannelTile> {
     );
   }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 //  页头 / 骨架
@@ -6341,22 +6277,23 @@ class _PageHead extends StatelessWidget {
            *     （与"两套 Theme 串台"是同一类风险：多一个来源就多一处不一致）。
            */
           if (onShowAll != null)
-            Tooltip(
+            ui.Tooltip(
               message: '看所有直播频道',
-              child: ActionChip(
-                  onPressed: onShowAll,
-                  avatar: Icon(
-                    AppIcons.list_alt,
-                    size: 16,
-                    color: colors.onSurfaceVariant,
+              child: ui.TextButton.icon(
+                onPressed: onShowAll,
+                icon: Icon(
+                  AppIcons.list_alt,
+                  size: 16,
+                  color: colors.onSurfaceVariant,
+                ),
+                label: Text(
+                  '全部',
+                  style: TextStyle(
+                    fontSize: FontSizes.sm,
+                    color: colors.onSurface,
                   ),
-                  label: Text(
-                    '全部',
-                    style: TextStyle(
-                      fontSize: FontSizes.sm,
-                      color: colors.onSurface,
-                    ),
-                  ),
+                ),
+                style: ui.TextButton.styleFrom(
                   side: BorderSide(color: colors.outlineVariant),
                   shape: const RoundedRectangleBorder(
                     borderRadius: Radii.rFull,
@@ -6365,10 +6302,8 @@ class _PageHead extends StatelessWidget {
                     horizontal: Sp.x3,
                     vertical: 6,
                   ),
-                  labelPadding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
+              ),
             ),
         ],
       ),
@@ -6463,7 +6398,7 @@ class LiveSearchField extends StatelessWidget {
           child: SizedBox(
             // 单行高度写死 —— 与 `_FilterBar` 的 36 同量级，避免挤压主体
             height: compact ? 36 : 40,
-            child: TextField(
+            child: ui.TextField(
               key: const ValueKey('live-search-field'),
               controller: controller,
               onChanged: onChanged,
@@ -6472,7 +6407,9 @@ class LiveSearchField extends StatelessWidget {
               decoration: InputDecoration(
                 isDense: true,
                 filled: true,
-                fillColor: colors.surfaceContainerHighest.withValues(alpha: 0.5),
+                fillColor: colors.surfaceContainerHighest.withValues(
+                  alpha: 0.5,
+                ),
                 // ★ 窄栏里长提示语会被截断成省略号 ⇒ 缩短（语义不变）
                 hintText: compact ? '搜频道' : '搜频道名（跨全部直播源）',
                 hintStyle: TextStyle(
@@ -6489,7 +6426,7 @@ class LiveSearchField extends StatelessWidget {
                   minHeight: 36,
                 ),
                 suffixIcon: searching
-                    ? IconButton(
+                    ? ui.IconButton(
                         key: const ValueKey('live-search-clear'),
                         tooltip: '清空搜索',
                         iconSize: 16,
@@ -6602,7 +6539,7 @@ class _LiveLoadError extends StatelessWidget {
               ),
             ),
             const SizedBox(height: Sp.x5),
-            FilledButton.icon(
+            ui.FilledButton.icon(
               key: const ValueKey('live-retry'),
               onPressed: onRetry,
               icon: const Icon(AppIcons.refresh, size: 18),

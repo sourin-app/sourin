@@ -30,6 +30,7 @@
 // 用例结束不会有 'A Timer is still pending'。
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -137,7 +138,7 @@ void main() {
       expect(find.text('二维码获取失败，请重试或切换到「其它方式」。'), findsWidgets,
           reason: '★ 默认应落在扫码页签（会去申请二维码）');
       // 而表单页签的内容（账号框 / Cookie 框）此时不该渲染
-      expect(find.byType(TextField), findsNothing,
+      expect(find.byType(ui.TextField), findsNothing,
           reason: '★ 扫码页签下不该同时渲染表单输入框');
     });
 
@@ -157,7 +158,7 @@ void main() {
       expect(find.text('其它方式'), findsNothing,
           reason: '★★★ 只有一个页签时，页签行整体不渲染');
       // 表单仍然照常可用（入口没坏）
-      expect(find.byType(TextField), findsWidgets,
+      expect(find.byType(ui.TextField), findsWidgets,
           reason: '★ 表单页签必须照常渲染（页签行不渲染 ≠ 表单没了）');
     });
 
@@ -222,14 +223,14 @@ void main() {
       await _settle(tester);
 
       // 开局在扫码页签：表单输入框不该在
-      expect(find.byType(TextField), findsNothing,
+      expect(find.byType(ui.TextField), findsNothing,
           reason: '★ 默认落在扫码页签');
 
       // 点「其它方式」
       await tester.tap(find.text('其它方式'));
       await _settle(tester);
 
-      expect(find.byType(TextField), findsWidgets,
+      expect(find.byType(ui.TextField), findsWidgets,
           reason: '★★★ 点「其它方式」必须真的切到表单 —— '
               '默认页签若在 build() 里重设，这里会是 0 个 TextField');
       expect(find.text('扫码登录'), findsOneWidget,
@@ -238,7 +239,7 @@ void main() {
       // 再切回扫码页签，双向都要能走
       await tester.tap(find.text('扫码登录'));
       await _settle(tester);
-      expect(find.byType(TextField), findsNothing,
+      expect(find.byType(ui.TextField), findsNothing,
           reason: '★★★ 切回扫码页签也要生效（两个方向都不能被重设吃掉）');
     });
   });

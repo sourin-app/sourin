@@ -67,10 +67,13 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/clip_download.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/design/icons/app_icons.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/tokens.dart';
 import 'package:sourin_spike/ui/widgets/app_dialog_shell.dart';
@@ -83,7 +86,9 @@ import 'package:sourin_spike/ui/widgets/danmaku_settings_dialog.dart';
 
 double _lin(int c) {
   final s = c / 255.0;
-  return s <= 0.04045 ? s / 12.92 : math.pow((s + 0.055) / 1.055, 2.4).toDouble();
+  return s <= 0.04045
+      ? s / 12.92
+      : math.pow((s + 0.055) / 1.055, 2.4).toDouble();
 }
 
 double _lum(int r, int g, int b) =>
@@ -269,40 +274,64 @@ Future<_Pixels> _rasterize(WidgetTester t, Finder finder) async {
 /// 视频画面的真实分布里既有纯白（雪景/亮字幕板）也有高饱和（动画）。
 /// ```
 Widget _worstCaseBackdrop() => Stack(
-      children: [
-        Positioned.fill(child: ColoredBox(color: Colors.white)),
-        Positioned(
-          left: 0,
-          top: 120,
-          width: 420,
-          height: 260,
-          child: const ColoredBox(color: Color(0xFFFF2D55)),
-        ),
-        Positioned(
-          left: 400,
-          top: 40,
-          width: 400,
-          height: 300,
-          child: const ColoredBox(color: Color(0xFF00E5FF)),
-        ),
-        Positioned(
-          left: 240,
-          top: 340,
-          width: 520,
-          height: 260,
-          child: const ColoredBox(color: Color(0xFFFFEB3B)),
-        ),
-      ],
-    );
+  children: [
+    Positioned.fill(child: ColoredBox(color: Colors.white)),
+    Positioned(
+      left: 0,
+      top: 120,
+      width: 420,
+      height: 260,
+      child: const ColoredBox(color: Color(0xFFFF2D55)),
+    ),
+    Positioned(
+      left: 400,
+      top: 40,
+      width: 400,
+      height: 300,
+      child: const ColoredBox(color: Color(0xFF00E5FF)),
+    ),
+    Positioned(
+      left: 240,
+      top: 340,
+      width: 520,
+      height: 260,
+      child: const ColoredBox(color: Color(0xFFFFEB3B)),
+    ),
+  ],
+);
 
 /// 三档字色的标本（**必须**与产品常量同一个值，⓪ 组会断言这一点）
-const _bodyStyle = TextStyle(color: DanmakuTextColors.body, fontSize: FontSizes.sm);
-const _secondaryStyle =
-    TextStyle(color: DanmakuTextColors.secondary, fontSize: FontSizes.sm);
-const _mutedStyle = TextStyle(color: DanmakuTextColors.muted, fontSize: FontSizes.cap);
+const _bodyStyle = TextStyle(
+  color: DanmakuTextColors.body,
+  fontSize: FontSizes.sm,
+);
+const _secondaryStyle = TextStyle(
+  color: DanmakuTextColors.secondary,
+  fontSize: FontSizes.sm,
+);
+const _mutedStyle = TextStyle(
+  color: DanmakuTextColors.muted,
+  fontSize: FontSizes.cap,
+);
 
 /// 正文线（WCAG AA）
 const double kBodyLine = 4.5;
+
+Widget _themeBuilder(BuildContext context, Widget? child) =>
+    AppThemeHost(data: AppTheme.themeFor(Brightness.dark), child: child!);
+
+Rect _settingsCardRect(WidgetTester t) {
+  final title = find.descendant(
+    of: find.byType(AppDialogShell),
+    matching: find.text('弹幕设置'),
+  );
+  expect(title, findsOneWidget);
+  final card = find
+      .ancestor(of: title, matching: find.byType(miuix.MiuixCard))
+      .first;
+  expect(card, findsOneWidget);
+  return t.getRect(card);
+}
 
 void main() {
   late Directory tmp;
@@ -337,10 +366,15 @@ void main() {
       const cBody = 14.50; // 对 #14161B 的既有实测值（t27_w1）
       final actual = _contrast(0xE6, 0xE6, 0xE6, 0x14, 0x16, 0x1B);
       // ignore: avoid_print
-      print('[R3-①②] 对照：正文对 #14161B = ${actual.toStringAsFixed(2)}:1 '
-          '（t27_w1 记录 ${cBody.toStringAsFixed(2)}:1）');
-      expect((actual - cBody).abs(), lessThan(0.2),
-          reason: '★ 与 t27_w1 同口径，证明本文件的对比度算法与既有门禁一致');
+      print(
+        '[R3-①②] 对照：正文对 #14161B = ${actual.toStringAsFixed(2)}:1 '
+        '（t27_w1 记录 ${cBody.toStringAsFixed(2)}:1）',
+      );
+      expect(
+        (actual - cBody).abs(),
+        lessThan(0.2),
+        reason: '★ 与 t27_w1 同口径，证明本文件的对比度算法与既有门禁一致',
+      );
       expect(actual, greaterThanOrEqualTo(kBodyLine));
       /*
        * ⇒ 这条**必然绿**。它的作用是**对照**：
@@ -358,44 +392,51 @@ void main() {
       t.view.physicalSize = const Size(900, 700);
       t.view.devicePixelRatio = 1.0;
       addTearDown(t.view.reset);
-      await t.pumpWidget(MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.themeFor(Brightness.dark),
-        home: Scaffold(
-          body: RepaintBoundary(
-            key: const ValueKey<String>('whole1'),
-            child: Stack(
-              children: [
-                Positioned.fill(child: _worstCaseBackdrop()),
-                Positioned(
-                  top: 20,
-                  right: 20,
-                  child: DanmakuInfoPanel(
-                    initiallyExpanded: true,
-                    data: DanmakuInfoData(
-                      source: DanmakuFeedKind.bili,
-                      match: DanmakuPairKind.autoSearch,
-                      count: 1200,
-                      title: '鬼灭之刃 柱训练篇',
-                      cid: 1602741036,
-                      enabled: true,
-                      sourceName: '外部视频站直连 · cid 1602741036',
-                      updatedAt:
-                          DateTime.now().subtract(const Duration(minutes: 3)),
+      await t.pumpWidget(
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.themeFor(Brightness.dark),
+          builder: _themeBuilder,
+          home: Scaffold(
+            body: RepaintBoundary(
+              key: const ValueKey<String>('whole1'),
+              child: Stack(
+                children: [
+                  Positioned.fill(child: _worstCaseBackdrop()),
+                  Positioned(
+                    top: 20,
+                    right: 20,
+                    child: DanmakuInfoPanel(
+                      initiallyExpanded: true,
+                      data: DanmakuInfoData(
+                        source: DanmakuFeedKind.bili,
+                        match: DanmakuPairKind.autoSearch,
+                        count: 1200,
+                        title: '鬼灭之刃 柱训练篇',
+                        cid: 1602741036,
+                        enabled: true,
+                        sourceName: '外部视频站直连 · cid 1602741036',
+                        updatedAt: DateTime.now().subtract(
+                          const Duration(minutes: 3),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
-      ));
+      );
       await t.pumpAndSettle();
     }
 
     testWidgets('★★★ 正文/说明两档：真实背景上的对比度必须 ≥ 4.5', (t) async {
       await mount(t);
-      final px = await _rasterize(t, find.byKey(const ValueKey<String>('whole1')));
+      final px = await _rasterize(
+        t,
+        find.byKey(const ValueKey<String>('whole1')),
+      );
 
       /*
        * # 量法（这是本探针最要紧的一段）
@@ -431,15 +472,24 @@ void main() {
           (0xFF, 0xFF, 0xFF),
         ];
         for (final (fr, fg, fb) in fgs) {
-          if ((r - fr).abs() <= 6 && (g - fg).abs() <= 6 && (b - fb).abs() <= 6) {
+          if ((r - fr).abs() <= 6 &&
+              (g - fg).abs() <= 6 &&
+              (b - fb).abs() <= 6) {
             return true;
           }
         }
         return false;
       }
 
-      final results = <String, (Rect, ({int r, int g, int b, int n}), ({int r, int g, int b, int n}))>{
-      };
+      final results =
+          <
+            String,
+            (
+              Rect,
+              ({int r, int g, int b, int n}),
+              ({int r, int g, int b, int n}),
+            )
+          >{};
       for (final e in find.byType(Text).evaluate()) {
         final w = e.widget as Text;
         final txt = w.data;
@@ -475,8 +525,11 @@ void main() {
         results[txt] = (rect, bg, fg);
       }
 
-      expect(results.length, greaterThanOrEqualTo(6),
-          reason: '读到的 Text 太少 —— 面板没渲染出来，判据失效');
+      expect(
+        results.length,
+        greaterThanOrEqualTo(6),
+        reason: '读到的 Text 太少 —— 面板没渲染出来，判据失效',
+      );
 
       // 逐条打读数（红的时候这就是证据）
       final failures = <String>[];
@@ -484,9 +537,12 @@ void main() {
         final (rect, bg, fg) = entry.value;
         final c = _contrast(fg.r, fg.g, fg.b, bg.r, bg.g, bg.b);
         // ignore: avoid_print
-        print('[R3-①②] "${entry.key}" 背景 rgb(${bg.r},${bg.g},${bg.b}) '
-            '字 rgb(${fg.r},${fg.g},${fg.b}) = ${c.toStringAsFixed(2)}:1');
-        if (c < kBodyLine) failures.add('"${entry.key}" ${c.toStringAsFixed(2)}:1');
+        print(
+          '[R3-①②] "${entry.key}" 背景 rgb(${bg.r},${bg.g},${bg.b}) '
+          '字 rgb(${fg.r},${fg.g},${fg.b}) = ${c.toStringAsFixed(2)}:1',
+        );
+        if (c < kBodyLine)
+          failures.add('"${entry.key}" ${c.toStringAsFixed(2)}:1');
       }
 
       /*
@@ -494,17 +550,23 @@ void main() {
        *   它**不读主题 surface** —— 文件头写得很清楚："浮在视频画面上"。
        *   所以每一条对它自己的真实背景都必须过 4.5:1。
        */
-      expect(failures, isEmpty,
-          reason: '★★★ 这些文字压在真实背景上不达标（WCAG AA 正文线 4.5:1）：\n'
-              '${failures.join("\n")}\n'
-              '—— 根因：玻璃把底下的画面透进来，'
-              '"背景"不再是 #14161B 而是中灰。Owner 说的「看不清」就是它。');
+      expect(
+        failures,
+        isEmpty,
+        reason:
+            '★★★ 这些文字压在真实背景上不达标（WCAG AA 正文线 4.5:1）：\n'
+            '${failures.join("\n")}\n'
+            '—— 根因：玻璃把底下的画面透进来，'
+            '"背景"不再是 #14161B 而是中灰。Owner 说的「看不清」就是它。',
+      );
     });
 
-    testWidgets('★★★ 玻璃底下必须有**实色衬底**（面板内背景 ≈ 面板色，不是画面色）',
-        (t) async {
+    testWidgets('★★★ 玻璃底下必须有**实色衬底**（面板内背景 ≈ 面板色，不是画面色）', (t) async {
       await mount(t);
-      final px = await _rasterize(t, find.byKey(const ValueKey<String>('whole1')));
+      final px = await _rasterize(
+        t,
+        find.byKey(const ValueKey<String>('whole1')),
+      );
 
       /*
        * # 这条是"机制判据"（上一条是"结果判据"）
@@ -535,14 +597,17 @@ void main() {
       final lumBg = _lum(bg.r, bg.g, bg.b);
       final lumPanel = _lum(0x14, 0x16, 0x1B);
       // ignore: avoid_print
-      print('[R3-①②] 信息面板真实背景 rgb(${bg.r},${bg.g},${bg.b})，'
-          '对 panelBg #14161B = ${c.toStringAsFixed(2)}:1，'
-          '亮度 ${lumBg.toStringAsFixed(3)} vs ${lumPanel.toStringAsFixed(3)}');
+      print(
+        '[R3-①②] 信息面板真实背景 rgb(${bg.r},${bg.g},${bg.b})，'
+        '对 panelBg #14161B = ${c.toStringAsFixed(2)}:1，'
+        '亮度 ${lumBg.toStringAsFixed(3)} vs ${lumPanel.toStringAsFixed(3)}',
+      );
 
       expect(
         lumBg,
         lessThan(lumPanel * 2.0 + 0.02),
-        reason: '★★★ 面板背景 rgb(${bg.r},${bg.g},${bg.b}) 比面板色 #14161B '
+        reason:
+            '★★★ 面板背景 rgb(${bg.r},${bg.g},${bg.b}) 比面板色 #14161B '
             '亮 ${(lumBg / lumPanel).toStringAsFixed(1)} 倍 —— '
             '说明玻璃在**透光**而不是遮光，文字压在画面上了',
       );
@@ -557,53 +622,58 @@ void main() {
       t.view.physicalSize = const Size(1100, 900);
       t.view.devicePixelRatio = 1.0;
       addTearDown(t.view.reset);
-      await t.pumpWidget(MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.themeFor(Brightness.dark),
-        home: Scaffold(
-          body: RepaintBoundary(
-            key: const ValueKey<String>('whole2'),
-            child: Stack(
-              children: [
-                Positioned.fill(child: _worstCaseBackdrop()),
-                Positioned.fill(
-                  child: DanmakuSettingsDialog(
-                    fill: false,
-                    state: const DanmakuSettingsState(
-                      enabled: true,
-                      appId: '',
-                      appSecret: '',
-                      fontScale: 1,
-                      opacity: 1,
-                      speed: 8,
-                      area: 1,
+      await t.pumpWidget(
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.themeFor(Brightness.dark),
+          builder: _themeBuilder,
+          home: Scaffold(
+            body: RepaintBoundary(
+              key: const ValueKey<String>('whole2'),
+              child: Stack(
+                children: [
+                  Positioned.fill(child: _worstCaseBackdrop()),
+                  Positioned.fill(
+                    child: DanmakuSettingsDialog(
+                      fill: false,
+                      state: const DanmakuSettingsState(
+                        enabled: true,
+                        appId: '',
+                        appSecret: '',
+                        fontScale: 1,
+                        opacity: 1,
+                        speed: 8,
+                        area: 1,
+                      ),
+                      onSetEnabled: (_) {},
+                      onSetFontScale: (_) {},
+                      onSetOpacity: (_) {},
+                      onSetSpeed: (_) {},
+                      onSetArea: (_) {},
+                      onReload: () {},
+                      onClose: () {},
+                      biliCount: 1200,
+                      onOpenBili: () {},
                     ),
-                    onSetEnabled: (_) {},
-                    onSetFontScale: (_) {},
-                    onSetOpacity: (_) {},
-                    onSetSpeed: (_) {},
-                    onSetArea: (_) {},
-                    onReload: () {},
-                    onClose: () {},
-                    biliCount: 1200,
-                    onOpenBili: () {},
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
-      ));
+      );
       await t.pumpAndSettle();
     }
 
     testWidgets('★★★ 面板里每条文字的真实对比度必须 ≥ 4.5', (t) async {
       await mount(t);
-      final px = await _rasterize(t, find.byKey(const ValueKey<String>('whole2')));
+      final px = await _rasterize(
+        t,
+        find.byKey(const ValueKey<String>('whole2')),
+      );
 
-      // 卡片内部才有意义：外壳是 Positioned.fill，取卡片（Material）矩形
-      final card = find.byType(AppDialogShell);
-      final cardRect = t.getRect(card);
+      // 外壳占满视口；从实际标题追溯其 MiuixCard，量卡片而非遮罩。
+      final cardRect = _settingsCardRect(t);
 
       final failures = <String>[];
       var measured = 0;
@@ -622,28 +692,41 @@ void main() {
         measured++;
         final c = _contrast(fg.r, fg.g, fg.b, bg.r, bg.g, bg.b);
         // ignore: avoid_print
-        print('[R3-①②] 弹窗 "$txt" 背景 rgb(${bg.r},${bg.g},${bg.b}) '
-            '字 rgb(${fg.r},${fg.g},${fg.b}) = ${c.toStringAsFixed(2)}:1');
+        print(
+          '[R3-①②] 弹窗 "$txt" 背景 rgb(${bg.r},${bg.g},${bg.b}) '
+          '字 rgb(${fg.r},${fg.g},${fg.b}) = ${c.toStringAsFixed(2)}:1',
+        );
         if (c < kBodyLine) {
-          failures.add('"$txt" ${c.toStringAsFixed(2)}:1 '
-              '(字 rgb(${fg.r},${fg.g},${fg.b}) 压 rgb(${bg.r},${bg.g},${bg.b}))');
+          failures.add(
+            '"$txt" ${c.toStringAsFixed(2)}:1 '
+            '(字 rgb(${fg.r},${fg.g},${fg.b}) 压 rgb(${bg.r},${bg.g},${bg.b}))',
+          );
         }
       }
 
-      expect(measured, greaterThanOrEqualTo(8),
-          reason: '在卡片里只量到 $measured 条 Text —— 太少了，判据失效');
+      expect(
+        measured,
+        greaterThanOrEqualTo(8),
+        reason: '在卡片里只量到 $measured 条 Text —— 太少了，判据失效',
+      );
 
-      expect(failures, isEmpty,
-          reason: '★★★ 弹窗里这些文字在**真实背景**上不达标（4.5:1）：\n'
-              '${failures.join("\n")}\n'
-              '—— 这就是 Owner 说的「弹窗整体看不清 / 里面的文字啊」');
+      expect(
+        failures,
+        isEmpty,
+        reason:
+            '★★★ 弹窗里这些文字在**真实背景**上不达标（4.5:1）：\n'
+            '${failures.join("\n")}\n'
+            '—— 这就是 Owner 说的「弹窗整体看不清 / 里面的文字啊」',
+      );
     });
 
-    testWidgets('★★★ 卡片里的背景不许比遮罩更亮（玻璃必须遮光，不能提亮）',
-        (t) async {
+    testWidgets('★★★ 卡片里的背景不许比遮罩更亮（玻璃必须遮光，不能提亮）', (t) async {
       await mount(t);
-      final px = await _rasterize(t, find.byKey(const ValueKey<String>('whole2')));
-      final cardRect = t.getRect(find.byType(AppDialogShell));
+      final px = await _rasterize(
+        t,
+        find.byKey(const ValueKey<String>('whole2')),
+      );
+      final cardRect = _settingsCardRect(t);
 
       /*
        * # 为什么这条能抓"玻璃透光"
@@ -674,14 +757,20 @@ void main() {
       final lOut = _lum(out.r, out.g, out.b);
       final lIn = _lum(inside.r, inside.g, inside.b);
       // ignore: avoid_print
-      print('[R3-①②] 弹窗遮罩 rgb(${out.r},${out.g},${out.b}) 亮度 '
-          '${lOut.toStringAsFixed(3)} → 卡片内 rgb(${inside.r},${inside.g},'
-          '${inside.b}) 亮度 ${lIn.toStringAsFixed(3)}');
+      print(
+        '[R3-①②] 弹窗遮罩 rgb(${out.r},${out.g},${out.b}) 亮度 '
+        '${lOut.toStringAsFixed(3)} → 卡片内 rgb(${inside.r},${inside.g},'
+        '${inside.b}) 亮度 ${lIn.toStringAsFixed(3)}',
+      );
 
-      expect(lIn, lessThanOrEqualTo(lOut * 1.05 + 0.005),
-          reason: '★★★ 卡片内 rgb(${inside.r},${inside.g},${inside.b}) 比遮罩 '
-              'rgb(${out.r},${out.g},${out.b}) 更亮 —— '
-              '玻璃没有承担遮光（透光=文字压在画面上）');
+      expect(
+        lIn,
+        lessThanOrEqualTo(lOut * 1.05 + 0.005),
+        reason:
+            '★★★ 卡片内 rgb(${inside.r},${inside.g},${inside.b}) 比遮罩 '
+            'rgb(${out.r},${out.g},${out.b}) 更亮 —— '
+            '玻璃没有承担遮光（透光=文字压在画面上）',
+      );
     });
   });
 
@@ -689,77 +778,110 @@ void main() {
   //  ③ 控件区（R3-② 的"控件啊"）
   // ═══════════════════════════════════════════════════════════════════
   group('③ 控件：勾选框/开关与它所在行的背景', () {
-    testWidgets('★★ 「弹幕来源」页签里的勾选框应当与背景可辨（≥ 3:1）',
-        (t) async {
+    testWidgets('★★ 「弹幕来源」页签里的勾选框应当与背景可辨（≥ 3:1）', (t) async {
       t.view.physicalSize = const Size(1100, 900);
       t.view.devicePixelRatio = 1.0;
       addTearDown(t.view.reset);
-      await t.pumpWidget(MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.themeFor(Brightness.dark),
-        home: Scaffold(
-          body: RepaintBoundary(
-            key: const ValueKey<String>('whole3'),
-            child: Stack(
-              children: [
-                Positioned.fill(child: _worstCaseBackdrop()),
-                Positioned.fill(
-                  child: DanmakuSettingsDialog(
-                    fill: false,
-                    state: const DanmakuSettingsState(
-                      enabled: true,
-                      appId: '',
-                      appSecret: '',
-                      fontScale: 1,
-                      opacity: 1,
-                      speed: 8,
-                      area: 1,
+      await t.pumpWidget(
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.themeFor(Brightness.dark),
+          builder: _themeBuilder,
+          home: Scaffold(
+            body: RepaintBoundary(
+              key: const ValueKey<String>('whole3'),
+              child: Stack(
+                children: [
+                  Positioned.fill(child: _worstCaseBackdrop()),
+                  Positioned.fill(
+                    child: DanmakuSettingsDialog(
+                      fill: false,
+                      state: const DanmakuSettingsState(
+                        enabled: true,
+                        appId: '',
+                        appSecret: '',
+                        fontScale: 1,
+                        opacity: 1,
+                        speed: 8,
+                        area: 1,
+                      ),
+                      onSetEnabled: (_) {},
+                      onSetFontScale: (_) {},
+                      onSetOpacity: (_) {},
+                      onSetSpeed: (_) {},
+                      onSetArea: (_) {},
+                      onReload: () {},
+                      onClose: () {},
+                      biliCount: 1200,
+                      onOpenBili: () {},
                     ),
-                    onSetEnabled: (_) {},
-                    onSetFontScale: (_) {},
-                    onSetOpacity: (_) {},
-                    onSetSpeed: (_) {},
-                    onSetArea: (_) {},
-                    onReload: () {},
-                    onClose: () {},
-                    biliCount: 1200,
-                    onOpenBili: () {},
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
-      ));
+      );
       await t.pumpAndSettle();
-      await t.tap(find.descendant(
-        of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('高级'),
-      ));
+      await t.tap(
+        find.descendant(
+          of: find.byKey(const ValueKey('danmaku-settings-tabs')),
+          matching: find.text('弹幕来源'),
+        ),
+      );
       await t.pumpAndSettle();
 
-      final px = await _rasterize(t, find.byKey(const ValueKey<String>('whole3')));
-
-      for (final label in <String>['本片源自带', 'dan-api', '本机服务']) {
-        final f = find.text(label);
-        expect(f, findsOneWidget);
-        final rowRect = t.getRect(f);
-        // 勾选框在文字左边那一小片（16px 图标）
-        final box = Rect.fromLTWH(
-          rowRect.left - 26,
-          rowRect.center.dy - 8,
-          20,
-          16,
+      for (final channel in const [
+        DanmakuFeedChannel.biliSource,
+        DanmakuFeedChannel.danApi,
+        DanmakuFeedChannel.localService,
+      ]) {
+        final label = channel.label;
+        final row = find.byKey(ValueKey('danmaku-feed-${channel.name}'));
+        expect(row, findsOneWidget);
+        expect(
+          find.descendant(of: row, matching: find.text(label)),
+          findsOneWidget,
         );
+        final indicator = find.descendant(
+          of: row,
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Icon &&
+                const [
+                  AppIcons.check_box_rounded,
+                  AppIcons.check_box_outline_blank_rounded,
+                ].contains(widget.icon),
+          ),
+        );
+        expect(indicator, findsOneWidget);
+        await t.ensureVisible(indicator);
+        await t.pumpAndSettle();
+        final iconRect = t.getRect(indicator);
+        expect(_settingsCardRect(t).contains(iconRect.center), isTrue);
+        // 每次滚动后重新截图；取真实图标的矩形和周围背景，不从文字位置猜偏移。
+        final px = await _rasterize(
+          t,
+          find.byKey(const ValueKey<String>('whole3')),
+        );
+        final box = iconRect.inflate(3);
         final bg = px.modal(box);
         final icon = px.secondModal(box, bg);
+        expect(bg.n, greaterThan(0));
+        expect(icon.n, greaterThan(0), reason: '必须在截图中实际采到「$label」图标');
         final c = _contrast(icon.r, icon.g, icon.b, bg.r, bg.g, bg.b);
         // ignore: avoid_print
-        print('[R3-①②] 勾选框「$label」：图标 rgb(${icon.r},${icon.g},${icon.b}) '
-            '压 rgb(${bg.r},${bg.g},${bg.b}) = ${c.toStringAsFixed(2)}:1');
-        expect(c, greaterThanOrEqualTo(3.0),
-            reason: '★★ 控件「$label」的勾选框与背景只有 ${c.toStringAsFixed(2)}:1'
-                '（WCAG 非文字图形线 3:1）—— 这就是"控件看不清"');
+        print(
+          '[R3-①②] 勾选框「$label」：图标 rgb(${icon.r},${icon.g},${icon.b}) '
+          '压 rgb(${bg.r},${bg.g},${bg.b}) = ${c.toStringAsFixed(2)}:1',
+        );
+        expect(
+          c,
+          greaterThanOrEqualTo(3.0),
+          reason:
+              '★★ 控件「$label」的勾选框与背景只有 ${c.toStringAsFixed(2)}:1'
+              '（WCAG 非文字图形线 3:1）—— 这就是"控件看不清"',
+        );
       }
     });
   });

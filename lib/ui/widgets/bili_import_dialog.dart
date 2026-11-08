@@ -29,6 +29,8 @@
 //
 // 项目用拆包后的 material_ui（见 test/material_split_test.dart）。
 
+import 'miuix_controls.dart' as ui;
+
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
@@ -390,14 +392,16 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
    *   共享件按主题角色取色（onSurface / onSurfaceVariant / outlineVariant）。
    */
 
-
   Widget _hint(String text) {
     return Padding(
       padding: const EdgeInsets.only(top: Sp.x2),
       child: Text(
         text,
         // 说明文字：Colors.white38 → onSurfaceVariant（浅色下白 38% 压白底=隐形）
-        style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
+        style: TextStyle(
+          color: _colors.onSurfaceVariant,
+          fontSize: FontSizes.cap,
+        ),
       ),
     );
   }
@@ -409,8 +413,11 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const AppDialogSection.title('视频链接', note: 'BV 号 / av 号 / 完整链接 / b23.tv 短链都行'),
-        TextField(
+        const AppDialogSection.title(
+          '视频链接',
+          note: 'BV 号 / av 号 / 完整链接 / b23.tv 短链都行',
+        ),
+        ui.TextField(
           controller: _input,
           enabled: !s.loading,
           style: TextStyle(
@@ -459,7 +466,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
         Row(
           children: [
             Expanded(
-              child: TextField(
+              child: ui.TextField(
                 controller: _searchInput,
                 enabled: !s.loading,
                 style: TextStyle(
@@ -475,7 +482,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
               ),
             ),
             const SizedBox(width: Sp.x3),
-            FilledButton.icon(
+            ui.FilledButton.icon(
               onPressed: s.loading
                   ? null
                   : () => _searchSubmit(_searchInput.text),
@@ -582,11 +589,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
   Widget _thumbPlaceholder() => ColoredBox(
     color: Colors.black.withValues(alpha: 0.5),
     child: const Center(
-      child: Icon(
-        AppIcons.movie_outlined,
-        size: 18,
-        color: Colors.white24,
-      ),
+      child: Icon(AppIcons.movie_outlined, size: 18, color: Colors.white24),
     ),
   );
 
@@ -745,14 +748,17 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
          * 换成 `SwitchListTile`：文字在左、开关在右、整行可点、
          * 带涟漪与读屏语义。文案与禁用逻辑（`s.loading`）逐字不变。
          */
-        SwitchListTile(
+        ui.SwitchListTile(
           contentPadding: EdgeInsets.zero,
           dense: true,
           value: s.autoUpdate,
           onChanged: s.loading ? null : widget.onSetAutoUpdate,
           title: Text(
             '重新进入这一集时自动比对增量',
-            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
+            style: TextStyle(
+              color: _colors.onSurfaceVariant,
+              fontSize: FontSizes.sm,
+            ),
           ),
         ),
         _slider(
@@ -792,7 +798,7 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
           ),
         ),
         Expanded(
-          child: Slider(
+          child: ui.Slider(
             value: value.clamp(min, max),
             min: min,
             max: max,
@@ -821,13 +827,13 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     final s = widget.state;
     return Row(
       children: [
-        FilledButton.icon(
+        ui.FilledButton.icon(
           onPressed: s.loading ? null : () => _submit(_input.text),
           icon: const Icon(AppIcons.download, size: 18),
           label: const Text('导入并绑定'),
         ),
         const SizedBox(width: Sp.x3),
-        TextButton.icon(
+        ui.TextButton.icon(
           onPressed: s.loading || !s.bound
               ? null
               : () => unawaited(widget.onUpdateNow()),
@@ -844,10 +850,13 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
             height: 16,
             // T27-07：无 color 的 CPI 走主题灰（#E5E5E5 on #14161C 仅 1.6:1），
             // 显式给白 #FAFAFA（对 #14161C ≈ 15.9:1）。
-            child: CircularProgressIndicator(color: Color(0xFFFAFAFA), strokeWidth: 2),
+            child: ui.CircularProgressIndicator(
+              color: Color(0xFFFAFAFA),
+              strokeWidth: 2,
+            ),
           ),
         if (s.bound && !s.loading)
-          TextButton(
+          ui.TextButton(
             onPressed: widget.onUnbind,
             child: const Text(
               '解除绑定',
@@ -869,7 +878,10 @@ class _BiliImportDialogState extends State<BiliImportDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        AppDialogSection.title('真实请求', note: '共 ${t.length} 条，显示最近 ${recent.length} 条'),
+        AppDialogSection.title(
+          '真实请求',
+          note: '共 ${t.length} 条，显示最近 ${recent.length} 条',
+        ),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(Sp.x3),

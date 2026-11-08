@@ -51,6 +51,8 @@
 // 没选中频道时点了不该有任何反应。所以 [onWatchLive] 为 null 时
 // 「直播中」那条**不可点**（不是"点了没反应"，而是明确的不可用态）。
 
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
@@ -114,7 +116,11 @@ class EpgPanel extends StatelessWidget {
             padding: const EdgeInsets.only(left: Sp.x2, bottom: Sp.x3),
             child: Row(
               children: [
-                Icon(AppIcons.schedule, size: 16, color: colors.onSurfaceVariant),
+                Icon(
+                  AppIcons.schedule,
+                  size: 16,
+                  color: colors.onSurfaceVariant,
+                ),
                 const SizedBox(width: Sp.x2),
                 Text(
                   '节目单',
@@ -301,15 +307,12 @@ class EpgTile extends StatelessWidget {
         ? null
         : (isNow ? onWatchLive : onWatchReplay);
 
-    return InkWell(
+    return ui.InkWell(
       onTap: onTap,
       borderRadius: Radii.rSm,
       child: Container(
         margin: const EdgeInsets.only(bottom: 3),
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x3,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x3),
         decoration: BoxDecoration(
           color: isNow ? colors.primary.withValues(alpha: 0.10) : null,
           borderRadius: Radii.rSm,
@@ -360,11 +363,12 @@ class EpgTile extends StatelessWidget {
                     const SizedBox(height: 5),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(2),
-                      child: LinearProgressIndicator(
+                      child: ui.LinearProgressIndicator(
                         value: entry.progressAt(now) / 100.0,
                         minHeight: 3,
-                        backgroundColor:
-                            colors.onSurface.withValues(alpha: 0.08),
+                        backgroundColor: colors.onSurface.withValues(
+                          alpha: 0.08,
+                        ),
                       ),
                     ),
                   ],

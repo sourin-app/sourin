@@ -23,14 +23,16 @@
 //    flutter test 里没有核心 DLL ⇒ listProviders() 必抛 ⇒ 恒为 0
 //    ⇒ 必须用生产代码里既有的 debugSetProviderCount 补环境前置条件。
 //    见 fixture() 里那条反向断言。
-// ③ TextField 的 onChanged 缺失时，_controller.text 变了但 build 不重跑
+// ③ ui.TextField 的 onChanged 缺失时，_controller.text 变了但 build 不重跑
 //    ⇒ 按钮启用态 / ✕ 永远是旧的。B 组直接断言**按钮的 onPressed**，
 //    而不是断言「输入框里有字」（后者恒真，钉不住任何东西）。
 //
 // ⚠️ 本文件不挂真 Player、不调 open()、不用 toImage() —— 同 t75_search_pinned_test.dart。
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:sourin_spike/ui/search_page.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
@@ -81,16 +83,17 @@ Future<SearchPageState> fixture(WidgetTester t) async {
   expect(
     find.textContaining('当前没有支持搜索的内容源'),
     findsNothing,
-    reason: '源数为 0 时 build 会在第一个分支就吃掉整段结果区 —— '
+    reason:
+        '源数为 0 时 build 会在第一个分支就吃掉整段结果区 —— '
         '那时本文件所有断言都是对空树断言，全部假通过',
   );
 
   return st;
 }
 
-/// 「搜索」那个 `FilledButton`（全页**只有**一个：搜索框右侧那个）。
-FilledButton searchButton(WidgetTester t) =>
-    t.widget<FilledButton>(find.byType(FilledButton));
+/// 「搜索」那个 `ui.FilledButton`（全页**只有**一个：搜索框右侧那个）。
+ui.FilledButton searchButton(WidgetTester t) =>
+    t.widget<ui.FilledButton>(find.byType(ui.FilledButton));
 
 void main() {
   // ════════════════════════════════════════════════════════════════════
@@ -101,21 +104,39 @@ void main() {
     testWidgets('A1 未搜索时显示空态引导（标题 + 说明）', (t) async {
       await fixture(t);
 
-      expect(find.text('搜索全部内容源'), findsOneWidget,
-          reason: '原版 SearchView.vue:365-371 EmptyState 的 title');
-      expect(find.text('输入关键词后回车即可同时搜索'), findsOneWidget,
-          reason: '原版同一条 EmptyState 的 desc');
-      expect(find.byIcon(Icons.search), findsWidgets,
-          reason: '空态图标是 Icons.search（搜索框左边那个也是它，所以是 findsWidgets）');
+      expect(find.byType(miuix.MiuixTextField), findsOneWidget);
+      expect(find.byType(miuix.MiuixButton), findsOneWidget);
+      expect(find.byType(miuix.MiuixCard), findsWidgets);
+      expect(
+        find.text('搜索全部内容源'),
+        findsOneWidget,
+        reason: '原版 SearchView.vue:365-371 EmptyState 的 title',
+      );
+      expect(
+        find.text('输入关键词后回车即可同时搜索'),
+        findsOneWidget,
+        reason: '原版同一条 EmptyState 的 desc',
+      );
+      expect(
+        find.byIcon(Icons.search),
+        findsWidgets,
+        reason: '空态图标是 Icons.search（搜索框左边那个也是它，所以是 findsWidgets）',
+      );
     });
 
     testWidgets('A2 未搜索时不显示「没有找到相关内容」', (t) async {
       await fixture(t);
 
-      expect(find.text('没有找到相关内容'), findsNothing,
-          reason: '还没搜就报「没找到」是误报 —— 两者是不同的语义分支');
-      expect(find.textContaining('个结果'), findsNothing,
-          reason: '一个源都还没回来，不可能有结果组');
+      expect(
+        find.text('没有找到相关内容'),
+        findsNothing,
+        reason: '还没搜就报「没找到」是误报 —— 两者是不同的语义分支',
+      );
+      expect(
+        find.textContaining('个结果'),
+        findsNothing,
+        reason: '一个源都还没回来，不可能有结果组',
+      );
     });
 
     testWidgets('A3 空态是 Sliver（不是盒模型孩子）', (t) async {
@@ -127,7 +148,8 @@ void main() {
           matching: find.byType(SliverToBoxAdapter),
         ),
         findsOneWidget,
-        reason: 'slivers: 里只能放 Sliver。若把空态写成裸 Column，'
+        reason:
+            'slivers: 里只能放 Sliver。若把空态写成裸 Column，'
             'CustomScrollView 会在**运行时**抛断言（不是编译错）',
       );
     });
@@ -141,23 +163,32 @@ void main() {
     testWidgets('B1 未输入：按钮 onPressed == null，且没有 ✕', (t) async {
       await fixture(t);
 
-      expect(searchButton(t).onPressed, isNull,
-          reason: '空关键词搜索是空操作 ⇒ 按钮应当是禁用态');
-      expect(find.byIcon(Icons.close), findsNothing,
-          reason: '没内容可清空时不该出现 ✕');
+      expect(
+        searchButton(t).onPressed,
+        isNull,
+        reason: '空关键词搜索是空操作 ⇒ 按钮应当是禁用态',
+      );
+      expect(find.byIcon(Icons.close), findsNothing, reason: '没内容可清空时不该出现 ✕');
     });
 
     testWidgets('B2 输入后：按钮 onPressed != null，且 ✕ 出现', (t) async {
       await fixture(t);
 
-      await t.enterText(find.byType(TextField), 'x');
+      await t.enterText(find.byType(ui.TextField), 'x');
       await t.pump();
 
-      expect(searchButton(t).onPressed, isNotNull,
-          reason: '★ 这一条就是真机上「按钮常灰、点了没反应」的回归闸门：'
-              '没有 onChanged 时 build 不重跑，onPressed 会一直是 null');
-      expect(find.byIcon(Icons.close), findsOneWidget,
-          reason: '★ 同一个重建问题：if (_controller.text.isNotEmpty) 也不会重算');
+      expect(
+        searchButton(t).onPressed,
+        isNotNull,
+        reason:
+            '★ 这一条就是真机上「按钮常灰、点了没反应」的回归闸门：'
+            '没有 onChanged 时 build 不重跑，onPressed 会一直是 null',
+      );
+      expect(
+        find.byIcon(Icons.close),
+        findsOneWidget,
+        reason: '★ 同一个重建问题：if (_controller.text.isNotEmpty) 也不会重算',
+      );
     });
   });
 
@@ -169,30 +200,42 @@ void main() {
     testWidgets('C1 点 ✕ 清空：按钮回到禁用、✕ 消失、空态回来', (t) async {
       await fixture(t);
 
-      await t.enterText(find.byType(TextField), 'x');
+      await t.enterText(find.byType(ui.TextField), 'x');
       await t.pump();
       expect(searchButton(t).onPressed, isNotNull);
 
       await t.tap(find.byIcon(Icons.close));
       await t.pump();
 
-      expect(searchButton(t).onPressed, isNull,
-          reason: '清空后 _controller.text 为空 ⇒ 按钮必须回到禁用');
+      expect(
+        searchButton(t).onPressed,
+        isNull,
+        reason: '清空后 _controller.text 为空 ⇒ 按钮必须回到禁用',
+      );
       expect(find.byIcon(Icons.close), findsNothing);
-      expect(find.text('搜索全部内容源'), findsOneWidget,
-          reason: '_clear() 把 _searched 也复位 ⇒ 空态必须回来');
+      expect(
+        find.text('搜索全部内容源'),
+        findsOneWidget,
+        reason: '_clear() 把 _searched 也复位 ⇒ 空态必须回来',
+      );
     });
 
     testWidgets('C2 只有空白字符时按钮仍禁用', (t) async {
       await fixture(t);
 
-      await t.enterText(find.byType(TextField), '   ');
+      await t.enterText(find.byType(ui.TextField), '   ');
       await t.pump();
 
-      expect(searchButton(t).onPressed, isNull,
-          reason: '判据是 _controller.text.trim().isEmpty ⇒ 纯空格不算关键词');
-      expect(find.byIcon(Icons.close), findsOneWidget,
-          reason: '✕ 的判据是 text.isNotEmpty（不 trim）—— 空格也是内容');
+      expect(
+        searchButton(t).onPressed,
+        isNull,
+        reason: '判据是 _controller.text.trim().isEmpty ⇒ 纯空格不算关键词',
+      );
+      expect(
+        find.byIcon(Icons.close),
+        findsOneWidget,
+        reason: '✕ 的判据是 text.isNotEmpty（不 trim）—— 空格也是内容',
+      );
     });
   });
 }

@@ -40,10 +40,15 @@
 // > 用户以为点成功了。现在无论成败都刷新。
 
 import '../core/library_cover_recovery.dart';
+
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:flutter/services.dart';
+
+import 'widgets/settings_tabs.dart';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../core/models.dart';
@@ -61,6 +66,7 @@ import 'widgets/poster_card.dart';
 
 /// 追更页
 bool abDisableFollowRefresh = false;
+
 /// ★ 仅供 OPS 探针：置 true 时恢复旧行为（依赖 `_ModalScopeStatus`）。生产恒 false。
 bool abLegacyFollowRouteDependency = false;
 
@@ -124,7 +130,8 @@ class FollowPage extends StatefulWidget {
     String title,
     String? cover,
     String? episodeId,
-  )? onPlay;
+  )?
+  onPlay;
 
   final void Function(String provider, String id)? onOpenDetail;
 
@@ -184,8 +191,7 @@ class FollowPage extends StatefulWidget {
   State<FollowPage> createState() => FollowPageState();
 }
 
-class FollowPageState extends State<FollowPage>
-    with WidgetsBindingObserver {
+class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   /// 当前 tab
   ///
   /// ⚠️ 原版默认是 `following`（追更中）—— 不是"全部收藏"。
@@ -328,9 +334,11 @@ class FollowPageState extends State<FollowPage>
   void _applyRequestedTab(String? key, {required String reason}) {
     if (key == null) return; // 没请求 ⇒ 保持现状
     if (!isValidTab(key)) {
-      debugPrint('[FOLLOW] ★ 非法 tab key "$key"（来自 $reason）'
-          '⇒ 保持当前 "$_tab"。合法值：'
-          '${_FollowTab.values.map((t) => t.key).join(" / ")}');
+      debugPrint(
+        '[FOLLOW] ★ 非法 tab key "$key"（来自 $reason）'
+        '⇒ 保持当前 "$_tab"。合法值：'
+        '${_FollowTab.values.map((t) => t.key).join(" / ")}',
+      );
       return;
     }
     if (key == _tab) return; // 已经是它了 ⇒ 不动（避免无谓重建）
@@ -358,8 +366,10 @@ class FollowPageState extends State<FollowPage>
   /// 返回值：`true` = 已切到目标 tab；`false` = key 非法（已记日志）
   bool showTab(String key) {
     if (!isValidTab(key)) {
-      debugPrint('[FOLLOW] ★ showTab("$key") 非法 ⇒ 忽略。合法值：'
-          '${_FollowTab.values.map((t) => t.key).join(" / ")}');
+      debugPrint(
+        '[FOLLOW] ★ showTab("$key") 非法 ⇒ 忽略。合法值：'
+        '${_FollowTab.values.map((t) => t.key).join(" / ")}',
+      );
       return false;
     }
     if (key != _tab) {
@@ -582,9 +592,11 @@ class FollowPageState extends State<FollowPage>
        *    （`build` 每帧都可能跑 ⇒ 会变成每帧一个网络请求）。
        */
       unawaited(_backfillTitles());
-      unawaited(LibraryCoverRecovery.repair().then((changed) async {
-        if (changed > 0 && mounted) await _load(silent: true);
-      }));
+      unawaited(
+        LibraryCoverRecovery.repair().then((changed) async {
+          if (changed > 0 && mounted) await _load(silent: true);
+        }),
+      );
     } catch (e) {
       debugPrint('[FOLLOW] 加载追更失败: $e');
     } finally {
@@ -641,8 +653,7 @@ class FollowPageState extends State<FollowPage>
     List<Favorite> following,
     List<Favorite> allFavs,
     List<Progress> cont,
-  ) =>
-      _followSignature(following, allFavs, cont);
+  ) => _followSignature(following, allFavs, cont);
 
   static String _followSignature(
     List<Favorite> following,
@@ -793,8 +804,10 @@ class FollowPageState extends State<FollowPage>
       setState(() {
         _continueList = mergeBackfilled(_continueList, patched);
       });
-      debugPrint('[FOLLOW] ★ 标题回填成功 ${patched.length} 条'
-          '（已写回 DB ⇒ 下次进页面零网络）');
+      debugPrint(
+        '[FOLLOW] ★ 标题回填成功 ${patched.length} 条'
+        '（已写回 DB ⇒ 下次进页面零网络）',
+      );
     } catch (e) {
       // 回填绝不影响主流程 —— 失败只记一行，界面保持占位符
       debugPrint('[FOLLOW] 标题回填跳过: $e');
@@ -1103,8 +1116,7 @@ class FollowPageState extends State<FollowPage>
     showAppToast(context, msg);
   }
 
-  List<Favorite> get _currentList =>
-      _tab == 'all' ? _allFavs : _following;
+  List<Favorite> get _currentList => _tab == 'all' ? _allFavs : _following;
 
   @override
   Widget build(BuildContext context) {
@@ -1179,89 +1191,22 @@ class FollowPageState extends State<FollowPage>
             ),
             const SizedBox(height: Sp.x5),
 
-            /*
-             * ── 工具条：三个 tab（液态玻璃）──
-             *
-             * ★★ 2026-09-25：套上底栏那套液态玻璃 + **删掉「检查更新」按钮**
-             *
-             * # 用户的两条要求
-             *
-             * > 追更页面的 追更中 收藏 历史,这三个没有做液态玻璃
-             * > 追更页面,去掉检查更新,应该是自动更新 这三个模块的数据
-             *
-             * # ① 为什么用 `GlassContainer` 而不是自己写模糊
-             *
-             * 用户原话：
-             * > 我们现在的底栏的那种液态玻璃效果,你就直接套用就行了
-             *
-             * 项目里已经踩过这个坑（`shell.dart:2787-2809` 记着用户
-             * **两次打回**）：自己写的 `ClipRRect > BackdropFilter(blur)`
-             * 只能做**毛玻璃（frosted）**，做不出液态玻璃的核心
-             * —— **折射（refraction）**。真液态玻璃要 fragment shader
-             * 采样背后纹理、按法线做位移。
-             *
-             * 所以这里和底栏/标题栏/my_shelf 用**同一个组件、同一套材质**：
-             * ```text
-             * 外层   GlassContainer(shape: LiquidRoundedSuperellipse(999))
-             * 质量   GlassQuality.standard   ← 包文档推荐（95% 场景）
-             * 内层   透明 tab + 滑动选中药丸（结构照 my_shelf.dart）
-             * ```
-             *
-             * ★ 结构照抄 `lib/ui/widgets/my_shelf.dart` —— 它是
-             *   「多个 tab 包在一个胶囊玻璃容器里」的**现成正确范例**。
-             *   那条注释里的教训尤其重要：
-             *   > "看起来不像"时**先怀疑结构，不要先调参数**。
-             *   （它第一版给**每个 tab** 各套一块玻璃，屏幕上出现三个
-             *     独立小胶囊，与底栏那条大玻璃完全不像。）
-             *
-             * # ② 为什么「检查更新」按钮删掉是安全的
-             *
-             * 那个按钮原先调 `_checkUpdates()` —— 它做的是**追更巡检**
-             *（`check_updates`：逐个追更条目去插件拉最新集数），
-             * 并把结果填进 `_updates`（"N 部有更新"那块提示）。
-             *
-             * ⚠️ 这**不是** `_load()` 能替代的：`_load()` 只读本地 DB，
-             *    而"有没有新集"必须真的联网问插件。所以按钮删了，
-             *    巡检要**搬进自动路径**（见 `_maybeSweep`），
-             *    否则那块"N 部有更新"的提示会**永远空着** ——
-             *    那是删按钮引入的新 bug。
-             */
+            // Selection changes refresh cached data through the existing _selectTab path.
             Padding(
               padding: Layout.contentInsetOf(context),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: GlassContainer(
-                  /*
-                   * ★ 全圆角胶囊 —— 与底栏同一个形状语言
-                   *（`shell.dart:3560` 用的是 `barHeight / 2`，
-                   *  这里就是胶囊高度的一半；999 是"给足"的写法，
-                   *  与 my_shelf 一致。）
-                   */
-                  shape: const LiquidRoundedSuperellipse(borderRadius: 999),
-                  // 与底栏同一档（包文档：95% 场景的正确选择）
-                  quality: GlassQuality.standard,
-                  child: _FollowTabs(
-                    /*
-                     * ★ `_tab`（String）→ `_FollowTab`（枚举）
-                     *
-                     * ⚠️ 必须**显式匹配**而不是试着用下标——
-                     *    状态字段是字符串（既有代码与测试都依赖
-                     *    `'following'` / `'all'` / `'continue'`），
-                     *    而枚举名是 `continueWatching` ≠ `'continue'`。
-                     *    `firstWhere` 的 `orElse` 兜住"未知字符串"
-                     *   （不该发生，但不能让页面崩）。
-                     */
-                    current: _FollowTab.values.firstWhere(
-                      (t) => t.key == _tab,
-                      orElse: () => _FollowTab.following,
-                    ),
-                    countOf: (t) => switch (t) {
-                      _FollowTab.following => _following.length,
-                      _FollowTab.all => _allFavs.length,
-                      _FollowTab.continueWatching => _continueList.length,
-                    },
-                    onSelect: _selectTab,
+                child: _FollowTabs(
+                  current: _FollowTab.values.firstWhere(
+                    (t) => t.key == _tab,
+                    orElse: () => _FollowTab.following,
                   ),
+                  countOf: (t) => switch (t) {
+                    _FollowTab.following => _following.length,
+                    _FollowTab.all => _allFavs.length,
+                    _FollowTab.continueWatching => _continueList.length,
+                  },
+                  onSelect: _selectTab,
                 ),
               ),
             ),
@@ -1294,8 +1239,8 @@ class FollowPageState extends State<FollowPage>
               ),
 
             // ── 骨架（★ 只在**首次**加载时显示 —— 见 `_loadedOnce`）──
-            if (_loading && !_loadedOnce) const _FollowSkeleton()
-
+            if (_loading && !_loadedOnce)
+              const _FollowSkeleton()
             // ── 继续观看 ──
             //
             // ★ 点条目 → **详情页**（用户要求「点进去都应该进详情页」）
@@ -1312,7 +1257,6 @@ class FollowPageState extends State<FollowPage>
                 remaining: _remaining,
                 onTap: _openDetailForProgress,
               )
-
             // ── 追更 / 收藏 ──
             else
               _FavGrid(
@@ -1343,141 +1287,36 @@ class FollowPageState extends State<FollowPage>
 //  子组件
 // ═══════════════════════════════════════════════════════════════════════
 
-/// 追更页的三个 tab（**液态玻璃分段控件**）
-///
-/// ══════════════════════════════════════════════════════════════════════
-/// ★★ 2026-09-25：从「三个各自带边框的 pill」改成「一块玻璃 + 滑动药丸」
-/// ══════════════════════════════════════════════════════════════════════
-///
-/// # 用户原话
-///
-/// > 追更页面的 追更中 收藏 历史,这三个没有做液态玻璃
-/// > 我们现在的底栏的那种液态玻璃效果,你就直接套用就行了
-///
-/// # 结构照抄 `lib/ui/widgets/my_shelf.dart`（现成的正确范例）
-///
-/// ```text
-/// GlassContainer(shape: LiquidRoundedSuperellipse(999))   ← 外层：一块胶囊玻璃
-///   └ Padding(all: 4)                                     ← 原版 .mine__tabs padding
-///       └ Stack
-///           ├ AnimatedPositioned  滑动选中药丸（白渐变 + 阴影）
-///           └ Row                 三个 tab（透明，压在药丸上面）
-/// ```
-///
-/// # ★★ 为什么是「一块玻璃包三个 tab」而不是「三个玻璃 pill」
-///
-/// 这正是 `my_shelf.dart:330-360` 记下的教训（它第一版做错了）：
-/// > 我第一版给**每个 tab** 各套一块 `GlassContainer` ——
-/// > 于是屏幕上出现三个独立的小玻璃胶囊。
-/// > ★ 教训：**"看起来不像"时先怀疑结构，不要先调参数**。
-///
-/// 底栏也是这个结构（**一条玻璃 + 一个滑动选中药丸**）——
-/// 所以两者观感自然一致。这也正是用户说的「套用底栏那套」。
-///
-/// # 为什么药丸与文字色必须**成对**取自 [_FollowPalette]
-///
-/// 药丸是**白**的（浅色主题下近纯白），所以药丸上的字必须**是深色**。
-/// 只抄一边（比如"永远白药丸 + 用 `colorScheme.onSurface` 当文字色"）
-/// 会在深色主题下变成「白药丸 + 白字」= **完全看不见**。
-/// 所以两套值集中在一个 palette 里，绑在一起给。
+/// The same Miuix tab component as the homepage shelf; keys retain data identity.
 class _FollowTabs extends StatelessWidget {
   const _FollowTabs({
     required this.current,
     required this.countOf,
     required this.onSelect,
   });
-
   final _FollowTab current;
   final int Function(_FollowTab) countOf;
   final ValueChanged<_FollowTab> onSelect;
 
   @override
-  Widget build(BuildContext context) {
-    /*
-     * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`Theme.of(context).colorScheme.brightness`
-     *   → `_followColors(context).isDark`
-     *
-     * `_FollowPalette.of(bool isLight)` 只吃一个布尔值、**本身完全不依赖 Material**，
-     * 所以这里只需要一个可靠的明暗判据，不需要整份 ColorScheme。
-     */
-    final isLight = !_followColors(context).isDark;
-    final cols = _FollowPalette.of(isLight);
-
-    /*
-     * ★ 2026-10-05：与首页 `_ShelfTabs` 同构 —— 宽度自适应（上限 `_followTabWidth`）。
-     *
-     * ⚠️ `LayoutBuilder` 必须在 `Padding(all(4))` **外面** —— 里面的
-     *    `constraints.maxWidth` 已经把 4dp×2 扣掉了，`_followTabWidthFor`
-     *    会再扣一次 8。
-     */
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final tabWidth = _followTabWidthFor(constraints.maxWidth);
-        return Padding(
-          // 原版 `.mine__tabs { padding: 4px }` —— 药丸与容器边缘留呼吸空间
-          padding: const EdgeInsets.all(4),
-          child: Stack(
-            children: [
-              // ── 滑动选中药丸 ──
-              AnimatedPositioned(
-                duration: Motion.slow, // 420ms，与底栏同一个时长
-                curve: Curves.easeOutBack, // 轻微过冲再回弹 = "液态"手感
-                left: current.index * tabWidth,
-                top: 0,
-                bottom: 0,
-                width: tabWidth,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: cols.pillGradient,
-                ),
-                borderRadius: Radii.rFull,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: cols.pillShadow),
-                    blurRadius: 8,
-                    spreadRadius: -2,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-              // ── 三个 tab（文字层，压在药丸上面）──
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final t in _FollowTab.values)
-                    SizedBox(
-                      width: tabWidth,
-                      child: _FollowTabChip(
-                        label: t.label,
-                        count: countOf(t),
-                        active: t == current,
-                        cols: cols,
-                        onTap: () => onSelect(t),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final width = math.min(296.0, constraints.maxWidth);
+      return SizedBox(
+        width: width,
+        child: SettingsTabs(
+          labels: [
+            for (final tab in _FollowTab.values)
+              '${tab.label}${countOf(tab) > 0 ? ' ${countOf(tab)}' : ''}',
+          ],
+          selected: current.index,
+          onSelected: (index) => onSelect(_FollowTab.values[index]),
+        ),
+      );
+    },
+  );
 }
 
-/// 三个 tab 的定义（**顺序即 `index`** —— 药丸的 `left` 靠它算）
-///
-/// ⚠️ `index` 直接用于 `left = index * tabWidth`（`tabWidth` 来自
-///    `_followTabWidthFor(constraints.maxWidth)`）：
-///    所以枚举顺序**就是**屏幕上的顺序，不能随意调整。
-///    三个 tab 等宽，`left` 是纯算术，不需要量真实布局
-///   （量布局要等一帧，首帧药丸会闪 —— `my_shelf` 的注释讲了这点）。
 enum _FollowTab {
   following('追更中', 'following'),
   all('全部收藏', 'all'),
@@ -1495,219 +1334,6 @@ enum _FollowTab {
   ///    而枚举名 `continueWatching` ≠ `'continue'`。
   ///    显式给出 key 让**映射关系只有一处**，改枚举名不会静默改掉状态值。
   final String key;
-}
-
-/// tab 分段控件的宽度**上限**（三个等宽）
-///
-/// 96 与 `my_shelf.dart` 的 `_shelfTabWidth` 一致 —— 同样的
-/// `[标签 + 计数角标]` 内容，同样的字号，宽度该一样。
-///
-/// ★ 2026-10-05：与首页同构，改成**上限** + 按可用宽三等分钳制
-///   （`min(96, (avail − 8) / 3)`）。两页**必须**用同一套语义：
-///   否则一个页面 96、另一个 88，看起来就是「两个页面对不齐」。
-///   ⚠️ 这里的 `avail` 是 `Padding(all(4))` **之外**的可用宽。
-const double _followTabWidth = 96;
-
-/// 实际使用的 tab 宽度 = `min(上限, 可用宽三等分)`（与首页同名同义）
-///
-/// 追更页这一行**没有** `Expanded`/`SingleChildScrollView`（`Align` 给的是
-/// loose 约束，maxWidth = 整页内容宽）⇒ 常见档位算下来都是 96.00：
-/// `360dp → (328 − 8)/3 = 106.67 → 96.00`、`412dp → 96.00`、
-/// `1280dp → 96.00`。钳制只在容器真的被压窄时才生效。
-double _followTabWidthFor(double avail) =>
-    math.min(_followTabWidth, (avail - 8.0) / 3);
-
-/// 分段控件的配色（浅色/深色两套，**照抄 `my_shelf.dart` 的 `_ShelfPalette`**）
-///
-/// # 为什么照抄而不是自己调
-///
-/// 用户的要求是「跟底栏的一样」。两者的药丸、文字色、角标底
-/// 必须**成对**取自同一套值 —— 自己另调一套参数就会"看起来不一样"，
-/// 而那正是用户已经打回过的问题。
-///
-/// 把两套值集中在这里，避免散落各处写 `isLight ? ... : ...`
-/// —— 漏改一处的表现是"某个元素在深色下看不见"，极难发现。
-class _FollowPalette {
-  const _FollowPalette({
-    required this.pillGradient,
-    required this.pillShadow,
-    required this.activeText,
-    required this.idleText,
-    required this.badgeBg,
-  });
-
-  /// 药丸填充（浅色=近纯白；深色=很透的白叠加）
-  final List<Color> pillGradient;
-
-  /// 药丸投影的不透明度
-  final double pillShadow;
-
-  /// 选中态文字（**必须与药丸明暗相反**，见 `_FollowTabs` 的说明）
-  final Color activeText;
-
-  /// 未选中文字
-  final Color idleText;
-
-  /// 角标底色
-  final Color badgeBg;
-
-  static _FollowPalette of(bool isLight) => isLight
-      ? _FollowPalette(
-          pillGradient: [
-            Colors.white.withValues(alpha: 0.96),
-            Colors.white.withValues(alpha: 0.80),
-          ],
-          pillShadow: 0.16,
-          // `--tab-fg-strong: rgb(16 18 26 / 0.94)`
-          activeText: const Color(0xFF10121A).withValues(alpha: 0.94),
-          // `--tab-fg: rgb(16 18 26 / 0.62)`
-          idleText: const Color(0xFF10121A).withValues(alpha: 0.62),
-          badgeBg: const Color(0xFF10121A).withValues(alpha: 0.10),
-        )
-      : _FollowPalette(
-          pillGradient: [
-            Colors.white.withValues(alpha: 0.19),
-            Colors.white.withValues(alpha: 0.10),
-          ],
-          pillShadow: 0.34,
-          // `--tab-fg-strong: #ffffff`
-          activeText: Colors.white,
-          // `--tab-fg: rgb(255 255 255 / 0.76)`
-          idleText: Colors.white.withValues(alpha: 0.76),
-          badgeBg: Colors.white.withValues(alpha: 0.16),
-        );
-}
-
-/// 单个 tab
-///
-/// ⚠️ **本身是透明的** —— 玻璃在外层 `GlassContainer`、
-///    选中药丸在 `_FollowTabs` 里。与 `my_shelf` 的 `_ShelfTabChip`
-///    结构完全一致（原版 `.mtab { background: transparent }`）。
-class _FollowTabChip extends StatelessWidget {
-  const _FollowTabChip({
-    required this.label,
-    required this.count,
-    required this.active,
-    required this.cols,
-    required this.onTap,
-  });
-
-  final String label;
-  final int count;
-  final bool active;
-  final _FollowPalette cols;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    /*
-     * ⚠️ 文字色**不能**用 `Theme.of(context).colorScheme.onSurface` ——
-     *    必须与药丸明暗成对，统一走 `_FollowPalette`。
-     */
-    final textColor = active ? cols.activeText : cols.idleText;
-
-    return _GlassTapSurface(
-      onTap: onTap,
-      borderRadius: Radii.rFull,
-      /*
-       * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`InkWell` → `_GlassTapSurface`
-       *
-       * # 为什么不是直接换成 `GlassButton.custom`
-       * ```text
-       * 这里的"药丸底 + 文字 + 角标"是**自己画的**（`_FollowPalette` 的
-       * 渐变 + 投影 + 角标 Container），不是玻璃材质。
-       * 若换成 GlassButton.custom，它会自带一层玻璃底 ⇒ 与外面的
-       * `_FollowTabs` 那块玻璃叠成两层 ⇒ 观感变成"玻璃里的玻璃里的玻璃"。
-       * 而 `_FollowTabs` 的注释（本文件 :1360）明确记着这个教训：
-       *   > 我第一版给每个 tab 各套一块 GlassContainer ——
-       *   > 于是屏幕上出现三个独立的小玻璃胶囊。
-       *   > ★ 教训："看起来不像"时先怀疑结构，不要先调参数。
-       * ⇒ 这里**只换点击层**，视觉层（药丸）原样不动。
-       * ```
-       *
-       * # 换了什么、没换什么
-       * ```text
-       * 换掉：InkWell（Material 的水波纹载体）
-       *       ⇒ 水波纹在本项目已被 `NoSplash.splashFactory` 全局关掉
-       *          （theme_bridge.dart 里 `splashFactory: NoSplash.splashFactory`），
-       *          所以**视觉上本来就无水波纹**，删它不丢观感。
-       * 保留：点击 / 焦点 / 语义 / 键盘激活（由 _GlassTapSurface 提供，
-       *       它内部走 GlassButton.custom，自带 GlassFocusRegion）
-       * 保留：34dp 触控契约（padding 在下面，未动）
-       * ```
-       */
-      child: Padding(
-        /*
-         * ★★ 纵向内边距必须 ≥ Sp.x3(12)，**不是** Sp.x2(8)
-         *
-         * # 为什么（实测 + 原版注释，双证据）
-         *
-         * 原版 `MyShelf.vue` 的 `.mtab` 逐字记着（CSS 注释，此处转述）：
-         * > 触控目标 ≥34px（见 DEVELOPMENT.md 坑 35）。
-         * > 8px 上下内边距 + 14px 行高只到 31px，差一点不达标，故加到 10px。
-         * 而它的实际取值是 `padding: 10px 14px`。
-         *
-         * 项目规范（`srcl_to_client/DEVELOPMENT.md` 坑 35）：
-         * > ★ 触控目标不得小于 ~34px —— 实测巡检发现 52 处偏小
-         *
-         * # 我们的实测（task-36，仪器有阳性对照）
-         *
-         * ```text
-         * 修之前：InkWell = 96 x 33   → under34 = true   ✗ 违反项目自己的规范
-         * 阳性对照：200x20 的东西被判 under34 = true     ✓ 仪器有效
-         * ```
-         * 算式：`Sp.x2*2 (16) + 17 (文字行高)` = 33。
-         *
-         * ★ 追更页这三个 tab 与首页「我的」**逐字同构**，两处必须一起改 ——
-         *   只改一处会立刻变成"一个页面对、一个页面不对"。
-         */
-        padding: const EdgeInsets.symmetric(
-          // ★ 横向 12 → 8：与首页 `my_shelf.dart` 的 chip 保持逐字一致
-          horizontal: Sp.x2,
-          // ⚠️ 纵向**不许动** —— 那是 ≥34dp 触控目标契约
-          vertical: Sp.x3,
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                  color: textColor,
-                ),
-              ),
-            ),
-            if (count > 0) ...[
-              const SizedBox(width: 4),
-              // 角标是**药丸形小底 + 文字**，不是裸数字
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                decoration: BoxDecoration(
-                  color: cols.badgeBg,
-                  borderRadius: Radii.rFull,
-                ),
-                child: Text(
-                  '$count',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    height: 1.5,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                    color: textColor,
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 /// 播放记录的**显示标题**（逐级兜底，**永不返回空串**）
@@ -2034,12 +1660,12 @@ class _ContinueCard extends StatelessWidget {
     final colors = _followColors(context);
     final p = progress;
 
-    return _GlassTapSurface(
+    return _FollowTapSurface(
       onTap: onTap,
       borderRadius: Radii.rMd,
       semanticLabel: progressDisplayTitle(p),
       /*
-       * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`InkWell` → `_GlassTapSurface`
+       * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`InkWell` → `_FollowTapSurface`
        *
        * 这一处与 tab chip 不同：它**不需要**玻璃底（卡片本身是封面图 +
        * 两行文字，背景透明），所以只换"点击 + 焦点 + 语义"这一层。
@@ -2063,8 +1689,9 @@ class _ContinueCard extends StatelessWidget {
                 children: [
                   // 占位底色 —— 前景色 5%（task-37，与 poster_card 同一口径）
                   Container(
-                    color: colors.onSurface
-                        .withValues(alpha: AppColors.posterPlaceholderAlpha),
+                    color: colors.onSurface.withValues(
+                      alpha: AppColors.posterPlaceholderAlpha,
+                    ),
                   ),
                   /*
                    * ══════════════════════════════════════════════════════
@@ -2115,8 +1742,9 @@ class _ContinueCard extends StatelessWidget {
                           ? Icon(
                               AppIcons.movie_outlined,
                               size: FontSizes.display * 0.6,
-                              color: colors.onSurfaceVariant
-                                  .withValues(alpha: 0.5),
+                              color: colors.onSurfaceVariant.withValues(
+                                alpha: 0.5,
+                              ),
                             )
                           : Text(
                               // 原版 `title.slice(0, 1)` —— 中文一个字就是完整的字
@@ -2124,8 +1752,9 @@ class _ContinueCard extends StatelessWidget {
                               style: TextStyle(
                                 fontSize: FontSizes.display * 0.6,
                                 fontWeight: FontWeight.w600,
-                                color: colors.onSurfaceVariant
-                                    .withValues(alpha: 0.5),
+                                color: colors.onSurfaceVariant.withValues(
+                                  alpha: 0.5,
+                                ),
                               ),
                             ),
                     ),
@@ -2134,7 +1763,7 @@ class _ContinueCard extends StatelessWidget {
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    child: _GlassProgressLine(
+                    child: _FollowProgressLine(
                       value: p.percent / 100.0,
                       minHeight: 3,
                       backgroundColor: Colors.black38,
@@ -2247,11 +1876,13 @@ class _FavGrid extends StatelessWidget {
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount:
-                followGridColumns(_followBandFor(context, c.maxWidth)),
+            crossAxisCount: followGridColumns(
+              _followBandFor(context, c.maxWidth),
+            ),
             // ★ 宽档 16（原版 `--poster-gap`）/ 窄档 12 —— 与 `_ContinueList` 同源
-            crossAxisSpacing:
-                Layout.gapFor(_followBandFor(context, c.maxWidth)),
+            crossAxisSpacing: Layout.gapFor(
+              _followBandFor(context, c.maxWidth),
+            ),
             mainAxisSpacing: Sp.x6,
             /*
              * ★ 2026-09-25：`+ 78` → `+ 44`（删掉卡片下的操作按钮后同步收回）
@@ -2426,10 +2057,12 @@ class _FollowSkeleton extends StatelessWidget {
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount:
-                followGridColumns(_followBandFor(context, c.maxWidth)),
-            crossAxisSpacing:
-                Layout.gapFor(_followBandFor(context, c.maxWidth)),
+            crossAxisCount: followGridColumns(
+              _followBandFor(context, c.maxWidth),
+            ),
+            crossAxisSpacing: Layout.gapFor(
+              _followBandFor(context, c.maxWidth),
+            ),
             mainAxisSpacing: Sp.x5,
             // ★ 必须与 followGridAspect() 逐值相同（否则骨架→内容卡跳位）
             childAspectRatio: followGridAspect(),
@@ -2464,7 +2097,7 @@ class _FollowSkeleton extends StatelessWidget {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  玻璃化 M2 的两个替代件（取代 Material 的 InkWell / LinearProgressIndicator）
+//  Semantic color compatibility for poster content and Miuix interaction surfaces
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// 取语义色 —— **优先走 AppThemeScope，未接线时按 Theme.brightness 兜底**
@@ -2512,126 +2145,57 @@ AppSemanticColors _followColors(BuildContext context) {
   );
 }
 
-/// 玻璃化的**点击面** —— 取代 `InkWell`
-///
-/// # 为什么不用裸 `GestureDetector`
-/// ```text
-/// 铁律 8 要求：焦点态 / 无障碍语义 / 键盘 Tab 序都要保留。
-/// 裸 GestureDetector 这三样**一个都没有**。
-/// ⇒ 内部走 `GlassButton.custom`，它自带 `GlassFocusRegion`：
-///     焦点环、Enter/Space 激活、Semantics(button, label, onTap) 全有。
-/// ```
-/// # 为什么不是 `GlassContainer`
-/// ```text
-/// GlassContainer **没有 onTap** —— 它只是材质，不是交互件。
-/// ```
-/// # 视觉上会多出一层玻璃吗
-/// ```text
-/// 不会。`GlassButton.custom` 的玻璃底由 `style` 控制，这里传
-/// `GlassButtonStyle.plain`（无填充、无描边、无投影），
-/// 只保留交互与焦点环 ⇒ 调用方自己的视觉（药丸渐变 / 封面图）原样露出。
-/// ```
-class _GlassTapSurface extends StatelessWidget {
-  const _GlassTapSurface({
+/// Clickable Miuix card preserves the full poster hit area and remote activation.
+class _FollowTapSurface extends StatelessWidget {
+  const _FollowTapSurface({
     required this.child,
     required this.onTap,
     this.borderRadius,
     this.semanticLabel,
   });
-
   final Widget child;
   final VoidCallback onTap;
   final BorderRadius? borderRadius;
-
-  /// 读屏器念出来的文字。不传时由子树的 Text 自行提供。
   final String? semanticLabel;
 
   @override
-  Widget build(BuildContext context) {
-    return GlassButton.custom(
-      onTap: onTap,
-      /*
-       * ★ label 必须给：`GlassButton` 只在 `label.isNotEmpty` 时才把
-       *   semanticLabel 传给 GlassFocusRegion（见包内 glass_button.dart:998）。
-       *   不传 ⇒ 读屏器只念出子树的文字、且没有 button 角色。
-       */
-      label: semanticLabel ?? '',
-      // 纯交互层，不要玻璃材质（视觉由调用方自己画）
-      style: GlassButtonStyle.transparent,
-      /*
-       * ⚠️ 关掉"液态拉伸"与"锚点形变"
-       *
-       * # 为什么必须关（实测，不是审美）
-       * ```text
-       * 默认 stretch=0.5 + anchorStretch=true ⇒ 按压/拖动期间起一个
-       * 基于 ticker 的持续形变动画。在本页（tab 药丸 + 拖拽）里它与
-       * 药丸的 AnimatedPositioned 叠加，导致 `pumpAndSettle` **永不收敛**：
-       *   t36_pill_drag_follow_test 两条用例报 "pumpAndSettle timed out"。
-       *   而断言本身是过的（拖动前=286 拖动中=326）——
-       *   ★ 也就是说：功能没坏，是"永远在动"把测试卡死了。
-       * 同一现象在真机上的表现是"松手后仍在轻微回弹"，属于无谓耗电。
-       * ```
-       * ⇒ 本页只需要"点击 + 焦点 + 语义"，不需要形变。
-       */
-      stretch: 0,
-      anchorStretch: false,
-      width: null,
-      height: null,
-      shape: LiquidRoundedSuperellipse(
-        borderRadius: borderRadius?.topLeft.x ?? Radii.md,
+  Widget build(BuildContext context) => Semantics(
+    label: semanticLabel,
+    button: true,
+    child: Shortcuts(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+      },
+      child: miuix.MiuixCard(
+        onPressed: onTap,
+        cornerRadius: borderRadius?.topLeft.x ?? Radii.md,
+        child: ClipRRect(borderRadius: borderRadius ?? Radii.rMd, child: child),
       ),
-      child: child,
-    );
-  }
+    ),
+  );
 }
 
-/// 玻璃化的**进度条** —— 取代 `LinearProgressIndicator`
-///
-/// # 为什么不直接删进度条
-/// ```text
-/// 它是「继续观看」卡片上唯一的"看到哪了"信息。删掉 = 丢功能（违反铁律 8）。
-/// ```
-/// # 为什么自绘而不是用 GlassProgressIndicator
-/// ```text
-/// 位置是 `Positioned(bottom: 0)` 贴在封面**底部**，高度只有 3dp。
-/// Glass 的进度条带材质层，在 3dp 高度上既看不出玻璃效果，
-/// 又会因为叠加层让封面边缘发灰。⇒ 这里要的是"一条细色带"，
-/// 用纯 `FractionallySizedBox` 自绘，零 Material、零额外图层。
-/// ```
-class _GlassProgressLine extends StatelessWidget {
-  const _GlassProgressLine({
+/// Progress retains the thin poster edge and uses the Miuix painter.
+class _FollowProgressLine extends StatelessWidget {
+  const _FollowProgressLine({
     required this.value,
     required this.minHeight,
     this.backgroundColor,
   });
-
-  /// 0..1；`null` 表示不确定进度（本页不用，但保留语义以免将来误传）
   final double value;
   final double minHeight;
   final Color? backgroundColor;
 
   @override
   Widget build(BuildContext context) {
-    final colors = _followColors(context);
-    return SizedBox(
+    final colors = miuix.MiuixTheme.of(context).colors;
+    return miuix.MiuixLinearProgressIndicator(
+      progress: value.clamp(0.0, 1.0),
       height: minHeight,
-      child: Stack(
-        children: [
-          // 底槽
-          Positioned.fill(
-            child: ColoredBox(
-              color: backgroundColor ?? Colors.black38,
-            ),
-          ),
-          // 已看部分
-          Positioned.fill(
-            child: FractionallySizedBox(
-              alignment: Alignment.centerLeft,
-              widthFactor: value.clamp(0.0, 1.0),
-              child: ColoredBox(color: colors.primary),
-            ),
-          ),
-        ],
+      colors: miuix.MiuixProgressIndicatorColors(
+        foregroundColor: colors.primary,
+        disabledForegroundColor: colors.disabledPrimarySlider,
+        backgroundColor: backgroundColor ?? colors.secondaryContainer,
       ),
     );
   }

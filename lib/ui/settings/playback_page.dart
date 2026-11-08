@@ -141,6 +141,8 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import '../../core/app_log.dart';
 import '../../core/clip_download.dart';
 import '../../core/device.dart';
@@ -375,9 +377,9 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
      *    他会以为"导出没成功"。
      */
     final dir = await writableExportDir();
-    _flash(dir.userVisible
-        ? '已存到 ${dir.path}'
-        : '已存到应用目录（系统文件管理器看不到），完整路径见下方「最近导出」');
+    _flash(
+      dir.userVisible ? '已存到 ${dir.path}' : '已存到应用目录（系统文件管理器看不到），完整路径见下方「最近导出」',
+    );
     return _join(dir.path, suggestedName);
   }
 
@@ -490,11 +492,14 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
     } catch (_) {}
     out.add(('系统', os));
 
-    out.add(('设备形态', switch (Device.kind) {
-      DeviceKind.desktop => '桌面（鼠标键盘）',
-      DeviceKind.touchOnly => '触摸端（手机 / 平板）',
-      DeviceKind.tv => '电视（遥控器）',
-    }));
+    out.add((
+      '设备形态',
+      switch (Device.kind) {
+        DeviceKind.desktop => '桌面（鼠标键盘）',
+        DeviceKind.touchOnly => '触摸端（手机 / 平板）',
+        DeviceKind.tv => '电视（遥控器）',
+      },
+    ));
 
     String dir;
     try {
@@ -602,13 +607,19 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       title: '片段下载并发',
       trailing: Text(
         '同时最多 ${ClipDownloader.concurrencyLabel(_concurrency)}',
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       ),
       children: [
         Text(
           '限制「同时进行」的片段下载任务数。排队中的任务不占带宽，'
           '前面的下载完成一个，后面的才开始一个。',
-          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x4),
         Row(
@@ -618,7 +629,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
               style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
             ),
             Expanded(
-              child: Slider(
+              child: ui.Slider(
                 value: _concurrency.toDouble().clamp(0, 8),
                 min: 0,
                 max: 8,
@@ -635,16 +646,16 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
               child: Text(
                 ClipDownloader.concurrencyLabel(_concurrency),
                 textAlign: TextAlign.end,
-                style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurface,
+                ),
               ),
             ),
           ],
         ),
         const SizedBox(height: Sp.x3),
-        const SettingsInfoRow(
-          label: '0 表示',
-          value: '不限制（同时开满所有任务）',
-        ),
+        const SettingsInfoRow(label: '0 表示', value: '不限制（同时开满所有任务）'),
         SettingsInfoRow(
           label: '当前正在跑',
           value: '${ClipDownloader.activeCount} 个',
@@ -670,7 +681,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           '★ 整片下载（详情页头部的「下载」按钮）「不占」这个上限 —— '
           '它落在「视频 / 源影 / <剧名>/」下，是用户自己的文件，'
           '不会被自动淘汰。',
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
       ],
     );
@@ -682,14 +696,20 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       title: '整片下载',
       trailing: Text(
         DownloadQueue.concurrencyLabel(_queueConcurrency),
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       ),
       children: [
         Text(
           '「下载」按钮（详情页头部 / 每一集）落在哪个目录、同时下几集。'
           '与上面「片段下载并发」是「两笔账」：片段进缓存会被自动淘汰，'
           '整片是你自己的文件，永远不会被自动删。',
-          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x4),
         Row(
@@ -699,10 +719,11 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
               style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
             ),
             Expanded(
-              child: Slider(
-                value: _queueConcurrency
-                    .toDouble()
-                    .clamp(1, DownloadQueue.maxConcurrency.toDouble()),
+              child: ui.Slider(
+                value: _queueConcurrency.toDouble().clamp(
+                  1,
+                  DownloadQueue.maxConcurrency.toDouble(),
+                ),
                 min: 1,
                 max: DownloadQueue.maxConcurrency.toDouble(),
                 divisions: DownloadQueue.maxConcurrency - 1,
@@ -718,7 +739,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
               child: Text(
                 DownloadQueue.concurrencyLabel(_queueConcurrency),
                 textAlign: TextAlign.end,
-                style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurface,
+                ),
               ),
             ),
           ],
@@ -729,10 +753,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
          *   串行是**为了播放不卡**（见 download_queue.dart 文件头），
          *   不是偷懒。用户把 1 拉到 3 时得知道自己在拿带宽换速度。
          */
-        const SettingsInfoRow(
-          label: '1 表示',
-          value: '串行（默认，把带宽让给播放）',
-        ),
+        const SettingsInfoRow(label: '1 表示', value: '串行（默认，把带宽让给播放）'),
         SettingsInfoRow(
           label: '当前正在跑',
           value: '${DownloadQueue.activeCount} 个',
@@ -746,18 +767,18 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
         const SizedBox(height: Sp.x2),
         Row(
           children: [
-            OutlinedButton.icon(
+            ui.OutlinedButton.icon(
               onPressed: _pickDownloadDir,
               icon: const Icon(AppIcons.folder_open, size: 18),
               label: const Text('改目录'),
             ),
             const SizedBox(width: Sp.x2),
-            TextButton(
+            ui.TextButton(
               onPressed: _resetDownloadDir,
               child: const Text('恢复默认'),
             ),
             const Spacer(),
-            TextButton.icon(
+            ui.TextButton.icon(
               onPressed: _dlDir.isEmpty ? null : () => DownloadDir.open(_dlDir),
               icon: const Icon(AppIcons.open_in_new, size: 16),
               label: const Text('打开'),
@@ -765,10 +786,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           ],
         ),
         const SizedBox(height: Sp.x2),
-        const SettingsInfoRow(
-          label: '默认目录',
-          value: '视频 / 源影（跟随系统）',
-        ),
+        const SettingsInfoRow(label: '默认目录', value: '视频 / 源影（跟随系统）'),
       ],
     );
   }
@@ -785,9 +803,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       final dir = await DownloadDir.root();
       if (!mounted) return;
       setState(() => _dlDir = dir);
-      _flash(dir == picked
-          ? '下载目录已改为 $dir'
-          : '这个目录用不了（$picked），已回到默认：$dir');
+      _flash(dir == picked ? '下载目录已改为 $dir' : '这个目录用不了（$picked），已回到默认：$dir');
     } catch (e) {
       _flash('改目录失败：$e');
     }
@@ -807,13 +823,19 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       title: '缓存上限与管理',
       trailing: Text(
         '合计 ${ClipDownloader.humanBytes(_totalBytes)} · 上限 $_cacheLimit MB',
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       ),
       children: [
         Text(
           '应用数据目录里有「三个」缓存目录，用途不同、能不能删也不同。'
           '下面每个数字都是「真实读盘」得到的，不是估算。',
-          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x4),
         SettingsGestureChoice<int>(
@@ -846,7 +868,8 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
          */
         SettingsInfoRow(
           label: '片段缓存',
-          value: '${ClipDownloader.humanBytes(_cacheBytes)}'
+          value:
+              '${ClipDownloader.humanBytes(_cacheBytes)}'
               '（$_cacheFiles 个文件）· clip-cache',
         ),
         /*
@@ -874,10 +897,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
          * ⇒ 不能因为"现在是 0"就把机制删了。
          * ```
          */
-        SettingsInfoRow(
-          label: '播放器临时缓存',
-          value: mpvCacheLabel(_mpvBytes),
-        ),
+        SettingsInfoRow(label: '播放器临时缓存', value: mpvCacheLabel(_mpvBytes)),
         SettingsInfoRow(
           label: '截图',
           value: '${ClipDownloader.humanBytes(_shotsBytes)} · shots',
@@ -889,12 +909,14 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
          */
         const SettingsInfoRow(
           label: '预读窗口',
-          value: '最多 ${ClipDownloader.kMpvCacheSecs ~/ 60} 分钟'
+          value:
+              '最多 ${ClipDownloader.kMpvCacheSecs ~/ 60} 分钟'
               '（到点即停，不会把整部片子一次拉完）',
         ),
         SettingsInfoRow(
           label: '合计',
-          value: '${ClipDownloader.humanBytes(_totalBytes)}'
+          value:
+              '${ClipDownloader.humanBytes(_totalBytes)}'
               ' / 上限 $_cacheLimit MB'
               '${_overLimit ? '（已超限）' : ''}',
         ),
@@ -903,23 +925,23 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           spacing: Sp.x3,
           runSpacing: Sp.x2,
           children: [
-            OutlinedButton(
+            ui.OutlinedButton(
               onPressed: _cacheBusy ? null : _applyLimitNow,
               child: const Text('按上限清理（三个目录）'),
             ),
-            OutlinedButton(
+            ui.OutlinedButton(
               onPressed: _cacheBusy ? null : _clearCache,
               child: const Text('清空片段缓存'),
             ),
-            OutlinedButton(
+            ui.OutlinedButton(
               onPressed: _cacheBusy ? null : _clearMpvCache,
               child: const Text('清空播放器缓存'),
             ),
-            TextButton(
+            ui.TextButton(
               onPressed: _cacheBusy ? null : _refreshCache,
               child: const Text('刷新读数'),
             ),
-            TextButton(
+            ui.TextButton(
               onPressed: _mpvReadBusy ? null : _readMpvNow,
               child: const Text('回读 mpv 设置'),
             ),
@@ -935,7 +957,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           '① 播放器缓存（删了只是重缓冲）→ ② 片段缓存（删了要重新下）'
           '→ ③ 截图（「不可再生」，只在①②都不够时才动）。'
           '「清空片段缓存」只清 clip-cache，「不碰」截图与播放器缓存。',
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         if (_mpvReadback.isNotEmpty) ...[
           const SizedBox(height: Sp.x4),
@@ -1060,7 +1085,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
       title: '日志与反馈',
       trailing: Text(
         '本次会话 ${AppLog.lineCount} 行',
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       ),
       children: [
         /*
@@ -1072,24 +1100,27 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           '出问题时请把这份日志发给作者 —— 里面记录了播放、下载、缓存的操作与失败原因。'
           '本应用没有接入系统分享面板，所以「分享」落成两条路：'
           '导出成 .log 文件，或者复制到剪贴板后自己粘贴。',
-          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x4),
         Wrap(
           spacing: Sp.x3,
           runSpacing: Sp.x2,
           children: [
-            FilledButton.icon(
+            ui.FilledButton.icon(
               onPressed: _logBusy ? null : _exportLog,
               icon: const Icon(AppIcons.save_alt, size: 18),
               label: const Text('导出为日志文件'),
             ),
-            OutlinedButton.icon(
+            ui.OutlinedButton.icon(
               onPressed: _logBusy ? null : _copyLog,
               icon: const Icon(AppIcons.copy_all, size: 18),
               label: const Text('复制到剪贴板'),
             ),
-            OutlinedButton.icon(
+            ui.OutlinedButton.icon(
               onPressed: _envBusy ? null : _copyEnvInfo,
               icon: const Icon(AppIcons.info_outline, size: 18),
               label: const Text('复制环境信息'),
@@ -1108,7 +1139,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           const SizedBox(height: Sp.x3),
           Text(
             '已复制到剪贴板的内容：',
-            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: Sp.x1),
           SettingsInfoRow(label: '环境信息', value: _envInfo),
@@ -1116,10 +1150,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
         if (_lastExportPath.isNotEmpty) ...[
           const SizedBox(height: Sp.x3),
           SettingsInfoRow(label: '最近导出', value: _lastExportPath),
-          SettingsInfoRow(
-            label: '文件大小',
-            value: '$_lastExportBytes 字节',
-          ),
+          SettingsInfoRow(label: '文件大小', value: '$_lastExportBytes 字节'),
         ],
         const SizedBox(height: Sp.x3),
         /*
@@ -1130,7 +1161,10 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
           '日志同时按天写进应用数据目录的 logs/ 下（sourin-YYYY-MM-DD.log），'
           '每次导出都会把当前内容整份写出，并在开头附上环境信息。'
           '反馈问题时也可以直接把上面这个目录里的 .log 文件发给作者。',
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
       ],
     );
@@ -1154,17 +1188,22 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
         children: [
           Text(
             '环境信息（反馈时请一并提供）',
-            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: Sp.x2),
           if (rows.isEmpty)
             Text(
               '读取中…',
-              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                color: colors.onSurfaceVariant,
+              ),
             )
           else
-            for (final r in rows)
-              SettingsInfoRow(label: r.$1, value: r.$2),
+            for (final r in rows) SettingsInfoRow(label: r.$1, value: r.$2),
         ],
       ),
     );

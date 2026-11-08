@@ -52,6 +52,7 @@ import 'dart:io';
 // material_ui 已经把 rendering 的公开类型带出来了（analyzer 实测：
 // 单独 import 会报 unnecessary_import）。
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/ui_prefs.dart';
@@ -248,12 +249,12 @@ PlayerSettingsSheet _sheet({
 Color _chipBorderColor(WidgetTester t, String label) {
   final chip = find.ancestor(
     of: find.text(label),
-    matching: find.byType(ChoiceChip),
+    matching: find.byType(ui.ChoiceChip),
   );
   expect(chip, findsOneWidget,
       reason: '★ 找不到该 chip 的 ChoiceChip ⇒ 后面的断言全是恒真（假绿）');
 
-  final side = t.widget<ChoiceChip>(chip).side;
+  final side = t.widget<ui.ChoiceChip>(chip).side;
   expect(side, isNotNull,
       reason: '★ chip 的 side 不能为空 —— 高亮判据就是读它');
   return side!.color;
@@ -469,8 +470,8 @@ void main() {
       await t.pumpAndSettle();
 
       var movable = 0;
-      for (final e in find.byType(Slider).evaluate()) {
-        if ((e.widget as Slider).onChanged != null) movable++;
+      for (final e in find.byType(ui.Slider).evaluate()) {
+        if ((e.widget as ui.Slider).onChanged != null) movable++;
       }
       expect(movable, 1,
           reason: '★★ 只允许「并发」那一根可动滑杆'
@@ -484,7 +485,7 @@ void main() {
       final body = sheetSrc.substring(i, i + 900);
       expect(body.contains('Slider'), isFalse,
           reason: '★ 倍速段落里不许出现 Slider（会抢走 '
-              'player_capability_test.dart:1252 的 find.byType(Slider).first）');
+              'player_capability_test.dart:1252 的 find.byType(ui.Slider).first）');
     });
   });
 

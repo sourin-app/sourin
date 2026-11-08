@@ -34,6 +34,8 @@
 // > 所以：**搜出来给用户看，由用户确认**。但我会做相似度排序 + 标记，
 // > 让正确的那个排在前面。
 
+import 'miuix_controls.dart' as ui;
+
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
@@ -78,15 +80,20 @@ export '../../core/title_match.dart';
 /// 参数：`(keyword, onEvent)`，`onEvent` 与真实 `searchAllStream` 的回调
 /// **同签名同语义**（返回 false = 停止接收）。
 @visibleForTesting
-Future<void> Function(String keyword, bool Function(SearchStreamEvent ev) onEvent)?
-    debugSwitchSearchRunner;
+Future<void> Function(
+  String keyword,
+  bool Function(SearchStreamEvent ev) onEvent,
+)?
+debugSwitchSearchRunner;
 
 /// 注册/注销上面的注入口（测试在 addTearDown 里复位为 null）
 @visibleForTesting
 void debugSetSwitchSearchRunner(
   Future<void> Function(
-          String keyword, bool Function(SearchStreamEvent ev) onEvent)?
-      f,
+    String keyword,
+    bool Function(SearchStreamEvent ev) onEvent,
+  )?
+  f,
 ) {
   debugSwitchSearchRunner = f;
 }
@@ -297,21 +304,21 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
   /// **共用这一份**（"判据只有一个来源"：不许测试里另写一遍累积/排序）。
   void _handleEvent(SearchStreamEvent ev) {
     switch (ev.kind) {
-          case SearchEventKind.hit:
-            /*
+      case SearchEventKind.hit:
+        /*
              * ★ 算相似度并**按相似度排序**（最可能"同一部"的排前面）
              *
              * 用该源里最像的那条的分数作为整个源的分数。
              */
-            // ★ 与搜索页用的是**同一个函数**（`bestTitleScore`），
-            //  不再是"两处各写一份、靠记得改两遍"。
-            final best = bestTitleScore(widget.title, ev.items);
-            setState(() {
-              _candidates.add(
-                SwitchCandidate(
-                  provider: ev.provider,
-                  providerName: ev.providerName,
-                  /*
+        // ★ 与搜索页用的是**同一个函数**（`bestTitleScore`），
+        //  不再是"两处各写一份、靠记得改两遍"。
+        final best = bestTitleScore(widget.title, ev.items);
+        setState(() {
+          _candidates.add(
+            SwitchCandidate(
+              provider: ev.provider,
+              providerName: ev.providerName,
+              /*
                  * ★ task-73 ⑥：**组内也按匹配度排序**
                  *
                  * 改之前这里是 `items: ev.items` —— 组内顺序 = 源自己返回的
@@ -327,23 +334,23 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
                  * ⚠️ 必须用 `stableRankDesc`（同分保持原顺序）——
                  *   Dart 的 `List.sort` 不是稳定排序，同分项会乱跳。
                  */
-                  items: rankItemsByTitleDesc(widget.title, ev.items),
-                  score: best,
-                ),
-              );
-              _settled++;
-            });
-          case SearchEventKind.miss:
-            setState(() {
-              if (ev.reason != null && ev.reason!.isNotEmpty) {
-                _misses.add((provider: ev.provider, reason: ev.reason!));
-              }
-              _settled++;
-            });
-          case SearchEventKind.done:
-          case SearchEventKind.error:
-            break;
-        }
+              items: rankItemsByTitleDesc(widget.title, ev.items),
+              score: best,
+            ),
+          );
+          _settled++;
+        });
+      case SearchEventKind.miss:
+        setState(() {
+          if (ev.reason != null && ev.reason!.isNotEmpty) {
+            _misses.add((provider: ev.provider, reason: ev.reason!));
+          }
+          _settled++;
+        });
+      case SearchEventKind.done:
+      case SearchEventKind.error:
+        break;
+    }
   }
 
   void _pick(MediaItem item) {
@@ -400,8 +407,10 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
         .toList(growable: false);
     final excludedCurrent = _candidates.length - candidates.length;
     if (excludedCurrent > 0) {
-      debugPrint('[SWITCH] 候选排除当前源=${widget.currentProvider} '
-          '（排掉 $excludedCurrent 组，剩 ${candidates.length} 组）');
+      debugPrint(
+        '[SWITCH] 候选排除当前源=${widget.currentProvider} '
+        '（排掉 $excludedCurrent 组，剩 ${candidates.length} 组）',
+      );
     }
 
     final sorted = stableRankDesc(candidates, (c) => c.score);
@@ -426,7 +435,8 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
      */
     return AppDialogShell(
       title: '换源',
-      subtitle: '按标题搜索其他源；'
+      subtitle:
+          '按标题搜索其他源；'
           '${widget.currentProviderName ?? widget.currentProvider}'
           ' 是当前源',
       onClose: () => Navigator.pop(context),
@@ -442,7 +452,7 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
             child: Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: ui.TextField(
                     controller: _kw,
                     textInputAction: TextInputAction.search,
                     onSubmitted: (_) => _run(),
@@ -454,7 +464,7 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
                   ),
                 ),
                 const SizedBox(width: Sp.x2),
-                FilledButton(
+                ui.FilledButton(
                   onPressed: _searching ? null : _run,
                   child: const Text('重搜'),
                 ),
@@ -473,7 +483,10 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
                     width: 14,
                     height: 14,
                     // T27-07：onSurface 随主题（dark #FAFAFA / light 近黑）。
-                    child: CircularProgressIndicator(color: colors.onSurface, strokeWidth: 2),
+                    child: ui.CircularProgressIndicator(
+                      color: colors.onSurface,
+                      strokeWidth: 2,
+                    ),
                   ),
                   const SizedBox(width: Sp.x2),
                   Text(
@@ -489,7 +502,7 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
             ),
 
           const SizedBox(height: Sp.x2),
-          const Divider(height: 1),
+          const ui.Divider(height: 1),
 
           // ── 结果 ──
           Flexible(
@@ -615,7 +628,10 @@ class _CandidateBlock extends StatelessWidget {
                   ),
                   child: Text(
                     '很可能是同一部',
-                    style: TextStyle(fontSize: FontSizes.cap, color: colors.primary),
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.primary,
+                    ),
                   ),
                 ),
               ],
@@ -670,7 +686,7 @@ class _CandidateBlock extends StatelessWidget {
           ),
           const SizedBox(height: Sp.x2),
           for (final it in candidate.items.take(8))
-            InkWell(
+            ui.InkWell(
               onTap: () => onPick(it),
               borderRadius: Radii.rSm,
               child: Padding(

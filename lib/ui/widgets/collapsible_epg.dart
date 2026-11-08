@@ -21,13 +21,19 @@
 // 但"自动展开"只该在**第一次拿到数据**时做一次，
 // 否则用户手动折叠后换个台又弹开，会很烦。
 
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
 import '../../design/icons/app_icons.dart';
 
 class CollapsibleEpg extends StatefulWidget {
-  const CollapsibleEpg({super.key, required this.child, this.autoExpand = true});
+  const CollapsibleEpg({
+    super.key,
+    required this.child,
+    this.autoExpand = true,
+  });
 
   final Widget child;
 
@@ -70,7 +76,7 @@ class CollapsibleEpgState extends State<CollapsibleEpg> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        InkWell(
+        ui.InkWell(
           onTap: () => setState(() {
             _open = !_open;
             _userTouched = true;

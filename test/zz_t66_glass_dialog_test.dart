@@ -45,13 +45,12 @@ import 'package:flutter_localizations/flutter_localizations.dart'
 import 'package:flutter_test/flutter_test.dart';
 // ⑧ 用来说「这是卡片本体」——量它的 rect 才知道有没有铺满整窗。
 // ignore: depend_on_referenced_packages
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
-    show GlassContainer, LiquidRoundedRectangle, LiquidRoundedSuperellipse;
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart'
     show AlertDialog, MaterialApp, Scaffold, TextButton;
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/core/network_status.dart';
-import 'package:sourin_spike/design/theme/app_theme.dart' as design;
+import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
 import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/ui/app_palette.dart' show AppPalette;
@@ -121,9 +120,14 @@ String detailSource() =>
 
 /// 宿主：**必须**给 CupertinoLocalizations —— 否则 `showAppDialog` 内部
 /// 的 DialogRoute 在部分路径下会抛（真实 shell.dart:2112-2114 也给了）。
-Widget _app(GlobalKey<NavigatorState> key) => MaterialApp(
+Widget _app(
+  GlobalKey<NavigatorState> key, {
+  Brightness mode = Brightness.dark,
+}) => MaterialApp(
   navigatorKey: key,
-  theme: AppTheme.themeFor(Brightness.dark),
+  theme: AppTheme.themeFor(mode),
+  builder: (_, child) =>
+      AppThemeHost(data: AppTheme.themeFor(mode), child: child!),
   themeAnimationDuration: Duration.zero,
   localizationsDelegates: const [
     GlobalWidgetsLocalizations.delegate,
@@ -493,7 +497,7 @@ void main() {
       /*
        * `GlassDialog`（我们没用的那个）内部硬编码了 Cupertino 色
        * （glass_dialog.dart:318-320 / 410-414）⇒ 与全站主题不同源。
-       * 本组件必须全走 AppSemanticColors。
+       * 文字跟随产品主题，表面跟随实际 Miuix 卡片；渲染对比度由第⑪组守护。
        */
       final code = stripComments(
         File('lib/design/widgets/app_glass_dialog.dart').readAsStringSync(),
@@ -504,9 +508,9 @@ void main() {
         reason: '★★★ 不许用 Cupertino 色（与全站主题不同源）',
       );
       expect(
-        code.contains('AppSemanticColors'),
+        code.contains('Theme.of(context).colorScheme'),
         isTrue,
-        reason: '★★★ 必须走 AppSemanticColors',
+        reason: '文字必须跟随产品主题，不能硬编码另一套颜色',
       );
     });
 
@@ -682,19 +686,16 @@ void main() {
       // 点「下载」→ 菜单 → 「下载全部集（1 集）」→ 触发 AppGlassDialog
       expect(find.text('下载'), findsOneWidget, reason: '前提：下载按钮在');
       await t.tap(find.text('下载'));
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 300));
+      await t.pumpAndSettle();
 
       final allItem = find.text('下载全部集（1 集）');
-      if (allItem.evaluate().isEmpty) {
-        // ignore: avoid_print
-        print('[GLASS4] 菜单项未出现，跳过页面级确认框断言（不强求）');
-        return;
-      }
+      expect(allItem, findsOneWidget, reason: '下载菜单必须显示可执行的全部集操作');
+      expect(t.getRect(allItem).right, lessThanOrEqualTo(433));
       await t.tap(allItem);
-      await t.pump();
-      await t.pump(const Duration(milliseconds: 800));
-      while (t.takeException() != null) {}
+      // Menu exit completes first, then the caller pushes a dialog whose
+      // Miuix content registers on a subsequent frame.
+      await t.pumpAndSettle();
+      expect(t.takeException(), isNull);
 
       expect(
         find.byType(AppGlassDialog),
@@ -894,7 +895,7 @@ void main() {
       await t.pumpWidget(_app(k));
       await _openAndSettle(t, k);
 
-      final rect = t.getRect(find.byType(GlassContainer));
+      final rect = t.getRect(find.byType(miuix.MiuixCard));
       // ignore: avoid_print
       print('[GLASS4] ⑧ rect=$rect w=${rect.width} h=${rect.height}');
       expect(
@@ -921,7 +922,7 @@ void main() {
       await t.pumpWidget(_app(k));
       await _openAndSettle(t, k);
 
-      final rect = t.getRect(find.byType(GlassContainer));
+      final rect = t.getRect(find.byType(miuix.MiuixCard));
       // ignore: avoid_print
       print('[GLASS4] ⑧ 默认宽=${rect.width} 高=${rect.height}');
       /*
@@ -979,7 +980,7 @@ void main() {
       await t.pump();
       await t.pump(const Duration(milliseconds: 800));
 
-      final card = t.getRect(find.byType(GlassContainer));
+      final card = t.getRect(find.byType(miuix.MiuixCard));
       final labels = ['最小化到托盘', '彻底退出', '取消'];
       final rects = [for (final l in labels) t.getRect(find.text(l).last)];
       // ignore: avoid_print
@@ -1006,257 +1007,80 @@ void main() {
   });
 
   // ════════════════════════════════════════════════════════════════════
-  group('⑩ 圆角引 token（读 widget 属性，不看像素）', () {
-    /*
-     * # 守什么
-     * ```text
-     * docs/AGENTS.md §3.5：圆角 Radii.rLg
-     * lib/ui/tokens.dart:98  Radii.lg  = 22
-     * lib/ui/tokens.dart:107 Radii.rLg = all(circular(22))
-     * ```
-     * 改前两套外壳的**玻璃轮廓层**都硬编码 `20`（`AppGlassDialog` 的
-     * `LiquidRoundedSuperellipse`、`AppDialogShell` 的 `LiquidRoundedRectangle`），
-     * 而玻璃档的观感由正是这一层决定（内层 Material 已透明 + side:none +
-     * Clip.none，不画也不裁）⇒ §3.5 在玻璃档上一直**名不副实**。
-     *
-     * # 为什么读属性而不是像素
-     * ```text
-     * 像素会被抗锯齿、设备像素比、玻璃模糊抖掉；
-     * `GlassContainer.shape.borderRadius` 是**决定观感的那个值本身**。
-     * ```
-     * # ⚠️ 判据写「等于 Radii.lg」，不写「等于 22」
-     * ```text
-     * 写死 22 ⇒ 以后调 token 时这两条会红，逼下一个人改测试而不是宣 token
-     * ⇒ 判据从"守规范"退化成"守某个具体数字"。
-     * ```
-     * # 判别力（已做故障注入）
-     * ```text
-     * 任一处改成字面量 20 ⇒ 本组立刻红（Expected: 22.0 / Actual: 20.0）。
-     * ```
-     */
-    testWidgets('AppGlassDialog 的 GlassContainer.shape 用 Radii.lg', (t) async {
-      final k = GlobalKey<NavigatorState>();
-      await t.pumpWidget(_app(k));
-      await _openAndSettle(t, k);
-
-      final glass = t.widget<GlassContainer>(find.byType(GlassContainer));
-      final shape = glass.shape;
-      expect(
-        shape,
-        isA<LiquidRoundedSuperellipse>(),
-        reason:
-            '★ AppGlassDialog 的玻璃轮廓不是超椭圆了 —— '
-            '先确认是不是换了 shape 类型，再决定这条判据怎么改',
-      );
-      expect(
-        (shape as LiquidRoundedSuperellipse).borderRadius,
-        Radii.lg,
-        reason:
-            '★ §3.5「圆角 Radii.rLg」：玻璃轮廓圆角必须引 token，'
-            '不许硬编码 20',
-      );
+  group('⑩ Miuix 对话框圆角引用 token', () {
+    testWidgets('AppGlassDialog 真实 dialog host 和卡片使用 Radii.lg', (t) async {
+      final key = GlobalKey<NavigatorState>();
+      await t.pumpWidget(_app(key));
+      await _openAndSettle(t, key);
+      expect(find.byType(miuix.MiuixDialogLayout), findsOneWidget);
+      expect(find.byType(miuix.MiuixPopupHost), findsOneWidget);
+      final card = t.widget<miuix.MiuixCard>(find.byType(miuix.MiuixCard));
+      expect(card.cornerRadius, Radii.lg);
+      expect(find.text('删除这一集？'), findsOneWidget);
     });
 
-    testWidgets(
-      'AppDialogShell(glass: true) 的 GlassContainer.shape 也用 Radii.lg',
-      (t) async {
-        await t.pumpWidget(
-          MaterialApp(
-            theme: AppTheme.themeFor(Brightness.dark),
-            themeAnimationDuration: Duration.zero,
-            localizationsDelegates: const [
-              GlobalWidgetsLocalizations.delegate,
-              GlobalCupertinoLocalizations.delegate,
-            ],
-            home: const AppDialogShell(
-              title: '圆角判据',
-              glass: true,
-              child: Text('内容'),
-            ),
+    testWidgets('AppDialogShell 的真实 Miuix 卡片使用同一圆角', (t) async {
+      final theme = AppTheme.themeFor(Brightness.dark);
+      await t.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          builder: (_, child) => AppThemeHost(data: theme, child: child!),
+          home: const AppDialogShell(
+            title: '圆角判据',
+            glass: true,
+            child: Text('内容'),
           ),
-        );
-
-        final glass = t.widget<GlassContainer>(find.byType(GlassContainer));
-        final shape = glass.shape;
-        expect(
-          shape,
-          isA<LiquidRoundedRectangle>(),
-          reason:
-              '★ AppDialogShell 的玻璃轮廓不是圆角矩形了 —— '
-              '先确认是不是换了 shape 类型，再决定这条判据怎么改',
-        );
-        expect(
-          (shape as LiquidRoundedRectangle).borderRadius,
-          Radii.lg,
-          reason:
-              '★ §3.5「圆角 Radii.rLg」：玻璃档的观感由这一层决定'
-              '（内层 Material 已透明 + side:none + Clip.none）'
-              '⇒ 这里硬编码 20 就等于整个玻璃弹窗的圆角不受规范管',
-        );
-      },
-    );
+        ),
+      );
+      await t.pumpAndSettle();
+      expect(find.byType(miuix.MiuixDialogLayout), findsOneWidget);
+      final card = t.widget<miuix.MiuixCard>(find.byType(miuix.MiuixCard));
+      expect(card.cornerRadius, Radii.lg);
+      expect(find.text('内容'), findsOneWidget);
+    });
   });
 
-  // ════════════════════════════════════════════════════════════════════
-  group('⑪ 实色垫层：正文对比度（P0，R3-① 同类缺陷）', () {
-    /*
-     * # 守什么
-     *
-     * 真机读数（Lead 用 PIL 从 `.probe/round66_r4_device/fix1_01_tray_close.png`
-     * 逐像素量；卡底 `#A1A9BC` 是**玻璃压页面后的模糊结果**）：
-     * ```text
-     * 标题「要关闭还是彻底退出？」      #0A0A0A on #A1A9BC = 8.41:1  ✔
-     * 正文（最小化到托盘…）            #737373 on #A1A9BC = 2.01:1  ✘
-     * 正文（彻底退出：结束程序…）       #737373 on #A1A9BC = 2.01:1  ✘
-     * 按钮行                          #171717 on #A1A9BC = 7.59:1  ✔
-     * ```
-     * 病因：R3-① 的口诀是「玻璃管质感、遮光交给**实色垫层**」，但那个垫层只
-     * 落在 `app_dialog_shell.dart:301`；本组件从来没有 ⇒ R4 把 7 个 `AlertDialog`
-     * 搬进来，等于把 R3-① 的缺陷搬了回来。
-     *
-     * # 垫层用哪个色：`c.surfaceContainerHigh`（**不是** ColorScheme）
-     * ```text
-     * 本组件的标题/正文色来自 `AppTheme.resolvedOf(context).colors`
-     * （AppSemanticColors），不是 `Theme.of(context).colorScheme`。
-     * 垫层必须与**文字色同源**，否则「算出来的对比度」和「真渲染的对比度」
-     * 对不上 ⇒ 又变成一条算着绿、看着坏的假门禁。
-     * ```
-     * ⚠️ 也**不要**照抄 AppDialogShell 玻璃档写死的 `#14161B@0.98`：那一档是
-     *    「视频上面的面板」，文字被换成浅色系；本组件的调用点是浅色页面上的
-     *    确认框，正文 `c.onSurfaceVariant` 在浅色档就是 `#737373` ——
-     *    压在近黑底上只剩 ~1.5:1，比不修更糟。
-     *
-     * # 三条判据（①②接线 + ③效果，缺一不可）
-     * ```text
-     * ① 结构：`GlassContainer` 的**直接子层**是 `DecoratedBox`
-     *         ⇒ 证明垫层没被漏掉（改前直接子层是 Padding）。
-     * ② 同源：该 DecoratedBox 的 color == 组件自己 resolve 出来的
-     *         `colors.surfaceContainerHigh`，borderRadius == `Radii.rLg`
-     *         ⇒ 读 widget 属性，不读像素：像素会被玻璃模糊/DPR/抗锯齿抖掉。
-     *         ⇒ 圆角也要断言：`ColoredBox` 那种直角垫层会从玻璃圆角外侧露出来。
-     * ③ 效果：拿**两套 palette** 现算的 `onSurfaceVariant` / `onSurface` 压在
-     *         `surfaceContainerHigh` 上，WCAG 对比比都 ≥ 4.5:1（AA 正文档）。
-     *         不写死 6.08 这种数 —— 主题改色时判据要跟着重算。
-     * ```
-     *
-     * # 判别力（故障注入，两次都实测变红后精确还原）
-     * ```text
-     * 注入 A：把 DecoratedBox 垫层整层删掉（回到玻璃直接压 Padding）⇒ ① 红
-     * 注入 B：垫层色改成 `Colors.transparent`                      ⇒ ② 红
-     * ```
-     */
-    for (final entry in <(String, AppPalette)>[
-      ('浅色', AppPalette.light),
-      ('深色', AppPalette.dark),
-    ]) {
-      final name = entry.$1;
-      final palette = entry.$2;
+  group('⑪ Miuix 实色面板的实际正文对比度', () {
+    // Read the rendered decoration and text, so removing the surface or
+    // changing the inherited text color makes this gate fail.
+    for (final mode in Brightness.values) {
+      testWidgets('$mode 的实际标题与正文对比度 ≥ 4.5:1', (t) async {
+        final key = GlobalKey<NavigatorState>();
+        await t.pumpWidget(_app(key, mode: mode));
+        await _openAndSettle(t, key);
+        final card = find.byType(miuix.MiuixCard);
+        final decoration = t
+            .widget<DecoratedBox>(
+              find
+                  .descendant(of: card, matching: find.byType(DecoratedBox))
+                  .first,
+            )
+            .decoration;
+        expect(decoration, isA<ShapeDecoration>());
+        final surface = (decoration as ShapeDecoration).color!;
+        expect(surface.a, 1, reason: '正文背后必须有不透明 Miuix 表面');
+        Color renderedColor(String text) {
+          final rich = t.widget<RichText>(
+            find.descendant(
+              of: find.text(text),
+              matching: find.byType(RichText),
+            ),
+          );
+          return rich.text.style!.color!;
+        }
 
-      testWidgets(
-        '$name主题：垫层 = 同源 surfaceContainerHigh + Radii.rLg，正文对比度 ≥ 4.5:1',
-        (t) async {
-          final k = GlobalKey<NavigatorState>();
-          await t.pumpWidget(_app(k));
-          await _openAndSettle(t, k);
-
-          // ── ① 结构：垫层就在 GlassContainer 的直接子层 ────────────────
-          final glass = t.widget<GlassContainer>(find.byType(GlassContainer));
-          expect(
-            glass.child,
-            isA<DecoratedBox>(),
-            reason:
-                '★★ 玻璃卡片下面**没有实色垫层**了。'
-                '玻璃只管质感、遮光必须靠垫层（R3-① 的裁决）——'
-                '少了这层，正文 c.onSurfaceVariant 压在页面色的模糊结果上会掉到 ~2:1',
-          );
-
-          // ── ② 同源：颜色/圆角都要对得上 ──────────────────────────────
-          final ctx = t.element(find.byType(GlassContainer));
-          final live = design.AppTheme.resolvedOf(ctx).colors;
-          // ⚠️ 子树里 DecoratedBox 不止一个（按钮等也有），
-          //    深度优先的**第一个**才是 GlassContainer 的直接子层。
-          final deco = t
-              .widget<DecoratedBox>(
-                find
-                    .descendant(
-                      of: find.byType(GlassContainer),
-                      matching: find.byType(DecoratedBox),
-                    )
-                    .first,
-              )
-              .decoration;
-          expect(
-            deco,
-            isA<BoxDecoration>(),
-            reason: '★ 垫层应该是 BoxDecoration（要能同时给色和圆角）',
-          );
-          final box = deco as BoxDecoration;
-
-          expect(
-            box.color,
-            live.surfaceContainerHigh,
-            reason:
-                '★ 垫层色必须与文字色**同源**：`c.surfaceContainerHigh`'
-                '（AppSemanticColors），不是 Theme.of(context).colorScheme 那一套。'
-                '实测 = ${box.color}，期望 = ${live.surfaceContainerHigh}',
-          );
-          expect(
-            box.borderRadius,
-            Radii.rLg,
-            reason:
-                '★ 垫层必须跟着卡片圆角（Radii.rLg）——'
-                '直角垫层会从玻璃圆角外侧露出来',
-          );
-
-          // ── ③ 效果：按两套 palette 的真实色值算对比度 ────────────────
-          final semantic = _semanticFor(palette);
-          final under = semantic.surfaceContainerHigh;
-          final body = _contrast(semantic.onSurfaceVariant, under);
-          final title = _contrast(semantic.onSurface, under);
-          // 失败时把读数打出来，省得下一个人再量一遍像素。
-          // ignore: avoid_print
-          print(
-            '[⑪] $name 垫层=$under body=${body.toStringAsFixed(2)}:1 '
-            'title=${title.toStringAsFixed(2)}:1',
-          );
-
-          expect(
-            body,
-            greaterThanOrEqualTo(4.5),
-            reason:
-                '★★ $name主题正文（onSurfaceVariant）对比度 = '
-                '${body.toStringAsFixed(2)}:1 < 4.5:1（WCAG AA 正文档）。'
-                '真机改前实测 2.01:1，正是这个缺陷。',
-          );
-          expect(
-            title,
-            greaterThanOrEqualTo(4.5),
-            reason:
-                '★★ $name主题标题（onSurface）对比度 = '
-                '${title.toStringAsFixed(2)}:1 < 4.5:1',
-          );
-
-          // ── 反向对照：证明这套算式**不是恒真**的 ─────────────────────
-          // 把改前的真实卡底（#A1A9BC，玻璃压浅色页面的模糊结果）代进同一套
-          // 算式，必须算出 < 4.5:1；否则说明算式或取色写错了，这条判据此刻无判别力。
-          final oldCard = _contrast(
-            semantic.onSurfaceVariant,
-            const Color(0xFFA1A9BC),
-          );
-          expect(
-            oldCard,
-            lessThan(4.5),
-            reason:
-                '★ 反向对照失败：改前真机卡底 #A1A9BC 代进同一套算式居然也'
-                '算出 ≥ 4.5:1（=${oldCard.toStringAsFixed(2)}:1）'
-                '⇒ 算式或取色错了，本条判据此刻无判别力',
-          );
-        },
-      );
+        final bodyColor = renderedColor('文件会从磁盘上真正删除，此操作不可恢复。');
+        final titleColor = renderedColor('删除这一集？');
+        expect(_contrast(bodyColor, surface), greaterThanOrEqualTo(4.5));
+        expect(_contrast(titleColor, surface), greaterThanOrEqualTo(4.5));
+        expect(
+          _contrast(bodyColor, const Color(0xFFA1A9BC)),
+          lessThan(4.5),
+          reason: '原先模糊后底色的负对照仍必须低于正文阈值',
+        );
+      });
     }
   });
-
-  // ════════════════════════════════════════════════════════════════════
   group('⑪-b 报告：全主题包的正文对比度（只打印，不 assert）', () {
     /*
      * # 为什么单独一条、且不 assert

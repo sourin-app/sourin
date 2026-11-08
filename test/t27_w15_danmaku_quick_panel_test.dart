@@ -31,6 +31,9 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
+import 'support/miuix_finders.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart' as mui;
 
 import 'package:sourin_spike/core/models.dart' show StreamCandidate;
@@ -179,6 +182,20 @@ Future<void> _openPanel(
 }
 
 void main() {
+  testWidgets('底栏与一级弹幕面板挂载实际 Miuix 控件', (t) async {
+    final spy = _Spy();
+    final controller = PopoverController();
+    addTearDown(controller.dispose);
+    await _openPanel(t, spy, controller);
+    expect(find.byType(miuix.MiuixIconButton), findsWidgets);
+    expect(find.byType(miuix.MiuixButton), findsWidgets);
+    final panel = find.byKey(PlayerBottomBar.danmakuQuickPanelKey);
+    expect(find.descendant(of: panel, matching: find.byType(miuix.MiuixTextField)), findsOneWidget);
+    expect(find.descendant(of: panel, matching: find.byType(EditableText)), findsOneWidget);
+    expect(find.descendant(of: panel, matching: find.byType(miuix.MiuixSlider)), findsNWidgets(4));
+    expect(t.widget(find.byKey(PlayerBottomBar.danmakuQuickScrollKey)), isA<miuix.MiuixPressable>());
+  });
+
   testWidgets('Escape closes focused quick search without submitting', (
     t,
   ) async {
@@ -186,7 +203,7 @@ void main() {
     final controller = PopoverController();
     addTearDown(controller.dispose);
     await _openPanel(t, spy, controller);
-    await t.enterText(find.byType(mui.TextFormField), '未提交的片名');
+    await t.enterText(find.byType(ui.TextFormField), '未提交的片名');
     await t.pump();
     await t.sendKeyEvent(LogicalKeyboardKey.escape);
     await t.pump();
@@ -203,7 +220,7 @@ void main() {
     await _openPanel(t, spy, controller);
     final field = find.descendant(
       of: find.byKey(PlayerBottomBar.danmakuQuickPanelKey),
-      matching: find.byType(mui.TextFormField),
+      matching: find.byType(ui.TextFormField),
     );
     final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: t.getCenter(field));
@@ -227,7 +244,7 @@ void main() {
       PopoverController.closeDelay + const Duration(milliseconds: 1),
     );
     expect(field, findsOneWidget);
-    expect(t.widget<mui.TextFormField>(field).controller!.text, '保留正在输入的片名');
+    expect(t.widget<ui.TextFormField>(field).controller!.text, '保留正在输入的片名');
     await t.testTextInput.receiveAction(TextInputAction.search);
     expect(spy.searches, ['保留正在输入的片名']);
   });
@@ -239,7 +256,7 @@ void main() {
     final controller = PopoverController();
     addTearDown(controller.dispose);
     await _openPanel(t, spy, controller);
-    final field = find.byType(mui.TextFormField);
+    final field = find.byType(ui.TextFormField);
     final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
     await mouse.addPointer(location: t.getCenter(field));
     addTearDown(mouse.removePointer);
@@ -263,7 +280,7 @@ void main() {
     final controller = PopoverController();
     addTearDown(controller.dispose);
     await _openPanel(t, spy, controller);
-    await t.enterText(find.byType(mui.TextFormField), '未提交');
+    await t.enterText(find.byType(ui.TextFormField), '未提交');
     await t.pump();
     await t.tap(find.byKey(PlayerBottomBar.danmakuSettingsKey));
     await t.pump();
@@ -278,19 +295,33 @@ void main() {
       final controller = PopoverController();
       addTearDown(controller.dispose);
       await _openPanel(t, spy, controller);
+      final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: const Offset(1, 1));
+      expect(miuixTooltip('搜索弹幕'), findsOneWidget);
+      await mouse.moveTo(t.getCenter(miuixTooltip('搜索弹幕')));
+      await t.pump(const Duration(seconds: 1));
+      await t.pump(const Duration(milliseconds: 220));
+      expect(find.byType(miuix.MiuixPlainTooltip), findsOneWidget);
+      expect(find.descendant(
+        of: find.byType(miuix.MiuixPlainTooltip),
+        matching: find.text('搜索弹幕'),
+      ), findsOneWidget);
+      await mouse.removePointer();
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 220));
       final field = find.descendant(
         of: find.byKey(PlayerBottomBar.danmakuQuickPanelKey),
-        matching: find.byType(mui.TextFormField),
+        matching: find.byType(ui.TextFormField),
       );
       expect(field, findsOneWidget);
       await t.enterText(field, '另一部作品');
       await t.testTextInput.receiveAction(TextInputAction.search);
       expect(spy.searches, ['另一部作品']);
       await t.enterText(field, '  按钮搜索  ');
-      await t.tap(find.byTooltip('搜索弹幕'));
+      await t.tap(miuixTooltip('搜索弹幕'));
       expect(spy.searches, ['另一部作品', '按钮搜索']);
       await t.enterText(field, '  ');
-      await t.tap(find.byTooltip('搜索弹幕'));
+      await t.tap(miuixTooltip('搜索弹幕'));
       expect(spy.searches, hasLength(2));
       await t.tap(find.byKey(PlayerBottomBar.danmakuQuickSearchKey));
       expect(spy.searchOpened, 1);

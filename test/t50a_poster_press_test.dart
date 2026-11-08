@@ -68,6 +68,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/poster_card.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:sourin_spike/ui/widgets/press_feedback.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 
@@ -211,9 +212,13 @@ String _fmt(List<double?> xs) =>
     xs.map((e) => e == null ? 'null' : e.toStringAsFixed(6)).join(' / ');
 
 void _noNull(List<double?> xs, String where) {
-  expect(xs.every((e) => e != null), isTrue,
-      reason: '★ $where：四刻读数都不该是 null'
-          '（说明 `PosterCard` 没挂上，或者子树里没有 PressFeedback 那一层）');
+  expect(
+    xs.every((e) => e != null),
+    isTrue,
+    reason:
+        '★ $where：四刻读数都不该是 null'
+        '（说明 `PosterCard` 没挂上，或者子树里没有 PressFeedback 那一层）',
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -273,6 +278,7 @@ const List<String> kExpectedParams = <String>[
   'this.focused = false',
   // ★★ 2026-10-03 追加：**可选**的标题行数（默认 1 ⇒ 与旧行为逐位相同）
   'this.titleLines = 1',
+  'this.showCaption = true',
 ];
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -283,12 +289,8 @@ void main() {
 
   // ═════════════════════════════════════════════════════════════════════
   group('A. 四刻中间态（Lead 口径：t=0/45/90/150ms）', () {
-    testWidgets('A1 按下（Motion.press=90ms）：四刻读数 + 90/150 相同的**原因**',
-        (t) async {
-      await _pumpCard(
-        t,
-        PosterCard(title: '怒鲨狂潮', onTap: () {}),
-      );
+    testWidgets('A1 按下（Motion.press=90ms）：四刻读数 + 90/150 相同的**原因**', (t) async {
+      await _pumpCard(t, PosterCard(title: '怒鲨狂潮', onTap: () {}));
 
       final g = await t.startGesture(t.getCenter(find.byType(PosterCard)));
       await t.pump(Duration.zero); // 触发 setState 的那一帧：动画从 t=0 开始
@@ -296,20 +298,38 @@ void main() {
 
       _noNull(r, 'A1 按下');
       _rec('[T50A] A1 按下 90ms 四刻读数 (t=0/45/90/150ms) = ${_fmt(r)}');
-      _rec('[T50A] A1 按下 前三点最小两两间距 = '
-          '${_minGap(<double?>[r[0], r[1], r[2]]).toStringAsFixed(9)}');
+      _rec(
+        '[T50A] A1 按下 前三点最小两两间距 = '
+        '${_minGap(<double?>[r[0], r[1], r[2]]).toStringAsFixed(9)}',
+      );
 
-      expect(r[0]!, closeTo(1.0, 1e-6),
-          reason: '★ t=0 应当还是**起始值** 1.0（动画刚起步，还没走）');
-      expect(r[1]! > 0.97 + 1e-4, isTrue,
-          reason: '★ t=45ms 应当已经动了一点（实测=${r[1]}）');
-      expect(r[1]! < 1.0 - 1e-4, isTrue,
-          reason: '★ 但还没到终点 —— 否则就是"没有过渡"（实测=${r[1]}）');
-      expect(r[2]!, closeTo(0.97, 1e-6),
-          reason: '★ t=90ms 应当**已经**到终点 0.97（Motion.press=90ms）');
-      expect(r[3]!, closeTo(0.97, 1e-6),
-          reason: '★ t=150ms 与 t=90ms 相同 —— 因为按下动画**在 90ms 就结束了**。'
-              '这不是"仪器分辨率不足"：同一次运行里前三点互不相同（见下一条断言）');
+      expect(
+        r[0]!,
+        closeTo(1.0, 1e-6),
+        reason: '★ t=0 应当还是**起始值** 1.0（动画刚起步，还没走）',
+      );
+      expect(
+        r[1]! > 0.97 + 1e-4,
+        isTrue,
+        reason: '★ t=45ms 应当已经动了一点（实测=${r[1]}）',
+      );
+      expect(
+        r[1]! < 1.0 - 1e-4,
+        isTrue,
+        reason: '★ 但还没到终点 —— 否则就是"没有过渡"（实测=${r[1]}）',
+      );
+      expect(
+        r[2]!,
+        closeTo(0.97, 1e-6),
+        reason: '★ t=90ms 应当**已经**到终点 0.97（Motion.press=90ms）',
+      );
+      expect(
+        r[3]!,
+        closeTo(0.97, 1e-6),
+        reason:
+            '★ t=150ms 与 t=90ms 相同 —— 因为按下动画**在 90ms 就结束了**。'
+            '这不是"仪器分辨率不足"：同一次运行里前三点互不相同（见下一条断言）',
+      );
 
       /*
        * ★★ 这一条是 A1 的**核心论证**（也是 Lead 那条 ★ 的正面回答）
@@ -318,19 +338,20 @@ void main() {
        * 实测它们互不相同 ⇒ 仪器能分辨状态 ⇒ r[3] == r[2] 只能解释为
        * **区间 (90ms, 150ms] 内动画状态确实没变**（90ms 的动画早已走完）。
        */
-      expect(_minGap(<double?>[r[0], r[1], r[2]]) > 1e-4, isTrue,
-          reason: '★★ 同一次运行里 t=0/45/90 必须互不相同 —— '
-              '它同时证明了"仪器有分辨力"和"t=150 相同 = 动画已结束"');
+      expect(
+        _minGap(<double?>[r[0], r[1], r[2]]) > 1e-4,
+        isTrue,
+        reason:
+            '★★ 同一次运行里 t=0/45/90 必须互不相同 —— '
+            '它同时证明了"仪器有分辨力"和"t=150 相同 = 动画已结束"',
+      );
 
       await g.up();
       await t.pump(const Duration(milliseconds: 300));
     });
 
     testWidgets('A2 回弹（Motion.fast=150ms）：四刻读数**四点全不同**', (t) async {
-      await _pumpCard(
-        t,
-        PosterCard(title: '怒鲨狂潮', onTap: () {}),
-      );
+      await _pumpCard(t, PosterCard(title: '怒鲨狂潮', onTap: () {}));
 
       final g = await t.startGesture(t.getCenter(find.byType(PosterCard)));
       /*
@@ -344,8 +365,11 @@ void main() {
        */
       await t.pump(Duration.zero); // ① 重建：按下动画在这一帧起步
       await t.pump(const Duration(milliseconds: 300)); // ② 走完 90ms 的按下动画
-      expect(_cardScale(t), closeTo(0.97, 1e-6),
-          reason: '前提：按下已经走完 ⇒ 回弹的起点才是 0.97');
+      expect(
+        _cardScale(t),
+        closeTo(0.97, 1e-6),
+        reason: '前提：按下已经走完 ⇒ 回弹的起点才是 0.97',
+      );
 
       await g.up();
       await t.pump(Duration.zero); // 回弹动画从 t=0 开始
@@ -353,25 +377,44 @@ void main() {
 
       _noNull(r, 'A2 回弹');
       _rec('[T50A] A2 回弹 150ms 四刻读数 (t=0/45/90/150ms) = ${_fmt(r)}');
-      _rec('[T50A] A2 回弹 四点最小两两间距 = '
-          '${_minGap(r).toStringAsFixed(9)}  <- 四个采样时刻之间的最小状态变化量');
+      _rec(
+        '[T50A] A2 回弹 四点最小两两间距 = '
+        '${_minGap(r).toStringAsFixed(9)}  <- 四个采样时刻之间的最小状态变化量',
+      );
 
       expect(r[0]!, closeTo(0.97, 1e-6), reason: '★ 回弹起点 = 按下终点 = 0.97');
-      expect(r[1]! > 0.97 + 1e-4, isTrue,
-          reason: '★ t=45ms 应当比起点更接近 1.0（实测=${r[1]}）');
-      expect(r[2]! > r[1]! + 1e-4, isTrue,
-          reason: '★ t=90ms 应当**继续**朝 1.0 走（实测=${r[2]}）—— '
-              '若这里已经等于 r[1]，说明回弹**不是** 150ms');
-      expect(r[2]! < 1.0 - 1e-4, isTrue,
-          reason: '★ t=90ms 还没到 1.0（Motion.fast=150ms，实测=${r[2]}）');
-      expect(r[3]!, closeTo(1.0, 1e-6),
-          reason: '★ t=150ms 应当已回到 1.0（Motion.fast=150ms）');
+      expect(
+        r[1]! > 0.97 + 1e-4,
+        isTrue,
+        reason: '★ t=45ms 应当比起点更接近 1.0（实测=${r[1]}）',
+      );
+      expect(
+        r[2]! > r[1]! + 1e-4,
+        isTrue,
+        reason:
+            '★ t=90ms 应当**继续**朝 1.0 走（实测=${r[2]}）—— '
+            '若这里已经等于 r[1]，说明回弹**不是** 150ms',
+      );
+      expect(
+        r[2]! < 1.0 - 1e-4,
+        isTrue,
+        reason: '★ t=90ms 还没到 1.0（Motion.fast=150ms，实测=${r[2]}）',
+      );
+      expect(
+        r[3]!,
+        closeTo(1.0, 1e-6),
+        reason: '★ t=150ms 应当已回到 1.0（Motion.fast=150ms）',
+      );
 
       // ★★ Lead 的验收口径本体：四个时刻读到**四个不同的中间值**
-      expect(_minGap(r) > 1e-4, isTrue,
-          reason: '★★ 四个时刻必须**两两不同**（实测最小间距='
-              '${_minGap(r).toStringAsFixed(9)}）—— 这就是'
-              '"t=0/45/90/150ms 各读到不同的中间值"');
+      expect(
+        _minGap(r) > 1e-4,
+        isTrue,
+        reason:
+            '★★ 四个时刻必须**两两不同**（实测最小间距='
+            '${_minGap(r).toStringAsFixed(9)}）—— 这就是'
+            '"t=0/45/90/150ms 各读到不同的中间值"',
+      );
     });
 
     /*
@@ -388,12 +431,8 @@ void main() {
      * 若两条时长其实一样（例如都被写成 150ms），90ms 时两个读数会**相同**。
      * ⇒ 这一条是"可区分"的**充分证据**，不依赖任何"仪器分辨率"的说法。
      */
-    testWidgets('A3 同一时刻 90ms：按下已结束(0.97) vs 回弹还在跑 ⇒ 可区分',
-        (t) async {
-      await _pumpCard(
-        t,
-        PosterCard(title: '怒鲨狂潮', onTap: () {}),
-      );
+    testWidgets('A3 同一时刻 90ms：按下已结束(0.97) vs 回弹还在跑 ⇒ 可区分', (t) async {
+      await _pumpCard(t, PosterCard(title: '怒鲨狂潮', onTap: () {}));
 
       // ── ① 按下动画走到 90ms（Motion.press = 90ms ⇒ 此刻应当**已结束**）
       final g = await t.startGesture(t.getCenter(find.byType(PosterCard)));
@@ -402,8 +441,10 @@ void main() {
       await t.pump(const Duration(milliseconds: 45)); // 累计 90ms
       final atPress90 = _cardScale(t);
       expect(atPress90, isNotNull, reason: '★ 按下 90ms 读不到缩放');
-      _rec('[T50A] A3 同一时刻 90ms：按下动画读数 = '
-          '${atPress90!.toStringAsFixed(6)}（Motion.press=90ms ⇒ 应已到 0.97）');
+      _rec(
+        '[T50A] A3 同一时刻 90ms：按下动画读数 = '
+        '${atPress90!.toStringAsFixed(6)}（Motion.press=90ms ⇒ 应已到 0.97）',
+      );
 
       // ── ② 松开，回弹动画**同样**走到 90ms（Motion.fast = 150ms ⇒ 还没结束）
       await g.up();
@@ -412,26 +453,44 @@ void main() {
       await t.pump(const Duration(milliseconds: 45)); // 累计 90ms
       final atRelease90 = _cardScale(t);
       expect(atRelease90, isNotNull, reason: '★ 回弹 90ms 读不到缩放');
-      _rec('[T50A] A3 同一时刻 90ms：回弹动画读数 = '
-          '${atRelease90!.toStringAsFixed(6)}（Motion.fast=150ms ⇒ 应还在途中）');
+      _rec(
+        '[T50A] A3 同一时刻 90ms：回弹动画读数 = '
+        '${atRelease90!.toStringAsFixed(6)}（Motion.fast=150ms ⇒ 应还在途中）',
+      );
 
       final gap = (atRelease90 - atPress90).abs();
-      _rec('[T50A] A3 同一时刻两读数之差 = ${gap.toStringAsFixed(6)}'
-          '（> 0 即证明 90ms 与 150ms **可区分**）');
+      _rec(
+        '[T50A] A3 同一时刻两读数之差 = ${gap.toStringAsFixed(6)}'
+        '（> 0 即证明 90ms 与 150ms **可区分**）',
+      );
 
       // 按下动画：90ms 时**已经结束**
-      expect(atPress90, closeTo(0.97, 1e-6),
-          reason: '★ 按下动画 90ms 应当已到终点（Motion.press=90ms），实测=$atPress90');
+      expect(
+        atPress90,
+        closeTo(0.97, 1e-6),
+        reason: '★ 按下动画 90ms 应当已到终点（Motion.press=90ms），实测=$atPress90',
+      );
       // 回弹动画：90ms 时**还在途中**（这就是 150ms 与 90ms 的差别）
-      expect(atRelease90 > 0.97 + 1e-4, isTrue,
-          reason: '★ 回弹 90ms 应当已经离开起点（实测=$atRelease90）');
-      expect(atRelease90 < 1.0 - 1e-4, isTrue,
-          reason: '★★ 回弹 90ms 时**必须还没到 1.0** —— 若已到，说明回弹也是 90ms，'
-              '那 90ms 与 150ms 就真的**不可区分**了（实测=$atRelease90）');
+      expect(
+        atRelease90 > 0.97 + 1e-4,
+        isTrue,
+        reason: '★ 回弹 90ms 应当已经离开起点（实测=$atRelease90）',
+      );
+      expect(
+        atRelease90 < 1.0 - 1e-4,
+        isTrue,
+        reason:
+            '★★ 回弹 90ms 时**必须还没到 1.0** —— 若已到，说明回弹也是 90ms，'
+            '那 90ms 与 150ms 就真的**不可区分**了（实测=$atRelease90）',
+      );
       // ★ 判别本体
-      expect(gap > 1e-3, isTrue,
-          reason: '★★ 同一个经过时间 90ms，两条动画读数必须**不同**（实测差=$gap）'
-              ' —— 这就是"90ms 与 150ms 可区分"的直接证据');
+      expect(
+        gap > 1e-3,
+        isTrue,
+        reason:
+            '★★ 同一个经过时间 90ms，两条动画读数必须**不同**（实测差=$gap）'
+            ' —— 这就是"90ms 与 150ms 可区分"的直接证据',
+      );
 
       await t.pump(const Duration(milliseconds: 300));
     });
@@ -452,16 +511,26 @@ void main() {
 
       _noNull(r, 'B1');
       _rec('[T50A] B1 阴性对照 按下（Reduce Motion）四刻读数 = ${_fmt(r)}');
-      _rec('[T50A] B1 四刻最小两两间距 = ${_minGap(r).toStringAsFixed(9)}'
-          '（应当 = 0）');
+      _rec(
+        '[T50A] B1 四刻最小两两间距 = ${_minGap(r).toStringAsFixed(9)}'
+        '（应当 = 0）',
+      );
 
-      expect(_minGap(r) < 1e-9, isTrue,
-          reason: '★★ 阴性对照：四刻读数必须**完全相同**'
-              '（实测最小间距=${_minGap(r).toStringAsFixed(9)}）—— '
-              '它证明 A 组的"四点不同"不是仪器自己编出来的');
-      expect(r.every((e) => (e! - 0.97).abs() < 1e-6), isTrue,
-          reason: '★ Reduce Motion 下**仍然缩小**（反馈的"信息"不因无障碍丢失），'
-              '丢掉的只是**过渡** —— 实测=${_fmt(r)}');
+      expect(
+        _minGap(r) < 1e-9,
+        isTrue,
+        reason:
+            '★★ 阴性对照：四刻读数必须**完全相同**'
+            '（实测最小间距=${_minGap(r).toStringAsFixed(9)}）—— '
+            '它证明 A 组的"四点不同"不是仪器自己编出来的',
+      );
+      expect(
+        r.every((e) => (e! - 0.97).abs() < 1e-6),
+        isTrue,
+        reason:
+            '★ Reduce Motion 下**仍然缩小**（反馈的"信息"不因无障碍丢失），'
+            '丢掉的只是**过渡** —— 实测=${_fmt(r)}',
+      );
 
       await g.up();
       await t.pump(const Duration(milliseconds: 300));
@@ -483,11 +552,18 @@ void main() {
       _noNull(r, 'B2');
       _rec('[T50A] B2 阴性对照 回弹（Reduce Motion）四刻读数 = ${_fmt(r)}');
 
-      expect(_minGap(r) < 1e-9, isTrue,
-          reason: '★★ 回弹同样必须**无过渡**（实测最小间距='
-              '${_minGap(r).toStringAsFixed(9)}）');
-      expect(r.every((e) => (e! - 1.0).abs() < 1e-6), isTrue,
-          reason: '★ 实测=${_fmt(r)}');
+      expect(
+        _minGap(r) < 1e-9,
+        isTrue,
+        reason:
+            '★★ 回弹同样必须**无过渡**（实测最小间距='
+            '${_minGap(r).toStringAsFixed(9)}）',
+      );
+      expect(
+        r.every((e) => (e! - 1.0).abs() < 1e-6),
+        isTrue,
+        reason: '★ 实测=${_fmt(r)}',
+      );
     });
   });
 
@@ -515,9 +591,13 @@ void main() {
 
       final ss = _transformsUnder(t, find.byType(PosterCard));
       _rec('[T50A] C1 PosterCard 子树 Transform 缩放列表（未按下）= $ss');
-      expect(ss.length, 1,
-          reason: '★ 未按下时子树里应当**恰好一层** `Transform`（= AnimatedScale 的）；'
-              '多了说明有别的东西也插了 Transform，读数会读错');
+      expect(
+        ss.length,
+        1,
+        reason:
+            '★ 未按下时子树里应当**恰好一层** `Transform`（= AnimatedScale 的）；'
+            '多了说明有别的东西也插了 Transform，读数会读错',
+      );
       expect(ss.first, closeTo(1.0, 1e-9), reason: '★ 未按下必须是 1.0（不动）');
     });
 
@@ -530,16 +610,23 @@ void main() {
           matching: find.byType(AnimatedScale),
         ),
         findsNothing,
-        reason: '★ `onTap == null` ⇒ `enabled=false` ⇒ `PressFeedback` **直接'
+        reason:
+            '★ `onTap == null` ⇒ `enabled=false` ⇒ `PressFeedback` **直接'
             '返回 child**，不留任何包装（"关"是真的关）',
       );
-      expect(_transformsUnder(t, find.byType(PosterCard)), isEmpty,
-          reason: '★ 零 `Transform` 层');
+      expect(
+        _transformsUnder(t, find.byType(PosterCard)),
+        isEmpty,
+        reason: '★ 零 `Transform` 层',
+      );
 
       // ★ 阳性对照：这条"零"不是"整个子树都没渲染"造成的
-      expect(find.text('怒鲨狂潮'), findsOneWidget,
-          reason: '★★ 阳性对照：卡片本身必须照常渲染（否则上面两条"零"是空的）');
-      expect(find.byType(InkWell), findsOneWidget);
+      expect(
+        find.text('怒鲨狂潮'),
+        findsOneWidget,
+        reason: '★★ 阳性对照：卡片本身必须照常渲染（否则上面两条"零"是空的）',
+      );
+      expect(find.byType(ui.InkWell), findsOneWidget);
     });
 
     testWidgets('C3 ★ 双层守卫：外层已包 PressFeedback 时，内层不得叠加', (t) async {
@@ -562,24 +649,38 @@ void main() {
           matching: find.byType(AnimatedScale),
         ),
         findsNothing,
-        reason: '★★ 守卫的**直接**证据（不靠"数 Transform"间接推）：'
+        reason:
+            '★★ 守卫的**直接**证据（不靠"数 Transform"间接推）：'
             '内层卡片里连 `AnimatedScale` 都不该有 —— '
             '`enabled=false` ⇒ `PressFeedback` 直接 `return widget.child`',
       );
 
-      final ss = _transformsUnder(t, find.byKey(const ValueKey<String>('outer-press')));
+      final ss = _transformsUnder(
+        t,
+        find.byKey(const ValueKey<String>('outer-press')),
+      );
       final prod = ss.fold<double>(1.0, (a, b) => a * b);
       _rec('[T50A] C3 双层挂载 按下后 外层子树 Transform 缩放列表 = $ss');
-      _rec('[T50A] C3 缩放乘积 = ${prod.toStringAsFixed(6)}'
-          '（0.97 = 守卫生效；0.9409 = 两层叠加）');
+      _rec(
+        '[T50A] C3 缩放乘积 = ${prod.toStringAsFixed(6)}'
+        '（0.97 = 守卫生效；0.9409 = 两层叠加）',
+      );
 
-      expect(ss.length, 1,
-          reason: '★★ 内层必须因为**祖先守卫**而关掉 ⇒ 只剩外层那一层。'
-              '若这里 = 2，说明叠加了（0.97 × 0.97 = 0.9409）');
-      expect(prod, closeTo(0.97, 0.001),
-          reason: '★★ 按下后**总**缩放必须正好是 0.97。'
-              '实测=${prod.toStringAsFixed(6)}'
-              '（若 ≈0.9409 ⇒ 双层叠加，卡片会"按下去更深"）');
+      expect(
+        ss.length,
+        1,
+        reason:
+            '★★ 内层必须因为**祖先守卫**而关掉 ⇒ 只剩外层那一层。'
+            '若这里 = 2，说明叠加了（0.97 × 0.97 = 0.9409）',
+      );
+      expect(
+        prod,
+        closeTo(0.97, 0.001),
+        reason:
+            '★★ 按下后**总**缩放必须正好是 0.97。'
+            '实测=${prod.toStringAsFixed(6)}'
+            '（若 ≈0.9409 ⇒ 双层叠加，卡片会"按下去更深"）',
+      );
 
       await g.up();
       await t.pump(const Duration(milliseconds: 300));
@@ -592,10 +693,14 @@ void main() {
       await t.tap(find.byType(PosterCard));
       await t.pump(const Duration(milliseconds: 300));
 
-      expect(taps, 1,
-          reason: '★★★ 加了按下反馈之后 `onTap` 必须**照常触发且只触发一次**。'
-              '`PressFeedback` 用的是 `Listener`（不进手势竞技场）—— '
-              '这正是选它而不选 `GestureDetector` 的唯一理由');
+      expect(
+        taps,
+        1,
+        reason:
+            '★★★ 加了按下反馈之后 `onTap` 必须**照常触发且只触发一次**。'
+            '`PressFeedback` 用的是 `Listener`（不进手势竞技场）—— '
+            '这正是选它而不选 `GestureDetector` 的唯一理由',
+      );
     });
 
     testWidgets('C5 ★ 几何不变：多出来的那一层不改变布局', (t) async {
@@ -616,11 +721,15 @@ void main() {
         <Object>['width', r1.width, r2.width],
         <Object>['height', r1.height, r2.height],
       ]) {
-        expect(pair[1] as double, closeTo(pair[2] as double, 1e-6),
-            reason: '★ 加一层 `Listener`+`AnimatedScale(identity)` 不得改变 '
-                '`PosterCard` 的 ${pair[0]} —— 既有测试'
-                '（`t75_search_pinned_test.dart` 读 `.top`、'
-                '`task37_poster_placeholder_test.dart` 读尺寸）依赖这个几何');
+        expect(
+          pair[1] as double,
+          closeTo(pair[2] as double, 1e-6),
+          reason:
+              '★ 加一层 `Listener`+`AnimatedScale(identity)` 不得改变 '
+              '`PosterCard` 的 ${pair[0]} —— 既有测试'
+              '（`t75_search_pinned_test.dart` 读 `.top`、'
+              '`task37_poster_placeholder_test.dart` 读尺寸）依赖这个几何',
+        );
       }
     });
   });
@@ -628,61 +737,100 @@ void main() {
   // ═════════════════════════════════════════════════════════════════════
   group('D. Lead 的硬约束（静态，逐条）', () {
     test('D0 ★ 阳性对照：构造参数解析器**看得见**参数', () {
-      const fake = 'class X { const PosterCard({ super.key, required this.title, '
+      const fake =
+          'class X { const PosterCard({ super.key, required this.title, '
           'this.cover, }); }';
-      expect(_ctorParams(fake),
-          <String>['super.key', 'required this.title', 'this.cover'],
-          reason: '★★ 若解析器恒返回空列表，D1 就会变成一条**永远失败**的断言；'
-              '若它恒返回任意非空列表，D1 又会变成**恒真**。先证明它真的在解析');
+      expect(
+        _ctorParams(fake),
+        <String>['super.key', 'required this.title', 'this.cover'],
+        reason:
+            '★★ 若解析器恒返回空列表，D1 就会变成一条**永远失败**的断言；'
+            '若它恒返回任意非空列表，D1 又会变成**恒真**。先证明它真的在解析',
+      );
     });
 
     test('D1 ★ 对外构造参数**逐项未变**（9 项原样 + 1 项可选追加）', () {
       final got = _ctorParams(_src(kPosterSrc));
       _rec('[T50A] D1 构造参数实测 = $got');
-      expect(got, kExpectedParams,
-          reason: '★★ Lead 硬约束：不许改对外签名/构造参数 —— '
-              '5 个调用点都在按这 9 个参数传值');
+      expect(
+        got,
+        kExpectedParams,
+        reason:
+            '★★ Lead 硬约束：不许改对外签名/构造参数 —— '
+            '5 个调用点都在按这 9 个参数传值',
+      );
 
       // ★★ 加固：原来那 9 项必须是**前缀**（顺序 + 默认值都不许动），
       //   新增项只能出现在**尾部**且必须是**可选带默认**的。
       final legacy = kExpectedParams.sublist(0, 9);
-      expect(got.sublist(0, 9), legacy,
-          reason: '★★ 2026-10-03 的 `titleLines` 是**追加**，不是改写 —— '
-              '前 9 项必须逐字原位');
-      expect(got.length, legacy.length + 1,
-          reason: '★★ 只允许**多出** `titleLines` 这一项');
-      expect(got.last, startsWith('this.titleLines'),
-          reason: '★★ 新参数只能加在**尾部**（不许插到中间打乱位置参数顺序）');
+      expect(
+        got.sublist(0, 9),
+        legacy,
+        reason:
+            '★★ 2026-10-03 的 `titleLines` 是**追加**，不是改写 —— '
+            '前 9 项必须逐字原位',
+      );
+      expect(
+        got.length,
+        legacy.length + 2,
+        reason: 'Only optional titleLines and compact-home showCaption extend the original API',
+      );
+      expect(
+        got.last,
+        'this.showCaption = true',
+        reason: '★★ 新参数只能加在**尾部**（不许插到中间打乱位置参数顺序）',
+      );
     });
 
     test('D2 ★ task-74 的 `coverImage(` 接线必须存活', () {
       final code = _src(kPosterSrc);
 
-      expect(code.contains('Image.network('), isFalse,
-          reason: '★ task-74：`PosterCard` 不能再直接 `Image.network`'
-              '（那样 `cacheWidth` 就丢了，海报会按源分辨率解码）');
+      expect(
+        code.contains('Image.network('),
+        isFalse,
+        reason:
+            '★ task-74：`PosterCard` 不能再直接 `Image.network`'
+            '（那样 `cacheWidth` 就丢了，海报会按源分辨率解码）',
+      );
 
       final lines = code.split('\n');
       final i = lines.indexWhere((l) => l.trim() == 'coverImage(');
-      expect(i >= 0, isTrue,
-          reason: '★★ task-74 判据依赖这处接线存活：`coverImage(` 必须独占一行');
-      final window =
-          lines.sublist(i, (i + 5).clamp(0, lines.length)).join('\n');
+      expect(
+        i >= 0,
+        isTrue,
+        reason: '★★ task-74 判据依赖这处接线存活：`coverImage(` 必须独占一行',
+      );
+      final window = lines
+          .sublist(i, (i + 5).clamp(0, lines.length))
+          .join('\n');
       _rec('[T50A] D2 coverImage( 在第 ${i + 1} 行（剥离注释后的行号）');
-      expect(window.contains('url: widget.cover!,'), isTrue,
-          reason: '★★ `coverImage(` 之后 5 行内必须出现 `url: widget.cover!,`；'
-              '实测窗口 = ${window.replaceAll('\n', ' ⏎ ')}');
-      expect(window.contains('layoutWidth:'), isTrue,
-          reason: '★ 解码宽度必须继续由布局宽度推导（task-74 的机制本身）');
+      expect(
+        window.contains('url: widget.cover!,'),
+        isTrue,
+        reason:
+            '★★ `coverImage(` 之后 5 行内必须出现 `url: widget.cover!,`；'
+            '实测窗口 = ${window.replaceAll('\n', ' ⏎ ')}',
+      );
+      expect(
+        window.contains('layoutWidth:'),
+        isTrue,
+        reason: '★ 解码宽度必须继续由布局宽度推导（task-74 的机制本身）',
+      );
     });
 
     test('D3 ★ 不 import `package:flutter/material.dart`（仓库硬纪律）', () {
-      expect(_src(kPosterSrc).contains('package:flutter/material.dart'), isFalse,
-          reason: '★ 生产代码只用 `package:material_ui/material_ui.dart`'
-              '（有测试在全仓范围强制这条）');
-      expect(_src(kPosterSrc).contains('package:material_ui/material_ui.dart'),
-          isTrue,
-          reason: '★ 阳性对照：它当然应当 import material_ui');
+      expect(
+        _src(kPosterSrc).contains('package:flutter/material.dart'),
+        isFalse,
+        reason:
+            '★ 生产代码只用 `package:material_ui/material_ui.dart`'
+            '（有测试在全仓范围强制这条）',
+      );
+      expect(
+        _src(kPosterSrc).contains('package:material_ui/material_ui.dart'),
+        isTrue,
+        reason: '★ 阳性对照：它当然应当 import material_ui',
+      );
     });
 
     test('D4 ★ 只包了**一层** PressFeedback（不重复接线）', () {
@@ -690,13 +838,16 @@ void main() {
       final n = RegExp(r'PressFeedback\(').allMatches(code).length;
       _rec('[T50A] D4 `PressFeedback(` 在 poster_card.dart 中出现 $n 次');
       expect(n, 1, reason: '★ 恰好一处（`child: PressFeedback(`）');
-      expect(code.contains("import 'press_feedback.dart';"), isTrue,
-          reason: '★ 且必须 import 了它');
       expect(
-        code.contains(
-            'enabled: widget.onTap != null && !_hasPressAncestor,'),
+        code.contains("import 'press_feedback.dart';"),
         isTrue,
-        reason: '★★ 守卫条件必须**逐字**在：`onTap == null` 时不包；'
+        reason: '★ 且必须 import 了它',
+      );
+      expect(
+        code.contains('enabled: widget.onTap != null && !_hasPressAncestor,'),
+        isTrue,
+        reason:
+            '★★ 守卫条件必须**逐字**在：`onTap == null` 时不包；'
             '祖先已有 PressFeedback 时不重复包',
       );
     });

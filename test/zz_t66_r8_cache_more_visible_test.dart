@@ -39,35 +39,47 @@ import 'package:flutter/gestures.dart'
         PointerHoverEvent,
         PointerRemovedEvent;
 import 'package:flutter/widgets.dart' show Brightness, Size, ValueKey, Widget;
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart' as mui;
 
 import 'package:sourin_spike/core/download_dir.dart';
 import 'package:sourin_spike/core/download_queue.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart' show AppThemeHost;
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/cache_page.dart';
+import 'package:sourin_spike/ui/widgets/poster_card.dart';
+import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
 
 // ══════════════════════════════════════════════════════════════════════
 //  沙盒（绝对路径 + 收尾自清理，绝不落仓库根）
 // ══════════════════════════════════════════════════════════════════════
 
+Directory? _suiteSandbox;
+
 Directory _sandbox() {
-  final p = '${Directory.systemTemp.absolute.path}'
-      '${Platform.pathSeparator}sourin_t66_r8';
-  final d = Directory(p);
-  if (!d.isAbsolute) fail('★ 沙盒必须是绝对路径，实际 = $p');
-  d.createSync(recursive: true);
+  final d = _suiteSandbox ??=
+      Directory.systemTemp.createTempSync('sourin_t66_r8_').absolute;
+  if (!d.isAbsolute ||
+      d.parent.path != Directory.systemTemp.absolute.path) {
+    fail('★ 沙盒必须是系统临时目录下的独立绝对路径，实际 = ${d.path}');
+  }
   return d;
 }
 
 Widget _appWith({required Widget home}) {
   final theme = AppTheme.themeFor(Brightness.dark);
-  return mui.MaterialApp(theme: theme, home: home);
+  return mui.MaterialApp(
+    theme: theme,
+    builder: (_, child) => AppThemeHost(data: theme, child: child!),
+    home: home,
+  );
 }
 
 void _claim(WidgetTester t) {
-  while (t.takeException() != null) {}
+  expect(t.takeException(), isNull);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -105,7 +117,7 @@ void main() {
   late Directory root;
 
   setUp(() {
-    UiPrefs.remove(DownloadDir.kDirKey);
+    UiPrefs.debugResetForTest();
     DownloadDir.debugReset();
     DownloadQueue.debugReset();
     root = Directory(
@@ -120,24 +132,14 @@ void main() {
     CachePage.debugScanRootOverride = null;
     // ★ R8：粘滞位是**进程级**的 ⇒ 不复位会串到下个用例
     CachePage.debugResetHoverCapability();
-    UiPrefs.remove(DownloadDir.kDirKey);
+    UiPrefs.debugResetForTest();
     DownloadDir.debugReset();
     DownloadQueue.debugReset();
   });
 
   tearDownAll(() {
-    final d = Directory(
-      '${Directory.systemTemp.absolute.path}${Platform.pathSeparator}'
-      'sourin_t66_r8',
-    );
-    if (!d.isAbsolute) fail('★ 清理路径必须是绝对路径，实际 = ${d.path}');
-    if (d.existsSync()) {
-      try {
-        d.deleteSync(recursive: true);
-      } catch (_) {
-        // 句柄仍被占用 ⇒ 留在 TEMP（下次 setUp 会用新 case 目录）
-      }
-    }
+    final d = _sandbox();
+    if (d.existsSync()) d.deleteSync(recursive: true);
   });
 
   /// 造一部剧（真文件，走真扫盘）
@@ -197,6 +199,54 @@ void main() {
             'IgnorePointer.ignoring=true 等于没有删除入口');
   });
 
+  testWidgets('实际 Miuix 缓存菜单按 Esc 取消，不确认、不删除目标或邻居', (t) async {
+    final name = makeWork('取消删除的剧');
+    final neighbor = makeWork('保留的邻居');
+    await pumpPage(t, hwHover: false);
+    final state = t.state<CachePageState>(find.byType(CachePage));
+    final loadsBefore = state.debugLoadCount;
+    expect(state.debugWorkCount, 2);
+
+    await t.tap(find.byKey(ValueKey<String>('cache-card-more:$name')));
+    await t.pumpAndSettle();
+    expect(find.byType(miuix.MiuixWindowListPopup), findsOneWidget);
+    expect(
+      find.widgetWithText(miuix.MiuixBasicComponent, '删除整部'),
+      findsOneWidget,
+    );
+    expect(find.byType(AppGlassDialog), findsNothing);
+
+    await t.sendKeyEvent(LogicalKeyboardKey.escape);
+    await t.pumpAndSettle();
+    // Let any accidentally dispatched delete preview finish its real IO.
+    // Checking immediately after Escape could miss an unwanted dialog.
+    await t.runAsync(() async {
+      for (var i = 0; i < 10; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        await t.pump(const Duration(milliseconds: 40));
+      }
+    });
+    await t.pumpAndSettle();
+    expect(find.byType(miuix.MiuixWindowListPopup), findsNothing);
+    expect(find.byType(AppGlassDialog), findsNothing);
+    expect(find.text('删除整部？'), findsNothing);
+    expect(state.debugWorkCount, 2);
+    expect(state.debugLoadCount, loadsBefore,
+        reason: '取消菜单不得触发删除后的刷新');
+    for (final title in [name, neighbor]) {
+      final file = File('${root.path}${Platform.pathSeparator}$title'
+          '${Platform.pathSeparator}第01集 a.mp4');
+      expect(file.existsSync(), isTrue);
+      expect(file.lengthSync(), 1024 * 512);
+      expect(file.readAsBytesSync(), everyElement(0x41));
+      expect(find.text(title), findsOneWidget);
+    }
+    _claim(t);
+    await t.pumpWidget(_appWith(home: const mui.SizedBox.shrink()));
+    await t.pumpAndSettle();
+    _claim(t);
+  });
+
   // ══════════════════════════════════════════════════════════════════
   //  case ②：**能悬停**（桌面有鼠标）⇒ 保持原行为：hover 才显形
   // ══════════════════════════════════════════════════════════════════
@@ -228,13 +278,14 @@ void main() {
     // 前置：悬停前是隐藏的
     expect(_moreOpacity(t, name), 0.0, reason: '前置：悬停前必须隐藏');
 
-    // 发一个真 hover 事件到卡片上
-    final poster = find
-        .ancestor(
-          of: find.text(name),
-          matching: find.byType(mui.Column),
-        )
-        .last;
+    // Target the actual card. AppThemeHost adds ancestor layout Columns, so
+    // taking the last Column can hover the page center outside this card.
+    final poster = find.ancestor(
+      of: find.text(name),
+      matching: find.byType(PosterCard),
+    );
+    expect(poster, findsOneWidget);
+    debugPrint('[R8] hover target PosterCard=${t.getRect(poster)}');
     await t.sendEventToBinding(
       PointerHoverEvent(
         position: t.getCenter(poster),

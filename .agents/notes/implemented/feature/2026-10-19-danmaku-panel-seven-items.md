@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Partially superseded: [player Miuix controls](2026-11-08-player-miuix-controls.md), 2026-11-08. The information panel surface uses an opaque MiuixCard; the historical glass layers and inner-alpha criterion below no longer apply there. Information, source binding, failure classification and rendered readability requirements remain in force. Historical measurements below are not acceptance evidence for the Miuix implementation.
+
 > 同域：[2026-10-18-danmaku-pipeline-five-changes.md](./2026-10-18-danmaku-pipeline-five-changes.md)
 > 那篇是弹幕管线的整体改造；本篇是**面板层**的逐项取证，且四条根因推翻了假设。
 > 相邻：[2026-10-18-danmaku-request-proxy.md](./2026-10-18-danmaku-request-proxy.md)（传输层代理）。

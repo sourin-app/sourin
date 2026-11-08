@@ -14,7 +14,10 @@
 // ③ 是最容易做错的一个：把"搜到一台 NAS"直接吞掉、只显示"没找到设备"，
 // 用户会以为是自己电视的问题，反复折腾。列出来才能一眼看出搜到的是谁。
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../core/dlna/cast_manager.dart';
 import '../../core/dlna/dlna_http.dart';
@@ -105,24 +108,32 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
     final mq = MediaQuery.of(context);
     return Padding(
       padding: EdgeInsets.only(bottom: mq.viewInsets.bottom),
-      child: Container(
+      child: ConstrainedBox(
         constraints: BoxConstraints(maxHeight: mq.size.height * 0.72),
-        decoration: BoxDecoration(
-          color: colors.surfaceContainerHigh,
+        child: ClipRRect(
           borderRadius: const BorderRadius.vertical(
             top: Radius.circular(Radii.xl),
           ),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _grabber(colors),
-              _header(colors),
-              Flexible(child: _body(colors)),
-            ],
+          child: miuix.MiuixCard(
+            // The bottom sheet keeps square bottom corners; its outer clip
+            // supplies only the existing rounded top corners.
+            cornerRadius: 0,
+            colors: miuix.MiuixCardColors(
+              color: colors.surfaceContainerHigh,
+              contentColor: colors.onSurface,
+            ),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _grabber(colors),
+                  _header(colors),
+                  Flexible(child: _body(colors)),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -178,7 +189,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
             ],
           ),
         ),
-        IconButton(
+        ui.IconButton(
           onPressed: _scanning ? null : _run,
           icon: const Icon(AppIcons.refresh, size: 20),
           tooltip: '重新搜索',
@@ -290,7 +301,7 @@ class _CastDeviceSheetState extends State<_CastDeviceSheet> {
         ),
         if (retry) ...[
           const SizedBox(height: Sp.x4),
-          TextButton.icon(
+          ui.TextButton.icon(
             onPressed: _run,
             icon: const Icon(AppIcons.refresh, size: 18),
             label: const Text('再搜一次'),

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
@@ -20,8 +21,9 @@ void main() {
           debugShelfLoadOverride = null;
           UiPrefs.debugResetForTest();
         });
-        await t.binding.setSurfaceSize(Size(width, 800));
-        addTearDown(() => t.binding.setSurfaceSize(null));
+        t.view.devicePixelRatio = 1;
+        t.view.physicalSize = Size(width, 800);
+        addTearDown(t.view.reset);
         final selected = <String>[];
         final key = GlobalKey<MyShelfState>();
         final theme = AppTheme.themeFor(Brightness.light);
@@ -78,9 +80,8 @@ void main() {
       MaterialApp(
         theme: theme,
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: const TextScaler.linear(1.6),
-          ),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(1.6)),
           child: child!,
         ),
         home: Scaffold(
@@ -103,8 +104,10 @@ void main() {
     expect(t.getSize(find.byType(PosterCard)).height, greaterThanOrEqualTo(96));
     expect(
       t
-          .widget<LinearProgressIndicator>(find.byType(LinearProgressIndicator))
-          .value,
+          .widget<miuix.MiuixLinearProgressIndicator>(
+            find.byType(miuix.MiuixLinearProgressIndicator),
+          )
+          .progress,
       .42,
     );
     expect(t.takeException(), isNull);
@@ -119,9 +122,8 @@ void main() {
       MaterialApp(
         theme: theme,
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: const TextScaler.linear(0.8),
-          ),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(0.8)),
           child: child!,
         ),
         home: Scaffold(
@@ -171,14 +173,22 @@ void main() {
           ),
         ),
       );
-      final surface = t.widget<Material>(
-        find.descendant(
-          of: find.byType(CompactShelfCard),
-          matching: find.byType(Material),
-        ).first,
+      expect(find.byType(miuix.MiuixCard), findsOneWidget);
+      final surface = t.widget<DecoratedBox>(
+        find
+            .descendant(
+              of: find.byType(CompactShelfCard),
+              matching: find.byWidgetPredicate(
+                (widget) =>
+                    widget is DecoratedBox &&
+                    widget.decoration is ShapeDecoration,
+              ),
+            )
+            .first,
       );
-      expect(surface.color, theme.colorScheme.surfaceContainer);
-      expect(surface.color, isNot(theme.scaffoldBackgroundColor));
+      final color = (surface.decoration as ShapeDecoration).color;
+      expect(color, theme.colorScheme.surfaceContainer);
+      expect(color, isNot(theme.scaffoldBackgroundColor));
       expect(t.takeException(), isNull);
     });
   }

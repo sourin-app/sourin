@@ -22,6 +22,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/bili/bili_api.dart';
@@ -671,9 +672,9 @@ void main() {  // ════════════════════�
        *   ⇒ 现在它在「弹幕来源」页签里是**平级的一行**，名字就叫出来，
        *      右侧动作按钮从「外部弹幕…」改成「打开…」。
        */
-      await t.tap(find.text('高级'));
+      await t.tap(find.text('弹幕来源'));
       await t.pumpAndSettle();
-      final btn = find.widgetWithText(TextButton, '打开…');
+      final btn = find.widgetWithText(ui.TextButton, '打开…');
       expect(btn, findsOneWidget);
       /*
        * ⚠️ 按钮在面板末尾 —— 800×600 的测试面里它在屏幕外，
@@ -698,7 +699,7 @@ void main() {  // ════════════════════�
       await t.pumpWidget(_host(_danmakuDialog()));
       await t.pumpAndSettle();
       // 同上：来源行现在在「弹幕来源」页签下。
-      await t.tap(find.text('高级'));
+      await t.tap(find.text('弹幕来源'));
       await t.pumpAndSettle();
       expect(find.text('打开…'), findsNothing,
           reason: '★ 面板可以被别的宿主复用而不带上那个源 —— 那时不该有这枚按钮');

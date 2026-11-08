@@ -85,6 +85,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -831,22 +832,22 @@ void main() {
        */
       await mountMediaPage(t, brightness: Brightness.light);
 
-      final sc = t.widget<Scaffold>(find.byType(Scaffold).first);
+      final sc = t.widget<miuix.MiuixScaffold>(find.byType(miuix.MiuixScaffold).first);
       final ctx = t.element(find.byType(MediaPage));
       final surface = Theme.of(ctx).colorScheme.surface;
 
-      debugPrint('[MEDIA-BG] Scaffold.backgroundColor=${sc.backgroundColor} '
+      debugPrint('[MEDIA-BG] MiuixScaffold.containerColor=${sc.containerColor} '
           'surface=$surface brightness='
           '${Theme.of(ctx).brightness}');
 
-      expect(sc.backgroundColor, isNot(equals(Colors.black)),
+      expect(sc.containerColor, isNot(equals(Colors.black)),
           reason: '★★★ 窗口态**不得**是纯黑 —— Owner 报的正是「进来之后只有黑色」。'
-              '实测 Scaffold.backgroundColor=${sc.backgroundColor}。'
+              '实测 MiuixScaffold.containerColor=${sc.containerColor}。'
               '若为 Colors.black ⇒ 详情区（用主题令牌画）会落在纯黑上 ⇒ '
               '亮色主题下 WCAG 只有 1.29:1');
-      expect(sc.backgroundColor, equals(surface),
+      expect(sc.containerColor, equals(surface),
           reason: '★★★ 窗口态底色必须**等于主题的 surface** —— '
-              '实测 ${sc.backgroundColor} vs surface=$surface。'
+              '实测 ${sc.containerColor} vs surface=$surface。'
               '若不等 ⇒ 详情区会落在与它不匹配的底色上');
     });
 
@@ -860,16 +861,16 @@ void main() {
        */
       await mountMediaPage(t);
 
-      final sc = t.widget<Scaffold>(find.byType(Scaffold).first);
+      final sc = t.widget<miuix.MiuixScaffold>(find.byType(miuix.MiuixScaffold).first);
       final ctx = t.element(find.byType(MediaPage));
       final surface = Theme.of(ctx).colorScheme.surface;
 
-      debugPrint('[MEDIA-BG] Scaffold.backgroundColor=${sc.backgroundColor} '
+      debugPrint('[MEDIA-BG] MiuixScaffold.containerColor=${sc.containerColor} '
           'surface=$surface');
 
-      expect(sc.backgroundColor, equals(surface),
+      expect(sc.containerColor, equals(surface),
           reason: '★★ 窗口态底色必须跟随**当前主题**的 surface（不是硬编码）—— '
-              '实测 ${sc.backgroundColor} vs surface=$surface');
+              '实测 ${sc.containerColor} vs surface=$surface');
     });
 
     testWidgets('★★★ 全屏态：底色**仍必须是** Colors.black（别把黑底全删了）',
@@ -890,8 +891,8 @@ void main() {
 
       final ctx = t.element(find.byType(MediaPage));
       final surface = Theme.of(ctx).colorScheme.surface;
-      final bgWindow = t.widget<Scaffold>(find.byType(Scaffold).first)
-          .backgroundColor;
+      final bgWindow = t.widget<miuix.MiuixScaffold>(find.byType(miuix.MiuixScaffold).first)
+          .containerColor;
       debugPrint('[MEDIA-BG] 窗口态 = $bgWindow（应 = surface=$surface）');
 
       // 进全屏（真路径：按 Enter）
@@ -900,8 +901,8 @@ void main() {
 
       expect(find.byType(DetailPage), findsNothing,
           reason: '前置：全屏后详情区应当消失');
-      final bgFull = t.widget<Scaffold>(find.byType(Scaffold).first)
-          .backgroundColor;
+      final bgFull = t.widget<miuix.MiuixScaffold>(find.byType(miuix.MiuixScaffold).first)
+          .containerColor;
       debugPrint('[MEDIA-BG] 全屏态 = $bgFull（应 = Colors.black）');
 
       expect(bgFull, equals(Colors.black),

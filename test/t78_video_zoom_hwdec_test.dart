@@ -22,6 +22,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/player_page.dart' show videoZoomToMpv;
@@ -354,20 +355,25 @@ void main() {
       }
     });
 
-    testWidgets('③b 回调缺失 ⇒ 档位在**结构上**点不动（InkWell.onTap == null）', (t) async {
+    testWidgets('③b 回调缺失 ⇒ 档位禁用且点击不改变选择', (t) async {
       await t.pumpWidget(_host(_sheet(videoZoom: 100, onSetVideoZoom: null)));
       await t.pumpAndSettle();
 
-      final ink = find.ancestor(
+      final chip = find.ancestor(
         of: find.text('125%'),
-        matching: find.byType(InkWell),
+        matching: find.byType(ui.ChoiceChip),
       );
-      expect(ink, findsOneWidget,
-          reason: '★ chip 的结构变了？t62_player_rate_test.dart:225-243 也钉着这个 ancestor');
-      expect(t.widget<InkWell>(ink).onTap, isNull,
+      expect(chip, findsOneWidget);
+      expect(t.widget<ui.ChoiceChip>(chip).onSelected, isNull,
           reason: '★ 没有回调时必须传 null（不是空实现 (){}）—— '
               '空实现会让点击被静默吞掉，用户看到的是「点了没反应」像卡顿，'
-              '而不是「当前不可用」；置空后连水波都不起（onTap == null ⇒ enabled == false）');
+              '而不是「当前不可用」');
+      await _scrollToBottom(t, chip);
+      expect(chip.hitTestable(), findsOneWidget);
+      await t.tap(chip);
+      await t.pumpAndSettle();
+      expect(t.widget<ui.ChoiceChip>(chip).selected, isFalse);
+      expect(t.takeException(), isNull);
     });
 
     testWidgets('③c 读不到但回调还在 ⇒ 点下去**仍然回调**（读不到≠不可设）', (t) async {
@@ -392,7 +398,7 @@ void main() {
       await t.pumpWidget(_host(_sheet(videoZoom: 100)));
       await t.pumpAndSettle();
 
-      final sliders = t.widgetList<Slider>(find.byType(Slider)).toList();
+      final sliders = t.widgetList<ui.Slider>(find.byType(ui.Slider)).toList();
       expect(
         sliders.where((s) => s.min == 50 && s.max == 200).length,
         0,

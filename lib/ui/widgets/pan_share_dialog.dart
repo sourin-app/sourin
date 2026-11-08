@@ -25,6 +25,8 @@
 // # 外壳规矩（docs/AGENTS.md §3.5）
 // `AppGlassDialog` + 显式 `maxWidth`；content 含 `TextField` ⇒ 就地包
 // `Material(type: transparency)`；所有 Text 显式 `TextAlign.left`。
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/ffi.dart' show userErrorText;
@@ -112,10 +114,7 @@ class _PanShareDialogState extends State<PanShareDialog> {
       _listing = null;
     });
     try {
-      final l = await SourinApi.panListShare(
-        _text.text.trim(),
-        pwd: s.pwd,
-      );
+      final l = await SourinApi.panListShare(_text.text.trim(), pwd: s.pwd);
       if (!mounted) return;
       setState(() => _listing = l);
     } catch (e) {
@@ -167,9 +166,8 @@ class _PanShareDialogState extends State<PanShareDialog> {
             // ★ 含 TextField ⇒ 必须就地补透明 Material 宿主
             Material(
               type: MaterialType.transparency,
-              child: TextField(
+              child: ui.TextField(
                 controller: _text,
-                textAlign: TextAlign.left,
                 maxLines: 3,
                 minLines: 2,
                 decoration: const InputDecoration(
@@ -185,8 +183,9 @@ class _PanShareDialogState extends State<PanShareDialog> {
               Text(
                 _error,
                 textAlign: TextAlign.left,
-                style: t.textTheme.bodySmall
-                    ?.copyWith(color: t.colorScheme.error),
+                style: t.textTheme.bodySmall?.copyWith(
+                  color: t.colorScheme.error,
+                ),
               ),
             ],
             if (s != null) ...[
@@ -208,10 +207,7 @@ class _PanShareDialogState extends State<PanShareDialog> {
               ],
               if (_listError.isNotEmpty || _listing != null) ...[
                 SizedBox(height: Sp.x2),
-                PanShareListingSection(
-                  listing: _listing,
-                  error: _listError,
-                ),
+                PanShareListingSection(listing: _listing, error: _listError),
               ],
             ],
           ],
@@ -237,8 +233,11 @@ class _PanShareDialogState extends State<PanShareDialog> {
         children: [
           Row(
             children: [
-              Icon(bad ? AppIcons.error_outline : AppIcons.check_circle,
-                  size: 16, color: accent),
+              Icon(
+                bad ? AppIcons.error_outline : AppIcons.check_circle,
+                size: 16,
+                color: accent,
+              ),
               SizedBox(width: Sp.x1),
               Expanded(
                 child: Text(
@@ -263,7 +262,7 @@ class _PanShareDialogState extends State<PanShareDialog> {
             '登录状态',
             s.loggedIn
                 ? '已登录${s.account != null ? '（${s.account}）' : ''}'
-                    '${s.expired ? '，但已过期' : ''}'
+                      '${s.expired ? '，但已过期' : ''}'
                 : '未登录',
           ),
           if (!s.keyringAvailable) ...[
@@ -271,8 +270,9 @@ class _PanShareDialogState extends State<PanShareDialog> {
             Text(
               '本机没有可用的系统钥匙串 ⇒ 无法安全保存登录状态',
               textAlign: TextAlign.left,
-              style: t.textTheme.labelSmall
-                  ?.copyWith(color: t.colorScheme.error),
+              style: t.textTheme.labelSmall?.copyWith(
+                color: t.colorScheme.error,
+              ),
             ),
           ],
           SizedBox(height: Sp.x2),
@@ -287,9 +287,7 @@ class _PanShareDialogState extends State<PanShareDialog> {
           SizedBox(height: Sp.x1),
           // 如实说明能力边界，不给假入口
           Text(
-            s.resolvable
-                ? '可以取流'
-                : '当前版本还不能用它播放（取直链功能尚未接入）',
+            s.resolvable ? '可以取流' : '当前版本还不能用它播放（取直链功能尚未接入）',
             textAlign: TextAlign.left,
             style: t.textTheme.labelSmall?.copyWith(
               color: t.colorScheme.onSurface.withValues(alpha: 0.6),
@@ -440,8 +438,9 @@ class PanShareListingView extends StatelessWidget {
                     textAlign: TextAlign.left,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: t.textTheme.labelSmall
-                        ?.copyWith(color: t.colorScheme.onSurface),
+                    style: t.textTheme.labelSmall?.copyWith(
+                      color: t.colorScheme.onSurface,
+                    ),
                   ),
                 ),
                 if (shown[i].sizeText.isNotEmpty) ...[

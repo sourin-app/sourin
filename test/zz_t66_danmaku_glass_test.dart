@@ -7,7 +7,7 @@
 //   ② 自建玻璃容器 + **原生 `TextField`**
 //
 // 选 ② 的理由（Lead 裁决，我认同）：
-//   task41 有 **9 处** `find.byType(TextField)` 断言守着 Owner 第 1 条
+//   task41 有 **9 处** `find.byType(ui.TextField)` 断言守着 Owner 第 1 条
 //   「不支持就不显示」这个**产品契约**。换成 GlassTextField ⇒ 那 9 处全红。
 //   而**改断言**等于把"输入框存在"的判据从"真的是 TextField"
 //   改成"某个玻璃组件" ⇒ 门禁失去鉴别力：
@@ -17,7 +17,7 @@
 //
 // # 所以本门禁要求**两条同时成立**
 // ```text
-// ① GlassContainer 在树上（真的玻璃化了）
+// ① miuix.MiuixCard 在树上（真的玻璃化了）
 // ② TextField 也在树上（真的没丢输入框）
 // ⇒ 缺任何一条都红。只查其中一条就是假绿。
 // ```
@@ -42,7 +42,7 @@
 // （表现为"调用了但 sent 列表是空的"，很容易误判成实现有 bug）。
 //
 // 正确写法：
-//   await t.enterText(find.byType(TextField), '文字');
+//   await t.enterText(find.byType(ui.TextField), '文字');
 //   await t.pump();                    // ← 这一行不能省
 //   await t.tap(find.text('发送'));
 // ```
@@ -66,8 +66,8 @@
 //   不断言像素颜色 —— 否则换环境就假红/假绿。
 // ```
 import 'package:flutter_test/flutter_test.dart';
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
-    show GlassContainer;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
@@ -95,25 +95,25 @@ DanmakuSendInline _send({
 
 void main() {
   // ═══════════════════════════════════════════════════════════════════
-  //  ① 玻璃化：GlassContainer 必须在树上
+  //  ① 玻璃化：miuix.MiuixCard 必须在树上
   // ═══════════════════════════════════════════════════════════════════
-  group('① 玻璃材质', () {
-    testWidgets('★★★ 输入框外面有 GlassContainer（真的玻璃化了）', (t) async {
+  group('① Miuix 输入承载面', () {
+    testWidgets('★★★ 输入框外面有 miuix.MiuixCard（真的玻璃化了）', (t) async {
       await t.pumpWidget(_host(_send()));
       await t.pumpAndSettle();
 
-      expect(find.byType(GlassContainer), findsWidgets,
-          reason: '★★★ Owner 要玻璃材质。没有 GlassContainer ⇒ 还是老样子。'
-              '（Lead 裁决：自建容器包原生 TextField）');
+      expect(find.byType(miuix.MiuixCard), findsWidgets,
+          reason: '★★★ 输入区必须挂载实际 MiuixCard。'
+              '并保留真实可编辑输入。');
     });
 
-    testWidgets('★★ 那个 GlassContainer **包含**输入框（不是摆旁边）', (t) async {
+    testWidgets('★★ 那个 miuix.MiuixCard **包含**输入框（不是摆旁边）', (t) async {
       await t.pumpWidget(_host(_send()));
       await t.pumpAndSettle();
 
       final nested = find.descendant(
-        of: find.byType(GlassContainer),
-        matching: find.byType(TextField),
+        of: find.byType(miuix.MiuixCard),
+        matching: find.byType(ui.TextField),
       );
       expect(nested, findsOneWidget,
           reason: '★★ 玻璃容器必须**包住**输入框 —— '
@@ -139,7 +139,9 @@ void main() {
        * ⇒ 这条门禁在**测试层**就把那个错误选择挡住，不用等 task41 报。
        * ```
        */
-      expect(find.byType(TextField), findsOneWidget,
+      expect(find.byType(miuix.MiuixTextField), findsOneWidget);
+      expect(find.byType(EditableText), findsOneWidget);
+      expect(find.byType(ui.TextField), findsOneWidget,
           reason: '★★★ 必须是原生 TextField —— task41 有 9 处断言靠它守住'
               '「不支持就不显示」的产品契约');
     });
@@ -147,10 +149,10 @@ void main() {
     testWidgets('★★★ 能用 enterText 输入（原生输入行为完整）', (t) async {
       await t.pumpWidget(_host(_send()));
       await t.pumpAndSettle();
-      await t.enterText(find.byType(TextField), '玻璃化之后还能打字');
+      await t.enterText(find.byType(ui.TextField), '玻璃化之后还能打字');
       await t.pumpAndSettle();
 
-      final tf = t.widget<TextField>(find.byType(TextField));
+      final tf = t.widget<ui.TextField>(find.byType(ui.TextField));
       expect(tf.controller?.text, '玻璃化之后还能打字',
           reason: '★★ 输入法/粘贴/选择都走原生路径，玻璃化不该影响');
     });
@@ -164,7 +166,7 @@ void main() {
         },
       )));
       await t.pumpAndSettle();
-      await t.enterText(find.byType(TextField), '回车发送');
+      await t.enterText(find.byType(ui.TextField), '回车发送');
       await t.testTextInput.receiveAction(TextInputAction.done);
       await t.pumpAndSettle();
 
@@ -196,7 +198,7 @@ void main() {
         },
       )));
       await t.pumpAndSettle();
-      await t.enterText(find.byType(TextField), '点两次试试');
+      await t.enterText(find.byType(ui.TextField), '点两次试试');
       /*
        * ⚠️ enterText 之后必须 pump 一次：`_canSend` 依赖 `_ctl.text`，
        *    而按钮的 enabled 是在**下一帧**才重算的。
@@ -207,7 +209,7 @@ void main() {
       await t.tap(find.text('发送'));
       await t.pump();
 
-      final tf = t.widget<TextField>(find.byType(TextField));
+      final tf = t.widget<ui.TextField>(find.byType(ui.TextField));
       expect(tf.enabled, isFalse, reason: '★★ 发送中必须禁用（防连点）');
 
       await t.pumpAndSettle();
@@ -219,12 +221,12 @@ void main() {
         onSend: (text, ms) async => '发不出去',
       )));
       await t.pumpAndSettle();
-      await t.enterText(find.byType(TextField), '这段话不能丢');
+      await t.enterText(find.byType(ui.TextField), '这段话不能丢');
       await t.pump(); // 同上一处：让 _canSend 重算
       await t.tap(find.text('发送'));
       await t.pumpAndSettle();
 
-      final tf = t.widget<TextField>(find.byType(TextField));
+      final tf = t.widget<ui.TextField>(find.byType(ui.TextField));
       expect(tf.controller?.text, '这段话不能丢',
           reason: '★★ 失败时清空等于用户打的字没了');
       expect(find.text('发不出去'), findsOneWidget, reason: '★ 失败原因要说出来');
@@ -248,7 +250,7 @@ void main() {
           t.widget<GlassFieldShell>(find.byType(GlassFieldShell));
       expect(shell().focused, isFalse, reason: '初始未聚焦');
 
-      await t.tap(find.byType(TextField));
+      await t.tap(find.byType(ui.TextField));
       await t.pumpAndSettle();
       expect(shell().focused, isTrue,
           reason: '★★ Lead 要求「焦点态要能看见」—— 聚焦后 focused 必须为 true');

@@ -1,9 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/danmaku.dart';
 import 'package:sourin_spike/ui/danmaku_search_page.dart';
 import 'package:sourin_spike/ui/widgets/bili_import_dialog.dart';
 import 'package:sourin_spike/ui/widgets/danmaku_settings_dialog.dart';
+
+import 'support/miuix_dialog_host.dart';
 
 const _match = DanmakuMatch(
   episodeId: 7,
@@ -45,28 +49,26 @@ DanmakuSettingsState _state({
 Widget _host({
   required DanmakuSettingsState state,
   BiliImportState biliState = const BiliImportState(),
-}) => MaterialApp(
-  home: DanmakuSearchPage(
-    state: state,
-    biliState: biliState,
-    localTitles: const ['Episode 1'],
-    onSearch: (_) => fail('Rendering must not dispatch a search.'),
-    onBiliSearch: (_) => fail('Rendering must not dispatch a video search.'),
-    onPickMatch: (_) => fail('Rendering must not bind a match.'),
-    onBatchBind: (_) => fail('Rendering must not bind a batch.'),
-    onBiliImport: (_) => fail('Rendering must not import a video.'),
-    onBiliSelectPage: (_) => fail('Rendering must not select a video page.'),
-    onClose: () {},
-  ),
+}) => DanmakuSearchPage(
+  state: state,
+  biliState: biliState,
+  localTitles: const ['Episode 1'],
+  onSearch: (_) => fail('Rendering must not dispatch a search.'),
+  onBiliSearch: (_) => fail('Rendering must not dispatch a video search.'),
+  onPickMatch: (_) => fail('Rendering must not bind a match.'),
+  onBatchBind: (_) => fail('Rendering must not bind a batch.'),
+  onBiliImport: (_) => fail('Rendering must not import a video.'),
+  onBiliSelectPage: (_) => fail('Rendering must not select a video page.'),
+  onClose: () {},
 );
 
 String _visibleText(WidgetTester tester) {
-  final text = tester.widgetList<Text>(find.byType(Text)).map(
-    (widget) => widget.data ?? widget.textSpan?.toPlainText() ?? '',
-  );
-  final selectable = tester.widgetList<SelectableText>(
-    find.byType(SelectableText),
-  ).map((widget) => widget.data ?? widget.textSpan?.toPlainText() ?? '');
+  final text = tester
+      .widgetList<Text>(find.byType(Text))
+      .map((widget) => widget.data ?? widget.textSpan?.toPlainText() ?? '');
+  final selectable = tester
+      .widgetList<SelectableText>(find.byType(SelectableText))
+      .map((widget) => widget.data ?? widget.textSpan?.toPlainText() ?? '');
   return [...text, ...selectable].join('\n');
 }
 
@@ -84,7 +86,8 @@ void _expectPrivateFieldsHidden(String visible) {
     expect(
       visible.contains(marker),
       isFalse,
-      reason: 'Production DanmakuSearchPage must hide synthetic private fields.',
+      reason:
+          'Production DanmakuSearchPage must hide synthetic private fields.',
     );
   }
 }
@@ -93,8 +96,7 @@ Future<void> _mount(WidgetTester tester, Widget host) async {
   await tester.binding.setSurfaceSize(const Size(1280, 800));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   addTearDown(() => tester.pumpWidget(const SizedBox.shrink()));
-  await tester.pumpWidget(host);
-  await tester.pumpAndSettle();
+  await pumpMiuixDialog(tester, host);
   expect(find.byType(DanmakuSearchPage), findsOneWidget);
   expect(tester.takeException(), isNull);
 }
@@ -109,9 +111,9 @@ void main() {
     expect(page.state.searchError, same(error));
     expect(error.uri, contains('-query-secret'));
     expect(
-      tester.widget<CheckboxListTile>(
-        find.byType(CheckboxListTile),
-      ).onChanged,
+      tester
+          .widget<ui.CheckboxListTile>(find.byType(ui.CheckboxListTile))
+          .onChanged,
       isNotNull,
       reason: 'Partial failure must not disable existing results.',
     );
@@ -127,7 +129,10 @@ void main() {
     final error = _failure('video');
     await _mount(
       tester,
-      _host(state: _state(), biliState: BiliImportState(error: error)),
+      _host(
+        state: _state(),
+        biliState: BiliImportState(error: error),
+      ),
     );
     final page = tester.widget<DanmakuSearchPage>(
       find.byType(DanmakuSearchPage),
@@ -142,40 +147,57 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('expanded request details hide private fields and response body', (
-    tester,
-  ) async {
-    final loadError = _failure('load');
-    final searchError = _failure('search');
-    final videoError = _failure('video');
-    await _mount(
-      tester,
-      _host(
-        state: _state(error: loadError, searchError: searchError),
-        biliState: BiliImportState(error: videoError),
-      ),
-    );
-    final expansion = find.byType(ExpansionTile);
-    expect(expansion, findsOneWidget);
-    expect(find.byType(SelectableText), findsNothing);
-    await tester.ensureVisible(expansion);
-    await tester.tap(expansion);
-    await tester.pumpAndSettle();
-    expect(find.byType(SelectableText), findsNWidgets(5));
-    final page = tester.widget<DanmakuSearchPage>(
-      find.byType(DanmakuSearchPage),
-    );
-    expect(page.state.error, same(loadError));
-    expect(page.state.searchError, same(searchError));
-    expect(page.biliState.error, same(videoError));
-    expect(loadError.body, contains('-body-secret'));
-    final visible = _visibleText(tester);
-    _expectPrivateFieldsHidden(visible);
-    expect(visible, contains('Fixture load response explains refusal.'));
-    expect(visible, contains('Fixture search response explains refusal.'));
-    expect(visible, contains('Fixture video response explains refusal.'));
-    expect(visible, contains('HTTP 403'));
-    expect(visible, contains('HTTP status=403'));
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'expanded request details hide private fields and response body',
+    (tester) async {
+      final loadError = _failure('load');
+      final searchError = _failure('search');
+      final videoError = _failure('video');
+      await _mount(
+        tester,
+        _host(
+          state: _state(error: loadError, searchError: searchError),
+          biliState: BiliImportState(error: videoError),
+        ),
+      );
+      final expansion = find.byType(ui.ExpansionTile);
+      expect(expansion, findsOneWidget);
+      expect(
+        find.descendant(of: expansion, matching: find.byType(miuix.MiuixCard)),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: expansion,
+          matching: find.byType(miuix.MiuixBasicComponent),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(SelectableText), findsNothing);
+      final header = find.text('请求与服务端详情');
+      await tester.ensureVisible(header);
+      await tester.tap(header);
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsNWidgets(5));
+      final page = tester.widget<DanmakuSearchPage>(
+        find.byType(DanmakuSearchPage),
+      );
+      expect(page.state.error, same(loadError));
+      expect(page.state.searchError, same(searchError));
+      expect(page.biliState.error, same(videoError));
+      expect(loadError.body, contains('-body-secret'));
+      final visible = _visibleText(tester);
+      _expectPrivateFieldsHidden(visible);
+      expect(visible, contains('Fixture load response explains refusal.'));
+      expect(visible, contains('Fixture search response explains refusal.'));
+      expect(visible, contains('Fixture video response explains refusal.'));
+      expect(visible, contains('HTTP 403'));
+      expect(visible, contains('HTTP status=403'));
+      await tester.ensureVisible(header);
+      await tester.tap(header);
+      await tester.pumpAndSettle();
+      expect(find.byType(SelectableText), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

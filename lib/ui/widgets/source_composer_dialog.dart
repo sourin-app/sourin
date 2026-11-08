@@ -27,6 +27,10 @@
 ///    退化后预览仍在**同一屏**（不是另一步），只是位置在下方。
 library;
 
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'miuix_controls.dart' as ui;
+
 import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
@@ -49,7 +53,6 @@ const Map<String, String> kComposerFieldHints = {
   'episodes': r'$.data.vod_play_url',
   'categories': r'$.data.class',
 };
-
 
 /// 从一份**声明式源 JSON** 还原成编排草稿（编辑入口用）
 ///
@@ -396,14 +399,8 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
       children: <Widget>[
         _tabBar(colors),
         const SizedBox(height: Sp.x4),
-        Offstage(
-          offstage: _tab != 0,
-          child: _declarativePane(colors),
-        ),
-        Offstage(
-          offstage: _tab != 1,
-          child: overridesPane,
-        ),
+        Offstage(offstage: _tab != 0, child: _declarativePane(colors)),
+        Offstage(offstage: _tab != 1, child: overridesPane),
       ],
     );
   }
@@ -419,10 +416,10 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
   Widget _tabBar(ColorScheme colors) {
     Widget chip(int index, String label) {
       final on = _tab == index;
-      return TextButton(
+      return ui.TextButton(
         key: ValueKey<String>('composer-tab-$index'),
         onPressed: () => setState(() => _tab = index),
-        style: TextButton.styleFrom(
+        style: ui.TextButton.styleFrom(
           foregroundColor: on ? colors.onPrimary : colors.onSurfaceVariant,
           backgroundColor: on
               ? colors.primary
@@ -452,92 +449,85 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
 
   /// 源定义页：左改右看（宽）/ 上下堆叠（窄）—— 与改前**逐像素一致**
   Widget _declarativePane(ColorScheme colors) => LayoutBuilder(
-        builder: (context, box) {
-          final twoPane = box.maxWidth >= kComposerTwoPaneMinWidth;
-          final editor = _editorPane(colors);
-          final preview = _previewPane(colors);
-          if (!twoPane) {
-            /*
+    builder: (context, box) {
+      final twoPane = box.maxWidth >= kComposerTwoPaneMinWidth;
+      final editor = _editorPane(colors);
+      final preview = _previewPane(colors);
+      if (!twoPane) {
+        /*
              * 窄屏：上下堆叠。⚠️ 仍是**同一屏**（不是另一步）——
              * 预览就在下方，滚动即可见，不需要点任何按钮。
              */
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [editor, const SizedBox(height: Sp.x5), preview],
-            );
-          }
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: editor),
-              const SizedBox(width: Sp.x5),
-              Expanded(child: preview),
-            ],
-          );
-        },
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            editor,
+            const SizedBox(height: Sp.x5),
+            preview,
+          ],
+        );
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: editor),
+          const SizedBox(width: Sp.x5),
+          Expanded(child: preview),
+        ],
       );
+    },
+  );
 
   List<Widget> _actions(BuildContext context) => [
-        TextButton(
-          onPressed: () => Navigator.of(context).maybePop(),
-          child: const Text('取消'),
-        ),
-        /*
+    ui.TextButton(
+      onPressed: () => Navigator.of(context).maybePop(),
+      child: const Text('取消'),
+    ),
+    /*
          * 覆盖层页签上是**另一份**保存（`保存覆盖层`，见
          * `ComposerOverridesTab`）—— 那是写 overrides/<id>.json，
          * 与这里的"写回源定义"完全两件事。
          * ⇒ 在那一页藏掉本按钮，避免用户以为它会保存覆盖层。
          * `overridesOnly` 时整份提交都不存在（没有源定义可提交）。
          */
-        if (_tab == 0 && !widget.overridesOnly) ...[
-          const SizedBox(width: Sp.x2),
-          FilledButton(
-            onPressed: _canSubmit
-                ? () {
-                    _sync();
-                    widget.onSubmit?.call(_d.toJson());
-                  }
-                : null,
-            child: Text(widget.submitLabel),
-          ),
-        ],
-      ];
+    if (_tab == 0 && !widget.overridesOnly) ...[
+      const SizedBox(width: Sp.x2),
+      ui.FilledButton(
+        onPressed: _canSubmit
+            ? () {
+                _sync();
+                widget.onSubmit?.call(_d.toJson());
+              }
+            : null,
+        child: Text(widget.submitLabel),
+      ),
+    ],
+  ];
   // ═══════════════════════════════════════════════════════════════════
   //  左栏：分区卡片（站点 / 端点 / 字段映射）—— 全部在一屏内
   // ═══════════════════════════════════════════════════════════════════
 
   Widget _editorPane(ColorScheme colors) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _siteCard(colors),
-          const SizedBox(height: Sp.x4),
-          _endpointsCard(colors),
-          const SizedBox(height: Sp.x4),
-          _mappingCard(colors),
-        ],
-      );
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      _siteCard(colors),
+      const SizedBox(height: Sp.x4),
+      _endpointsCard(colors),
+      const SizedBox(height: Sp.x4),
+      _mappingCard(colors),
+    ],
+  );
 
-  /// 分区卡片的统一外壳
-  ///
-  /// ⚠️ 底色/描边都**显式给**，不落主题兜底 —— 弹窗本身已有 surface 底，
-  ///    再叠一层必须靠 alpha 区分，否则卡片和背景糊在一起看不出「分区」。
-  ///
-  /// ★★★ 为什么用 `Material` 而不是 `Container(decoration:)`
-  /// ```text
-  /// 第一版用的是 Container + BoxDecoration，测试直接抛断言：
-  ///   ListTile background color or ink splashes may be invisible.
-  ///   The ListTile is wrapped in a DecoratedBox that has a background color.
-  /// ⇒ 卡片里放了 CheckboxListTile（端点行），而 ListTile 的底色/水波纹
-  ///   是画在**最近的 Material 祖先**上的。中间隔一层带底色的 DecoratedBox，
-  ///   那些效果就全被盖住 —— 用户点复选框时看不到任何反馈。
-  /// ⇒ 用 Material 同时承担「底色」和「祖先」两个角色，一步解决。
-  ///   （这比「保留 Container + 再套一层 Material」少一层 widget，也更不易写错。）
-  /// ```
-  Widget _card(ColorScheme colors, {required List<Widget> children}) => Material(
-        color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
-        borderRadius: BorderRadius.circular(Radii.md),
+  /// Miuix sections share the current palette and keep endpoint controls visible.
+  Widget _card(ColorScheme colors, {required List<Widget> children}) =>
+      miuix.MiuixCard(
+        colors: miuix.MiuixCardColors(
+          color: colors.surfaceContainerHighest,
+          contentColor: colors.onSurface,
+        ),
+        cornerRadius: Radii.md,
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.all(Sp.x4),
@@ -554,17 +544,23 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
       );
 
   Widget _siteCard(ColorScheme colors) => _card(
+    colors,
+    children: [
+      const AppDialogSection.title('① 站点'),
+      const SizedBox(height: Sp.x3),
+      _field(colors, 'id', '唯一标识（英文，如 mysite）', _id, (v) => _d.id = v),
+      const SizedBox(height: Sp.x3),
+      _field(colors, 'name', '显示名（如 我的影视）', _name, (v) => _d.name = v),
+      const SizedBox(height: Sp.x3),
+      _field(
         colors,
-        children: [
-          const AppDialogSection.title('① 站点'),
-          const SizedBox(height: Sp.x3),
-          _field(colors, 'id', '唯一标识（英文，如 mysite）', _id, (v) => _d.id = v),
-          const SizedBox(height: Sp.x3),
-          _field(colors, 'name', '显示名（如 我的影视）', _name, (v) => _d.name = v),
-          const SizedBox(height: Sp.x3),
-          _field(colors, 'base', '接口地址（如 https://api.example.com）', _base, (v) => _d.base = v),
-        ],
-      );
+        'base',
+        '接口地址（如 https://api.example.com）',
+        _base,
+        (v) => _d.base = v,
+      ),
+    ],
+  );
 
   Widget _field(
     ColorScheme colors,
@@ -572,37 +568,45 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
     String hint,
     TextEditingController ctl,
     ValueChanged<String> onChanged,
-  ) =>
-      Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          SizedBox(
-            width: 72,
-            child: Text(
-              label,
-              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
-            ),
+  ) => Row(
+    crossAxisAlignment: CrossAxisAlignment.center,
+    children: [
+      SizedBox(
+        width: 72,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.onSurfaceVariant,
           ),
-          Expanded(
-            child: TextField(
-              controller: ctl,
-              /*
+        ),
+      ),
+      Expanded(
+        child: ui.TextField(
+          controller: ctl,
+          /*
                * ★ 每次输入都 setState —— 右侧预览就是靠这个**立即**更新的。
                *   这一条是验收判据 3（改字段 → 预览立即更新，不点保存）。
                */
-              onChanged: (v) => setState(() => onChanged(v)),
-              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
-              decoration: InputDecoration(
-                hintText: hint,
-                hintStyle: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
-                isDense: true,
-                border: const OutlineInputBorder(),
-                contentPadding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x3),
-              ),
+          onChanged: (v) => setState(() => onChanged(v)),
+          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: TextStyle(
+              fontSize: FontSizes.sm,
+              color: colors.onSurfaceVariant,
+            ),
+            isDense: true,
+            border: const OutlineInputBorder(),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: Sp.x3,
+              vertical: Sp.x3,
             ),
           ),
-        ],
-      );
+        ),
+      ),
+    ],
+  );
 
   /// ② 端点卡片 —— 勾选 + **拖拽排序**
   ///
@@ -614,36 +618,38 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
   /// Owner 要的是「可见的编排」，顺序是编排最直观的表达。
   /// ```
   Widget _endpointsCard(ColorScheme colors) => _card(
-        colors,
-        children: [
-          const AppDialogSection.title('② 端点', note: '勾上的才写进 JSON；可拖动排序'),
-          const SizedBox(height: Sp.x2),
-          /*
+    colors,
+    children: [
+      const AppDialogSection.title('② 端点', note: '勾上的才写进 JSON；可拖动排序'),
+      const SizedBox(height: Sp.x2),
+      /*
            * ⚠️ ReorderableListView 在 Column 里必须**给定高度**（它要无限长）。
            *    这里用 shrinkWrap + physics: NeverScrollable：
            *    条目数固定是 4 个，不会长到需要自己滚。
            *    外层（弹窗外壳）已经在滚，这里再滚会出现嵌套滚动 —— 鼠标滚轮
            *    停在卡片上时页面不动，用户会以为卡住了。
            */
-          ReorderableListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            buildDefaultDragHandles: false,
-            itemCount: _order.length,
-            onReorderItem: _reorder,
-            proxyDecorator: (child, index, animation) => Material(
-              color: colors.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(Radii.sm),
-              elevation: 4,
-              child: child,
-            ),
-            itemBuilder: (context, i) {
-              final e = _order[i];
-              return _endpointRow(colors, e, i);
-            },
+      ReorderableListView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        buildDefaultDragHandles: false,
+        itemCount: _order.length,
+        onReorderItem: _reorder,
+        proxyDecorator: (child, index, animation) => miuix.MiuixCard(
+          colors: miuix.MiuixCardColors(
+            color: colors.surfaceContainerHighest,
+            contentColor: colors.onSurface,
           ),
-        ],
-      );
+          cornerRadius: Radii.sm,
+          child: child,
+        ),
+        itemBuilder: (context, i) {
+          final e = _order[i];
+          return _endpointRow(colors, e, i);
+        },
+      ),
+    ],
+  );
 
   Widget _endpointRow(ColorScheme colors, ComposerEndpoint e, int index) {
     final draft = _d.endpoints[e]!;
@@ -676,7 +682,7 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
             ),
           ),
           Expanded(
-            child: CheckboxListTile(
+            child: ui.CheckboxListTile(
               value: draft.enabled,
               onChanged: (v) => setState(() => draft.enabled = v ?? false),
               dense: true,
@@ -685,7 +691,10 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
               secondary: Icon(e.icon, size: 18, color: colors.onSurfaceVariant),
               title: Text(
                 e.label,
-                style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurface,
+                ),
               ),
             ),
           ),
@@ -706,7 +715,10 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
           const SizedBox(height: Sp.x2),
           Text(
             '还没勾任何端点 —— 在上面 ② 里勾一个，这里就会出现它的映射行。',
-            style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.sm,
+              color: colors.onSurfaceVariant,
+            ),
           ),
         ],
       );
@@ -753,12 +765,14 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
               style: TextStyle(
                 fontSize: FontSizes.sm,
                 color: required ? colors.onSurface : colors.onSurfaceVariant,
-                fontWeight: required ? FontWeights.semibold : FontWeights.regular,
+                fontWeight: required
+                    ? FontWeights.semibold
+                    : FontWeights.regular,
               ),
             ),
           ),
           Expanded(
-            child: TextField(
+            child: ui.TextField(
               controller: ctl,
               // ★ 同 _field：setState 让右侧预览立即跟随（验收判据 3）
               onChanged: (v) => setState(() {
@@ -775,10 +789,16 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
               ),
               decoration: InputDecoration(
                 hintText: kComposerFieldHints[field] ?? r'$.data.vod_id',
-                hintStyle: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+                hintStyle: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
                 isDense: true,
                 border: const OutlineInputBorder(),
-                contentPadding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x3),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: Sp.x3,
+                  vertical: Sp.x3,
+                ),
               ),
             ),
           ),
@@ -801,37 +821,37 @@ class _SourceComposerDialogState extends State<SourceComposerDialog> {
   // ═══════════════════════════════════════════════════════════════════
 
   Widget _previewPane(ColorScheme colors) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const AppDialogSection.title('实时预览', note: '改左边立刻变，不用保存'),
-          const SizedBox(height: Sp.x2),
-          Container(
-            width: double.infinity,
-            /*
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const AppDialogSection.title('实时预览', note: '改左边立刻变，不用保存'),
+      const SizedBox(height: Sp.x2),
+      Container(
+        width: double.infinity,
+        /*
              * ⚠️ 给一个**上限**而不是固定高度：内容少时不该撑出一大片空白，
              *    内容多时自己滚（外层已经在滚，这里用 maxHeight 让它不无限长）。
              */
-            constraints: const BoxConstraints(maxHeight: 420),
-            padding: const EdgeInsets.all(Sp.x3),
-            decoration: BoxDecoration(
-              // ★ 显式给底色，不落主题兜底（弹窗本身就是 surface，会糊在一起）
-              color: colors.surfaceContainerHighest.withValues(alpha: 0.55),
-              borderRadius: BorderRadius.circular(Radii.sm),
-              border: Border.all(color: colors.outlineVariant),
-            ),
-            child: SingleChildScrollView(
-              child: SelectableText(
-                _preview,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: FontSizes.cap,
-                  color: colors.onSurface,
-                  height: 1.5,
-                ),
-              ),
+        constraints: const BoxConstraints(maxHeight: 420),
+        padding: const EdgeInsets.all(Sp.x3),
+        decoration: BoxDecoration(
+          // ★ 显式给底色，不落主题兜底（弹窗本身就是 surface，会糊在一起）
+          color: colors.surfaceContainerHighest.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(Radii.sm),
+          border: Border.all(color: colors.outlineVariant),
+        ),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            _preview,
+            style: TextStyle(
+              fontFamily: 'monospace',
+              fontSize: FontSizes.cap,
+              color: colors.onSurface,
+              height: 1.5,
             ),
           ),
-        ],
-      );
+        ),
+      ),
+    ],
+  );
 }

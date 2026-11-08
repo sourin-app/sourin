@@ -4,7 +4,7 @@
 //
 // # 这个文件守什么
 // ```text
-// ① 仪器自检（行为取证）：统一外壳 AppGlassDialog 的内容区**零 Material 宿主**
+// ① 仪器自检（行为取证）：统一 Miuix 对话框的内容区提供透明 Material 兼容宿主
 //    ⇒ 哪些控件放进去会抛？必须真跑一遍拿到名单，不能靠注释里的转述
 //    （既有登记里「机制②」就是这么说的，但那是别的文件里的结论）。
 // ② 逐处行为测试：打开 → 断言标题/内容 → 点确认/取消 → 断言**返回值与副作用**。
@@ -17,6 +17,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/download_queue.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
@@ -31,6 +32,9 @@ import 'package:sourin_spike/ui/widgets/backup_panel.dart';
 import 'package:sourin_spike/ui/widgets/download_panel.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart';
 import 'package:sourin_spike/ui/widgets/tvbox_source_panel.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
+
+import 'support/miuix_finders.dart';
 
 /// 在**真实 showAppDialog 路由**里挂一个 AppGlassDialog，返回该路由的 Future。
 ///
@@ -51,27 +55,27 @@ Future<T?> openGlass<T>(
     builder: (ctx) => AppGlassDialog(
       title: title,
       content: content,
-      actions: actions ?? AppTextButton(onPressed: () {}, child: const Text('好')),
+      actions:
+          actions ?? AppTextButton(onPressed: () {}, child: const Text('好')),
     ),
   );
 }
 
 Future<GlobalKey<NavigatorState>> mountHost(WidgetTester t) async {
   final key = GlobalKey<NavigatorState>();
-  await t.pumpWidget(MaterialApp(
-    navigatorKey: key,
-    theme: AppTheme.themeFor(Brightness.dark),
-    themeAnimationDuration: Duration.zero,
-    home: const SizedBox(),
-  ));
+  await t.pumpWidget(
+    MaterialApp(
+      navigatorKey: key,
+      theme: AppTheme.themeFor(Brightness.dark),
+      themeAnimationDuration: Duration.zero,
+      home: const SizedBox(),
+    ),
+  );
   return key;
 }
 
 /// 打开 → pump 到动画结束 → 收异常。返回 null 表示**没有异常**。
-Future<Object?> probeContent(
-  WidgetTester t,
-  Widget content,
-) async {
+Future<Object?> probeContent(WidgetTester t, Widget content) async {
   final key = await mountHost(t);
   openGlass<void>(t, key, content);
   await t.pump();
@@ -142,89 +146,89 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
   //  ① 仪器自检：外壳内容区的 Material 依赖名单（行为取证）
   // ═══════════════════════════════════════════════════════════════════
-  group('① 外壳内容区 Material 依赖探针', () {
-    testWidgets('裸 TextField 在外壳里**抛**（取证：机制② 成立）', (t) async {
-      final ex = await probeContent(t, const TextField());
-      expect(ex, isNotNull,
-          reason: '★ 实测：AppGlassDialog 内容区放裸 TextField 会抛 —— '
-              '这正是登记里「机制②」的依据。若这里变成 null（不抛了），'
-              '说明组件补了 Material 宿主，本文件的 _ShellBody 包装可以简化。');
-      expect('$ex', contains('Material'),
-          reason: '★ 异常内容必须指向 Material 祖先缺失（实测原文：'
-              '"No Material widget found. TextField widgets require a '
-              'Material widget ancestor"）');
+  group('① Miuix 对话框的透明兼容宿主', () {
+    testWidgets('实际 Miuix 对话框支持遗留 TextField', (t) async {
+      final key = await mountHost(t);
+      openGlass<void>(t, key, const TextField());
+      await t.pumpAndSettle();
+      expect(find.byType(miuix.MiuixDialogLayout), findsOneWidget);
+      expect(find.byType(miuix.MiuixCard), findsOneWidget);
+      await t.enterText(find.byType(TextField), '输入保留');
+      expect(find.text('输入保留'), findsOneWidget);
+      expect(t.takeException(), isNull);
     });
 
-    testWidgets('TextField 包一层 Material(transparency) ⇒ 不抛（这就是补法）',
-        (t) async {
-      final ex = await probeContent(
-        t,
-        const Material(type: MaterialType.transparency, child: TextField()),
+    testWidgets('显式透明宿主继续兼容', (t) async {
+      expect(
+        await probeContent(
+          t,
+          const Material(type: MaterialType.transparency, child: TextField()),
+        ),
+        isNull,
       );
-      expect(ex, isNull,
-          reason: '★ 实测：content 自带透明 Material 宿主后 TextField 可用 ⇒ '
-              '迁移时在**调用点**补宿主是有效修法（不必改共享组件）。');
     });
 
-    testWidgets('裸 ListTile 在外壳里**抛**（取证：机制② 对 ListTile 也成立）',
-        (t) async {
-      final ex = await probeContent(t, const ListTile(title: Text('一行')));
-      expect(ex, isNotNull,
-          reason: '★ _OrderDialog 的 content 每行都是 ListTile（内部 InkWell）'
-              '⇒ 不补宿主就会「弹窗根本打不开」（R4 改判记录里的实测结论）。');
-      expect('$ex', contains('Material'));
+    testWidgets('遗留列表行仍可挂载', (t) async {
+      expect(await probeContent(t, const ListTile(title: Text('一行'))), isNull);
     });
 
-    testWidgets('Material 按钮在外壳里**不抛**（取证：按钮自带墨水宿主）', (t) async {
-      final ex = await probeContent(
-        t,
-        Column(children: [
-          FilledButton(onPressed: () {}, child: const Text('主按钮')),
-          FilledButton.tonal(onPressed: () {}, child: const Text('次按钮')),
-          FilledButton.icon(
-              onPressed: () {}, icon: const Icon(Icons.add), label: const Text('带图标')),
-          OutlinedButton(onPressed: () {}, child: const Text('描边')),
-          TextButton(onPressed: () {}, child: const Text('文字按钮')),
-        ]),
+    testWidgets('遗留操作按钮仍可挂载', (t) async {
+      expect(
+        await probeContent(
+          t,
+          Column(
+            children: [
+              FilledButton(onPressed: () {}, child: const Text('主按钮')),
+              FilledButton.tonal(onPressed: () {}, child: const Text('次按钮')),
+              FilledButton.icon(
+                onPressed: () {},
+                icon: const Icon(Icons.add),
+                label: const Text('带图标'),
+              ),
+              OutlinedButton(onPressed: () {}, child: const Text('描边')),
+              TextButton(onPressed: () {}, child: const Text('文字按钮')),
+            ],
+          ),
+        ),
+        isNull,
       );
-      expect(ex, isNull,
-          reason: '★ 实测：三种 Material 按钮在外壳内容区**都可用** ⇒ '
-              '只含按钮的内容（如主题大预览里的按钮行）不需要额外补宿主。');
     });
 
-    testWidgets('Switch / SwitchListTile 在外壳里**抛**（实测：报 _MaterialSwitch）',
-        (t) async {
-      final ex = await probeContent(t, const Switch(value: true, onChanged: _noop));
-      expect(ex, isNotNull,
-          reason: '★ 实测异常原文：「_MaterialSwitch widgets require a Material '
-              'widget ancestor」⇒ 主题大预览（含两个 Switch）与 tvbox 的'
-              '「同时加入新增站点」开关行都**必须**补透明 Material 宿主。');
-      expect('$ex', contains('_MaterialSwitch'));
-
-      final ex2 = await probeContent(
-        t,
-        SwitchListTile(value: true, onChanged: _noop, title: const Text('一行开关')),
+    testWidgets('遗留开关及开关行仍可挂载', (t) async {
+      expect(
+        await probeContent(t, const Switch(value: true, onChanged: _noop)),
+        isNull,
       );
-      expect(ex2, isNotNull, reason: '★ SwitchListTile 同理（内含 Switch）');
+      expect(
+        await probeContent(
+          t,
+          SwitchListTile(
+            value: true,
+            onChanged: _noop,
+            title: const Text('一行开关'),
+          ),
+        ),
+        isNull,
+      );
     });
 
-    testWidgets('InkWell 在外壳里**抛**（实测：_InkResponseStateWidget）', (t) async {
-      final ex = await probeContent(
+    testWidgets('遗留点击区域保持可操作', (t) async {
+      var clicks = 0;
+      final key = await mountHost(t);
+      openGlass<void>(
         t,
-        InkWell(onTap: () {}, child: const Padding(
-          padding: EdgeInsets.all(8),
-          child: Text('可点行'),
-        )),
+        key,
+        InkWell(
+          onTap: () => clicks++,
+          child: const Padding(padding: EdgeInsets.all(8), child: Text('可点行')),
+        ),
       );
-      expect(ex, isNotNull,
-          reason: '★ 实测异常原文：「_InkResponseStateWidget widgets require a '
-              'Material widget ancestor」⇒ 凡内容里带 InkWell 的（可点行 / '
-              '手势药丸 / 多仓子仓列表）都必须补透明 Material 宿主，'
-              '否则**弹窗根本打不开**。');
-      expect('$ex', contains('_InkResponseStateWidget'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('可点行'));
+      expect(clicks, 1);
+      expect(t.takeException(), isNull);
     });
   });
-
   // ═══════════════════════════════════════════════════════════════════
   //  ② 逐处行为测试（真实组件路径）
   // ═══════════════════════════════════════════════════════════════════
@@ -262,22 +266,38 @@ void main() {
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
 
-      expect(t.takeException(), isNull,
-          reason: '★★ 打开就抛 ⇒ 内容里的 TextField 没拿到 Material 宿主。'
-              '第 18 项在**调用点**补了 `MaterialType.transparency`（不改共享组件）。');
-      expect(find.byType(AppGlassDialog), findsOneWidget,
-          reason: '★ 必须走统一外壳（改前是 Material 的 AlertDialog）');
-      expect(find.text('订阅更新 · 测试源'), findsOneWidget,
-          reason: '★ 标题仍然逐字渲染出来（改前是 Row+Flexible+ellipsis 的自绘标题）');
+      expect(
+        t.takeException(),
+        isNull,
+        reason:
+            '★★ 打开就抛 ⇒ 内容里的 TextField 没拿到 Material 宿主。'
+            '第 18 项在**调用点**补了 `MaterialType.transparency`（不改共享组件）。',
+      );
+      expect(
+        find.byType(AppGlassDialog),
+        findsOneWidget,
+        reason: '★ 必须走统一外壳（改前是 Material 的 AlertDialog）',
+      );
+      expect(
+        find.text('订阅更新 · 测试源'),
+        findsOneWidget,
+        reason: '★ 标题仍然逐字渲染出来（改前是 Row+Flexible+ellipsis 的自绘标题）',
+      );
       expect(find.text('订阅链接'), findsOneWidget, reason: '★ 内容确实渲染（不是空白壳）');
-      expect(find.byType(TextField), findsWidgets,
-          reason: '★★ 输入框必须**真的建出来** —— 缺 Material 宿主时它连建都不建');
+      expect(
+        find.byType(ui.TextField),
+        findsWidgets,
+        reason: '★★ 输入框必须**真的建出来** —— 缺 Material 宿主时它连建都不建',
+      );
 
       await t.tap(find.text('关闭'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
-      expect(await fut, isFalse,
-          reason: '★★ 返回值语义：`show()` 里 `return r ?? false` ⇒ 没改过时关闭 = false');
+      expect(
+        await fut,
+        isFalse,
+        reason: '★★ 返回值语义：`show()` 里 `return r ?? false` ⇒ 没改过时关闭 = false',
+      );
       expect(find.byType(AppGlassDialog), findsNothing, reason: '★ 关闭后必须关掉');
     });
 
@@ -288,20 +308,22 @@ void main() {
       DownloadQueue.enqueue(_task('第01集', DownloadState.done));
       DownloadQueue.enqueue(_task('第02集', DownloadState.done));
 
-      await t.pumpWidget(MaterialApp(
-        theme: AppTheme.themeFor(Brightness.dark),
-        themeAnimationDuration: Duration.zero,
-        home: Scaffold(
-          body: SizedBox(
-            width: 420,
-            height: 700,
-            child: DownloadPanel(
-              title: '探针剧',
-              callbacks: DownloadPanelCallbacks(onPlay: (_) {}),
+      await t.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.themeFor(Brightness.dark),
+          themeAnimationDuration: Duration.zero,
+          home: Scaffold(
+            body: SizedBox(
+              width: 420,
+              height: 700,
+              child: DownloadPanel(
+                title: '探针剧',
+                callbacks: DownloadPanelCallbacks(onPlay: (_) {}),
+              ),
             ),
           ),
         ),
-      ));
+      );
       await t.pump();
       final diag = await t.runAsync(() async {
         final p = await DownloadQueue.previewRemoveWork('探针剧');
@@ -309,26 +331,31 @@ void main() {
             'files=${p.fileCount} eps=${p.episodeCount}';
       });
       debugPrint('DIAG $diag');
-      final btn = find.byTooltip('删除整部剧的下载');
-      debugPrint('DIAG btnFound=${btn.evaluate().length} '
-          'rect=${btn.evaluate().isEmpty ? 'n/a' : t.getRect(btn)}');
+      final btn = miuixTooltip('删除整部剧的下载');
+      debugPrint(
+        'DIAG btnFound=${btn.evaluate().length} '
+        'rect=${btn.evaluate().isEmpty ? 'n/a' : t.getRect(btn)}',
+      );
       await t.tap(btn);
       // ★ 关键：`_confirmRemoveWork` 内部要先 `await DownloadQueue.previewRemoveWork()`
       //   （真实文件系统 I/O），`testWidgets` 的 fake-async 时钟不会推进它。
       //   必须用 `runAsync` 让真实 I/O 落地，再把结果 pump 回 UI ——
       //   否则弹窗永远不会被建出来，断言会误报"没走统一外壳"。
       for (var i = 0; i < 10; i++) {
-        await t.runAsync(() => Future<void>.delayed(
-              const Duration(milliseconds: 50),
-            ));
+        await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
         await t.pump();
         if (find.byType(AppGlassDialog).evaluate().isNotEmpty) break;
       }
       await t.pump(const Duration(milliseconds: 900));
 
       expect(t.takeException(), isNull, reason: '★ 打开不许抛');
-      expect(find.byType(AppGlassDialog), findsOneWidget,
-          reason: '★ 必须走统一外壳（改前是 Material 的 AlertDialog）');
+      expect(
+        find.byType(AppGlassDialog),
+        findsOneWidget,
+        reason: '★ 必须走统一外壳（改前是 Material 的 AlertDialog）',
+      );
       expect(find.text('删除整部剧的下载？'), findsOneWidget, reason: '★ 标题');
       expect(find.text('此操作不可恢复。'), findsOneWidget, reason: '★ 内容渲染');
       expect(find.text('全部删除'), findsOneWidget, reason: '★ 按钮文案与改前一致');
@@ -343,17 +370,27 @@ void main() {
       expect(warnColor, isNotNull, reason: '★★ 警示色必须存在');
       // 实测 `Colors.red` = MaterialColor(0xFFF44336)，不是纯红 0xFFFF0000。
       // 按**真实色值**钉住，既能防"被外壳样式冲掉"，也不会因写成纯红而恒红。
-      expect(warnColor!.toARGB32(), Colors.red.toARGB32(),
-          reason: '★★ 内联 `TextStyle(color: Colors.red)` 必须仍然生效'
-              '（inherit=true ⇒ 与外壳默认样式 merge，显式色胜出）');
+      expect(
+        warnColor!.toARGB32(),
+        Colors.red.toARGB32(),
+        reason:
+            '★★ 内联 `TextStyle(color: Colors.red)` 必须仍然生效'
+            '（inherit=true ⇒ 与外壳默认样式 merge，显式色胜出）',
+      );
       // 左对齐必须显式指定（外壳内容区 DefaultTextStyle 写死 textAlign: center）
-      final leftAligned = t.widgetList<DefaultTextStyle>(find.descendant(
-        of: find.byType(AppGlassDialog),
-        matching: find.byType(DefaultTextStyle),
-      ));
-      expect(leftAligned.any((d) => d.textAlign == TextAlign.left), isTrue,
-          reason: '★★ 必须显式给出左对齐 —— 否则这份清单会被外壳逐行居中'
-              '（改前是 Column(crossAxisAlignment.start) 的左对齐清单）');
+      final leftAligned = t.widgetList<DefaultTextStyle>(
+        find.descendant(
+          of: find.byType(AppGlassDialog),
+          matching: find.byType(DefaultTextStyle),
+        ),
+      );
+      expect(
+        leftAligned.any((d) => d.textAlign == TextAlign.left),
+        isTrue,
+        reason:
+            '★★ 必须显式给出左对齐 —— 否则这份清单会被外壳逐行居中'
+            '（改前是 Column(crossAxisAlignment.start) 的左对齐清单）',
+      );
 
       // 取消 ⇒ pop(false)（不是 null）⇒ `ok != true` 提前 return ⇒ 队列一条都不许少
       // ★ 用真实的只读快照 `DownloadQueue.tasks.value`（该类的公开读入口），
@@ -363,30 +400,40 @@ void main() {
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
       expect(find.byType(AppGlassDialog), findsNothing, reason: '★ 取消应关掉');
-      expect(DownloadQueue.tasks.value.length, before,
-          reason: '★★ 取消**不能**触发删除（改前取消 pop(false)，判据 `ok != true` 一字未改）');
+      expect(
+        DownloadQueue.tasks.value.length,
+        before,
+        reason: '★★ 取消**不能**触发删除（改前取消 pop(false)，判据 `ok != true` 一字未改）',
+      );
     });
 
     // ── ③ backup「含登录态」（三键 + 多行左对齐清单）与「导出用口令」──
     testWidgets('③ backup 含登录态提示：三键语义 + 左对齐 + 走入口令框', (t) async {
       if (!_coreReady) {
         // 环境缺件 ⇒ 允许 skip；点名缺件与替代覆盖（B1 分类表见文件头）
-        markTestSkipped('环境缺件：缺 sourin_core.dll（CI 在构建前跑测试）；'
-            '替代覆盖：⑬ download 同形态断言 + Rust 端 backup 单测');
+        markTestSkipped(
+          '环境缺件：缺 sourin_core.dll（CI 在构建前跑测试）；'
+          '替代覆盖：⑬ download 同形态断言 + Rust 端 backup 单测',
+        );
         return;
       }
       // 只桩掉"本机有 2 个源、其中 1 个明文存密码"，不桩导出/选择器
-      SourinApi.debugCredentialsStatusFetcher = () async => const CredentialsStatus(
+      SourinApi.debugCredentialsStatusFetcher = () async =>
+          const CredentialsStatus(
             providers: 2,
             plaintextPasswordProviders: ['测试源'],
           );
       addTearDown(() => SourinApi.debugCredentialsStatusFetcher = null);
 
-      await t.pumpWidget(MaterialApp(
-        theme: AppTheme.themeFor(Brightness.dark),
-        themeAnimationDuration: Duration.zero,
-        home: const Scaffold(body: SingleChildScrollView(child: BackupPanel())),
-      ));
+      await t.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.themeFor(Brightness.dark),
+          themeAnimationDuration: Duration.zero,
+          home: const Scaffold(
+            body: SingleChildScrollView(child: BackupPanel()),
+          ),
+        ),
+      );
       await t.pump();
       await t.pump(const Duration(milliseconds: 600));
 
@@ -400,28 +447,29 @@ void main() {
        * 弹窗当然不出现 ⇒ 旧代码就 skip 掉，看起来"环境不具备"。实际是
        * **测试自己没等前置状态**。这属于「用例自身前置状态缺失 ⇒ 必须 fail」那一类。
        */
-      final exportBtn = find.widgetWithText(FilledButton, '导出');
+      final exportBtn = find.widgetWithText(ui.FilledButton, '导出');
       expect(exportBtn, findsOneWidget, reason: '★ 导出按钮必须渲染出来');
       for (var i = 0; i < 20; i++) {
-        await t.runAsync(() => Future<void>.delayed(
-              const Duration(milliseconds: 50),
-            ));
+        await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
         await t.pump();
-        if (t.widget<FilledButton>(exportBtn).onPressed != null) break;
+        if (t.widget<ui.FilledButton>(exportBtn).onPressed != null) break;
       }
       expect(
-        t.widget<FilledButton>(exportBtn).onPressed,
+        t.widget<ui.FilledButton>(exportBtn).onPressed,
         isNotNull,
-        reason: '★★★ 按钮必须可点（_loading/_busy 期间为 null）—— '
+        reason:
+            '★★★ 按钮必须可点（_loading/_busy 期间为 null）—— '
             '按钮不可点时点它等于什么都没驱动，后面的断言就没有意义',
       );
       await t.tap(exportBtn);
       // ★ 同 ⑬：导出前要 await 真实的凭证/文件检查（fake-async 不推进），
       //   必须 runAsync 轮询到弹窗真的建出来，否则会误报"标题不存在"。
       for (var i = 0; i < 12; i++) {
-        await t.runAsync(() => Future<void>.delayed(
-              const Duration(milliseconds: 50),
-            ));
+        await t.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
         await t.pump();
         if (find.text('这个备份文件含登录态').evaluate().isNotEmpty) break;
       }
@@ -458,54 +506,79 @@ void main() {
       expect(
         find.text('这个备份文件含登录态'),
         findsOneWidget,
-        reason: '★★★ 前置状态由本用例自己构造（桩 providers=2 + 自带 Navigator），'
+        reason:
+            '★★★ 前置状态由本用例自己构造（桩 providers=2 + 自带 Navigator），'
             '提示不出现只能是 _exportConsent 判据坏了或外壳吞了弹窗 —— 必须红，不许 skip',
       );
 
-      expect(find.text('这个备份文件含登录态'), findsOneWidget,
-          reason: '★ 导出前必须先出现这条知情提示（标题逐字）');
+      expect(
+        find.text('这个备份文件含登录态'),
+        findsOneWidget,
+        reason: '★ 导出前必须先出现这条知情提示（标题逐字）',
+      );
       expect(find.text('不含登录态导出'), findsOneWidget);
       expect(find.text('设口令并加密'), findsOneWidget);
-      expect(find.textContaining('2 个内容源'), findsWidgets,
-          reason: '★ 正文照渲染（含源数）');
+      expect(
+        find.textContaining('2 个内容源'),
+        findsWidgets,
+        reason: '★ 正文照渲染（含源数）',
+      );
 
       // 机制⑤：正文必须左对齐（这张清单靠行首缩进才成立）
-      final texts = t.widgetList<Text>(find.descendant(
-        of: find.byType(AppGlassDialog),
-        matching: find.byType(Text),
-      ));
-      expect(texts.any((w) => w.textAlign == TextAlign.left), isTrue,
-          reason: '★★ 清单必须显式左对齐 —— 外壳内容区默认 textAlign: center');
+      final texts = t.widgetList<Text>(
+        find.descendant(
+          of: find.byType(AppGlassDialog),
+          matching: find.byType(Text),
+        ),
+      );
+      expect(
+        texts.any((w) => w.textAlign == TextAlign.left),
+        isTrue,
+        reason: '★★ 清单必须显式左对齐 —— 外壳内容区默认 textAlign: center',
+      );
 
       // 取消 ⇒ pop(null) ⇒ `choice == null` ⇒ 直接 return（不设口令、不导出）
       await t.tap(find.text('取消'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
       expect(find.byType(AppGlassDialog), findsNothing, reason: '★ 取消应关掉');
-      expect(find.text('设置导出用口令'), findsNothing,
-          reason: '★★ 取消后**不许**继续走"设口令"分支（pop 的必须是 null）');
+      expect(
+        find.text('设置导出用口令'),
+        findsNothing,
+        reason: '★★ 取消后**不许**继续走"设口令"分支（pop 的必须是 null）',
+      );
 
       // 「设口令并加密」⇒ pop('encrypt') ⇒ 必须打开口令框
-      await t.tap(find.widgetWithText(FilledButton, '导出'));
+      await t.tap(find.widgetWithText(ui.FilledButton, '导出'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
       await t.tap(find.text('设口令并加密'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
-      expect(find.text('设置导出用口令'), findsOneWidget,
-          reason: '★★ 「设口令并加密」必须弹出**口令框**（改前 pop 出的是字符串 '
-              "'encrypt'，宿主据此走这一支）");
-      expect(find.byType(TextField), findsOneWidget,
-          reason: '★★ 输入框必须真的建出来（机制②：调用点补了透明 Material 宿主）');
+      expect(
+        find.text('设置导出用口令'),
+        findsOneWidget,
+        reason:
+            '★★ 「设口令并加密」必须弹出**口令框**（改前 pop 出的是字符串 '
+            "'encrypt'，宿主据此走这一支）",
+      );
+      expect(
+        find.byType(ui.TextField),
+        findsOneWidget,
+        reason: '★★ 输入框必须真的建出来（机制②：调用点补了透明 Material 宿主）',
+      );
       expect(t.takeException(), isNull, reason: '★ 口令框打开不许抛');
 
       // 口令 <8 位 ⇒ `_submit()` 只 setState 报错、**不关窗**
-      await t.enterText(find.byType(TextField), 'short');
+      await t.enterText(find.byType(ui.TextField), 'short');
       await t.tap(find.byType(AppTextButton).last);
       await t.pump();
       await t.pump(const Duration(milliseconds: 300));
-      expect(find.text('设置导出用口令'), findsOneWidget,
-          reason: '★★ 口令太短**不许关窗**（`_submit` 的判据：setState 报 _err 后 return）');
+      expect(
+        find.text('设置导出用口令'),
+        findsOneWidget,
+        reason: '★★ 口令太短**不许关窗**（`_submit` 的判据：setState 报 _err 后 return）',
+      );
       /*
        * ★ 原来写的是 `find.textContaining('至少 8 位') , findsOneWidget` ——
        *   一旦真的驱动到这一步就会红：**两处**都含这句
@@ -513,49 +586,70 @@ void main() {
        *   这条断言的本意是"必须把**原因**说出来"，所以收紧成**逐字匹配错误文案**，
        *   既排除 label 的干扰，又比 contains 更严（少一个字就红）。
        */
-      expect(find.text('口令至少 8 位'), findsOneWidget,
-          reason: '★★ 必须把原因说出来（不是静默不响应）；逐字匹配错误文案，'
-              '不与输入框 label「口令（至少 8 位）」混淆');
+      expect(
+        find.text('口令至少 8 位'),
+        findsOneWidget,
+        reason:
+            '★★ 必须把原因说出来（不是静默不响应）；逐字匹配错误文案，'
+            '不与输入框 label「口令（至少 8 位）」混淆',
+      );
 
       // 合法口令 ⇒ pop((pass:…)) ⇒ 关窗并继续（后面会因没有文件选择器而失败，
       // 本用例只钉"值真的交出去了"这一条：弹窗必须关掉）
-      await t.enterText(find.byType(TextField), 'longenough1');
+      await t.enterText(find.byType(ui.TextField), 'longenough1');
       await t.tap(find.byType(AppTextButton).last);
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
-      expect(find.text('设置导出用口令'), findsNothing,
-          reason: '★★ 合法口令必须 pop 出 (pass:…)，弹窗关掉');
+      expect(
+        find.text('设置导出用口令'),
+        findsNothing,
+        reason: '★★ 合法口令必须 pop 出 (pass:…)，弹窗关掉',
+      );
     });
 
     // ── ⑤⑥ theme「粘贴主题包 JSON」+「单套大预览」──
-    testWidgets('appearance has direct mode selection without theme pack dialogs', (t) async {
-      await t.pumpWidget(MaterialApp(
-        theme: AppTheme.themeFor(Brightness.dark),
-        home: const Scaffold(body: ThemeSettingsPage()),
-      ));
-      await t.pumpAndSettle();
-      expect(find.text('粘贴 JSON'), findsNothing);
-      expect(find.byType(ThemeGrid), findsNothing);
-      await t.tap(find.text('浅色'));
-      await t.pumpAndSettle();
-      expect(AppTheme.mode, AppThemeMode.light);
-      expect(find.byType(AppGlassDialog), findsNothing);
-      expect(find.text('界面预览'), findsOneWidget);
-      expect(t.takeException(), isNull);
-    });
+    testWidgets(
+      'appearance has direct mode selection without theme pack dialogs',
+      (t) async {
+        await t.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.themeFor(Brightness.dark),
+            home: const Scaffold(body: ThemeSettingsPage()),
+          ),
+        );
+        await t.pumpAndSettle();
+        expect(find.text('粘贴 JSON'), findsNothing);
+        expect(find.byType(ThemeGrid), findsNothing);
+        await t.tap(find.text('浅色'));
+        await t.pumpAndSettle();
+        await t.runAsync(UiPrefs.flush);
+        expect(AppTheme.mode, AppThemeMode.light);
+        expect(find.byType(AppGlassDialog), findsNothing);
+        expect(find.text('界面预览'), findsOneWidget);
+        expect(t.takeException(), isNull);
+      },
+    );
 
-    testWidgets('① settings _promptText：真点「安装 JS 插件」→ 取消 ⇒ null（不装）', (t) async {
+    testWidgets('① settings _promptText：真点「安装 JS 插件」→ 取消 ⇒ null（不装）', (
+      t,
+    ) async {
       if (!_coreReady) {
         // 环境缺件 ⇒ 允许 skip；点名缺件与替代覆盖
-        markTestSkipped('环境缺件：缺 sourin_core.dll（CI 在构建前跑测试，测试阶段没有 dll）；'
-            '替代覆盖：该入口的结构断言 + Rust 端对应单测');
+        markTestSkipped(
+          '环境缺件：缺 sourin_core.dll（CI 在构建前跑测试，测试阶段没有 dll）；'
+          '替代覆盖：该入口的结构断言 + Rust 端对应单测',
+        );
         return;
       }
-      await t.pumpWidget(MaterialApp(
-        theme: AppTheme.themeFor(Brightness.dark),
-        themeAnimationDuration: Duration.zero,
-        home: const Scaffold(body: SingleChildScrollView(child: SettingsPage())),
-      ));
+      await t.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.themeFor(Brightness.dark),
+          themeAnimationDuration: Duration.zero,
+          home: const Scaffold(
+            body: SingleChildScrollView(child: SettingsPage()),
+          ),
+        ),
+      );
       await t.pump();
       await t.pump(const Duration(milliseconds: 600));
 
@@ -573,9 +667,11 @@ void main() {
        * `zz_t1023_player_recovery_contract_test` 的契约断言间接覆盖。
        */
       if (entry.evaluate().isEmpty) {
-        markTestSkipped('环境缺件：本机没有已安装插件（入口挂在插件卡片区）；'
-            '替代覆盖：plugins 侧的安装入口单测 + 本文件 ① 外壳探针；原注：'
-            '空数据环境不渲染；本处 _promptText 迁移由 ③ 组同形态弹窗覆盖。');
+        markTestSkipped(
+          '环境缺件：本机没有已安装插件（入口挂在插件卡片区）；'
+          '替代覆盖：plugins 侧的安装入口单测 + 本文件 ① 外壳探针；原注：'
+          '空数据环境不渲染；本处 _promptText 迁移由 ③ 组同形态弹窗覆盖。',
+        );
         return;
       }
       await t.ensureVisible(entry.first);
@@ -584,22 +680,35 @@ void main() {
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
 
-      expect(find.byType(AppGlassDialog), findsOneWidget,
-          reason: '★ 必须走统一外壳（改前是 Material 的 AlertDialog）');
+      expect(
+        find.byType(AppGlassDialog),
+        findsOneWidget,
+        reason: '★ 必须走统一外壳（改前是 Material 的 AlertDialog）',
+      );
       expect(find.text('安装源'), findsWidgets, reason: '★ 标题');
-      expect(find.byType(TextField), findsOneWidget,
-          reason: '★★ 输入框必须真的建出来 —— 缺 Material 宿主时连建都不建');
-      expect(t.takeException(), isNull,
-          reason: '★★ 打开不许抛（机制② 在调用点补了透明 Material 宿主）');
+      expect(
+        find.byType(ui.TextField),
+        findsOneWidget,
+        reason: '★★ 输入框必须真的建出来 —— 缺 Material 宿主时连建都不建',
+      );
+      expect(
+        t.takeException(),
+        isNull,
+        reason: '★★ 打开不许抛（机制② 在调用点补了透明 Material 宿主）',
+      );
 
       // 取消 ⇒ pop(null) ⇒ 调用方 `url == null` ⇒ 不安装、不 flash
       await t.tap(find.text('取消'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
       expect(find.byType(AppGlassDialog), findsNothing, reason: '★ 取消应关掉');
-      expect(find.textContaining('正在下载'), findsNothing,
-          reason: '★★ 取消后**不许**走安装分支（pop 的必须是 null，'
-              '`url == null || url.trim().isEmpty` 判据一字未改）');
+      expect(
+        find.textContaining('正在下载'),
+        findsNothing,
+        reason:
+            '★★ 取消后**不许**走安装分支（pop 的必须是 null，'
+            '`url == null || url.trim().isEmpty` 判据一字未改）',
+      );
 
       // 再打开一次：确定 ⇒ pop(ctl.text)，**空串也是有效返回值**
       //   ⇒ 调用方随后 `url.trim().isEmpty` 自己拦下来（改前就是这样）
@@ -609,12 +718,20 @@ void main() {
       await t.tap(find.text('确定'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 900));
-      expect(find.byType(AppGlassDialog), findsNothing,
-          reason: '★★ 点确定必须 pop 出值并关窗（空串也要 pop 出来，'
-              '由调用方判空 —— 不要把判空搬进弹窗，那是行为变更）');
-      expect(find.textContaining('正在下载'), findsNothing,
-          reason: '★★ 空串由调用方拦下 ⇒ 不许出现「正在下载…」'
-              '（若这里红灯，说明有人把 `pop(ctx, ctl.text)` 改成了别的）');
+      expect(
+        find.byType(AppGlassDialog),
+        findsNothing,
+        reason:
+            '★★ 点确定必须 pop 出值并关窗（空串也要 pop 出来，'
+            '由调用方判空 —— 不要把判空搬进弹窗，那是行为变更）',
+      );
+      expect(
+        find.textContaining('正在下载'),
+        findsNothing,
+        reason:
+            '★★ 空串由调用方拦下 ⇒ 不许出现「正在下载…」'
+            '（若这里红灯，说明有人把 `pop(ctx, ctl.text)` 改成了别的）',
+      );
     });
   });
 
@@ -655,32 +772,52 @@ void main() {
         final f = File(p);
         expect(f.existsSync(), isTrue, reason: '★ 前提：$p 存在');
         final hits = bareAlertDialogLines(f.readAsStringSync());
-        expect(hits, isEmpty,
-            reason: '★★ $p 里还有裸 `AlertDialog(`（行 $hits）—— '
-                '第 18 项把这 13 处全迁到了统一外壳 AppGlassDialog。'
-                '弹窗一律走外壳：宽度 460/560/820 + 圆角 Radii.rLg + 内容区可滚。');
+        expect(
+          hits,
+          isEmpty,
+          reason:
+              '★★ $p 里还有裸 `AlertDialog(`（行 $hits）—— '
+              '第 18 项把这 13 处全迁到了统一外壳 AppGlassDialog。'
+              '弹窗一律走外壳：宽度 460/560/820 + 圆角 Radii.rLg + 内容区可滚。',
+        );
       }
     });
 
-    test('★★ 阳性对照：扫描器真的能抓到裸 AlertDialog(（否则上一条是空断言）',
-        () {
-      expect(bareAlertDialogLines('return AlertDialog(\n'), [1],
-          reason: '★★ 扫描器抓不到源码里的裸 AlertDialog( ⇒ 上一条恒真 = 假绿');
-      expect(bareAlertDialogLines('builder: (ctx) => AppGlassDialog('), isEmpty,
-          reason: '★ 别把统一外壳也算成违规（负向前瞻必须排掉 AppDialogShell/AppGlassDialog）');
-      expect(bareAlertDialogLines("// 旧注释里写过 AlertDialog(\n"), [1],
-          reason: '★ 记一句实话：本扫描器**不剥注释**，'
-              '所以迁移时留在注释里的旧写法也会被它判红 —— '
-              '第 18 项的 6 个文件里已把旧的 R4-EXCEPTION 注释一并改写/删除；'
-              '若将来有人在注释里写回该字面量，这一条会红（宁可吵一点）。');
+    test('★★ 阳性对照：扫描器真的能抓到裸 AlertDialog(（否则上一条是空断言）', () {
+      expect(bareAlertDialogLines('return AlertDialog(\n'), [
+        1,
+      ], reason: '★★ 扫描器抓不到源码里的裸 AlertDialog( ⇒ 上一条恒真 = 假绿');
+      expect(
+        bareAlertDialogLines('builder: (ctx) => AppGlassDialog('),
+        isEmpty,
+        reason: '★ 别把统一外壳也算成违规（负向前瞻必须排掉 AppDialogShell/AppGlassDialog）',
+      );
+      expect(
+        bareAlertDialogLines("// 旧注释里写过 AlertDialog(\n"),
+        [1],
+        reason:
+            '★ 记一句实话：本扫描器**不剥注释**，'
+            '所以迁移时留在注释里的旧写法也会被它判红 —— '
+            '第 18 项的 6 个文件里已把旧的 R4-EXCEPTION 注释一并改写/删除；'
+            '若将来有人在注释里写回该字面量，这一条会红（宁可吵一点）。',
+      );
     });
 
-    test('★ 反向对照：这 6 个文件确实都在用统一外壳（防"删了没换"）', () {
+    test('★ 保留的弹窗使用统一外壳，外观页使用直接选择', () {
       for (final p in moved) {
         final src = File(p).readAsStringSync();
-        expect(src.contains('AppGlassDialog('), isTrue,
-            reason: '★★ $p 里一个 AppGlassDialog( 都没有 —— '
-                '要么迁移没落盘，要么被换回别的承载件');
+        if (p == 'lib/ui/settings/theme_page.dart') {
+          expect(src, isNot(contains('AppGlassDialog(')));
+          expect(src, contains('SettingsGesturePill('));
+          continue;
+        }
+        expect(
+          src.contains('AppGlassDialog('),
+          isTrue,
+          reason:
+              '★★ $p 里一个 AppGlassDialog( 都没有 —— '
+              '要么迁移没落盘，要么被换回别的承载件',
+        );
       }
     });
   });
@@ -688,17 +825,17 @@ void main() {
 
 /// 构造一条下载任务（照 test/zz_t11_panel_render_probe_test.dart 的 _task）
 DownloadTask _task(String ep, DownloadState state) => DownloadTask(
-      id: 'p:m:$ep',
-      title: '探针剧',
-      episodeTitle: ep,
-      provider: 'p',
-      mediaId: 'm',
-      episodeId: ep,
-      sourceCode: 's',
-      fileName: ep,
-      done: 0,
-      total: 0,
-      state: state,
-    );
+  id: 'p:m:$ep',
+  title: '探针剧',
+  episodeTitle: ep,
+  provider: 'p',
+  mediaId: 'm',
+  episodeId: ep,
+  sourceCode: 's',
+  fileName: ep,
+  done: 0,
+  total: 0,
+  state: state,
+);
 
 void _noop(bool _) {}

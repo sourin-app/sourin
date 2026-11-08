@@ -64,6 +64,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
+import 'widgets/miuix_controls.dart' as ui;
 /*
  * ★★ task-53【#4b-④】滚轮调音量需要这三个：
  *   `PointerSignalEvent` / `PointerScrollEvent` / `GestureBinding`
@@ -17302,9 +17303,9 @@ class _PlayerPageState extends State<PlayerPage>
       isLive: _isLive,
     );
 
-    final page = Scaffold(
+    final page = AppScaffold(
       backgroundColor: Colors.black,
-      body: Focus(
+      child: Focus(
         /*
          * ★ 挂一个**显式** FocusNode（task-42）
          *
@@ -19884,7 +19885,7 @@ class _ErrorOverlay extends StatelessWidget {
                  *    「该内容没有可播放的地址」这类用户也看到一个登录按钮。
                  */
             if (onLogin != null) ...[
-              FilledButton.icon(
+              ui.FilledButton.icon(
                 onPressed: onLogin,
                 icon: const Icon(AppIcons.login, size: 18),
                 label: const Text('登录'),
@@ -19910,7 +19911,7 @@ class _ErrorOverlay extends StatelessWidget {
                   if (event is KeyDownEvent) onLines!();
                   return KeyEventResult.handled;
                 },
-                child: OutlinedButton.icon(
+                child: ui.OutlinedButton.icon(
                   onPressed: onLines,
                   icon: const Icon(AppIcons.swap_horiz, size: 18),
                   label: const Text('线路'),
@@ -19921,7 +19922,7 @@ class _ErrorOverlay extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                OutlinedButton(onPressed: onBack, child: const Text('返回')),
+                ui.OutlinedButton(onPressed: onBack, child: const Text('返回')),
                 const SizedBox(width: Sp.x3),
                 /*
                  * ★ 重试按钮按类别决定给不给（Owner 第 6 条）
@@ -19934,7 +19935,7 @@ class _ErrorOverlay extends StatelessWidget {
                  *    老路径的行为一个字都不改。
                  */
                 if (failure?.canRetry ?? true)
-                  FilledButton(onPressed: onRetry, child: const Text('重试')),
+                  ui.FilledButton(onPressed: onRetry, child: const Text('重试')),
               ],
             ),
           ],
@@ -20095,9 +20096,9 @@ class _BeforeErrorCard extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                OutlinedButton(onPressed: onBack, child: const Text('返回')),
+                ui.OutlinedButton(onPressed: onBack, child: const Text('返回')),
                 const SizedBox(width: Sp.x3),
-                FilledButton(onPressed: () {}, child: const Text('重试')),
+                ui.FilledButton(onPressed: () {}, child: const Text('重试')),
               ],
             ),
           ],
@@ -20192,7 +20193,7 @@ class _LiveAudioOnlyBanner extends StatelessWidget {
               ),
             ),
             const SizedBox(width: Sp.x3),
-            OutlinedButton(onPressed: onBack, child: const Text('返回')),
+            ui.OutlinedButton(onPressed: onBack, child: const Text('返回')),
           ],
         ),
       ),
@@ -20276,7 +20277,7 @@ class _VideoOutputDeadBanner extends StatelessWidget {
               ),
             ),
             const SizedBox(width: Sp.x3),
-            OutlinedButton(onPressed: onBack, child: const Text('返回')),
+            ui.OutlinedButton(onPressed: onBack, child: const Text('返回')),
           ],
         ),
       ),
@@ -20409,7 +20410,7 @@ class _PlaybackFailureBanner extends StatelessWidget {
               ),
             ),
             const SizedBox(width: Sp.x3),
-            FilledButton(onPressed: onRetry, child: const Text('重试')),
+            ui.FilledButton(onPressed: onRetry, child: const Text('重试')),
           ],
         ),
       ),
@@ -23388,7 +23389,7 @@ class _TopBar extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    IconButton(
+                    ui.IconButton(
                       key: backArrowKey,
                       onPressed: onBack,
                       icon: const Icon(AppIcons.arrow_back, color: Colors.white),
@@ -23538,7 +23539,7 @@ class _TopBar extends StatelessWidget {
                *   **没有的能力不假装有**。
                */
                     if (onHints != null)
-                      IconButton(
+                      ui.IconButton(
                         onPressed: onHints,
                         icon: const Icon(
                           AppIcons.keyboard_outlined,
@@ -23937,7 +23938,7 @@ class _DanmakuInfoChip extends StatelessWidget {
     final text = bad ? '弹幕 !' : (n == null ? '弹幕' : '弹幕 $n');
     // ignore: unused_local_variable
     final _ = clipBehavior; // 见上方说明：保留签名但不再消费
-    return Tooltip(
+    return ui.Tooltip(
       message: '弹幕信息（来源 / 条数 / 匹配方式 / 失败原因）',
       child: AppInkWell(
         onTap: onTap,
@@ -24027,9 +24028,9 @@ class _NextCountdown extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextButton(onPressed: onCancel, child: const Text('取消')),
+                ui.TextButton(onPressed: onCancel, child: const Text('取消')),
                 const SizedBox(width: Sp.x2),
-                FilledButton(onPressed: onPlayNow, child: const Text('立即播放')),
+                ui.FilledButton(onPressed: onPlayNow, child: const Text('立即播放')),
               ],
             ),
           ],
@@ -24112,9 +24113,9 @@ class _RewatchPrompt extends StatelessWidget {
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextButton(onPressed: onFromStart, child: const Text('从头播放')),
+                ui.TextButton(onPressed: onFromStart, child: const Text('从头播放')),
                 const SizedBox(width: Sp.x2),
-                FilledButton(onPressed: onContinue, child: const Text('继续观看')),
+                ui.FilledButton(onPressed: onContinue, child: const Text('继续观看')),
               ],
             ),
           ],
@@ -25237,7 +25238,7 @@ class _StreamSheet extends StatelessWidget {
                         ),
                       ),
                       const Spacer(),
-                      IconButton(
+                      ui.IconButton(
                         onPressed: onClose,
                         icon: const Icon(AppIcons.close, color: Colors.white),
                       ),
@@ -25286,7 +25287,7 @@ class _StreamSheet extends StatelessWidget {
                       final isPanLocked =
                           pan != null && pan.state == PanCheckState.locked;
                       final rowEnabled = isPanDead ? false : s.isPlayable;
-                      return ListTile(
+                      return ui.ListTile(
                         dense: true,
                         selected: active,
                         selectedTileColor: Colors.white12,
@@ -25536,7 +25537,7 @@ class _LiveChannelsSheet extends StatelessWidget {
                           ),
                         ),
                       ),
-                      IconButton(
+                      ui.IconButton(
                         onPressed: onClose,
                         icon: const Icon(AppIcons.close, color: Colors.white),
                         tooltip: '关闭',
@@ -25594,7 +25595,7 @@ class _LiveChannelsSheet extends StatelessWidget {
   }
 
   Widget _tile(LiveChannel c, bool active) {
-    return ListTile(
+    return ui.ListTile(
       dense: true,
       selected: active,
       selectedTileColor: Colors.white12,

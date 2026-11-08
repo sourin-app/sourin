@@ -46,6 +46,8 @@
 
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import '../../core/device.dart';
 import '../../core/player_gestures.dart';
 import '../tokens.dart';
@@ -139,7 +141,7 @@ class _TouchGesturesSettingsPageState extends State<TouchGesturesSettingsPage> {
             ],
 
             const SizedBox(height: Sp.x5),
-            Divider(color: colors.outlineVariant, height: 1),
+            ui.Divider(color: colors.outlineVariant, height: 1),
             const SizedBox(height: Sp.x5),
 
             // ────────────────────────────────────────────────────────

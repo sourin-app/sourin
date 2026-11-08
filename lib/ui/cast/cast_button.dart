@@ -24,6 +24,9 @@
 //    按钮绝不能显示成「投屏中」—— 电视那边根本没在播。
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import '../widgets/miuix_controls.dart' as ui;
 
 import '../../core/dlna/cast_manager.dart';
 import '../tokens.dart';
@@ -227,7 +230,7 @@ class _CastButtonState extends State<CastButton> {
             width: 18,
             height: 18,
             // ★ T27-07（lead 集成补漏）：显式 onSurface，不落主题 primary 灰。
-            child: CircularProgressIndicator(
+            child: ui.CircularProgressIndicator(
               color: colors.onSurface,
               strokeWidth: 2,
             ),
@@ -245,7 +248,7 @@ class _CastButtonState extends State<CastButton> {
         ? '上次投屏失败：${s.error ?? ''}'
         : '投屏到电视';
 
-    final btn = IconButton(
+    final btn = ui.IconButton(
       onPressed: _busy ? null : _onTap,
       icon: icon,
       tooltip: tooltip,
@@ -259,11 +262,11 @@ class _CastButtonState extends State<CastButton> {
     );
 
     if (!widget.showLabel) return btn;
-    return TextButton.icon(
+    return ui.TextButton.icon(
       onPressed: _busy ? null : _onTap,
       icon: icon,
       label: Text(active ? s.device.name : '投屏'),
-      style: TextButton.styleFrom(
+      style: ui.TextButton.styleFrom(
         foregroundColor: active ? colors.primary : colors.onSurfaceVariant,
       ),
     );
@@ -297,88 +300,94 @@ class _CastActiveSheetState extends State<_CastActiveSheet> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final playing = _s.phase == CastPhase.playing;
-    return Container(
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHigh,
-        borderRadius: const BorderRadius.vertical(
-          top: Radius.circular(Radii.xl),
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(Radii.xl)),
+      child: miuix.MiuixCard(
+        cornerRadius: 0,
+        colors: miuix.MiuixCardColors(
+          color: colors.surfaceContainerHigh,
+          contentColor: colors.onSurface,
         ),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x5, Sp.x5, Sp.x4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Icon(AppIcons.cast_connected, size: 20, color: colors.primary),
-                  const SizedBox(width: Sp.x3),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          '正在投屏到 ${_s.device.name}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: FontSizes.base,
-                            fontWeight: FontWeight.w600,
-                            color: colors.onSurface,
-                          ),
-                        ),
-                        Text(
-                          _stateText(_s),
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x5, Sp.x5, Sp.x4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      AppIcons.cast_connected,
+                      size: 20,
+                      color: colors.primary,
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: Sp.x4),
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      onPressed: () =>
-                          Navigator.of(context)
-                              .pop(playing ? 'pause' : 'resume'),
-                      icon: Icon(
-                        playing ? AppIcons.pause : AppIcons.play_arrow,
-                        size: 18,
+                    const SizedBox(width: Sp.x3),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '正在投屏到 ${_s.device.name}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: FontSizes.base,
+                              fontWeight: FontWeight.w600,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                          Text(
+                            _stateText(_s),
+                            style: TextStyle(
+                              fontSize: FontSizes.cap,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
-                      label: Text(playing ? '暂停' : '继续'),
                     ),
-                  ),
-                  const SizedBox(width: Sp.x3),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () => Navigator.of(context).pop('stop'),
-                      icon: const Icon(AppIcons.stop, size: 18),
-                      label: const Text('停止投屏'),
+                  ],
+                ),
+                const SizedBox(height: Sp.x4),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ui.FilledButton.tonalIcon(
+                        onPressed: () =>
+                            Navigator.of(context)
+                                .pop(playing ? 'pause' : 'resume'),
+                        icon: Icon(
+                          playing ? AppIcons.pause : AppIcons.play_arrow,
+                          size: 18,
+                        ),
+                        label: Text(playing ? '暂停' : '继续'),
+                      ),
+                    ),
+                    const SizedBox(width: Sp.x3),
+                    Expanded(
+                      child: ui.OutlinedButton.icon(
+                        onPressed: () => Navigator.of(context).pop('stop'),
+                        icon: const Icon(AppIcons.stop, size: 18),
+                        label: const Text('停止投屏'),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_s.error != null) ...[
+                  const SizedBox(height: Sp.x3),
+                  Text(
+                    _s.error!,
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.error,
                     ),
                   ),
                 ],
-              ),
-              if (_s.error != null) ...[
-                const SizedBox(height: Sp.x3),
-                Text(
-                  _s.error!,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.error,
-                  ),
-                ),
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -449,13 +458,13 @@ class _CastStatusBarState extends State<CastStatusBar> {
                 ),
               ),
             ),
-            TextButton(
+            ui.TextButton(
               onPressed: () async {
                 await _m.stop();
                 widget.onStopped?.call();
                 if (mounted) setState(() {});
               },
-              style: TextButton.styleFrom(
+              style: ui.TextButton.styleFrom(
                 visualDensity: VisualDensity.compact,
                 foregroundColor: colors.primary,
               ),

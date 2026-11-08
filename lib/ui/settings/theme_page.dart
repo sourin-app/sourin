@@ -1,9 +1,13 @@
 // Product appearance has one light/dark/system choice; old packs are preview-only.
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import '../widgets/miuix_controls.dart' as ui;
 import '../../core/app_logo.dart';
 
 import '../app_theme.dart';
-import '../theme/theme_language.dart' show kDefaultRadius, kDefaultBorderWidth, kDefaultDividerThickness;
+import '../theme/theme_language.dart'
+    show kDefaultRadius, kDefaultBorderWidth, kDefaultDividerThickness;
 import '../theme/theme_pack.dart';
 import '../tokens.dart';
 import '../widgets/settings_kit.dart';
@@ -33,69 +37,104 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
       SettingsBlock(
         title: '显示模式',
         children: [
-          Wrap(spacing: Sp.x3, runSpacing: Sp.x3, children: [
-            for (final mode in AppThemeMode.values)
-              SettingsGesturePill(
-                text: mode.label,
-                selected: AppTheme.mode == mode,
-                onTap: () => _pickMode(mode),
-              ),
-          ]),
-          const SizedBox(height: Sp.x4),
-          Text('跟随系统会自动切换明暗，所有页面即时生效。',
-            style: TextStyle(fontSize: FontSizes.sm,
-              color: Theme.of(context).colorScheme.onSurfaceVariant)),
-        ],
-      ),
-      SettingsBlock(title: '应用标识', children: [
-        ValueListenableBuilder<AppLogoStyle>(
-          valueListenable: AppLogoPreference.current,
-          builder: (context, selected, _) => Wrap(
+          Wrap(
             spacing: Sp.x3,
             runSpacing: Sp.x3,
             children: [
-              for (final style in AppLogoStyle.values)
-                Semantics(
-                  selected: selected == style,
-                  button: true,
-                  label: style.label,
-                  child: OutlinedButton(
-                    key: ValueKey('app-logo-${style.id}'),
-                    onPressed: () => AppLogoPreference.select(style),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.all(Sp.x4),
-                      backgroundColor: selected == style
-                          ? Theme.of(context).colorScheme.primaryContainer
-                          : Theme.of(context).colorScheme.surface,
-                      side: BorderSide(color: selected == style
-                          ? Theme.of(context).colorScheme.primary
-                          : Theme.of(context).colorScheme.outlineVariant),
-                      shape: const RoundedRectangleBorder(borderRadius: Radii.rMd),
-                    ),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      Image.asset(style.imageAsset, width: Sp.x16, height: Sp.x16),
-                      const SizedBox(height: Sp.x2),
-                      Text(style == AppLogoStyle.orbit ? '${style.label} · 默认' : style.label),
-                      const SizedBox(height: Sp.x1),
-                      Icon(selected == style ? Icons.check_circle : Icons.circle_outlined,
-                        size: Sp.x4),
-                    ]),
-                  ),
+              for (final mode in AppThemeMode.values)
+                SettingsGesturePill(
+                  text: mode.label,
+                  selected: AppTheme.mode == mode,
+                  onTap: () => _pickMode(mode),
                 ),
             ],
           ),
-        ),
-        const SizedBox(height: Sp.x3),
-        const Text('切换后立即生效，下次启动保留你的选择。'),
-      ]),
-      SettingsBlock(title: '界面预览', children: [
-        SettingsGestureToggle(label: '试试开关', hint: '预览当前外观的控件样式',
-          value: _previewEnabled,
-          onChanged: (value) => setState(() => _previewEnabled = value)),
-      ]),
+          const SizedBox(height: Sp.x4),
+          Text(
+            '跟随系统会自动切换明暗，所有页面即时生效。',
+            style: TextStyle(
+              fontSize: FontSizes.sm,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+      SettingsBlock(
+        title: '应用标识',
+        children: [
+          ValueListenableBuilder<AppLogoStyle>(
+            valueListenable: AppLogoPreference.current,
+            builder: (context, selected, _) => Wrap(
+              spacing: Sp.x3,
+              runSpacing: Sp.x3,
+              children: [
+                for (final style in AppLogoStyle.values)
+                  Semantics(
+                    selected: selected == style,
+                    button: true,
+                    label: style.label,
+                    child: ui.OutlinedButton(
+                      key: ValueKey('app-logo-${style.id}'),
+                      onPressed: () => AppLogoPreference.select(style),
+                      style: ui.OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.all(Sp.x4),
+                        backgroundColor: selected == style
+                            ? Theme.of(context).colorScheme.primaryContainer
+                            : Theme.of(context).colorScheme.surface,
+                        side: BorderSide(
+                          color: selected == style
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                        shape: const RoundedRectangleBorder(
+                          borderRadius: Radii.rMd,
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Image.asset(
+                            style.imageAsset,
+                            width: Sp.x16,
+                            height: Sp.x16,
+                          ),
+                          const SizedBox(height: Sp.x2),
+                          Text(
+                            style == AppLogoStyle.orbit
+                                ? '${style.label} · 默认'
+                                : style.label,
+                          ),
+                          const SizedBox(height: Sp.x1),
+                          Icon(
+                            selected == style
+                                ? Icons.check_circle
+                                : Icons.circle_outlined,
+                            size: Sp.x4,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: Sp.x3),
+          const Text('切换后立即生效，下次启动保留你的选择。'),
+        ],
+      ),
+      SettingsBlock(
+        title: '界面预览',
+        children: [
+          SettingsGestureToggle(
+            label: '试试开关',
+            hint: '预览当前外观的控件样式',
+            value: _previewEnabled,
+            onChanged: (value) => setState(() => _previewEnabled = value),
+          ),
+        ],
+      ),
     ],
   );
-
 }
 
 // Legacy pack previews remain usable by the explicit preview tooling.
@@ -284,8 +323,9 @@ class ThemeGrid extends StatelessWidget {
                               selected: p.id == selectedId,
                               onTap: () => onPick(p),
                               onDelete: p.builtin ? null : () => onDelete(p),
-                              onPreview:
-                                  onPreview == null ? null : () => onPreview!(p),
+                              onPreview: onPreview == null
+                                  ? null
+                                  : () => onPreview!(p),
                             ),
                           ),
                       ],
@@ -362,10 +402,11 @@ class ThemeCard extends StatelessWidget {
     return Semantics(
       selected: selected,
       button: true,
-      label: '${pack.name}（${pack.brightness == Brightness.dark ? '深色' : '浅色'}）',
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: Radii.rMd,
+      label:
+          '${pack.name}（${pack.brightness == Brightness.dark ? '深色' : '浅色'}）',
+      child: miuix.MiuixCard(
+        onPressed: onTap,
+        cornerRadius: Radii.md,
         child: Container(
           decoration: BoxDecoration(
             borderRadius: Radii.rMd,
@@ -429,7 +470,9 @@ class ThemeCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: FontSizes.sm,
-                        fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
                         color: cs.onSurface,
                       ),
                     ),
@@ -456,23 +499,37 @@ class ThemeCard extends StatelessWidget {
                     ),
                   if (onPreview != null)
                     ConstrainedBox(
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      child: InkWell(
-                        onTap: onPreview,
-                        child: Icon(AppIcons.visibility_outlined,
-                            size: 16,
-                            color: selected
-                                ? cs.onSurfaceVariant.withValues(alpha: 0.55)
-                                : cs.onSurfaceVariant),
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      child: ui.IconButton(
+                        onPressed: onPreview,
+                        tooltip: '预览',
+                        icon: Icon(
+                          AppIcons.visibility_outlined,
+                          size: 16,
+                          color: selected
+                              ? cs.onSurfaceVariant.withValues(alpha: 0.55)
+                              : cs.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   if (onDelete != null)
                     // 命中区域比图标大 —— 16px 的 ✕ 在电视遥控器上点不中
                     ConstrainedBox(
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      child: InkWell(
-                        onTap: onDelete,
-                        child: Icon(AppIcons.close, size: 16, color: cs.onSurfaceVariant),
+                      constraints: const BoxConstraints(
+                        minWidth: 32,
+                        minHeight: 32,
+                      ),
+                      child: ui.IconButton(
+                        onPressed: onDelete,
+                        tooltip: '删除',
+                        icon: Icon(
+                          AppIcons.close,
+                          size: 16,
+                          color: cs.onSurfaceVariant,
+                        ),
                       ),
                     ),
                 ],
@@ -575,8 +632,7 @@ class _Preview extends StatelessWidget {
                           width: 26,
                           decoration: BoxDecoration(
                             color: p.card,
-                            borderRadius:
-                                BorderRadius.all(Radius.circular(r)),
+                            borderRadius: BorderRadius.all(Radius.circular(r)),
                             border: Border.all(color: p.border, width: bw),
                           ),
                         ),
@@ -591,8 +647,10 @@ class _Preview extends StatelessWidget {
                               const SizedBox(height: 3),
                               FractionallySizedBox(
                                 widthFactor: 0.62,
-                                child:
-                                    Container(height: 4, color: p.mutedForeground),
+                                child: Container(
+                                  height: 4,
+                                  color: p.mutedForeground,
+                                ),
                               ),
                             ],
                           ),
@@ -687,15 +745,12 @@ class ThemePreviewBody extends StatelessWidget {
     final double div = pack.dividerThickness ?? kDefaultDividerThickness;
 
     Widget label(String text) => Padding(
-          padding: const EdgeInsets.only(bottom: 6),
-          child: Text(
-            text,
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              color: p.mutedForeground,
-            ),
-          ),
-        );
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: FontSizes.cap, color: p.mutedForeground),
+      ),
+    );
 
     return Theme(
       data: td,
@@ -713,18 +768,9 @@ class ThemePreviewBody extends StatelessWidget {
               spacing: Sp.x2,
               runSpacing: Sp.x2,
               children: [
-                FilledButton(
-                  onPressed: () {},
-                  child: const Text("主按钮"),
-                ),
-                OutlinedButton(
-                  onPressed: () {},
-                  child: const Text("次按钮"),
-                ),
-                TextButton(
-                  onPressed: () {},
-                  child: const Text("文字按钮"),
-                ),
+                ui.FilledButton(onPressed: () {}, child: const Text("主按钮")),
+                ui.OutlinedButton(onPressed: () {}, child: const Text("次按钮")),
+                ui.TextButton(onPressed: () {}, child: const Text("文字按钮")),
               ],
             ),
             const SizedBox(height: Sp.x4),
@@ -733,9 +779,9 @@ class ThemePreviewBody extends StatelessWidget {
             label("开关"),
             Row(
               children: [
-                Switch(value: true, onChanged: (_) {}),
+                ui.Switch(value: true, onChanged: (_) {}),
                 const SizedBox(width: Sp.x3),
-                Switch(value: false, onChanged: (_) {}),
+                ui.Switch(value: false, onChanged: (_) {}),
               ],
             ),
             const SizedBox(height: Sp.x4),
@@ -753,7 +799,10 @@ class ThemePreviewBody extends StatelessWidget {
               ),
               child: Text(
                 "占位提示文字",
-                style: TextStyle(fontSize: FontSizes.sm, color: p.mutedForeground),
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: p.mutedForeground,
+                ),
               ),
             ),
             const SizedBox(height: Sp.x4),

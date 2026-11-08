@@ -83,6 +83,8 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 // ★ 2026-10-18（Owner 第 12 条）：toast 统一走这里（`showAppToast`）
@@ -425,7 +427,7 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
     child: Row(
       children: [
         Expanded(
-          child: TextField(
+          child: ui.TextField(
             controller: _queryCtrl,
             onChanged: (v) {
               /*
@@ -453,7 +455,7 @@ class _SkipMarkersSettingsPageState extends State<SkipMarkersSettingsPage> {
               prefixIconConstraints: const BoxConstraints(minWidth: 36),
               suffixIcon: _queryCtrl.text.isEmpty
                   ? null
-                  : IconButton(
+                  : ui.IconButton(
                       icon: const Icon(AppIcons.clear, size: 16),
                       tooltip: '清除',
                       onPressed: () {
@@ -689,7 +691,7 @@ class _SkipMarkerRow extends StatelessWidget {
           ),
         ),
         const SizedBox(width: Sp.x2),
-        TextButton(onPressed: onClear, child: const Text('清除')),
+        ui.TextButton(onPressed: onClear, child: const Text('清除')),
       ],
     );
   }

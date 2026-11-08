@@ -35,6 +35,8 @@ import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+
 import '../../core/clip_download.dart' show ClipDownloader;
 import '../tokens.dart';
 import '../widgets/app_loading.dart';
@@ -283,19 +285,19 @@ class _DataManagePageState extends State<DataManagePage> {
               ),
             )
           : _error != null
-              ? _ErrorView(message: _error!, onRetry: _scan)
-              : ListView(
-                  padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x2, Sp.x4, Sp.x8),
-                  children: [
-                    _TotalCard(total: total, root: _root),
-                    const SizedBox(height: Sp.x4),
-                    ..._buildGroups(colors),
-                    const SizedBox(height: Sp.x4),
-                    _TipCard(),
-                    // ★ 2026-10-18（Owner 第 12 条）：提示行已删除，
-                    //   统一由 shell 层的 `ToastHost` 承担（见 `_flash`）。
-                  ],
-                ),
+          ? _ErrorView(message: _error!, onRetry: _scan)
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x2, Sp.x4, Sp.x8),
+              children: [
+                _TotalCard(total: total, root: _root),
+                const SizedBox(height: Sp.x4),
+                ..._buildGroups(colors),
+                const SizedBox(height: Sp.x4),
+                _TipCard(),
+                // ★ 2026-10-18（Owner 第 12 条）：提示行已删除，
+                //   统一由 shell 层的 `ToastHost` 承担（见 `_flash`）。
+              ],
+            ),
     );
   }
 
@@ -338,17 +340,30 @@ class _TotalCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('数据目录共占用',
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+          Text(
+            '数据目录共占用',
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(height: Sp.x1),
-          Text(_DataManagePageState._fmt(total),
-              style: TextStyle(
-                  fontSize: FontSizes.lg,
-                  fontWeight: FontWeight.w600,
-                  color: colors.onSurface)),
+          Text(
+            _DataManagePageState._fmt(total),
+            style: TextStyle(
+              fontSize: FontSizes.lg,
+              fontWeight: FontWeight.w600,
+              color: colors.onSurface,
+            ),
+          ),
           const SizedBox(height: Sp.x2),
-          SelectableText(root,
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+          SelectableText(
+            root,
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
         ],
       ),
     );
@@ -379,31 +394,45 @@ class _CatRow extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: Text(cat.label,
-                    style: TextStyle(
-                        fontSize: FontSizes.base,
-                        fontWeight: FontWeight.w600,
-                        color: colors.onSurface)),
-              ),
-              Text(_DataManagePageState._fmt(bytes),
+                child: Text(
+                  cat.label,
                   style: TextStyle(
-                      fontSize: FontSizes.base, color: colors.onSurfaceVariant)),
+                    fontSize: FontSizes.base,
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
+                  ),
+                ),
+              ),
+              Text(
+                _DataManagePageState._fmt(bytes),
+                style: TextStyle(
+                  fontSize: FontSizes.base,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
               if (onClear != null) ...[
                 const SizedBox(width: Sp.x2),
-                TextButton(
-                  onPressed: onClear,
-                  child: const Text('清理'),
-                ),
+                ui.TextButton(onPressed: onClear, child: const Text('清理')),
               ],
             ],
           ),
           const SizedBox(height: Sp.x1),
-          Text(cat.hint,
-              style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+          Text(
+            cat.hint,
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
           if (entries.length > 1) ...[
             const SizedBox(height: Sp.x1),
-            Text('共 ${entries.length} 项',
-                style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+            Text(
+              '共 ${entries.length} 项',
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
           ],
         ],
       ),
@@ -431,7 +460,9 @@ class _TipCard extends StatelessWidget {
               '数据库日志（WAL）不建议直接删除 —— 它用于崩溃恢复，'
               '直接删可能丢事务。要收缩它请用 SQLite 的 checkpoint。',
               style: TextStyle(
-                  fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
             ),
           ),
         ],
@@ -457,11 +488,16 @@ class _ErrorView extends StatelessWidget {
           children: [
             Icon(AppIcons.error_outline, size: 36, color: colors.error),
             const SizedBox(height: Sp.x3),
-            SelectableText(message,
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+            SelectableText(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
             const SizedBox(height: Sp.x4),
-            TextButton(onPressed: onRetry, child: const Text('重试')),
+            ui.TextButton(onPressed: onRetry, child: const Text('重试')),
           ],
         ),
       ),

@@ -85,6 +85,8 @@
 //    并行的"模型，下次字段变更就会改一处漏一处（这正是当初那个 bug 的形态）。
 //    唯一来源是 `models.dart::ProxyConfig`。
 
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
@@ -333,8 +335,9 @@ class _ProxyPanelState extends State<ProxyPanel> {
       if (!mounted) return;
       setState(() {
         _testResult = ProxyTestResult(
-            ok: false,
-            message: userErrorText(e, fallback: '没有连上这个代理，请检查地址与端口'));
+          ok: false,
+          message: userErrorText(e, fallback: '没有连上这个代理，请检查地址与端口'),
+        );
         _testing = false;
       });
     }
@@ -357,9 +360,13 @@ class _ProxyPanelState extends State<ProxyPanel> {
     if (_loading) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: Sp.x2),
-        child: Text('代理配置读取中…',
-            style: TextStyle(
-                fontSize: FontSizes.cap, color: colors.mutedForeground)),
+        child: Text(
+          '代理配置读取中…',
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.mutedForeground,
+          ),
+        ),
       );
     }
 
@@ -369,7 +376,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // ── 折叠头：一行摘要 + 展开箭头 ──
-        InkWell(
+        ui.InkWell(
           onTap: () => setState(() => _open = !_open),
           borderRadius: BorderRadius.circular(Radii.sm),
           child: Padding(
@@ -396,8 +403,9 @@ class _ProxyPanelState extends State<ProxyPanel> {
                   _open ? '代理' : cfg.summary,
                   style: TextStyle(
                     fontSize: FontSizes.cap,
-                    fontWeight:
-                        cfg.isConfigured ? FontWeight.w600 : FontWeight.w400,
+                    fontWeight: cfg.isConfigured
+                        ? FontWeight.w600
+                        : FontWeight.w400,
                     color: cfg.isConfigured
                         ? colors.primary
                         : colors.mutedForeground,
@@ -411,10 +419,13 @@ class _ProxyPanelState extends State<ProxyPanel> {
                 ),
                 if (_open) ...[
                   const SizedBox(width: Sp.x2),
-                  Text(cfg.summary,
-                      style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          color: colors.mutedForeground)),
+                  Text(
+                    cfg.summary,
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.mutedForeground,
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -476,7 +487,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
                   ),
                 ),
                 const SizedBox(width: Sp.x2),
-                IconButton(
+                ui.IconButton(
                   onPressed: _savePassword,
                   icon: const Icon(AppIcons.lock_outline, size: 18),
                   tooltip: '保存密码到系统钥匙串',
@@ -489,7 +500,9 @@ class _ProxyPanelState extends State<ProxyPanel> {
                 child: Text(
                   '密码已存在系统钥匙串 —— 它「不进配置对象，也就不进备份」',
                   style: TextStyle(
-                      fontSize: FontSizes.cap, color: colors.mutedForeground),
+                    fontSize: FontSizes.cap,
+                    color: colors.mutedForeground,
+                  ),
                 ),
               ),
 
@@ -500,17 +513,12 @@ class _ProxyPanelState extends State<ProxyPanel> {
               spacing: 6,
               children: [
                 for (final s in ProxyScope.values)
-                  _modePill2(
-                    s.label,
-                    cfg.scope == s,
-                    colors,
-                    () {
-                      setState(() {
-                        _cfg = cfg.copyWith(scope: s);
-                      });
-                      _save();
-                    },
-                  ),
+                  _modePill2(s.label, cfg.scope == s, colors, () {
+                    setState(() {
+                      _cfg = cfg.copyWith(scope: s);
+                    });
+                    _save();
+                  }),
               ],
             ),
             Padding(
@@ -520,7 +528,9 @@ class _ProxyPanelState extends State<ProxyPanel> {
                     ? '只让取数据走代理，视频直连更流畅（推荐）'
                     : '视频分片也走代理 —— 流量大，除非接口被墙否则不必',
                 style: TextStyle(
-                    fontSize: FontSizes.cap, color: colors.mutedForeground),
+                  fontSize: FontSizes.cap,
+                  color: colors.mutedForeground,
+                ),
               ),
             ),
 
@@ -556,7 +566,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
           // ── 动作行 ──
           Row(
             children: [
-              OutlinedButton.icon(
+              ui.OutlinedButton.icon(
                 onPressed: (_testing || cfg.mode == ProxyMode.direct)
                     ? null
                     : _test,
@@ -565,14 +575,17 @@ class _ProxyPanelState extends State<ProxyPanel> {
                         width: 12,
                         height: 12,
                         // T27-07：AppPalette.foreground（dark #FAFAFA / light #0A0A0A）。
-                        child: CircularProgressIndicator(color: colors.foreground, strokeWidth: 2),
+                        child: ui.CircularProgressIndicator(
+                          color: colors.foreground,
+                          strokeWidth: 2,
+                        ),
                       )
                     : const Icon(AppIcons.bolt_outlined, size: 15),
                 label: Text(_testing ? '测试中…' : '测试连接'),
               ),
               const SizedBox(width: Sp.x2),
               if (cfg.mode != ProxyMode.direct)
-                TextButton(onPressed: _clear, child: const Text('清除代理')),
+                ui.TextButton(onPressed: _clear, child: const Text('清除代理')),
             ],
           ),
 
@@ -599,8 +612,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
                       style: TextStyle(
                         fontSize: FontSizes.cap,
                         height: 1.45,
-                        color:
-                            _testResult!.ok ? colors.primary : colors.error,
+                        color: _testResult!.ok ? colors.primary : colors.error,
                       ),
                     ),
                   ),
@@ -611,9 +623,10 @@ class _ProxyPanelState extends State<ProxyPanel> {
           if (_err.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: Sp.x2),
-              child: Text(_err,
-                  style: TextStyle(
-                      fontSize: FontSizes.cap, color: colors.error)),
+              child: Text(
+                _err,
+                style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+              ),
             ),
         ],
       ],
@@ -621,9 +634,9 @@ class _ProxyPanelState extends State<ProxyPanel> {
   }
 
   Widget _label(String t, AppPalette colors) => Text(
-        t,
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.mutedForeground),
-      );
+    t,
+    style: TextStyle(fontSize: FontSizes.cap, color: colors.mutedForeground),
+  );
 
   Widget _input({
     required TextEditingController controller,
@@ -632,18 +645,22 @@ class _ProxyPanelState extends State<ProxyPanel> {
     bool obscure = false,
     VoidCallback? onDone,
   }) {
-    return TextField(
+    return ui.TextField(
       controller: controller,
       obscureText: obscure,
       style: const TextStyle(fontSize: FontSizes.sm),
       onSubmitted: onDone == null ? null : (_) => onDone(),
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle:
-            TextStyle(fontSize: FontSizes.sm, color: colors.mutedForeground),
+        hintStyle: TextStyle(
+          fontSize: FontSizes.sm,
+          color: colors.mutedForeground,
+        ),
         isDense: true,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x3),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: Sp.x3,
+          vertical: Sp.x3,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(Radii.sm),
         ),
@@ -674,7 +691,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
      * ⚠️ `visualDensity: compact` + `shrinkWrap`：ChoiceChip 默认最小
      *    点击区高 48，会比改前（vertical 5）高出一截，把下面的内容顶下去。
      */
-    return ChoiceChip(
+    return ui.ChoiceChip(
       label: Text(
         label,
         style: TextStyle(

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/danmaku.dart';
@@ -77,7 +78,7 @@ void main() {
     await t.pumpWidget(host(dialog));
     await t.pumpAndSettle();
     await t.tap(find.descendant(
-      of: find.byType(SegmentedButton<DanmakuPanelTab>),
+      of: find.byKey(const ValueKey('danmaku-settings-tabs')),
       matching: find.text('高级'),
     ));
     await t.pumpAndSettle();
@@ -86,7 +87,7 @@ void main() {
     await t.enterText(
       find.ancestor(
         of: find.text('服务地址'),
-        matching: find.byType(TextField),
+        matching: find.byType(ui.TextField),
       ).first,
       'http://127.0.0.1:9321',
     );

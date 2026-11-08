@@ -38,6 +38,7 @@
 // ```
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/danmaku.dart';
@@ -86,11 +87,11 @@ Widget page(DanmakuSettingsState state, {DanmakuSearchDraft? draft}) =>
 
 /// 读搜索页关键词输入框里的**真实**文本
 String keywordText(WidgetTester t) {
-  final field = find.byType(TextField);
+  final field = find.byType(ui.TextField);
   expect(field, findsOneWidget,
       reason: '★★ 搜索页必须有一个关键词输入框 —— 找不到说明树变了，'
           '下面所有断言都会退化成对空树的断言（铁律 149）');
-  return t.widget<TextField>(field).controller!.text;
+  return t.widget<ui.TextField>(field).controller!.text;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -154,7 +155,7 @@ void main() {
     expect(keywordText(t), kShow, reason: '前置：先确认预填生效');
 
     // 用户把输入框清空（真实输入路径）
-    await t.enterText(find.byType(TextField), '');
+    await t.enterText(find.byType(ui.TextField), '');
     await t.pump();
 
     expect(keywordText(t), '',

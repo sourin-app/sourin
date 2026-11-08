@@ -44,6 +44,8 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -55,24 +57,32 @@ Widget host(Widget child) {
   final theme = AppTheme.themeFor(Brightness.dark);
   return MaterialApp(
     theme: theme,
-    builder: (context, c) => AppThemeHost(data: theme, child: c ?? const SizedBox()),
+    builder: (context, c) =>
+        AppThemeHost(data: theme, child: c ?? const SizedBox()),
     home: Scaffold(body: SingleChildScrollView(child: child)),
   );
 }
 
-void claim(WidgetTester tester) {
-  while (tester.takeException() != null) {}
-}
-
-/// 状态行右侧那个切换按钮（用 widget 判定，**不依赖文案**）
-Finder switchButton() => find.byWidgetPredicate((w) =>
-    w is TextButton &&
-    w.child is Text &&
-    const ['登录', '收起'].contains((w.child! as Text).data));
+/// 文案只定位状态行的入口；展开结果仍由表单是否出现判断。
+Finder switchButton() => find.descendant(
+  of: find.descendant(
+    of: find.byType(ProviderLoginPanel),
+    matching: find.byWidgetPredicate(
+      (w) =>
+          w is ui.TextButton &&
+          w.child is Text &&
+          const ['登录', '收起'].contains((w.child! as Text).data),
+    ),
+  ),
+  matching: find.byType(miuix.MiuixButton),
+);
 
 /// 按钮总数（"被测对象存在"的自证判据）
-int buttonCount(WidgetTester tester) => find
-    .byWidgetPredicate((w) => w is TextButton && w.child is Text)
+int buttonCount() => find
+    .descendant(
+      of: find.byType(ProviderLoginPanel),
+      matching: find.byType(miuix.MiuixButton),
+    )
     .evaluate()
     .length;
 
@@ -89,8 +99,8 @@ void main() {
        * ⇒ 用一个确定性的静态断言把"机制"钉住更可靠，也更快。
        * ```
        */
-      final src =
-          File('lib/ui/widgets/provider_login_panel.dart').readAsStringSync();
+      final src = File('lib/ui/widgets/provider_login_panel.dart')
+          .readAsStringSync();
 
       // ① build 的第一道门是 _loading
       final buildIdx = src.indexOf('Widget build(BuildContext context)');
@@ -110,12 +120,15 @@ void main() {
       // ② `_load()` 里必须有 override 注入（否则无核心时永远 loading）
       final loadIdx = src.indexOf('Future<void> _load() async {');
       expect(loadIdx > 0, isTrue, reason: '应能找到 _load()');
-      final overrideIdx =
-          src.indexOf('widget.debugSessionStateOverride', loadIdx);
+      final overrideIdx = src.indexOf(
+        'widget.debugSessionStateOverride',
+        loadIdx,
+      );
       expect(
         overrideIdx > loadIdx,
         isTrue,
-        reason: '★★★ `_load()` 里必须有 `debugSessionStateOverride` 注入 —— '
+        reason:
+            '★★★ `_load()` 里必须有 `debugSessionStateOverride` 注入 —— '
             '没有它，单元测试里那次 FFI await 永不完成 ⇒ `_loading` 永远 true '
             '⇒ 面板只渲染「读取中」⇒ 所有"找按钮/找输入框"的断言都无从谈起',
       );
@@ -146,7 +159,8 @@ void main() {
       expect(
         src.contains('override.wire'),
         isTrue,
-        reason: '★★ 注入应"只替换数据来源"（`override.wire` 当 st 用）—— '
+        reason:
+            '★★ 注入应"只替换数据来源"（`override.wire` 当 st 用）—— '
             '这样后续解析/赋值**全部共用**真实路径的代码',
       );
       // ★ 反向断言：不能有"注入分支里自己 setState 再 return"的旧写法
@@ -155,7 +169,8 @@ void main() {
         RegExp(r'if \(override != null\) \{[\s\S]{0,200}?return;')
             .hasMatch(injectSeg),
         isFalse,
-        reason: '★★★ 注入分支**绝不能提前 return** —— '
+        reason:
+            '★★★ 注入分支**绝不能提前 return** —— '
             '那会让尾部 setState（含被测的 `_open` 逻辑）永不执行 ⇒ 假绿。'
             '（实测：恢复 auto-expand 变异在旧写法下 GREEN，在新写法下 RED）',
       );
@@ -163,109 +178,138 @@ void main() {
   });
 
   group('② 四个行为（传 override ⇒ 走可达路径）', () {
-    testWidgets('★ defaultOpen: true ⇒ 表单**立即展开**（失败页弹窗那条路径）',
-        (tester) async {
-      await tester.pumpWidget(host(const ProviderLoginPanel(
-        providerId: 'bilibili',
-        providerName: '哔哩哔哩',
-        defaultOpen: true,
-        caps: Capabilities(loginRequired: true, loginSupported: true),
-        // ★ 关键：短路 `_load()`（否则永远停在"读取中"，见第 ① 组）
-        debugSessionStateOverride: SessionState.notRequired,
-      )));
+    testWidgets('★ defaultOpen: true ⇒ 表单**立即展开**（失败页弹窗那条路径）', (tester) async {
+      await tester.pumpWidget(
+        host(
+          const ProviderLoginPanel(
+            providerId: 'bilibili',
+            providerName: '哔哩哔哩',
+            defaultOpen: true,
+            caps: Capabilities(loginRequired: true, loginSupported: true),
+            // ★ 关键：短路 `_load()`（否则永远停在"读取中"，见第 ① 组）
+            debugSessionStateOverride: SessionState.notRequired,
+          ),
+        ),
+      );
       await tester.pump();
-      claim(tester);
+      expect(tester.takeException(), isNull);
       await tester.pump(const Duration(milliseconds: 600));
-      claim(tester);
+      expect(tester.takeException(), isNull);
 
       // ★ 自证：被测对象（按钮）存在 —— 否则下面的 0 分不清"没展开"和"没渲染"
-      expect(buttonCount(tester), greaterThan(0),
-          reason: '★ 自证断言：面板必须真的渲染出按钮。'
-              '若为 0，下面那条 TextField 判断就是**空洞的**（面板没渲染）');
+      expect(
+        buttonCount(),
+        greaterThan(0),
+        reason:
+            '★ 自证断言：面板必须真的渲染出按钮。'
+            '若为 0，下面那条 TextField 判断就是**空洞的**（面板没渲染）',
+      );
 
       expect(
-        find.byType(TextField),
+        find.byType(ui.TextField),
         findsWidgets,
-        reason: '★★ `defaultOpen: true`（播放失败页弹窗传的）必须让表单**立即展开**。'
+        reason:
+            '★★ `defaultOpen: true`（播放失败页弹窗传的）必须让表单**立即展开**。'
             '若失败 ⇒ "播放失败 → 提示登录"那条路径断了',
       );
     });
 
-    testWidgets('★ defaultOpen: false ⇒ 初始**不展开**（设置页不再自动打扰）',
-        (tester) async {
-      await tester.pumpWidget(host(const ProviderLoginPanel(
-        providerId: 'bilibili',
-        providerName: '哔哩哔哩',
-        defaultOpen: false,
-        caps: Capabilities(loginRequired: true, loginSupported: true),
-        debugSessionStateOverride: SessionState.notRequired,
-      )));
+    testWidgets('★ defaultOpen: false ⇒ 初始**不展开**（设置页不再自动打扰）', (tester) async {
+      await tester.pumpWidget(
+        host(
+          const ProviderLoginPanel(
+            providerId: 'bilibili',
+            providerName: '哔哩哔哩',
+            defaultOpen: false,
+            caps: Capabilities(loginRequired: true, loginSupported: true),
+            debugSessionStateOverride: SessionState.notRequired,
+          ),
+        ),
+      );
       await tester.pump();
-      claim(tester);
+      expect(tester.takeException(), isNull);
       await tester.pump(const Duration(milliseconds: 600));
-      claim(tester);
+      expect(tester.takeException(), isNull);
 
-      expect(buttonCount(tester), greaterThan(0),
-          reason: '★ 自证断言：面板必须渲染（否则下面那条 0 是空洞的）');
-      expect(find.byType(TextField), findsNothing,
-          reason: '★ `defaultOpen: false`（设置页内嵌）⇒ 初始收起');
+      expect(
+        buttonCount(),
+        greaterThan(0),
+        reason: '★ 自证断言：面板必须渲染（否则下面那条 0 是空洞的）',
+      );
+      expect(
+        find.byType(ui.TextField),
+        findsNothing,
+        reason: '★ `defaultOpen: false`（设置页内嵌）⇒ 初始收起',
+      );
     });
 
     testWidgets('★★★ 点「登录」⇒ 能展开（入口没丢）', (tester) async {
-      await tester.pumpWidget(host(const ProviderLoginPanel(
-        providerId: 'bilibili',
-        providerName: '哔哩哔哩',
-        defaultOpen: false,
-        caps: Capabilities(loginRequired: true, loginSupported: true),
-        debugSessionStateOverride: SessionState.notRequired,
-      )));
+      await tester.pumpWidget(
+        host(
+          const ProviderLoginPanel(
+            providerId: 'bilibili',
+            providerName: '哔哩哔哩',
+            defaultOpen: false,
+            caps: Capabilities(loginRequired: true, loginSupported: true),
+            debugSessionStateOverride: SessionState.notRequired,
+          ),
+        ),
+      );
       await tester.pump();
-      claim(tester);
+      expect(tester.takeException(), isNull);
       await tester.pump(const Duration(milliseconds: 600));
-      claim(tester);
+      expect(tester.takeException(), isNull);
 
-      expect(buttonCount(tester), greaterThan(0), reason: '★ 自证：面板已渲染');
-      expect(find.byType(TextField), findsNothing, reason: '前置：初始收起');
-      expect(switchButton(), findsWidgets,
-          reason: '★ 状态行右侧必须有切换按钮（"提供入口"vs"主动打扰"的区别）');
+      expect(buttonCount(), greaterThan(0), reason: '★ 自证：面板已渲染');
+      expect(find.byType(ui.TextField), findsNothing, reason: '前置：初始收起');
+      expect(
+        switchButton(),
+        findsOneWidget,
+        reason: '★ 状态行右侧必须有切换按钮（"提供入口"vs"主动打扰"的区别）',
+      );
 
-      await tester.tap(switchButton().first);
+      await tester.tap(switchButton());
       await tester.pump();
-      claim(tester);
+      expect(tester.takeException(), isNull);
       await tester.pump(const Duration(milliseconds: 300));
-      claim(tester);
+      expect(tester.takeException(), isNull);
 
       expect(
-        find.byType(TextField),
+        find.byType(ui.TextField),
         findsWidgets,
-        reason: '★★★ 点「登录」必须**能展开** —— 若失败 ⇒ 有人把"不自动展开"'
+        reason:
+            '★★★ 点「登录」必须**能展开** —— 若失败 ⇒ 有人把"不自动展开"'
             '改成了"不能展开" ⇒ 用户找不到地方登录（比原 bug 更严重）',
       );
     });
 
-    testWidgets('★★★ expired 状态时**仍然收起**（= 本次修复的目标）',
-        (tester) async {
+    testWidgets('★★★ expired 状态时**仍然收起**（= 本次修复的目标）', (tester) async {
       /*
        * ★ 目标状态的正向验证（用 override 让 expired 可达）：
        *   与另一个代理的判据① 同一个意思，但这里用 TextField 判（行为级）。
        */
-      await tester.pumpWidget(host(const ProviderLoginPanel(
-        providerId: 'cycani',
-        providerName: '次元城',
-        defaultOpen: false,
-        caps: Capabilities(loginRequired: true, loginSupported: true),
-        debugSessionStateOverride: SessionState.expired,
-      )));
+      await tester.pumpWidget(
+        host(
+          const ProviderLoginPanel(
+            providerId: 'cycani',
+            providerName: '次元城',
+            defaultOpen: false,
+            caps: Capabilities(loginRequired: true, loginSupported: true),
+            debugSessionStateOverride: SessionState.expired,
+          ),
+        ),
+      );
       await tester.pump();
-      claim(tester);
+      expect(tester.takeException(), isNull);
       await tester.pump(const Duration(milliseconds: 600));
-      claim(tester);
+      expect(tester.takeException(), isNull);
 
-      expect(buttonCount(tester), greaterThan(0), reason: '★ 自证：面板已渲染');
+      expect(buttonCount(), greaterThan(0), reason: '★ 自证：面板已渲染');
       expect(
-        find.byType(TextField),
+        find.byType(ui.TextField),
         findsNothing,
-        reason: '★★★ `expired` 时**不得**自动展开 —— 这正是用户报的问题'
+        reason:
+            '★★★ `expired` 时**不得**自动展开 —— 这正是用户报的问题'
             '（"明明不需要验证码就可以自动登录，还提示验证码"）。'
             '触发点应该是"内容需要"（点播失败那一刻），不是"会话状态"',
       );

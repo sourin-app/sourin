@@ -38,8 +38,11 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart' show KeyDownEvent, LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../tokens.dart';
+import '../theme/miuix_palette.dart';
+import '../widgets/miuix_controls.dart' as ui;
 import '../../design/icons/app_icons.dart';
 
 /// popover 的 id 常量 —— 开关与按钮用**同一份**字符串
@@ -118,6 +121,7 @@ class PopoverController extends ChangeNotifier {
   GlobalKey get layerKey => _layerKey;
 
   bool _refreshScheduled = false;
+  bool _geometryWatchScheduled = false;
   bool _disposed = false;
 
   /// 当前展开的按钮 id（null = 都没展开）
@@ -172,7 +176,10 @@ class PopoverController extends ChangeNotifier {
   /// 直接返回，一个字节都不量）。**不排帧、不重绘**。
   /// ```
   void watchAnchorGeometry() {
-    if (_disposed || _openId == null) return;
+    if (_disposed || _openId == null || _geometryWatchScheduled) return;
+    // Opening another panel before the pending callback runs must reuse the
+    // same watcher. Otherwise each switch adds a permanent callback chain.
+    _geometryWatchScheduled = true;
     /*
      * ⚠️ 用 addPostFrameCallback 而**不是** scheduleFrameCallback：
      *    后者会 `scheduleFrame()` ⇒ 每帧都排一帧 ⇒ 应用永远不进入 idle
@@ -182,6 +189,7 @@ class PopoverController extends ChangeNotifier {
      *    这里只搭「下一帧发生时的顺风车」：没有帧就不跑，也不去排帧。
      */
     SchedulerBinding.instance.addPostFrameCallback((_) {
+      _geometryWatchScheduled = false;
       if (_disposed || _openId == null) return;
       /*
        * 自己量一次（走 globalToLocal ⇒ 逐级 applyPaintTransform，
@@ -346,22 +354,16 @@ class PlayerPopoverSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return SizedBox(
       width: width,
-      padding: const EdgeInsets.symmetric(vertical: Sp.x1),
-      decoration: BoxDecoration(
-        color: const Color(0xF01A1A1A),
-        borderRadius: Radii.rSm,
-        border: Border.all(color: const Color(0x1FFFFFFF)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x66000000),
-            blurRadius: 16,
-            offset: Offset(0, 6),
-          ),
-        ],
+      child: miuix.MiuixTheme(
+        data: miuixThemeData(Brightness.dark),
+        child: miuix.MiuixCard(
+          cornerRadius: Radii.sm,
+          insideMargin: const EdgeInsets.symmetric(vertical: Sp.x1),
+          child: child,
+        ),
       ),
-      child: child,
     );
   }
 }
@@ -385,53 +387,56 @@ class PopoverRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      focusNode: focusNode,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: Sp.x3,
-            vertical: Sp.x2,
-          ),
-          child: Row(
-            children: [
-              // ★ 固定宽度的对勾槽：勾与不勾时文字**不左右跳**
-              SizedBox(
-                width: 18,
-                child: checked
-                    ? const Icon(
-                        AppIcons.check,
-                        size: 15,
-                        color: Color(0xFF32C7FF),
-                      )
-                    : null,
-              ),
-              const SizedBox(width: Sp.x1),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: onTap == null
-                        ? const Color(0xFF7A7A7A)
-                        : const Color(0xFFF2F2F2),
-                    fontSize: FontSizes.sm,
+    return MergeSemantics(
+      child: Semantics(
+        selected: checked,
+        child: miuix.MiuixPressable(
+          focusNode: focusNode,
+          onPressed: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Sp.x3,
+              vertical: Sp.x2,
+            ),
+            child: Row(
+              children: [
+                // ★ 固定宽度的对勾槽：勾与不勾时文字**不左右跳**
+                SizedBox(
+                  width: 18,
+                  child: checked
+                      ? const Icon(
+                          AppIcons.check,
+                          size: 15,
+                          color: Color(0xFF32C7FF),
+                        )
+                      : null,
+                ),
+                const SizedBox(width: Sp.x1),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: onTap == null
+                          ? const Color(0xFF7A7A7A)
+                          : const Color(0xFFF2F2F2),
+                      fontSize: FontSizes.sm,
+                    ),
                   ),
                 ),
-              ),
-              if (hint != null && hint!.isNotEmpty) ...[
-                const SizedBox(width: Sp.x2),
-                Text(
-                  hint!,
-                  style: const TextStyle(
-                    color: Color(0xFF8C8C8C),
-                    fontSize: FontSizes.cap,
+                if (hint != null && hint!.isNotEmpty) ...[
+                  const SizedBox(width: Sp.x2),
+                  Text(
+                    hint!,
+                    style: const TextStyle(
+                      color: Color(0xFF8C8C8C),
+                      fontSize: FontSizes.cap,
+                    ),
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -462,7 +467,7 @@ class PopoverDivider extends StatelessWidget {
   @override
   Widget build(BuildContext context) => const Padding(
     padding: EdgeInsets.symmetric(vertical: Sp.x1, horizontal: Sp.x2),
-    child: Divider(height: 1, color: Color(0x1FFFFFFF)),
+    child: ui.Divider(height: 1, color: Color(0x1FFFFFFF)),
   );
 }
 
@@ -834,12 +839,18 @@ class PopoverAnchorButtonState extends State<PopoverAnchorButton> {
       child: _PopoverAnchorProbe(
         controller: widget.controller,
         id: widget.id,
-        child: Tooltip(
-          message: widget.tooltip ?? '',
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _onTap,
-            child: widget.child,
+        child: Listener(
+          // Observe the press before nested button recognizers enter the
+          // player's double-tap arena. A delayed single tap must not toggle
+          // a panel that the same pointer's pending hover just opened.
+          onPointerDown: (_) => _openTimer?.cancel(),
+          child: ui.Tooltip(
+            message: widget.tooltip ?? '',
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _onTap,
+              child: widget.child,
+            ),
           ),
         ),
       ),

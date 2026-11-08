@@ -128,7 +128,7 @@ Widget _panel({
 
 Future<void> _tapTab(WidgetTester t, String label) async {
   await t.tap(find.descendant(
-    of: find.byType(SegmentedButton<DanmakuPanelTab>),
+    of: find.byKey(const ValueKey('danmaku-settings-tabs')),
     matching: find.text(label),
   ));
   await t.pumpAndSettle();
@@ -147,7 +147,7 @@ void main() {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
 
-      final seg = find.byType(SegmentedButton<DanmakuPanelTab>);
+      final seg = find.byKey(const ValueKey('danmaku-settings-tabs'));
       /*
        * ⚠️ 必须把 find.text 限定在 SegmentedButton **内部**：
        *    「显示」这个词同时是**页签名**和**区块标题**（`_sectionTitle('显示')`），
@@ -456,7 +456,7 @@ void main() {
       await t.pumpWidget(_host(_panel(biliCount: 1200, onOpenBili: () {})));
       await t.pumpAndSettle();
 
-      final seg = find.byType(SegmentedButton<DanmakuPanelTab>);
+      final seg = find.byKey(const ValueKey('danmaku-settings-tabs'));
       expect(seg, findsOneWidget);
       for (final label in <String>['显示', '弹幕来源', '高级']) {
         expect(

@@ -303,7 +303,7 @@ void main() {
       await t.pumpAndSettle();
       // 切到「高级」页签，那里有 dan-api 的测试按钮
       await t.tap(find.descendant(
-        of: find.byType(SegmentedButton<DanmakuPanelTab>),
+        of: find.byKey(const ValueKey('danmaku-settings-tabs')),
         matching: find.text('高级'),
       ));
       await t.pumpAndSettle();

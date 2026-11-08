@@ -96,6 +96,7 @@
 import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
+import 'miuix_controls.dart' as ui;
 // ⚠️ `LogicalKeyboardKey` / `KeyDownEvent` 在 services 里，
 //    `material_ui` **不**转出它们（键盘事件是引擎层概念，不属于 UI 层）
 import 'package:flutter/services.dart';
@@ -872,7 +873,7 @@ class _EpisodeChipState extends State<_EpisodeChip> {
           : colors.secondary.withValues(alpha: 0.55),
       borderRadius: radius,
       clipBehavior: Clip.antiAlias,
-      child: InkWell(
+      child: ui.InkWell(
         focusNode: widget.focusNode,
         /*
          * ★ TV 焦点态（2026-09-24）
@@ -1031,7 +1032,7 @@ class _MoreButtonState extends State<_MoreButton> {
           )
         : body;
 
-    return Tooltip(message: '展开全部 ${widget.count} 集', child: ringed);
+    return ui.Tooltip(message: '展开全部 ${widget.count} 集', child: ringed);
   }
 }
 
@@ -1506,7 +1507,7 @@ class LineChip extends StatelessWidget {
     final colors = AppPalette.of(context);
     return Material(
       type: MaterialType.transparency,
-      child: ChoiceChip(
+      child: ui.ChoiceChip(
         label: Text(
           flag,
           overflow: TextOverflow.ellipsis,
@@ -2513,7 +2514,7 @@ class _EpisodeSearchField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = AppPalette.of(context);
-    return TextField(
+    return ui.TextField(
       controller: controller,
       onChanged: onChanged,
       style: TextStyle(fontSize: FontSizes.sm, color: colors.foreground),
@@ -2528,7 +2529,7 @@ class _EpisodeSearchField extends StatelessWidget {
         prefixIconConstraints: const BoxConstraints(minWidth: 32),
         suffixIcon: controller.text.isEmpty
             ? null
-            : IconButton(
+            : ui.IconButton(
                 icon: const Icon(AppIcons.clear, size: 15),
                 tooltip: '清除',
                 onPressed: onClear,
@@ -2647,7 +2648,7 @@ class _SheetIconButtonState extends State<_SheetIconButton> {
      * ★ 去 Material（真 A 类：完全透明，只为 InkWell 提供绘制面）
      *
      * ⚠️ 我第一次改错了：把 Material 换成 AppInkWell，但**保留了里面的 InkWell**，
-     *    变成 AppInkWell(child: InkWell(...)) —— 两层手势、两层焦点，
+     *    变成 AppInkWell(child: ui.InkWell(...)) —— 两层手势、两层焦点，
      *    而且外层没接 onTap ⇒ 点上去没反应。
      *    ⇒ 正确做法是 **InkWell 整个换成 AppInkWell**，不是在外面再包一层。
      */
@@ -2677,6 +2678,6 @@ class _SheetIconButtonState extends State<_SheetIconButton> {
           )
         : body;
 
-    return Tooltip(message: widget.tooltip, child: ringed);
+    return ui.Tooltip(message: widget.tooltip, child: ringed);
   }
 }

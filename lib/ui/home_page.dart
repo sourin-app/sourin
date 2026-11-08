@@ -45,12 +45,15 @@
 // ```
 
 import 'settings/source_discovery_page.dart';
+
 import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
+
+import 'widgets/miuix_controls.dart' as ui;
 
 import '../core/disk_cache.dart';
 import '../core/ffi.dart' show SourinCore, userErrorText;
@@ -62,7 +65,6 @@ import 'tokens.dart';
 import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
 import 'widgets/press_feedback.dart';
-import 'widgets/motion_prefs.dart';
 import 'widgets/my_shelf.dart';
 import 'widgets/source_bar.dart';
 import 'widgets/sourin_scroll_behavior.dart';
@@ -288,6 +290,7 @@ const Duration? kHomeCacheTtl = null;
 /// ⚠️ 有意的代价：这 30 秒内**不会**发现源那边新上的内容。
 ///    用户手动下拉刷新永远是 `force: true` ⇒ **不受本窗口影响**。
 const Duration kHomeCacheFreshFor = Duration(seconds: 30);
+
 /// 一个源的首页列表快照（分区骨架 + 各区块 items）
 ///
 /// ⚠️ `groups` / `items` 里存的是**引用**，靠的是"只整体替换、从不原地改"
@@ -330,15 +333,15 @@ class HomeSnapshot {
   /// at          → Owner 要的"检测时间对比"：够新就不发请求，旧了才异步替换
   /// ```
   Map<String, dynamic> toJson() => <String, dynamic>{
-        'fingerprint': fingerprint,
-        'at': at.millisecondsSinceEpoch,
-        'groups': [for (final g in groups) g.toJson()],
-        // ⚠️ items 的键是 'provider::sectionId' —— 原样存（它就是 _sectionItems 的键）
-        'items': <String, dynamic>{
-          for (final e in items.entries)
-            e.key: [for (final it in e.value) it.toJson()],
-        },
-      };
+    'fingerprint': fingerprint,
+    'at': at.millisecondsSinceEpoch,
+    'groups': [for (final g in groups) g.toJson()],
+    // ⚠️ items 的键是 'provider::sectionId' —— 原样存（它就是 _sectionItems 的键）
+    'items': <String, dynamic>{
+      for (final e in items.entries)
+        e.key: [for (final it in e.value) it.toJson()],
+    },
+  };
 
   /// 反序列化 —— 与 [toJson] 逐键对称
   ///
@@ -361,7 +364,8 @@ class HomeSnapshot {
           final list = e.value;
           if (list is! List) continue;
           items[e.key.toString()] = <MediaItem>[
-            for (final it in list) MediaItem.fromJson(jmapOrNull(it) ?? const {}),
+            for (final it in list)
+              MediaItem.fromJson(jmapOrNull(it) ?? const {}),
           ];
         }
       }
@@ -699,75 +703,9 @@ const String kTvboxAggChannelsKey = 'tvbox_agg_channels';
 ///    命令自带聚合源 id，Dart 侧不传 `provider`（见下面的契约说明）。
 const String kTvboxAggregateId = 'tvbox_agg';
 
-// ═══════════════════════════════════════════════════════════════════════
-//  ★★★ R2-#4（2026-10-27 Owner 实测）：渠道条的**液态玻璃**
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # Owner 原话（逐字）
-// ```text
-// > 4.二级横向渠道条应该还是液态玻璃
-// ```
-//
-// # 落点（Lead 侦查 + 我自己复核过一遍，结论一致）
-// ```text
-// `SourinHorizontalRail`（`widgets/sourin_scroll_behavior.dart:43`）是个**纯手势包装**
-//   —— `grep -c "Glass"` = 0，它不画任何材质。
-// ⇒ "看起来不是玻璃"的落点**不在 rail**，而在渠道条**自己那一层**：
-//   原实现是裸 `ActionChip`（Material 默认芯片）直接压在**首页底色**上，
-//   既没有玻璃材质、也没有外层玻璃容器。
-//   ★ 而当时源码里写着"与 source_bar 同一套意图" —— 实际上只借了**圆角**，
-//     没借**材质**（那句注释本身就是这条缺陷的成因：写得比做得多）。
-// ```
-// ★ 对照 `lib/ui/widgets/source_bar.dart:216`：源条的形状是
-//   `Center > GlassContainer(superellipse 999) > 44 高 > 可横滑 pill 列表`
-//   —— **外层那一个玻璃容器承担材质**，里面 25 个 pill 全是透明的
-//   （`_SourcePill` 只有选中项"更亮一层"的 `--surface-4` 底，**不是**玻璃）。
-//
-// # 为什么这里也做成"外层承担材质"（而不是给每个药丸上玻璃）
-// ```text
-// ① 与 source_bar / my_shelf 的**同一形状**：Owner 说的是"应该**还是**液态玻璃"
-//    —— "还是" = 与它旁边那条源条同款。给每个药丸各套一块玻璃 = N 块独立玻璃，
-//    正是 source_bar 注释里记着"连续踩两次"的那个错（"看起来不像时先怀疑结构"）。
-// ② 与 N7 裁定一致：**材质只落一层**，不许在外面再套（重复模糊层，旧13 结论）。
-//    这里 1 个玻璃容器 = 1 层模糊；内层药丸**不走** `GlassContainer`。
-// ```
-//
-// # ⚠️ 与 `SourinHorizontalRail` 的关系（本卡硬约束 3）
-// ```text
-// rail 是**全仓共用**的手势包装（my_shelf 三处轨道也用）⇒ **一个字节都不改它**。
-// 玻璃只加在本区块自己的视觉层：`SourinHorizontalRail > GlassContainer > ListView`。
-// 顺序是 **rail 在外、玻璃在内** —— rail 只管手势（dragDevices/scrollbars），
-// 玻璃只管材质，两者互不干涉。
-// ```
-const LiquidRoundedSuperellipse kAggChannelRailGlassShape =
-    LiquidRoundedSuperellipse(borderRadius: 999);
-
-/// 门禁注入点：强制**跳过**渠道条的玻璃层（**生产恒 false**）
-///
-/// # 与既有三处同一条纪律
-/// ```text
-/// `debugSkipGlassShell` （app_dialog_shell.dart:839）
-/// `debugSkipGlassDialog`（app_glass_dialog.dart）
-/// `debugSkipGlassMenu`  （app_menu.dart:150）
-/// ⇒ 每个外壳/区块一个**独立**开关，互不影响
-///   （混用一个会让对照实验互相污染 —— 那三处的注释都写了这条）。
-/// ```
-/// ★ 为什么必须有：逐像素门禁要"挂玻璃"与"不挂玻璃"两张图。
-///   若靠**改产品代码**造对照，那对照本身就在改产品（旧批踩过"忘了回滚"）。
+/// Historical probe switch; production channel rails always use Miuix cards.
 @visibleForTesting
 bool debugSkipGlassAggChannelRail = false;
-
-/// 这一次要不要跳过渠道条的玻璃
-///
-/// 判据与既有三处**逐字同形**：
-/// ```text
-/// ① 测量仪器（生产恒 false）
-/// ② `MediaQuery.disableAnimations` —— 用户已声明减少动效/效果
-/// ```
-/// ⚠️ 旧13 的取舍（reduced-motion 档不挂玻璃）在这里照样成立：
-///    省的是 raster 成本，代价是**可感知的** —— 逐像素对照见本卡门禁。
-bool _skipGlassAggChannelRail(BuildContext context) =>
-    debugSkipGlassAggChannelRail || MotionPrefs.reduce(context);
 
 /// 一个聚合**渠道**（TVBox 子站）
 ///
@@ -861,13 +799,13 @@ class AggChannelHome {
   final List<Section> sections;
 
   static AggChannelHome fromJson(Map<String, dynamic> j) => AggChannelHome(
-        ok: j['ok'] != false,
-        channelId: '${j['channelId'] ?? ''}',
-        channelName: '${j['channelName'] ?? ''}',
-        // ★ 复用现成的 `Section.fromJson` —— 不另写一套映射
-        //   （另写必然与线上报文漂移，见 models.dart 里 note/subtitle 那个静默 bug）
-        sections: jlist<Section>(j['sections'], Section.fromJson),
-      );
+    ok: j['ok'] != false,
+    channelId: '${j['channelId'] ?? ''}',
+    channelName: '${j['channelName'] ?? ''}',
+    // ★ 复用现成的 `Section.fromJson` —— 不另写一套映射
+    //   （另写必然与线上报文漂移，见 models.dart 里 note/subtitle 那个静默 bug）
+    sections: jlist<Section>(j['sections'], Section.fromJson),
+  );
 }
 
 /// 渠道清单与按渠道取数的**真实实现**（不经门禁 seam）
@@ -929,7 +867,8 @@ class TvboxAggChannelApi {
 //    不经 seam —— 那是"命令名/参数名/返回形状对得上"的判据。
 typedef AggChannelsFetcher = Future<AggChannelsPayload> Function();
 typedef AggChannelHomeFetcher = Future<AggChannelHome> Function(
-    String channelId);
+  String channelId,
+);
 
 /// 门禁注入点（**生产恒 null**）
 @visibleForTesting
@@ -997,15 +936,12 @@ void debugClearAggChannelReadouts() {
 /// ★ 三件事只有它有读数：① 渠道条真的画了（渠道数 > 0）② 当前是哪个渠道
 ///   ③ 该渠道的内容区块有几个（= 二级内容真的换了，不是只换了个高亮）。
 final List<({int channels, String current, int sections})>
-    debugHomeAggChannelRenders =
-    <({int channels, String current, int sections})>[];
+debugHomeAggChannelRenders = <({int channels, String current, int sections})>[];
 
 /// 最近一次聚合渠道条渲染读数（`null` = 本次会话还没渲染过）
 ({int channels, String current, int sections})?
-    get debugHomeAggChannelRenderLast =>
-        debugHomeAggChannelRenders.isEmpty
-            ? null
-            : debugHomeAggChannelRenders.last;
+get debugHomeAggChannelRenderLast =>
+    debugHomeAggChannelRenders.isEmpty ? null : debugHomeAggChannelRenders.last;
 
 /// ★★★ N9 探针：渠道条的**选择记录**（用户/探针点了哪个渠道）
 ///
@@ -1050,11 +986,11 @@ class HomePage extends StatefulWidget {
   /// 探出来的**（见 `HomePageState._probeLiveStrip`），
   /// ⇒ 让同一个 provider 原样带上去，回调两侧才指向同一个源。
   final void Function(String provider, String channelId, String name)?
-      onOpenLive;
+  onOpenLive;
 
   /// 「查看全部」→ 浏览页
   final void Function(String provider, String sectionTitle, SectionSource src)?
-      onBrowse;
+  onBrowse;
 
   /// 点「我的」卡片 → 进播放器（续播）
   ///
@@ -1066,7 +1002,8 @@ class HomePage extends StatefulWidget {
     String title,
     String? cover,
     String? episodeId,
-  )? onShelfPlay;
+  )?
+  onShelfPlay;
 
   /// ★★ task-65：「我的」版块的「查看更多」→ 切到追更页并激活对应 tab
   ///
@@ -1157,6 +1094,7 @@ class HomePageState extends State<HomePage> {
   /// 但**读 `_groups` / `_sectionItems` 去组装**这个动作在已销毁的 State 上
   /// 是没有意义的 —— 显式记一个 flag 比靠 `mounted` 的边界语义更清楚。
   bool _disposed = false;
+
   /// 当前显示的源
   ///
   /// ══════════════════════════════════════════════════════════════════
@@ -1327,8 +1265,10 @@ class HomePageState extends State<HomePage> {
     debugHomeLiveStripPassed
       ..clear()
       ..addAll(_liveStripGate(provider).map((c) => '$provider::${c.id}'));
-    debugPrint('[HOME] 直播条: 闸前候选=$candidates 闸后渲染=$rendered'
-        '（源=$provider）');
+    debugPrint(
+      '[HOME] 直播条: 闸前候选=$candidates 闸后渲染=$rendered'
+      '（源=$provider）',
+    );
   }
 
   /// 探测当前源的直播条频道（**只为过闸**，结果进探针缓存）
@@ -1361,9 +1301,11 @@ class HomePageState extends State<HomePage> {
       final n = await _liveProbe.probe(groups);
       // ★ 过期批次直接丢（用户可能已切源）
       if (!mounted || gen != _liveProbeGen) return;
-      debugPrint('[HOME] 直播条探测完成: 新探到 $n 个'
-          '（源=$provider）⇒ 可播=${_liveStripGate(provider).length}'
-          '/${kLivePreview.length}');
+      debugPrint(
+        '[HOME] 直播条探测完成: 新探到 $n 个'
+        '（源=$provider）⇒ 可播=${_liveStripGate(provider).length}'
+        '/${kLivePreview.length}',
+      );
       setState(() {});
     } catch (e) {
       // 探测整体失败不影响首页其它内容（错误隔离，同 _loadSection）
@@ -1404,9 +1346,11 @@ class HomePageState extends State<HomePage> {
     final hasCustom = _groups
         .where((g) => g.provider == provider)
         .expand((g) => g.sections)
-        .any((s) =>
-            s.source.type == 'custom' &&
-            !_SectionBlock._isAggChannelsSection(s));
+        .any(
+          (s) =>
+              s.source.type == 'custom' &&
+              !_SectionBlock._isAggChannelsSection(s),
+        );
     if (!hasCustom) return;
     unawaited(_probeLiveStrip(provider));
   }
@@ -1418,7 +1362,7 @@ class HomePageState extends State<HomePage> {
   @visibleForTesting
   void debugSetLiveProbeFetch(
     Future<List<StreamCandidate>> Function(String provider, String channelId)
-        fetch,
+    fetch,
   ) {
     _liveProbe = LiveAvailabilityProbe(fetch: fetch);
   }
@@ -1440,7 +1384,7 @@ class HomePageState extends State<HomePage> {
   /// ⚠️ 只读不写；`@visibleForTesting` 只影响 lint 提示，不影响行为。
   @visibleForTesting
   ({String source, int groups, int sections, int cards, bool loading})
-      get debugHomeReadout {
+  get debugHomeReadout {
     var sections = 0;
     var cards = 0;
     for (final g in _groups) {
@@ -1472,7 +1416,8 @@ class HomePageState extends State<HomePage> {
   /// 探针用它把"装完源之后可能存在的空快照"补实，然后再开始测量 ——
   /// ⚠️ 走的是产品路径，不是探针自己造的请求。
   @visibleForTesting
-  Future<void> debugEnsureSections(String provider) => _ensureSections(provider);
+  Future<void> debugEnsureSections(String provider) =>
+      _ensureSections(provider);
   @override
   void initState() {
     super.initState();
@@ -1534,7 +1479,10 @@ class HomePageState extends State<HomePage> {
   ///     设置页逻辑），最容易漏掉第三者 ⇒ 设计判据时要把**所有调用点 grep 全**。
   ///
   /// ⚠️ 它**只影响 debugPrint**，零行为影响。
-  Future<void> loadAll({bool force = false, String reason = 'unspecified'}) async {
+  Future<void> loadAll({
+    bool force = false,
+    String reason = 'unspecified',
+  }) async {
     debugPrint('[HOME] loadAll 开始 (force=$force, reason=$reason)');
     /*
      * ★★ 探针记录（task-41）—— 让 `reason` 变成**可运行时读取**的计数
@@ -1595,11 +1543,15 @@ class HomePageState extends State<HomePage> {
        * 当前源却还是它」的错配（那正是空态与解析打架的成因）。
        */
       final homeSources = homeSourceList(enabled);
-      debugPrint('[HOME] 已启用 → ${enabled.length} 个: '
-          '${enabled.take(5).map((p) => p.id).join(", ")}');
-      debugPrint('[HOME] 其中首页可用 → ${homeSources.length} 个'
-          '（排除纯直播源 ${enabled.length - homeSources.length} 个：'
-          '${enabled.where((p) => !providesHomeContent(p)).map((p) => p.id).join(", ")}）');
+      debugPrint(
+        '[HOME] 已启用 → ${enabled.length} 个: '
+        '${enabled.take(5).map((p) => p.id).join(", ")}',
+      );
+      debugPrint(
+        '[HOME] 其中首页可用 → ${homeSources.length} 个'
+        '（排除纯直播源 ${enabled.length - homeSources.length} 个：'
+        '${enabled.where((p) => !providesHomeContent(p)).map((p) => p.id).join(", ")}）',
+      );
 
       /*
        * 当前源的解析顺序（与原版 `store.activeHomeSource` 等价）：
@@ -1673,8 +1625,10 @@ class HomePageState extends State<HomePage> {
       );
       final showSkeleton = _groups.isEmpty && cachedTop == null;
       if (cachedTop != null && _groups.isEmpty) {
-        debugPrint('[HOME] 整页刷新前命中缓存（源=$current）：'
-            '分区=${cachedTop.groups.length} 卡片=${cachedTop.cardCount} ⇒ 先画它');
+        debugPrint(
+          '[HOME] 整页刷新前命中缓存（源=$current）：'
+          '分区=${cachedTop.groups.length} 卡片=${cachedTop.cardCount} ⇒ 先画它',
+        );
         if (mounted) {
           setState(() {
             /*
@@ -1694,8 +1648,10 @@ class HomePageState extends State<HomePage> {
       final t0 = DateTime.now();
       debugPrint('[HOME] 调 getHome()…（25 个源，可能要几秒）');
       final next = await SourinApi.getHome();
-      debugPrint('[HOME] getHome 返回: ${next.length} 个分组，'
-          '耗时 ${DateTime.now().difference(t0).inMilliseconds}ms');
+      debugPrint(
+        '[HOME] getHome 返回: ${next.length} 个分组，'
+        '耗时 ${DateTime.now().difference(t0).inMilliseconds}ms',
+      );
 
       /*
        * ③ 分区没变就不换引用
@@ -1744,8 +1700,9 @@ class HomePageState extends State<HomePage> {
                * ⚠️ 用 id 串比而不是「个数相同」：区块**换了一个**（数量不变）
                *    同样是骨架变了，那种情况必须换引用（否则画的是旧标题）。
                */
-              final newSubset =
-                  next.where((g) => g.provider == current).toList();
+              final newSubset = next
+                  .where((g) => g.provider == current)
+                  .toList();
               final oldIds = _groups
                   .expand((g) => g.sections.map((s) => s.id))
                   .join(',');
@@ -1754,8 +1711,10 @@ class HomePageState extends State<HomePage> {
                   .join(',');
               if (newSubset.isNotEmpty && oldIds == newIds) {
                 keepSubset = true;
-                debugPrint('[HOME] 骨架变了但当前源（$current）的分区没变'
-                    ' ⇒ 保留子集，只刷内容');
+                debugPrint(
+                  '[HOME] 骨架变了但当前源（$current）的分区没变'
+                  ' ⇒ 保留子集，只刷内容',
+                );
               } else {
                 _groups = newSubset;
                 _fingerprint = fp;
@@ -1794,12 +1753,15 @@ class HomePageState extends State<HomePage> {
         fingerprint: _fingerprint,
         now: DateTime.now(),
       );
-      final recentlyFresh = recent != null &&
+      final recentlyFresh =
+          recent != null &&
           DateTime.now().difference(recent.at) <= kHomeCacheFreshFor;
       if (recentlyFresh) {
-        debugPrint('[HOME] 快照足够新（源=$current，存了 '
-            '${DateTime.now().difference(recent.at).inSeconds}s）'
-            ' ⇒ 这一轮不发区块请求');
+        debugPrint(
+          '[HOME] 快照足够新（源=$current，存了 '
+          '${DateTime.now().difference(recent.at).inSeconds}s）'
+          ' ⇒ 这一轮不发区块请求',
+        );
       }
 
       final pending = <Future<void>>[];
@@ -1808,8 +1770,9 @@ class HomePageState extends State<HomePage> {
         for (final s in g.sections) {
           final key = '${g.provider}::${s.id}';
           final has = (_sectionItems[key]?.isNotEmpty) ?? false;
-          final tried =
-              (_loadedBy[g.provider] ?? const <String>{}).contains(s.id);
+          final tried = (_loadedBy[g.provider] ?? const <String>{}).contains(
+            s.id,
+          );
           /*
            * ⚠️ tried 参与判据是**必须**的：没有它，一个「拉过但确实是空」的区块
            *    会在**每一帧**都被算成「没拉过」⇒ 无限重拉（见 _loadedBy 的说明）。
@@ -1819,9 +1782,11 @@ class HomePageState extends State<HomePage> {
           }
         }
       }
-      debugPrint('[HOME] 待加载区块 ${pending.length} 个'
-          '（当前源=$current）'
-          '${keepSubset ? "（骨架未变 ⇒ 只刷内容）" : ""}');
+      debugPrint(
+        '[HOME] 待加载区块 ${pending.length} 个'
+        '（当前源=$current）'
+        '${keepSubset ? "（骨架未变 ⇒ 只刷内容）" : ""}',
+      );
       await Future.wait(pending);
       debugPrint('[HOME] 全部区块加载完成');
 
@@ -1900,10 +1865,12 @@ class HomePageState extends State<HomePage> {
        * `_enabled` = M 个。报 N 会与源条上实际药丸数**对不上**。
        * N 没有丢 —— 上面那两行仍然完整打印。
        */
-      debugPrint('[HOME] 渲染完成: 启用源=${_enabled.length} 个'
-          '（首页可用，已排除纯直播源）'
-          '（当前=$_currentSource）'
-          ' 分区=$sections 卡片=$cards 错误=${_error ?? "无"}');
+      debugPrint(
+        '[HOME] 渲染完成: 启用源=${_enabled.length} 个'
+        '（首页可用，已排除纯直播源）'
+        '（当前=$_currentSource）'
+        ' 分区=$sections 卡片=$cards 错误=${_error ?? "无"}',
+      );
 
       /*
        * ★★★ task-6：首页直播条的**可用性探测**（Owner 第 8 条）
@@ -2093,15 +2060,18 @@ class HomePageState extends State<HomePage> {
        * 于是日志里出现"补拉 1 个区块"而实际零请求 ⇒ 读数与日志对不上。
        * ★ srcl 源的「正在直播」正是 custom ⇒ 这条不加，切到 srcl 每次都多一行假日志。
        */
-      final fetchable = (s.source.isCategory && s.source.categoryId != null) ||
+      final fetchable =
+          (s.source.isCategory && s.source.categoryId != null) ||
           (s.source.isRank && s.source.rankId != null);
       if (fetchable && !_hasItems(provider, s)) {
         pending.add(_loadSection(provider, s.id, s.source));
       }
     }
     if (pending.isNotEmpty) {
-      debugPrint('[HOME] 按需补拉（源=$provider）：${pending.length} 个区块'
-          '（其余 ${g.sections.length - pending.length} 个已有数据 ⇒ 零请求）');
+      debugPrint(
+        '[HOME] 按需补拉（源=$provider）：${pending.length} 个区块'
+        '（其余 ${g.sections.length - pending.length} 个已有数据 ⇒ 零请求）',
+      );
     }
     await Future.wait(pending);
     /*
@@ -2183,9 +2153,11 @@ class HomePageState extends State<HomePage> {
        *    （同一条：`_restoreScroll` 也是末尾那段，命中路径原本也漏了。）
        */
       UiPrefs.setHomeSource(id);
-      debugPrint('[HOME] 缓存命中（源=$id）：分区=${cached.groups.length} '
-          '区块=${cached.items.length} 卡片=${cached.cardCount} '
-          '（存了 ${DateTime.now().difference(cached.at).inSeconds}s）');
+      debugPrint(
+        '[HOME] 缓存命中（源=$id）：分区=${cached.groups.length} '
+        '区块=${cached.items.length} 卡片=${cached.cardCount} '
+        '（存了 ${DateTime.now().difference(cached.at).inSeconds}s）',
+      );
       /*
        * ★★ 后台刷新：这就是 stale-while-revalidate 的 revalidate 那一半
        *
@@ -2212,8 +2184,10 @@ class HomePageState extends State<HomePage> {
         if (stale) {
           await _refreshSource(id, reason: 'cache-stale');
         } else {
-          debugPrint('[HOME] 快照够新（源=$id，存了 ${age.inSeconds}s ≤ '
-              '${kHomeCacheFreshFor.inSeconds}s）⇒ 跳过后台刷新');
+          debugPrint(
+            '[HOME] 快照够新（源=$id，存了 ${age.inSeconds}s ≤ '
+            '${kHomeCacheFreshFor.inSeconds}s）⇒ 跳过后台刷新',
+          );
         }
       }());
       _maybeProbeLiveStrip();
@@ -2310,8 +2284,10 @@ class HomePageState extends State<HomePage> {
     // ★ 用户可能在刷新期间又切走了 ⇒ 这份快照仍然值得存（它就是这个源的），
     //   但**不要再 setState**（当前显示的是别的源，刷上去就是串台）。
     _cacheSource(provider);
-    debugPrint("[HOME] 后台刷新完成（源=$provider）："
-        "耗时 ${DateTime.now().difference(t0).inMilliseconds}ms");
+    debugPrint(
+      "[HOME] 后台刷新完成（源=$provider）："
+      "耗时 ${DateTime.now().difference(t0).inMilliseconds}ms",
+    );
   }
 
   /// 把 provider 当前的 _groups + _sectionItems 存成快照（LRU + TTL）
@@ -2340,9 +2316,11 @@ class HomePageState extends State<HomePage> {
         at: DateTime.now(),
       ),
     );
-    debugPrint("[HOME] 缓存写入（源=$provider）：分区=${groups.length} "
-        "区块=${mine.length} 驻留=${homeListCache.length}/"
-        "${homeListCache.maxEntries}");
+    debugPrint(
+      "[HOME] 缓存写入（源=$provider）：分区=${groups.length} "
+      "区块=${mine.length} 驻留=${homeListCache.length}/"
+      "${homeListCache.maxEntries}",
+    );
   }
 
   /// `srcl:abc` → (provider, id)
@@ -2382,6 +2360,7 @@ class HomePageState extends State<HomePage> {
     el.visitChildElements(walk);
     return n;
   }
+
   /// 空态：文案由顶层纯函数 [emptyStateText] 决定（便于单测直接覆盖）
   Widget _buildEmptyState() {
     final (title, desc, noSourceAtAll) = emptyStateText(
@@ -2413,7 +2392,8 @@ class HomePageState extends State<HomePage> {
     if (WebHomeController.instance.showWebHome) {
       return WebHomePage(
         key: ValueKey<String>(
-            '${WebHomeController.instance.activeId}:${WebHomeController.instance.html.hashCode}'),
+          '${WebHomeController.instance.activeId}:${WebHomeController.instance.html.hashCode}',
+        ),
         onOpenDetail: widget.onOpenDetail,
         onOpenLive: widget.onOpenLive,
         onBackToNative: () =>
@@ -2457,7 +2437,7 @@ class HomePageState extends State<HomePage> {
      *    顶部内边距放进第一个 sliver、底部放进最后一个。
      *    直接丢掉的话顶部会贴着标题栏、底部会被悬浮底栏盖住。
      */
-    return RefreshIndicator(
+    return ui.RefreshIndicator(
       // 用户手动刷新 → force 全拉（原版的刷新语义）
       onRefresh: () => loadAll(force: true, reason: 'user-refresh'),
       /*
@@ -2504,19 +2484,19 @@ class HomePageState extends State<HomePage> {
         children: [
           Positioned.fill(
             child: Padding(
-        padding: Layout.horizontalInsetOf(context),
-        child: CustomScrollView(
-        clipBehavior: Clip.antiAlias,
-        controller: _scrollController,
-        slivers: [
-          // ── 顶部内边距（原来是 ListView.padding.top）──
-          const SliverToBoxAdapter(
-            child: SizedBox(height: AppMetrics.homeTopPadding),
-          ),
+              padding: Layout.horizontalInsetOf(context),
+              child: CustomScrollView(
+                clipBehavior: Clip.antiAlias,
+                controller: _scrollController,
+                slivers: [
+                  // ── 顶部内边距（原来是 ListView.padding.top）──
+                  const SliverToBoxAdapter(
+                    child: SizedBox(height: AppMetrics.homeTopPadding),
+                  ),
 
-          // ── 错误条 ──
-          if (_error != null)
-            /*
+                  // ── 错误条 ──
+                  if (_error != null)
+                    /*
              * ★ 内容带：这里**不再**自己给横向内边距。
              *
              * 原版 `HomeView.vue:375` 的 `div.alert` 是 `div.container`（`:348`）的
@@ -2528,9 +2508,9 @@ class HomePageState extends State<HomePage> {
              *    不能动 —— 那是原版 `.alert { padding: var(--sp-3) var(--sp-4) }
              *    （`HomeView.vue:531`）里的卡片内边距，与容器内边距是两回事。
              */
-            SliverToBoxAdapter(child: _ErrorBar(message: _error!)),
+                    SliverToBoxAdapter(child: _ErrorBar(message: _error!)),
 
-          /*
+                  /*
            * ★★★ 「我的」三合一版块（收藏 / 追更 / 历史）
            *
            * 原版注释解释了为什么合成一个版块：
@@ -2543,24 +2523,29 @@ class HomePageState extends State<HomePage> {
            *    > 它管的是**下面的内容区显示哪个源**，
            *    > 所以「我的」在前、源切换条在后。
            */
-          SliverToBoxAdapter(child: SourceDiscoveryEntry(noticeOnly: true,
-            onSourcesChanged: () => loadAll(force: true, reason: 'github-source-enabled'))),
-          SliverToBoxAdapter(
-            child: MyShelf(
-              key: _shelfKey,
-              compact: true,
-              isTv: widget.isTv,
-              onPlay: widget.onShelfPlay,
-              onOpenDetail: widget.onOpenDetail,
-              // ★ task-65：「查看更多」→ 交给 shell 切 tab
-              onSeeAll: widget.onSeeAllShelf,
-            ),
-          ),
-          const SliverToBoxAdapter(child: SizedBox(height: Sp.x6)),
+                  SliverToBoxAdapter(
+                    child: SourceDiscoveryEntry(
+                      noticeOnly: true,
+                      onSourcesChanged: () =>
+                          loadAll(force: true, reason: 'github-source-enabled'),
+                    ),
+                  ),
+                  SliverToBoxAdapter(
+                    child: MyShelf(
+                      key: _shelfKey,
+                      compact: true,
+                      isTv: widget.isTv,
+                      onPlay: widget.onShelfPlay,
+                      onOpenDetail: widget.onOpenDetail,
+                      // ★ task-65：「查看更多」→ 交给 shell 切 tab
+                      onSeeAll: widget.onSeeAllShelf,
+                    ),
+                  ),
+                  const SliverToBoxAdapter(child: SizedBox(height: Sp.x6)),
 
-          // ── ★ 多源切换条（吸附在顶部）──
-          SliverPersistentHeader(
-            /*
+                  // ── ★ 多源切换条（吸附在顶部）──
+                  SliverPersistentHeader(
+                    /*
              * `pinned: true` 才是"吸附"
              *
              * ```text
@@ -2568,34 +2553,34 @@ class HomePageState extends State<HomePage> {
              * pinned: false  → 滚上去就跟着滚走（floating 也只管收缩）
              * ```
              */
-            pinned: true,
-            delegate: _StickySourceBar(
-              // ★ 与 `SourceBar` 用**同一个**过滤结果算 extent ——
-              //   两者必须同步（详见 `extentFor` 的长注释）。
-              //
-              // ⚠️ 2026-10-31 Owner 改判：**单源也占位**。
-              //   旧注释写的是"源少于 2 个时那条返回 `SizedBox.shrink()`，
-              //   此刻吸附条必须完全不占位"—— 那是**改判前**的语义，
-              //   而且它就是**本次漏改的帮凶**：正因为这里写着"不占位"，
-              //   删 source_bar 早退时没人想到本文件还有第二道门槛。
-              //   现在的口径：**只有一个源也照样给它 `_extent`**
-              //   （Owner 逐字：「首页就算只有一个源也要显示那个液态选择的」）；
-              //   点击重选零副作用由 `_switchSource` 的同源守卫保证，
-              //   与 `source_bar.dart` 同源。
-              visibleCount: visibleSourceList(_enabled).length,
-              // ⚠️ 必须传**同一个 GlobalKey** 给 SourceBar
-              //    （见 `_sourceBarKey` 的说明：不用 key 的话
-              //     delegate 每次重建都会**丢 ScrollController 状态**）
-              child: SourceBar(
-                key: sourceBarKey,
-                sources: _enabled,
-                current: _currentSource,
-                onSelect: _switchSource,
-              ),
-            ),
-          ),
+                    pinned: true,
+                    delegate: _StickySourceBar(
+                      // ★ 与 `SourceBar` 用**同一个**过滤结果算 extent ——
+                      //   两者必须同步（详见 `extentFor` 的长注释）。
+                      //
+                      // ⚠️ 2026-10-31 Owner 改判：**单源也占位**。
+                      //   旧注释写的是"源少于 2 个时那条返回 `SizedBox.shrink()`，
+                      //   此刻吸附条必须完全不占位"—— 那是**改判前**的语义，
+                      //   而且它就是**本次漏改的帮凶**：正因为这里写着"不占位"，
+                      //   删 source_bar 早退时没人想到本文件还有第二道门槛。
+                      //   现在的口径：**只有一个源也照样给它 `_extent`**
+                      //   （Owner 逐字：「首页就算只有一个源也要显示那个液态选择的」）；
+                      //   点击重选零副作用由 `_switchSource` 的同源守卫保证，
+                      //   与 `source_bar.dart` 同源。
+                      visibleCount: visibleSourceList(_enabled).length,
+                      // ⚠️ 必须传**同一个 GlobalKey** 给 SourceBar
+                      //    （见 `_sourceBarKey` 的说明：不用 key 的话
+                      //     delegate 每次重建都会**丢 ScrollController 状态**）
+                      child: SourceBar(
+                        key: sourceBarKey,
+                        sources: _enabled,
+                        current: _currentSource,
+                        onSelect: _switchSource,
+                      ),
+                    ),
+                  ),
 
-          /*
+                  /*
            * ══════════════════════════════════════════════════════════
            * ★★★ 骨架 → 内容：淡入过渡（task-44 B 项，2026-09-26）
            * ══════════════════════════════════════════════════════════
@@ -2638,33 +2623,31 @@ class HomePageState extends State<HomePage> {
            * ```
            */
 
-          // ── 骨架屏 ──
-          if (_loading)
-            const SliverToBoxAdapter(child: _SkeletonSections()),
+                  // ── 骨架屏 ──
+                  if (_loading)
+                    const SliverToBoxAdapter(child: _SkeletonSections()),
 
-          // ── 空状态（★ 淡入）──
-          if (!_loading && visible.isEmpty)
-            FadeInSliver(
-              sliver: SliverToBoxAdapter(
-                child: _buildEmptyState(),
-              ),
-            ),
+                  // ── 空状态（★ 淡入）──
+                  if (!_loading && visible.isEmpty)
+                    FadeInSliver(
+                      sliver: SliverToBoxAdapter(child: _buildEmptyState()),
+                    ),
 
-          // ── 内容分区（只渲染当前源；★ 淡入）──
-          if (!_loading)
-            FadeInSliver(
-              sliver: SliverList(
-                delegate: SliverChildListDelegate([
-                  for (final g in visible)
-                    for (final s in g.sections)
-                      _SectionBlock(
-                        provider: g.provider,
-                        section: s,
-                        items: _itemsOf(g.provider, s.id),
-                        onOpenDetail: _openDetail,
-                        onOpenLive: widget.onOpenLive,
-                        onBrowse: widget.onBrowse,
-                        /*
+                  // ── 内容分区（只渲染当前源；★ 淡入）──
+                  if (!_loading)
+                    FadeInSliver(
+                      sliver: SliverList(
+                        delegate: SliverChildListDelegate([
+                          for (final g in visible)
+                            for (final s in g.sections)
+                              _SectionBlock(
+                                provider: g.provider,
+                                section: s,
+                                items: _itemsOf(g.provider, s.id),
+                                onOpenDetail: _openDetail,
+                                onOpenLive: widget.onOpenLive,
+                                onBrowse: widget.onBrowse,
+                                /*
                          * ★ task-6：把"**过闸后的名单**"和"记录读数"交给区块。
                          *
                          * # 为什么闸在这里过（而不是在 build 里算好）
@@ -2680,11 +2663,11 @@ class HomePageState extends State<HomePage> {
                          * 见 `srcl.js:391`）⇒ 只有它才需要直播条的判定；
                          * 其它类型的区块传空名单，不产生任何请求/查询。
                          */
-                        liveStrip: s.source.type == 'custom'
-                            ? _liveStripGate(g.provider)
-                            : const <({String id, String name})>[],
-                        onLiveStripRendered: _recordLiveStrip,
-                        /*
+                                liveStrip: s.source.type == 'custom'
+                                    ? _liveStripGate(g.provider)
+                                    : const <({String id, String name})>[],
+                                onLiveStripRendered: _recordLiveStrip,
+                                /*
                          * ★★★ N9：给聚合渠道条的**按渠道取数**通道。
                          *
                          * 只对渠道条那一条区块有意义（其余区块拿到也用不上）——
@@ -2692,26 +2675,31 @@ class HomePageState extends State<HomePage> {
                          * 所以渠道条拉回来的内容跟普通区块走同一份
                          * `_sectionItems`（卡片渲染 / 缓存 / 命中判据**同源**）。
                          */
-                        itemsOf: _itemsOf,
-                        loadSectionItems: (sec) =>
-                            _loadSection(g.provider, sec.id, sec.source),
+                                itemsOf: _itemsOf,
+                                loadSectionItems: (sec) => _loadSection(
+                                  g.provider,
+                                  sec.id,
+                                  sec.source,
+                                ),
+                              ),
+                        ]),
                       ),
-                ]),
-              ),
-            ),
+                    ),
 
-          // ── 底部内边距（原来是 ListView.padding.bottom）──
-          // ★ 页面级留白只在这里放一次（Sp.bottomBarInset = 90dp，给悬浮底栏让位）；
-          //   分区自己的间距走 _SectionBlock 里的 Sp.x8。
-          // ⚠️ 这里**不能**加 `const`：`Sp.bottomBarInset` 是 getter
-          //   （`tokens.dart:73 static double get bottomBarInset => Device.isTv ? 110 : 90;`），
-          //   带 getter 就不是常量表达式 ⇒ `flutter build` 的 kernel_snapshot 阶段直接报
-          //   "The invocation of 'bottomBarInset' is not allowed in a constant expression"。
-          //   （同类警告见 search_page.dart:632 / live_page.dart:1588 / settings_page.dart:3203）
-          SliverToBoxAdapter(child: SizedBox(height: Sp.bottomBarInset)),
-        ],
-      ),
-      ),   // ← 内容带那层 Padding 的收口（见上面那段长注释）
+                  // ── 底部内边距（原来是 ListView.padding.bottom）──
+                  // ★ 页面级留白只在这里放一次（Sp.bottomBarInset = 90dp，给悬浮底栏让位）；
+                  //   分区自己的间距走 _SectionBlock 里的 Sp.x8。
+                  // ⚠️ 这里**不能**加 `const`：`Sp.bottomBarInset` 是 getter
+                  //   （`tokens.dart:73 static double get bottomBarInset => Device.isTv ? 110 : 90;`），
+                  //   带 getter 就不是常量表达式 ⇒ `flutter build` 的 kernel_snapshot 阶段直接报
+                  //   "The invocation of 'bottomBarInset' is not allowed in a constant expression"。
+                  //   （同类警告见 search_page.dart:632 / live_page.dart:1588 / settings_page.dart:3203）
+                  SliverToBoxAdapter(
+                    child: SizedBox(height: Sp.bottomBarInset),
+                  ),
+                ],
+              ),
+            ), // ← 内容带那层 Padding 的收口（见上面那段长注释）
           ), // Positioned.fill
         ],
       ),
@@ -2916,16 +2904,15 @@ _StickySourceBar debugStickySourceBar({
   required String current,
   required ValueChanged<String> onSelect,
   Key? key,
-}) =>
-    _StickySourceBar(
-      visibleCount: visibleCount,
-      child: SourceBar(
-        key: key ?? sourceBarKey,
-        sources: sources,
-        current: current,
-        onSelect: onSelect,
-      ),
-    );
+}) => _StickySourceBar(
+  visibleCount: visibleCount,
+  child: SourceBar(
+    key: key ?? sourceBarKey,
+    sources: sources,
+    current: current,
+    onSelect: onSelect,
+  ),
+);
 
 // ═══════════════════════════════════════════════════════════════════════
 //  区块
@@ -2979,10 +2966,10 @@ class _SectionBlock extends StatelessWidget {
   /// ★ task-6：第一个参数是**频道所属的源**（旧签名丢了它，
   ///   接收方只能把 provider 写死成 'srcl'）。详见 [HomePage.onOpenLive]。
   final void Function(String provider, String channelId, String name)?
-      onOpenLive;
+  onOpenLive;
 
   final void Function(String provider, String sectionTitle, SectionSource src)?
-      onBrowse;
+  onBrowse;
 
   /// ★ task-6：**已过闸**的直播频道名单（只含 `playable`）
   ///
@@ -2994,7 +2981,7 @@ class _SectionBlock extends StatelessWidget {
   ///
   /// ★ 探针读数必须由**渲染路径自己**上报 —— 见 `debugHomeLiveStrip` 的说明。
   final void Function(int candidates, int rendered, String provider)?
-      onLiveStripRendered;
+  onLiveStripRendered;
 
   @override
   Widget build(BuildContext context) {
@@ -3135,7 +3122,6 @@ class _SectionBlock extends StatelessWidget {
               itemsOf: itemsOf,
               loadItems: loadSectionItems,
             )
-
           // ── 直播区块：横向频道条 ──
           else if (src.type == 'custom')
             _LiveStrip(
@@ -3144,7 +3130,6 @@ class _SectionBlock extends StatelessWidget {
               onOpenLive: onOpenLive,
               onRendered: onLiveStripRendered,
             )
-
           // ── 榜单区块：带序号的紧凑卡片 ──
           /*
            * ★ 为什么榜单用「带序号」而不是普通海报轨道
@@ -3155,19 +3140,10 @@ class _SectionBlock extends StatelessWidget {
            * > 仍然可横向滚动，信息与操作与原来完全一致。
            */
           else if (src.isRank && items.isNotEmpty)
-            _Rail(
-              items: items,
-              ranked: true,
-              onOpenDetail: onOpenDetail,
-            )
-
+            _Rail(items: items, ranked: true, onOpenDetail: onOpenDetail)
           // ── 普通区块：海报轨道 ──
           else
-            _Rail(
-              items: items,
-              ranked: false,
-              onOpenDetail: onOpenDetail,
-            ),
+            _Rail(items: items, ranked: false, onOpenDetail: onOpenDetail),
         ],
       ),
     );
@@ -3219,20 +3195,20 @@ class _Rail extends StatelessWidget {
       height: AppMetrics.railHeight(titleLines: 2),
       child: SourinHorizontalRail(
         child: ListView.separated(
-        clipBehavior: Clip.antiAlias,
-        scrollDirection: Axis.horizontal,
-        // ★ 内容带（t508）：轨道那层 —— 原版 `.section__rail` 的
-        //   `padding: 0 var(--sp-6) var(--sp-2)`（`base.css:906-915`，
-        //   窄档 `:918` 换成 `var(--sp-4)`）。
-        //   页面根那层带落地后，这里保留 ⇒ 视觉 ×2（与原版一致）。
-        padding: EdgeInsets.symmetric(
-          horizontal: Layout.railPaddingOf(context),
-        ),
-        itemCount: items.length,
-        separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
-        itemBuilder: (context, i) {
-          final it = items[i];
-          /*
+          clipBehavior: Clip.antiAlias,
+          scrollDirection: Axis.horizontal,
+          // ★ 内容带（t508）：轨道那层 —— 原版 `.section__rail` 的
+          //   `padding: 0 var(--sp-6) var(--sp-2)`（`base.css:906-915`，
+          //   窄档 `:918` 换成 `var(--sp-4)`）。
+          //   页面根那层带落地后，这里保留 ⇒ 视觉 ×2（与原版一致）。
+          padding: EdgeInsets.symmetric(
+            horizontal: Layout.railPaddingOf(context),
+          ),
+          itemCount: items.length,
+          separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
+          itemBuilder: (context, i) {
+            final it = items[i];
+            /*
            * ══════════════════════════════════════════════════════════
            * ★★ 按下反馈（task-44 A 项，2026-09-26）
            * ══════════════════════════════════════════════════════════
@@ -3258,44 +3234,44 @@ class _Rail extends StatelessWidget {
            * 判据映射：① 反馈操作 ② 90/150ms（最高频 ⇒ 最低档）
            *          ③ 可打断 ④ 走 `MotionPrefs` ⑤ `AnimatedScale`（惯用法）
            */
-          final card = PressFeedback(
-            child: PosterCard(
-              title: it.title,
-              cover: it.cover,
-              subtitle: it.note,
-              titleLines: 2,
-              onTap: () => onOpenDetail(it),
-            ),
-          );
+            final card = PressFeedback(
+              child: PosterCard(
+                title: it.title,
+                cover: it.cover,
+                subtitle: it.note,
+                titleLines: 2,
+                onTap: () => onOpenDetail(it),
+              ),
+            );
 
-          if (!ranked) return card;
+            if (!ranked) return card;
 
-          // 榜单：序号 + 卡片
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(
-                width: 30,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: Sp.x4),
-                  child: Text(
-                    '${i + 1}',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: FontSizes.xl,
-                      fontWeight: FontWeights.semibold,
-                      // 前三名用主色强调（原版 `is-top` 的语义）
-                      color: i < 3
-                          ? colors.primary
-                          : colors.onSurfaceVariant.withValues(alpha: 0.5),
+            // 榜单：序号 + 卡片
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 30,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: Sp.x4),
+                    child: Text(
+                      '${i + 1}',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: FontSizes.xl,
+                        fontWeight: FontWeights.semibold,
+                        // 前三名用主色强调（原版 `is-top` 的语义）
+                        color: i < 3
+                            ? colors.primary
+                            : colors.onSurfaceVariant.withValues(alpha: 0.5),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              card,
-            ],
-          );
-        },
+                card,
+              ],
+            );
+          },
         ),
       ),
     );
@@ -3350,10 +3326,11 @@ class _LiveStrip extends StatelessWidget {
   /// ★ task-6：第一个参数是 `provider`（本组件自己那份，不是猜的）——
   ///   旧签名只有 `(channelId, name)`，接收方只能写死 'srcl'。
   final void Function(String provider, String channelId, String name)?
-      onOpenLive;
+  onOpenLive;
 
   /// 渲染读数上报（闸前候选数 / 闸后渲染数 / 源）
-  final void Function(int candidates, int rendered, String provider)? onRendered;
+  final void Function(int candidates, int rendered, String provider)?
+  onRendered;
 
   @override
   Widget build(BuildContext context) {
@@ -3393,9 +3370,9 @@ class _LiveStrip extends StatelessWidget {
       height: 44,
       child: SourinHorizontalRail(
         child: ListView.separated(
-        clipBehavior: Clip.antiAlias,
-        scrollDirection: Axis.horizontal,
-        /*
+          clipBehavior: Clip.antiAlias,
+          scrollDirection: Axis.horizontal,
+          /*
          * ★ 内容带：**零**横向内边距（原来是 24）。
          *
          * 原版 `.live-strip { display:flex; gap:var(--sp-2); padding-bottom:var(--sp-2) }
@@ -3407,53 +3384,52 @@ class _LiveStrip extends StatelessWidget {
          * ⚠️ 与 `.section__rail` 的区别正在这里：轨道自己也带 `--sp-6`
          *    （`base.css:906-915`）⇒ 轨道是 ×2，直播条是 ×1。
          */
-        padding: EdgeInsets.zero,
-        // ★ task-6：数据源从写死的 kLivePreview 换成**过闸后的名单**
-        //   （长度可能小于 kLivePreview，为 0 时上面已提前 return）
-        itemCount: channels.length,
-        separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
-        itemBuilder: (context, i) {
-          final ch = channels[i];
-          /*
+          padding: EdgeInsets.zero,
+          // ★ task-6：数据源从写死的 kLivePreview 换成**过闸后的名单**
+          //   （长度可能小于 kLivePreview，为 0 时上面已提前 return）
+          itemCount: channels.length,
+          separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
+          itemBuilder: (context, i) {
+            final ch = channels[i];
+            /*
            * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
            *
            * 改前是 InkWell + Container(decoration:) 手写胶囊。这是「点一下
            * 去直播」的动作入口 ⇒ 换成框架的 `ActionChip`（圆点走 avatar）。
            * 描边 / 圆角 / 内边距 / 字号全部显式给死 ⇒ 长相与改前一致。
            */
-          return Center(
-            child: ActionChip(
-              // ★ task-6：把 provider 原样带上 —— 接收方不再猜源
-              onPressed: () => onOpenLive?.call(provider, ch.id, ch.name),
-              label: Text(
-                ch.name,
-                style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  color: colors.onSurface,
+            return Center(
+              child: ui.TextButton.icon(
+                // ★ task-6：把 provider 原样带上 —— 接收方不再猜源
+                onPressed: () => onOpenLive?.call(provider, ch.id, ch.name),
+                label: Text(
+                  ch.name,
+                  style: TextStyle(
+                    fontSize: FontSizes.sm,
+                    color: colors.onSurface,
+                  ),
+                ),
+                icon: Container(
+                  width: 6,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                    color: AppColors.liveDot,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                style: ui.TextButton.styleFrom(
+                  side: BorderSide(color: colors.outlineVariant),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: Radii.rFull,
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: Sp.x4,
+                    vertical: Sp.x2,
+                  ),
                 ),
               ),
-              avatar: Container(
-                width: 6,
-                height: 6,
-                decoration: const BoxDecoration(
-                  color: AppColors.liveDot,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              side: BorderSide(color: colors.outlineVariant),
-              shape: const RoundedRectangleBorder(
-                borderRadius: Radii.rFull,
-              ),
-              padding: const EdgeInsets.symmetric(
-                horizontal: Sp.x4,
-                vertical: Sp.x2,
-              ),
-              labelPadding: EdgeInsets.zero,
-              visualDensity: VisualDensity.compact,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-          );
-        },
+            );
+          },
         ),
       ),
     );
@@ -3604,15 +3580,16 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
        *     channels=0 ⇒ 命令通了但这个源没有可用渠道（正常形态）
        *     抛错       ⇒ 命令没接入/源坏了（下面 catch 里如实打原因）
        */
-      debugPrint('[HOME] 聚合渠道清单: ${payload.channels.length} 个'
-          '（${payload.channels.take(5).map((c) => c.id).join(", ")}）'
-          '${payload.channels.length > 5 ? "…" : ""}');
+      debugPrint(
+        '[HOME] 聚合渠道清单: ${payload.channels.length} 个'
+        '（${payload.channels.take(5).map((c) => c.id).join(", ")}）'
+        '${payload.channels.length > 5 ? "…" : ""}',
+      );
       setState(() {
         _channels = payload.channels;
         _loadingChannels = false;
         // 当前渠道：保持已选的（切走再回来不跳），否则落到第一个
-        if (_channels.isNotEmpty &&
-            !_channels.any((c) => c.id == _current)) {
+        if (_channels.isNotEmpty && !_channels.any((c) => c.id == _current)) {
           _current = _channels.first.id;
         }
       });
@@ -3657,8 +3634,10 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
     try {
       final home = await fetchAggChannelHome(channelId);
       if (!mounted) return;
-      debugPrint('[HOME] 按渠道取数完成（渠道=$channelId）: '
-          '${home.sections.length} 个区块');
+      debugPrint(
+        '[HOME] 按渠道取数完成（渠道=$channelId）: '
+        '${home.sections.length} 个区块',
+      );
       setState(() {
         _sectionsByChannel[channelId] = home.sections;
         // 成功 ⇒ 清掉上一次的失败（渠道恢复可达时不该继续挂着旧错误）
@@ -3681,8 +3660,10 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
       setState(() {
         // ★ 失败要**可查**、且**不连坐**：原因挂在这个渠道上，
         //   只把该渠道那块换成原因文案（同聚合源"单站失败隔离"的既有纪律）
-        _channelErrors[channelId] =
-            userErrorText(e, fallback: '这个渠道没有取到内容，请稍后重试');
+        _channelErrors[channelId] = userErrorText(
+          e,
+          fallback: '这个渠道没有取到内容，请稍后重试',
+        );
       });
     }
   }
@@ -3717,13 +3698,12 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
     // ── 清单失败：如实显示原因，不留空条 ──
     if (_listError != null) {
       return Padding(
-        padding: EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+        padding: EdgeInsets.symmetric(
+          horizontal: Layout.railPaddingOf(context),
+        ),
         child: Text(
           _listError!,
-          style: TextStyle(
-            fontSize: FontSizes.sm,
-            color: colors.error,
-          ),
+          style: TextStyle(fontSize: FontSizes.sm, color: colors.error),
         ),
       );
     }
@@ -3733,8 +3713,9 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
       return SizedBox(
         height: 40,
         child: Padding(
-          padding:
-              EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+          padding: EdgeInsets.symmetric(
+            horizontal: Layout.railPaddingOf(context),
+          ),
           child: Text(
             '正在读取渠道…',
             style: TextStyle(
@@ -3765,7 +3746,9 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
      */
     if (_channels.isEmpty) {
       return Padding(
-        padding: EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+        padding: EdgeInsets.symmetric(
+          horizontal: Layout.railPaddingOf(context),
+        ),
         child: Text(
           '还没有导入 TVBox 聚合源',
           style: TextStyle(
@@ -3798,8 +3781,9 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
         // ── 当前渠道的二级内容（每个区块一条海报轨道）──
         if (_channelErrors[_current] != null)
           Padding(
-            padding:
-                EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+            padding: EdgeInsets.symmetric(
+              horizontal: Layout.railPaddingOf(context),
+            ),
             child: Text(
               _channelErrors[_current]!,
               style: TextStyle(fontSize: FontSizes.sm, color: colors.error),
@@ -3807,8 +3791,9 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
           )
         else if (sections.isEmpty)
           Padding(
-            padding:
-                EdgeInsets.symmetric(horizontal: Layout.railPaddingOf(context)),
+            padding: EdgeInsets.symmetric(
+              horizontal: Layout.railPaddingOf(context),
+            ),
             child: Text(
               '这个渠道还在加载…',
               style: TextStyle(
@@ -3863,42 +3848,7 @@ class _AggChannelRail extends StatelessWidget {
       sections: currentSections,
     ));
 
-    /*
-     * ══════════════════════════════════════════════════════════════
-     * ★★★ R2-#4：整条渠道条 = **一个玻璃胶囊**（外层承担材质）
-     * ══════════════════════════════════════════════════════════════
-     *
-     * 形状与 `source_bar.dart:216` **同构**（那是源条，Owner 要"还是"它那款）：
-     * ```text
-     * Center
-     *   └ GlassContainer(superellipse 999, quality.standard)   ← ★ 唯一一层材质
-     *       └ 44 高
-     *           └ SourinHorizontalRail                           ← 手势（共用手势包装）
-     *               └ 可横滑的药丸列表（药丸本身**透明**）
-     * ```
-     *
-     * # 为什么玻璃在 rail **外面**（而不是 rail 与 ListView 之间）
-     * ```text
-     * ① `source_bar` 的玻璃容器**也**包着它自己那层滚动区 ⇒ 同构；
-     * ② 本文件那条"守恒律"判据要求 `SourinHorizontalRail(` 与
-     *    `child: ListView.separated(` **紧邻**（正则逐字：`rail(\s*child:`）——
-     *    插一层进中间会让它变红。那条门禁是**对的**：
-     *    它守的是"rail 真的直接包住了那个 ListView"（不是"数够几个"）。
-     *    ⇒ 玻璃挪到 rail 外面既保住该判据，又不改 rail 一个字节。
-     * ```
-     *
-     * # 为什么 `Center` + 内容宽度（而不是满宽）
-     * `source_bar` 的注释里记着 Owner 当时的原则：「**方案 A：悬浮胶囊**
-     * （与底部 tab 栏同款造型）」——理由是"用户不用学新东西"。渠道条是**同一族**
-     * 的二级选择条 ⇒ 沿用同一造型语言。
-     *
-     * # 为什么不是"每个药丸一块玻璃"
-     * 见文件里 `kAggChannelRailGlassShape` 那段：N 块独立玻璃 = N 层模糊，
-     * 正是 source_bar 记着"连续踩两次"的错，也与 N7"材质只落一层"相冲。
-     *
-     * ⚠️ `ConstrainedBox(maxWidth: 屏宽 - Sp.x8)`：渠道很多时不许把屏幕撑破
-     *   （与 `source_bar.dart:221` 同一个约束，值也一致）。
-     */
+    // The surface owns appearance; the shared rail preserves mouse drag/scroll.
     final rail = SourinHorizontalRail(
       child: ListView.separated(
         // ★ 与 `_LiveStrip` 逐字同款：内容带**零**横向内边距
@@ -3911,25 +3861,6 @@ class _AggChannelRail extends StatelessWidget {
         itemBuilder: (context, i) {
           final ch = channels[i];
           final active = ch.id == current;
-          /*
-           * ★★★ 2026-10-31（Owner 逐字）：**药丸与源条同一件**
-           * ```text
-           * > tvbox 聚合源下面的也要跟那个液态玻璃选择的样式一样，
-           * > 这里样式都不一样，要优化和矫正
-           * ```
-           * 改前这里用框架 `ActionChip`（描边 + Material 芯片样式）——
-           * R2-#4 只统一了**外层玻璃容器**，药丸本体仍是另一套视觉
-           * （这正是 Owner 这次点名"样式都不一样"的残余落点）。
-           *
-           * ⇒ 改用 `SourcePill`（source_bar.dart 的**公共药丸**，源条同款）：
-           * ```text
-           * · 选中态 = 白色高亮层（--surface-4）+ 加粗，无描边 —— 与源条同款；
-           * · 材质仍在外层 GlassContainer（药丸透明，N7"材质只落一层"不变）；
-           * · "改一处两处同变"：药丸样式只活在 SourcePill 一个类里。
-           * ```
-           * ★ 历史注脚：R2-#4 当年选 ActionChip 的理由（"_SourcePill 是私有
-           *   组件跨文件够不到"）随着 SourcePill 抽成公共件**已不成立**。
-           */
           return Center(
             child: SourcePill(
               label: ch.name,
@@ -3950,21 +3881,7 @@ class _AggChannelRail extends StatelessWidget {
         ),
         child: SizedBox(
           height: 44,
-          /*
-           * 顺序：**玻璃在外、rail 在内**（见上面那段长注释）。
-           * 玻璃只管材质，rail 只管手势（dragDevices + 局部关滚动条）。
-           * ★ `_skipGlassAggChannelRail(context)` 为真 ⇒ **原样返回 rail**
-           *   （逐像素门禁的"不挂玻璃"对照臂 + reduced-motion 档）。
-           */
-          child: _skipGlassAggChannelRail(context)
-              // reduced-motion / 测量仪器 ⇒ **整层不挂**（旧13 的取舍）
-              ? rail
-              : GlassContainer(
-                  shape: kAggChannelRailGlassShape,
-                  quality: GlassQuality.standard,
-                  padding: EdgeInsets.zero,
-                  child: rail,
-                ),
+          child: miuix.MiuixCard(cornerRadius: Radii.full, child: rail),
         ),
       ),
     );
@@ -3981,9 +3898,9 @@ class _MoreButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return TextButton(
+    return ui.TextButton(
       onPressed: onTap,
-      style: TextButton.styleFrom(
+      style: ui.TextButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
         minimumSize: Size.zero,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -4011,10 +3928,7 @@ class _ErrorBar extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Container(
       margin: const EdgeInsets.only(bottom: Sp.x6),
-      padding: const EdgeInsets.symmetric(
-        horizontal: Sp.x4,
-        vertical: Sp.x3,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
       decoration: BoxDecoration(
         color: colors.errorContainer.withValues(alpha: 0.35),
         borderRadius: Radii.rLg,
@@ -4125,9 +4039,7 @@ class _ShimmerState extends State<_Shimmer>
         width: widget.width,
         height: widget.height,
         decoration: BoxDecoration(
-          color: colors.onSurface.withValues(
-            alpha: 0.04 + 0.04 * _c.value,
-          ),
+          color: colors.onSurface.withValues(alpha: 0.04 + 0.04 * _c.value),
           borderRadius: BorderRadius.circular(widget.radius),
         ),
       ),
@@ -4154,9 +4066,7 @@ class _EmptyState extends StatelessWidget {
     //   自身不带横向内边距 ⇒ 只该有页面根那**一层** 24。
     //   ⚠️ 这里原来是 24，页面根加带后会变成 ×2 ⇒ 归零。
     return Padding(
-      padding: const EdgeInsets.symmetric(
-        vertical: Sp.x16,
-      ),
+      padding: const EdgeInsets.symmetric(vertical: Sp.x16),
       child: Column(
         children: [
           Icon(

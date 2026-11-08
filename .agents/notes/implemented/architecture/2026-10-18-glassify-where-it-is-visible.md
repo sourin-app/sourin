@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Partially superseded: [player Miuix controls](../feature/2026-11-08-player-miuix-controls.md), 2026-11-08. Player controls and information cards use actual Miuix components. The readability, list continuity and performance constraints remain applicable; this note does not require glass on those migrated controls.
+
 ## Problem
 
 第 66 轮 Owner 的指示是「彻底不用 Material 组件，全部自建/玻璃」。

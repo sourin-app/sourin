@@ -13,6 +13,7 @@
 // 面板底部固定显示这一行（SubtitleConfig.showAttribution 默认 true）。
 
 import 'package:material_ui/material_ui.dart';
+import '../widgets/miuix_controls.dart' as ui;
 
 import '../../core/app_log.dart';
 import '../../core/assrt/archive.dart';
@@ -403,7 +404,7 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
       child: Row(
         children: <Widget>[
           Expanded(
-            child: TextField(
+            child: ui.TextField(
               controller: _ctl,
               enabled: !_st.busy,
               textInputAction: TextInputAction.search,
@@ -427,7 +428,7 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
             ),
           ),
           const SizedBox(width: Sp.x2),
-          FilledButton(
+          ui.FilledButton(
             onPressed: _st.busy ? null : _search,
             child: Text(_st.busy ? '处理中' : '搜索'),
           ),
@@ -540,7 +541,7 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
               ),
               const SizedBox(width: Sp.x2),
               if (widget.onMount != null)
-                FilledButton.tonal(
+                ui.FilledButton.tonal(
                   onPressed: _st.busy ? null : () => _mount(f),
                   child: Text(_st.mountedPath == f.path ? '已挂载' : '挂到当前播放'),
                 ),
@@ -652,12 +653,12 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
           const SizedBox(height: Sp.x2),
           Row(
             children: <Widget>[
-              TextButton(
+              ui.TextButton(
                 onPressed: _st.busy ? null : () => _openDetail(s),
                 child: const Text('详情'),
               ),
               const SizedBox(width: Sp.x2),
-              FilledButton.tonal(
+              ui.FilledButton.tonal(
                 onPressed: _st.busy ? null : () => _download(s),
                 child: const Text('下载'),
               ),
@@ -691,7 +692,7 @@ class _SubtitlePanelState extends State<SubtitlePanel> {
               width: 14,
               height: 14,
               // ★ T27-07（lead 集成补漏）：显式 onSurface，不落主题 primary 灰。
-              child: CircularProgressIndicator(
+              child: ui.CircularProgressIndicator(
                 color: colors.onSurface,
                 strokeWidth: 2,
               ),

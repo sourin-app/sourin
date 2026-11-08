@@ -29,7 +29,9 @@
 // ```
 
 import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
 
@@ -61,6 +63,30 @@ void main() {
   }
 
   group('第 17 条：拖动进度条不得每次移动都 seek', () {
+    testWidgets('取消拖动不会提交 seek，预览恢复真实位置', (tester) async {
+      final seeks = await mountSlider(tester);
+      final control = find.byType(miuix.MiuixSlider);
+      final gesture = await tester.startGesture(tester.getCenter(control));
+      await gesture.moveBy(const Offset(80, 0));
+      await tester.pump();
+      expect(tester.widget<miuix.MiuixSlider>(control).value, greaterThan(0));
+      await gesture.cancel();
+      await tester.pump();
+      expect(seeks, isEmpty);
+      expect(tester.widget<miuix.MiuixSlider>(control).value, 0);
+    });
+
+    testWidgets('方向键在实际 Miuix 滑杆上提交一次 seek', (tester) async {
+      final seeks = await mountSlider(tester);
+      final control = find.byType(miuix.MiuixSlider);
+      Focus.of(tester.element(control)).requestFocus();
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(seeks, hasLength(1));
+      expect(seeks.single, greaterThan(Duration.zero));
+    });
+
     testWidgets('★★★ 一次连续拖动只产生 1 次 onSeek', (tester) async {
       final seeks = await mountSlider(tester);
 
@@ -99,16 +125,16 @@ void main() {
     testWidgets('★★ 拖动中的预览位置会随手指变化（不是只有松手才动）', (tester) async {
       final seeks = await mountSlider(tester);
       final slider = find.byType(PlayerProgressSlider);
-      final thumb = find.byKey(PlayerProgressSlider.thumbKey);
+      final thumb = find.byType(miuix.MiuixSlider);
 
-      final before = tester.getCenter(thumb);
+      final before = tester.widget<miuix.MiuixSlider>(thumb).value;
       final g = await tester.startGesture(tester.getCenter(slider));
       await tester.pump();
       await g.moveBy(const Offset(80, 0));
       await tester.pump();
-      final during = tester.getCenter(thumb);
+      final during = tester.widget<miuix.MiuixSlider>(thumb).value;
 
-      expect(during.dx, greaterThan(before.dx),
+      expect(during, greaterThan(before),
           reason: '★ 拖动中圆点必须跟手（否则用户看不到拖到哪了）');
       // 但仍然没有 seek
       expect(seeks, isEmpty);
@@ -122,9 +148,9 @@ void main() {
       // position 固定为 0 ⇒ 松手 seek 后若预览没清空，圆点会停在拖到的位置
       final seeks = await mountSlider(tester, position: Duration.zero);
       final slider = find.byType(PlayerProgressSlider);
-      final thumb = find.byKey(PlayerProgressSlider.thumbKey);
+      final thumb = find.byType(miuix.MiuixSlider);
 
-      final origin = tester.getCenter(thumb);
+      final origin = tester.widget<miuix.MiuixSlider>(thumb).value;
       final g = await tester.startGesture(tester.getCenter(slider));
       await tester.pump();
       await g.moveBy(const Offset(100, 0));
@@ -132,8 +158,8 @@ void main() {
       await g.up();
       await tester.pump();
 
-      final after = tester.getCenter(thumb);
-      expect(after.dx, closeTo(origin.dx, 0.5),
+      final after = tester.widget<miuix.MiuixSlider>(thumb).value;
+      expect(after, closeTo(origin, 0.5),
           reason: '★★ 松手后必须清空 _dragMs —— 否则圆点冻在松手处，'
               '看起来像卡住（真实 position 还是 0，没有追上来）');
       expect(seeks.length, 1);

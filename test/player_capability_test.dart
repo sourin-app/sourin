@@ -43,6 +43,8 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'support/miuix_finders.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/widgets/player_settings_sheet.dart';
@@ -1130,20 +1132,22 @@ void real() {}
       }
     });
 
-    test('★★ 面板必须用 material_ui + forui', () {
+    test('★★ 面板使用 Miuix 控件并保留应用主题兼容层', () {
       final sheet = codeOf('lib/ui/widgets/player_settings_sheet.dart');
       expect(sheet.contains("import 'package:material_ui/material_ui.dart'"),
           isTrue);
+      expect(sheet.contains("import 'package:flutter_miuix/miuix.dart'"),
+          isTrue);
     });
 
-    test('★ 面板不得新增依赖（只用 file_selector，它已在 pubspec 里）', () {
+    test('★ 面板依赖仅允许文件选择、Miuix、主题兼容层和 Flutter SDK', () {
       /*
-       * 任务明确要求"禁止加新依赖"。
+       * 原面板任务限制新增依赖；2026-11-08 组件迁移明确采用 flutter_miuix。
        *
        * ⚠️ `file_selector` **不是本次加的** —— 它在 `pubspec.yaml` 的
        *    dependencies 里（`file_selector: ^1.0.3`），
        *    是另一个代理为文件对话框加的。
-       *    这里断言"只用了它"，防止我在自己的文件里偷偷再引别的包。
+       *    这里只增列已授权的 Miuix 包，继续阻止其它包进入面板。
        */
       final sheet = codeOf('lib/ui/widgets/player_settings_sheet.dart');
       final imports = RegExp(r"import 'package:([a-z_]+)/")
@@ -1158,9 +1162,9 @@ void real() {}
        *    `package:flutter/services.dart`。
        */
       expect(
-        imports.difference({'file_selector', 'material_ui', 'flutter'}).isEmpty,
+        imports.difference({'file_selector', 'flutter_miuix', 'material_ui', 'flutter'}).isEmpty,
         isTrue,
-        reason: '★ 面板只允许依赖 file_selector + material_ui（+ SDK 的 flutter），'
+        reason: '★ 面板只允许 file_selector、flutter_miuix、material_ui 和 SDK flutter，'
             '实际用了：$imports',
       );    });
 
@@ -1288,7 +1292,7 @@ void real() {}
       await t.pumpAndSettle();
 
       // 文字色那一排的「黄」（第 2 个）
-      final swatches = find.byTooltip('1.00/1.00/0.00');
+      final swatches = miuixTooltip('1.00/1.00/0.00');
       expect(swatches, findsOneWidget, reason: '黄色预设必须存在');
       await t.tap(swatches);
       await t.pumpAndSettle();
@@ -1335,7 +1339,7 @@ void real() {}
 
       expect(find.text('我的字幕.ass'), findsOneWidget,
           reason: '★ 要显示加载的是哪个文件 —— 否则用户不知道挂上没');
-      await t.tap(find.byTooltip('移除这条外挂字幕'));
+      await t.tap(miuixTooltip('移除这条外挂字幕'));
       await t.pumpAndSettle();
       expect(removed, isTrue);
     });
@@ -1371,7 +1375,7 @@ void real() {}
       )));
       await t.pumpAndSettle();
 
-      final slider = find.byType(Slider).first;
+      final slider = find.byType(ui.Slider).first;
       await t.drag(slider, const Offset(40, 0));
       await t.pumpAndSettle();
       expect(value, isNotNull, reason: '★ 拖滑块要真的发出 sub-font-size');
@@ -1403,10 +1407,10 @@ void real() {}
        * 这样的滑杆**有且只有一根**，防止将来有人把样式滑块也改成这个范围、
        * 从而把样式滑块偷渡出这条断言。
        */
-      bool isConcurrencySlider(Slider s) =>
+      bool isConcurrencySlider(ui.Slider s) =>
           s.min == 0 && s.max == 8 && s.divisions == 8;
 
-      final sliders = t.widgetList<Slider>(find.byType(Slider)).toList();
+      final sliders = t.widgetList<ui.Slider>(find.byType(ui.Slider)).toList();
       expect(sliders, isNotEmpty);
 
       final concurrencySliders = sliders.where(isConcurrencySlider).toList();

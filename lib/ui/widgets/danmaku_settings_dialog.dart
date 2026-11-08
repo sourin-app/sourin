@@ -62,6 +62,9 @@
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'miuix_controls.dart' as ui;
 
 import 'dart:async';
 import 'dart:io' show SocketException;
@@ -301,8 +304,7 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
       this == DanmakuProbeFailure.tlsFailed;
 
   /// ★ 服务端的问题（与"本机网络"完全两件事）
-  bool get isServiceProblem =>
-      this == DanmakuProbeFailure.serverError;
+  bool get isServiceProblem => this == DanmakuProbeFailure.serverError;
 
   /// ★★ 探测本身出错 —— **既不是本机网络、也不是服务**
   ///
@@ -310,8 +312,7 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
   ///   兜底分支**没有任何网络物证**（没解析过、没建过连接）⇒
   ///   把它算成「本机网络问题」会让用户去改代理 / 换网络（错的操作），
   ///   算成「服务问题」会让用户去重启服务（同样错）。
-  bool get isProbeItselfFailed =>
-      this == DanmakuProbeFailure.probeFailed;
+  bool get isProbeItselfFailed => this == DanmakuProbeFailure.probeFailed;
 
   /*
    * ★★★ 2026-10-25（第 05 项复核修复 A）：**拿了真值却不比较**是真缺陷
@@ -333,33 +334,33 @@ extension DanmakuProbeFailureX on DanmakuProbeFailure {
 
   /// 一句短标题（**不含具体地址**，那种由调用方拼）
   String get title => switch (this) {
-        DanmakuProbeFailure.none => '可用',
-        DanmakuProbeFailure.dnsFailed => '域名解析失败（本机 DNS 不通）',
-        /*
+    DanmakuProbeFailure.none => '可用',
+    DanmakuProbeFailure.dnsFailed => '域名解析失败（本机 DNS 不通）',
+    /*
          * ★ 必须与上一句**明显不同**：
          *   前者的操作是"换网络"，后者是"换 DNS / 开代理"。
          *   两句混用会把用户指向错误的修法。
          */
-        DanmakuProbeFailure.dnsHijacked => '域名被解析到了错误地址（DNS 可能被劫持）',
-        /*
+    DanmakuProbeFailure.dnsHijacked => '域名被解析到了错误地址（DNS 可能被劫持）',
+    /*
          * ★ 修复 A：与上一句**必须**明显不同 —— 上一句让用户改 DNS，
          *   这一句明确告诉他"DNS 没问题，别改"。
          */
-        DanmakuProbeFailure.dnsConsistent => '域名解析正确（与权威 DNS 一致）· 不是劫持',
-        DanmakuProbeFailure.dnsUnverifiable => '查到了权威真值，但没法与本机答案比较',
-        // ★ 与上一档的区别：这里**真的比过了**，只是不同；所以标题里不能有"劫持"两字
-        DanmakuProbeFailure.dnsInconsistent => '与本机解析不一致（可能是多地址 / CDN）',
-        DanmakuProbeFailure.connectionTimeout => '连不上（连接超时）',
-        DanmakuProbeFailure.connectionRefused => '连不上（连接被拒绝）',
-        DanmakuProbeFailure.tlsFailed => '连不上（TLS 握手失败）',
-        DanmakuProbeFailure.serverError => '服务返回错误',
-        /*
+    DanmakuProbeFailure.dnsConsistent => '域名解析正确（与权威 DNS 一致）· 不是劫持',
+    DanmakuProbeFailure.dnsUnverifiable => '查到了权威真值，但没法与本机答案比较',
+    // ★ 与上一档的区别：这里**真的比过了**，只是不同；所以标题里不能有"劫持"两字
+    DanmakuProbeFailure.dnsInconsistent => '与本机解析不一致（可能是多地址 / CDN）',
+    DanmakuProbeFailure.connectionTimeout => '连不上（连接超时）',
+    DanmakuProbeFailure.connectionRefused => '连不上（连接被拒绝）',
+    DanmakuProbeFailure.tlsFailed => '连不上（TLS 握手失败）',
+    DanmakuProbeFailure.serverError => '服务返回错误',
+    /*
          * ★ 必须**不含**任何网络断言：
          *   改前这里落到 connectionTimeout，于是说「地址解析出来了但连不过去」
          *   —— 而兜底分支压根没解析过、也没建过连接。
          */
-        DanmakuProbeFailure.probeFailed => '检测过程本身出错了',
-      };
+    DanmakuProbeFailure.probeFailed => '检测过程本身出错了',
+  };
 }
 
 /// 一次探测的**完整**结论（在线与否 + 为什么 + 下一步）
@@ -410,54 +411,56 @@ class DanmakuProbeReport {
   /// ```
   static const List<({String prefix, String evidence})> kForgedAddressRanges =
       <({String prefix, String evidence})>[
-    /*
+        /*
      * ① IPv6 花样段 —— 本轮**三个** *.vercel.app 域名都返回它
      *    这是最强的单条证据：一个 Vercel 域名不该解析到 Facebook 的段。
      */
-    (
-      prefix: '2a03:2880:',
-      evidence: 'Facebook IPv6 段（含 face:b00c 花样）；实测 danmu-api-delta / '
-          'danmu-api-kappa / vercel.app apex 「三个都」返回 '
-          '2a03:2880:…:face:b00c（DoH 真值为 216.198.79.x / 64.29.17.x）',
-    ),
-    (
-      prefix: 'face:b00c',
-      evidence: 'Facebook 的固定花样段（出现在上述三个域名的本机解析结果里）',
-    ),
-    /*
+        (
+          prefix: '2a03:2880:',
+          evidence:
+              'Facebook IPv6 段（含 face:b00c 花样）；实测 danmu-api-delta / '
+              'danmu-api-kappa / vercel.app apex 「三个都」返回 '
+              '2a03:2880:…:face:b00c（DoH 真值为 216.198.79.x / 64.29.17.x）',
+        ),
+        (prefix: 'face:b00c', evidence: 'Facebook 的固定花样段（出现在上述三个域名的本机解析结果里）'),
+        /*
      * ② 有 PTR 归属证据的 IPv4 段（最硬的一类：PTR 直接说了它属于谁）
      */
-    (
-      prefix: '74.86.17.',
-      evidence: 'SoftLayer/IBM 静态段 —— PTR 实测：'
-          '74.86.17.48 → 30.11.564a.ip4.static.sl-reverse.com',
-    ),
-    (
-      prefix: '108.160.173.',
-      evidence: 'Dropbox —— PTR 实测：108.160.173.207 → www.v.dropbox.com',
-    ),
-    (
-      prefix: '199.59.150.',
-      evidence: 'Twitter（twttr.com）—— PTR 实测：'
-          '199.59.150.39 → r-199-59-150-39.twttr.com；'
-          '同族 199.59.148.1 → r-199-59-148-1.twttr.com',
-    ),
-    (
-      prefix: '199.59.148.',
-      evidence: 'Twitter（twttr.com）—— PTR 实测：'
-          '199.59.148.1 → r-199-59-148-1.twttr.com',
-    ),
-    (
-      prefix: '199.96.58.',
-      evidence: 'Twitter（twttr.com）—— PTR 实测：'
-          '199.96.58.1 → ge-2-0-3.pao1.cr2.twttr.com；'
-          '本机对 danmu-api-* 返回过该段的 199.96.58.15（DoH 真值不含它）',
-    ),
-    (
-      prefix: '157.240.',
-      evidence: 'Facebook —— 对照 DoH：graph.facebook.com 解析到 157.240.13.14',
-    ),
-    /*
+        (
+          prefix: '74.86.17.',
+          evidence:
+              'SoftLayer/IBM 静态段 —— PTR 实测：'
+              '74.86.17.48 → 30.11.564a.ip4.static.sl-reverse.com',
+        ),
+        (
+          prefix: '108.160.173.',
+          evidence: 'Dropbox —— PTR 实测：108.160.173.207 → www.v.dropbox.com',
+        ),
+        (
+          prefix: '199.59.150.',
+          evidence:
+              'Twitter（twttr.com）—— PTR 实测：'
+              '199.59.150.39 → r-199-59-150-39.twttr.com；'
+              '同族 199.59.148.1 → r-199-59-148-1.twttr.com',
+        ),
+        (
+          prefix: '199.59.148.',
+          evidence:
+              'Twitter（twttr.com）—— PTR 实测：'
+              '199.59.148.1 → r-199-59-148-1.twttr.com',
+        ),
+        (
+          prefix: '199.96.58.',
+          evidence:
+              'Twitter（twttr.com）—— PTR 实测：'
+              '199.96.58.1 → ge-2-0-3.pao1.cr2.twttr.com；'
+              '本机对 danmu-api-* 返回过该段的 199.96.58.15（DoH 真值不含它）',
+        ),
+        (
+          prefix: '157.240.',
+          evidence: 'Facebook —— 对照 DoH：graph.facebook.com 解析到 157.240.13.14',
+        ),
+        /*
      * ③ 只有 DoH 对照、没有 PTR 的段
      *
      * ⚠️ 这类**依据最弱**：没有归属证据，只是"与本机对不上"。
@@ -465,24 +468,26 @@ class DanmakuProbeReport {
      *    但如果将来有人质疑，删掉这一条**不会削弱**定案能力
      *    （DoH 那条腿仍然兜得住）。
      */
-    (
-      prefix: '185.45.6.',
-      evidence: '★ 实网实测（2026-10-25，真实 DoH 对照）：本机系统 DNS 把 '
-          'danmu-api-kappa.vercel.app 解析到 185.45.6.57，而当日三家真 DoH '
-          '（cloudflare / doh.pub / 1.12.12.12）一致给出 216.198.79.131 · 64.29.17.131 '
-          '⇒ 与该字段无交集。'
-          '★ 为什么必须补这一条（IPv4/IPv6 两条路都要判得出来）：同一台机器同时拿到 '
-          'IPv6 2a03:2880:…:face:b00c（在表内 ⇒ 判得出劫持）与 IPv4 185.45.6.57'
-          '（此前「不在」表内 ⇒ 判不出）；而 SocketException.resolvedAddress '
-          '只带「OS 实际选去连的那一个」 —— 选到 IPv4 时上层只能看到"连不上"，'
-          '把用户指向网络/代理，方向就错了。这就是本次补它的原因。',
-    ),
-    (
-      prefix: '104.244.43.',
-      evidence: '本轮实测本机返回过该段（104.244.43.182，无 PTR），'
-          'DoH 真值为 216.198.79.195 / 64.29.17.195 —— 仅"与真值不符"，归属未证实',
-    ),
-  ];
+        (
+          prefix: '185.45.6.',
+          evidence:
+              '★ 实网实测（2026-10-25，真实 DoH 对照）：本机系统 DNS 把 '
+              'danmu-api-kappa.vercel.app 解析到 185.45.6.57，而当日三家真 DoH '
+              '（cloudflare / doh.pub / 1.12.12.12）一致给出 216.198.79.131 · 64.29.17.131 '
+              '⇒ 与该字段无交集。'
+              '★ 为什么必须补这一条（IPv4/IPv6 两条路都要判得出来）：同一台机器同时拿到 '
+              'IPv6 2a03:2880:…:face:b00c（在表内 ⇒ 判得出劫持）与 IPv4 185.45.6.57'
+              '（此前「不在」表内 ⇒ 判不出）；而 SocketException.resolvedAddress '
+              '只带「OS 实际选去连的那一个」 —— 选到 IPv4 时上层只能看到"连不上"，'
+              '把用户指向网络/代理，方向就错了。这就是本次补它的原因。',
+        ),
+        (
+          prefix: '104.244.43.',
+          evidence:
+              '本轮实测本机返回过该段（104.244.43.182，无 PTR），'
+              'DoH 真值为 216.198.79.195 / 64.29.17.195 —— 仅"与真值不符"，归属未证实',
+        ),
+      ];
 
   /// 这个地址是否落在**已知伪造段**里
   ///
@@ -567,7 +572,8 @@ class DanmakuProbeReport {
         failure: DanmakuProbeFailure.connectionTimeout,
         url: url,
         detail: '等待 ${error.duration?.inSeconds ?? 0} 秒没有回应',
-        remedy: '这通常不是"服务坏了"，而是这台机器到那个地址「连不通」'
+        remedy:
+            '这通常不是"服务坏了"，而是这台机器到那个地址「连不通」'
             '（被墙 / 需要代理 / 路由不通）。'
             '可以先在弹幕设置里把代理切成「系统」或「自定义」，再点一次「测试连接」。',
       );
@@ -641,7 +647,8 @@ class DanmakuProbeReport {
         failure: DanmakuProbeFailure.tlsFailed,
         url: url,
         detail: s,
-        remedy: 'TLS 握手没过：可能是代理在做中间人、或证书过期。'
+        remedy:
+            'TLS 握手没过：可能是代理在做中间人、或证书过期。'
             '换直连/换代理各试一次就能分清是哪一边。',
       );
     }
@@ -736,15 +743,15 @@ class DanmakuProbeReport {
      */
     final failure = !hasTruth
         ? (forged
-            ? DanmakuProbeFailure.dnsHijacked
-            : DanmakuProbeFailure.dnsUnverifiable)
+              ? DanmakuProbeFailure.dnsHijacked
+              : DanmakuProbeFailure.dnsUnverifiable)
         : cmp == DanmakuDnsComparison.overlap
-            ? DanmakuProbeFailure.dnsConsistent
-            : different
-                ? (forged
-                    ? DanmakuProbeFailure.dnsHijacked
-                    : DanmakuProbeFailure.dnsInconsistent)
-                : DanmakuProbeFailure.dnsUnverifiable;
+        ? DanmakuProbeFailure.dnsConsistent
+        : different
+        ? (forged
+              ? DanmakuProbeFailure.dnsHijacked
+              : DanmakuProbeFailure.dnsInconsistent)
+        : DanmakuProbeFailure.dnsUnverifiable;
     /*
      * ★★★ 2026-10-19（任务 B）：detail 要让用户**自己看懂发生了什么**。
      *
@@ -783,31 +790,31 @@ class DanmakuProbeReport {
      */
     final evidence = !hasTruth && forged
         ? '本机解析到：$local\n'
-            '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
-            '注意：取弹幕 / 搜索这条路径不做额外查询 —— 本次没能核对权威 DNS 真值；'
-            '到弹幕设置里点「测试连接」会把真值查出来对照。'
+              '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
+              '注意：取弹幕 / 搜索这条路径不做额外查询 —— 本次没能核对权威 DNS 真值；'
+              '到弹幕设置里点「测试连接」会把真值查出来对照。'
         : doh.isEmpty
-            ? '本机解析到：$local\n'
-                '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
-                '⚠️ 已经按当前代理设置问过三个加密 DNS 源，全都连不上 —— 本次没能核对权威 DNS 真值（这次没有可比较的权威答案）。'
-                '可能是网络封锁了 DoH，也可能是没开代理；但上面这个地址本身已经能说明问题。'
-            : hijacked
-                ? '本机解析到：$local\n'
-                    '权威 DNS（加密查询）真值：$doh\n'
-                    '⇒ 同一个域名，你这台机器拿到的和真实地址「不是一个东西」。'
-                : different
-                    ? '本机解析到：$local\n'
-                        '权威 DNS（加密查询）真值：$doh\n'
-                        '⚠️ 两边不在同一网段，但本机地址「不在」已知伪造段里 '
-                        '⇒ 这只能说明「不一致」，不能据此说被劫持'
-                        '（大站多 A / anycast 时，同一天不同源给出不同末位是常态）。'
-                : cmp == DanmakuDnsComparison.overlap
-                    ? '本机解析到：$local\n'
-                        '权威 DNS（加密查询）真值：$doh\n'
-                        '⇒ 两边有交集：本机解析与权威 DNS 一致 ⇒ '
-                        '「问题不在 DNS」，不是劫持。'
-                    : '本机解析到：$local，没有可比较的本机/权威答案 ⇒ '
-                        '既不能说被劫持，也不能说没问题（这里不猜）。';
+        ? '本机解析到：$local\n'
+              '这个地址落在「已知的伪造段」里（同一网段被实测判定为他人服务器）。\n'
+              '⚠️ 已经按当前代理设置问过三个加密 DNS 源，全都连不上 —— 本次没能核对权威 DNS 真值（这次没有可比较的权威答案）。'
+              '可能是网络封锁了 DoH，也可能是没开代理；但上面这个地址本身已经能说明问题。'
+        : hijacked
+        ? '本机解析到：$local\n'
+              '权威 DNS（加密查询）真值：$doh\n'
+              '⇒ 同一个域名，你这台机器拿到的和真实地址「不是一个东西」。'
+        : different
+        ? '本机解析到：$local\n'
+              '权威 DNS（加密查询）真值：$doh\n'
+              '⚠️ 两边不在同一网段，但本机地址「不在」已知伪造段里 '
+              '⇒ 这只能说明「不一致」，不能据此说被劫持'
+              '（大站多 A / anycast 时，同一天不同源给出不同末位是常态）。'
+        : cmp == DanmakuDnsComparison.overlap
+        ? '本机解析到：$local\n'
+              '权威 DNS（加密查询）真值：$doh\n'
+              '⇒ 两边有交集：本机解析与权威 DNS 一致 ⇒ '
+              '「问题不在 DNS」，不是劫持。'
+        : '本机解析到：$local，没有可比较的本机/权威答案 ⇒ '
+              '既不能说被劫持，也不能说没问题（这里不猜）。';
     return DanmakuProbeReport(
       failure: failure,
       url: url,
@@ -824,9 +831,9 @@ class DanmakuProbeReport {
        */
       remedy: failure == DanmakuProbeFailure.dnsHijacked
           ? '本机 DNS 把这个域名解析到了「错误地址」，所以连不上 —— '
-              '「不是这个服务坏了」（它在代理下是活的）。'
-              '改弹幕地址没用；要做的是：把系统 DNS 换成可信的（支持 DoH 更好），'
-              '或者在弹幕设置里开启代理，让域名解析/连接都走代理。'
+                '「不是这个服务坏了」（它在代理下是活的）。'
+                '改弹幕地址没用；要做的是：把系统 DNS 换成可信的（支持 DoH 更好），'
+                '或者在弹幕设置里开启代理，让域名解析/连接都走代理。'
           : remedyFor(failure),
     );
   }
@@ -890,18 +897,17 @@ class DanmakuProbeReport {
     required String url,
     required int statusCode,
     String detail = '',
-  }) =>
-      DanmakuProbeReport(
-        failure: DanmakuProbeFailure.serverError,
-        url: url,
-        statusCode: statusCode,
-        detail: detail,
-        remedy: statusCode == 401 || statusCode == 403
-            ? '服务活着，但它拒绝了这次请求（凭证/token 问题）——'
-                '这是「配置」问题，不是网络问题。'
-            : '服务活着，但它自己报错了 —— 这是「服务端」的问题，'
-                '等一会儿或换一个实例再试。',
-      );
+  }) => DanmakuProbeReport(
+    failure: DanmakuProbeFailure.serverError,
+    url: url,
+    statusCode: statusCode,
+    detail: detail,
+    remedy: statusCode == 401 || statusCode == 403
+        ? '服务活着，但它拒绝了这次请求（凭证/token 问题）——'
+              '这是「配置」问题，不是网络问题。'
+        : '服务活着，但它自己报错了 —— 这是「服务端」的问题，'
+              '等一会儿或换一个实例再试。',
+  );
 
   final DanmakuProbeFailure failure;
 
@@ -919,59 +925,58 @@ class DanmakuProbeReport {
 
   /// 按 [f] 给下一步（**公开**：设置页也要用同一份文案，见 danmaku_source_page）
   static String remedyFor(DanmakuProbeFailure f) => switch (f) {
-        DanmakuProbeFailure.dnsFailed =>
-          '域名解析不出来 ⇒ 是本机 DNS / 网络的问题，'
-              '「不是这个服务坏了」。改配置不会有用；'
-              '换个网络或修好 DNS 再试。',
-        /*
+    DanmakuProbeFailure.dnsFailed =>
+      '域名解析不出来 ⇒ 是本机 DNS / 网络的问题，'
+          '「不是这个服务坏了」。改配置不会有用；'
+          '换个网络或修好 DNS 再试。',
+    /*
          * ★ 与上一档**操作完全不同**：这里 DNS 是"通"的，但答案是**假的**。
          *   ⇒ 要换的是 DNS 解析（DoH）/ 开代理，而不是"换个网络碰运气"。
          */
-        DanmakuProbeFailure.dnsHijacked =>
-          '本机 DNS 把这个域名解析到了「错误地址」（不是服务坏了）。'
-              '所以改弹幕地址没用 —— 要换的是「域名解析」：'
-              '把系统 DNS 换成可信的（支持 DoH 更好），'
-              '或者在弹幕设置里开启代理。',
-        /*
+    DanmakuProbeFailure.dnsHijacked =>
+      '本机 DNS 把这个域名解析到了「错误地址」（不是服务坏了）。'
+          '所以改弹幕地址没用 —— 要换的是「域名解析」：'
+          '把系统 DNS 换成可信的（支持 DoH 更好），'
+          '或者在弹幕设置里开启代理。',
+    /*
          * ★★★ 修复 A 的核心一句：**别动 DNS**。
          *   到达这一档意味着"查到了真值，而且真值与本机答案有交集"
          *   ⇒ 再把用户推去改 DNS 就是纯粹的误导。
          */
-        DanmakuProbeFailure.dnsConsistent =>
-          '本机解析与权威 DNS 一致 ⇒「问题不在 DNS」（不是劫持，别去改 DNS）。'
-              '既然域名解析是对的，就把方向放到「连接 / 服务可达性」上：'
-              '先试一下弹幕设置里的「代理」，或换个实例；'
-              '若开了代理仍不通，那是这条线路到服务端的网络问题，不是配置错。',
-        DanmakuProbeFailure.dnsUnverifiable =>
-          '这次拿到了权威 DNS 的答案，但没法与本机答案比较'
-              '（本机没留下可比的解析结果）。'
-              '所以既不能说是劫持、也不能说没事 —— 这里不猜。'
-              '请重试一次「测试连接」；若一直这样，把下面这句原文反馈给我们。',
-        /*
+    DanmakuProbeFailure.dnsConsistent =>
+      '本机解析与权威 DNS 一致 ⇒「问题不在 DNS」（不是劫持，别去改 DNS）。'
+          '既然域名解析是对的，就把方向放到「连接 / 服务可达性」上：'
+          '先试一下弹幕设置里的「代理」，或换个实例；'
+          '若开了代理仍不通，那是这条线路到服务端的网络问题，不是配置错。',
+    DanmakuProbeFailure.dnsUnverifiable =>
+      '这次拿到了权威 DNS 的答案，但没法与本机答案比较'
+          '（本机没留下可比的解析结果）。'
+          '所以既不能说是劫持、也不能说没事 —— 这里不猜。'
+          '请重试一次「测试连接」；若一直这样，把下面这句原文反馈给我们。',
+    /*
          * ★★ 实网实测（2026-10-25）：三家真 DoH 彼此就会不一致（Vercel 多 A），
          *   所以不能把用户推去改 DNS（那是没坑的东西）。
          *   真要改 DNS 的前提是本机地址落在**伪造段**（那时走 dnsHijacked）。
          */
-        DanmakuProbeFailure.dnsInconsistent =>
-          '本机与权威 DNS 拿到的不是同一组地址，但本机地址「不」在已知伪造段 '
-              '⇒ 这只能说明「不一致」，「别去改 DNS」（大站多地址时这是常态）。'
-              '先重试一次、或换一个实例。',
-        DanmakuProbeFailure.connectionTimeout =>
-          '连不上（超时）⇒ 地址解析出来了但连不过去，'
-              '通常是「被墙 / 需要代理 / 路由不通」，'
-              '「也可能」是本机 DNS 返回了假地址（那种情况会单独报「域名被解析到错误地址」）。'
-              '这不是"服务没运行"，也不是"地址填错了"。'
-              '在弹幕设置里试「代理」，或换一个能连通的实例。',
-        DanmakuProbeFailure.connectionRefused =>
-          '连接被拒绝 ⇒ 这个地址上「没有服务在听」。'
-              '自建地址的话去启动服务 / 检查端口；'
-              '内置实例出现这个通常是我们换了部署 —— 换下一个实例。',
-        DanmakuProbeFailure.tlsFailed =>
-          'TLS 握手失败 ⇒ 证书 / 中间人代理的问题。'
-              '先把代理切成「直连」再试一次，能分清是不是代理造成的。',
-        DanmakuProbeFailure.serverError =>
-          '服务回了错误状态 ⇒ 这是「服务端」的问题（我们这边没做错什么）。',
-        /*
+    DanmakuProbeFailure.dnsInconsistent =>
+      '本机与权威 DNS 拿到的不是同一组地址，但本机地址「不」在已知伪造段 '
+          '⇒ 这只能说明「不一致」，「别去改 DNS」（大站多地址时这是常态）。'
+          '先重试一次、或换一个实例。',
+    DanmakuProbeFailure.connectionTimeout =>
+      '连不上（超时）⇒ 地址解析出来了但连不过去，'
+          '通常是「被墙 / 需要代理 / 路由不通」，'
+          '「也可能」是本机 DNS 返回了假地址（那种情况会单独报「域名被解析到错误地址」）。'
+          '这不是"服务没运行"，也不是"地址填错了"。'
+          '在弹幕设置里试「代理」，或换一个能连通的实例。',
+    DanmakuProbeFailure.connectionRefused =>
+      '连接被拒绝 ⇒ 这个地址上「没有服务在听」。'
+          '自建地址的话去启动服务 / 检查端口；'
+          '内置实例出现这个通常是我们换了部署 —— 换下一个实例。',
+    DanmakuProbeFailure.tlsFailed =>
+      'TLS 握手失败 ⇒ 证书 / 中间人代理的问题。'
+          '先把代理切成「直连」再试一次，能分清是不是代理造成的。',
+    DanmakuProbeFailure.serverError => '服务回了错误状态 ⇒ 这是「服务端」的问题（我们这边没做错什么）。',
+    /*
          * ★★★ 2026-10-19（X4）：这一段的每个字都必须能被证伪。
          * ```text
          * 兜底分支手里**没有任何网络物证**（没解析过、没建过连接），
@@ -979,12 +984,12 @@ class DanmakuProbeReport {
          * 否则用户会去改代理 / 换网络 —— 而真正出错的是检测这一步自己。
          * ```
          */
-        DanmakuProbeFailure.probeFailed =>
-          '检测这一步自己出错了，还没走到「能不能连上」那一步。'
-              '所以「不能」据此判断服务或网络好坏。'
-              '请把下面这句原文反馈给我们（它能帮我们定位）：',
-        DanmakuProbeFailure.none => '',
-      };
+    DanmakuProbeFailure.probeFailed =>
+      '检测这一步自己出错了，还没走到「能不能连上」那一步。'
+          '所以「不能」据此判断服务或网络好坏。'
+          '请把下面这句原文反馈给我们（它能帮我们定位）：',
+    DanmakuProbeFailure.none => '',
+  };
 
   /// ★★★ 2026-10-19（R3-③/⑦ 归因修正）：用 **DoH** 拿一次"真值"做**佐证**
   ///
@@ -1436,12 +1441,12 @@ enum DanmakuFeedChannel {
 extension DanmakuFeedChannelX on DanmakuFeedChannel {
   /// 给人看的名字（**全仓一份**：勾选框、合并读数、门禁都读这里）
   String get label => switch (this) {
-        DanmakuFeedChannel.biliSource => '本片源自带',
-        DanmakuFeedChannel.biliExternal => '某个视频站',
-        DanmakuFeedChannel.danApi => 'dan-api',
-        DanmakuFeedChannel.localService => '本机服务',
-        DanmakuFeedChannel.plugin => '插件提供',
-      };
+    DanmakuFeedChannel.biliSource => '本片源自带',
+    DanmakuFeedChannel.biliExternal => '某个视频站',
+    DanmakuFeedChannel.danApi => 'dan-api',
+    DanmakuFeedChannel.localService => '本机服务',
+    DanmakuFeedChannel.plugin => '插件提供',
+  };
 }
 
 class DanmakuSettingsDialog extends StatefulWidget {
@@ -1910,7 +1915,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           _group(_hintSection(s.error!.hint!)),
         ],
         if (s.error != null && widget.onOpenSearch != null)
-          TextButton(
+          ui.TextButton(
             onPressed: widget.onOpenSearch,
             child: const Text('查看请求与服务端详情'),
           ),
@@ -2133,69 +2138,31 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     );
   }
 
-  /// 四个页签。用 `SegmentedButton` 而不是自写一套：
-  /// 它自带选中态语义、键盘导航与无障碍读屏支持，
-  /// 而且与本仓其他地方的选择控件同一套。
-  ///
-  /// ★★★ 2026-10-17（Owner 第 11 条）：页签从「按源命名」改成「按能力命名」
-  /// ```text
-  /// 改前：配置 / bilibili / 弹弹play            // site-ok: danmaku-source
-  /// 改后：配置 / dan-api / 插件提供 / 官方兜底
-  /// ```
-  /// Owner 原话：「弹弹play 我说了要让可用的dan-api去替换的,
-  ///              这里的弹幕面板怎么还是弹弹play?」
-  ///
-  /// ⚠️ 四个标签都是 2~4 个字，卡片宽 560、内容区扣掉左右 padding 后
-  ///    仍放得下 —— **不给图标**（四个图标会把文字挤成省略号，
-  ///    而省略号比没图标难认得多）。
+  /// 三个能力页签使用实际 Miuix 选择按钮，保留键盘遍历与选中语义。
   Widget _tabBar() {
-    return SizedBox(
-      width: double.infinity,
-      child: SegmentedButton<DanmakuPanelTab>(
-        segments: const <ButtonSegment<DanmakuPanelTab>>[
-          /*
-           * ★ 2026-10-18 第四版：三个页签按「用户要做的事」分。
-           *   标签都是 2~3 个字，卡片宽 560 扣掉左右 padding 后放得下。
-           */
-          ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.display,
-            label: Text('显示'),
-          ),
-          ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.sources,
-            label: Text('弹幕来源'),
-          ),
-          ButtonSegment<DanmakuPanelTab>(
-            value: DanmakuPanelTab.advanced,
-            label: Text('高级'),
+    const tabs = [
+      (DanmakuPanelTab.display, '显示'),
+      (DanmakuPanelTab.sources, '弹幕来源'),
+      (DanmakuPanelTab.advanced, '高级'),
+    ];
+    return Row(
+      key: const ValueKey('danmaku-settings-tabs'),
+      children: [
+        for (var index = 0; index < tabs.length; index++) ...[
+          if (index > 0) const SizedBox(width: Sp.x2),
+          Expanded(
+            child: ui.ChoiceChip(
+              label: Text(tabs[index].$2),
+              selected: _tab == tabs[index].$1,
+              showCheckmark: false,
+              onSelected: (_) => setState(() => _tab = tabs[index].$1),
+              labelStyle: _tab == tabs[index].$1
+                  ? null
+                  : const TextStyle(color: DanmakuTextColors.secondary),
+            ),
           ),
         ],
-        selected: <DanmakuPanelTab>{_tab},
-        showSelectedIcon: false,
-        /*
-         * ★★ 2026-10-16（Owner 实测截图：「未选中的 tab 文字看不清」）
-         *
-         * 根因：不给 `style` 时，未选中项走框架默认的
-         * `_SegmentedButtonDefaultsM3` —— 它的前景色是
-         * `colorScheme.onSurface`。本面板是**强制深色卡片**
-         * （`forceDarkCard: true`），而灰色档是给 #14161B 这个
-         * 深底设计的固定灰阶 ⇒ 未选中项与卡片底几乎同色（实测均值 ≈ 卡片底）。
-         *
-         * ⇒ 显式给色，两档都走 `DanmakuTextColors`：
-         *     未选中  secondary #B9BEC6（对深底 9.7:1，t27_w1 门禁钉着）
-         *     选中    body      #E6E6E6（对深底 14.5:1）
-         *   ⚠️ 面板是强制深色 ⇒ **不许**用 colorScheme（明暗主题下会各取一色，
-         *      浅色主题下又变成看不清 —— 那正是本面板上一次的回归）。
-         *   ⚠️ 用 `styleFrom` 而不是手写 `ButtonStyle`：
-         *      它是框架提供的那条路（见 `segmented_button.dart:281`）。
-         *      底纹/边框仍由主题给 —— 只改**文字色**，不动几何。
-         */
-        style: SegmentedButton.styleFrom(
-          foregroundColor: DanmakuTextColors.secondary,
-          selectedForegroundColor: DanmakuTextColors.body,
-        ),
-        onSelectionChanged: (v) => setState(() => _tab = v.first),
-      ),
+      ],
     );
   }
 
@@ -2282,7 +2249,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     required void Function(bool) onChanged,
     String? hint,
   }) {
-    return SwitchListTile(
+    return ui.SwitchListTile(
       contentPadding: EdgeInsets.zero,
       dense: true,
       visualDensity: VisualDensity.compact,
@@ -2381,7 +2348,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           ),
         ),
         const SizedBox(height: Sp.x2),
-        TextField(
+        ui.TextField(
           controller: _endpointUrl,
           style: const TextStyle(
             color: DanmakuTextColors.body,
@@ -2425,7 +2392,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ),
         const SizedBox(height: Sp.x2),
         // ── token（可选）──
-        TextField(
+        ui.TextField(
           controller: _endpointToken,
           style: const TextStyle(
             color: DanmakuTextColors.body,
@@ -2452,7 +2419,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         // ── 动作行 ──
         Row(
           children: [
-            FilledButton.icon(
+            ui.FilledButton.icon(
               onPressed: _probeRunning ? null : _runProbe,
               icon: _probeRunning
                   ? const AppInlineSpinner(
@@ -2463,7 +2430,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
               label: const Text('测试连接'),
             ),
             const SizedBox(width: Sp.x2),
-            TextButton(
+            ui.TextButton(
               // 没有存过地址 ⇒ 「清除」无意义，禁用比画一个点了没反应的按钮好
               onPressed: saved.isEmpty ? null : _clearEndpoint,
               child: const Text('清除'),
@@ -2554,15 +2521,15 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     final color = ok
         ? DanmakuTextColors.secondary
         : (r.failure.isLocalNetworkProblem
-            // 本机网络问题：橙色（该动手，但不是"我们坏了"）
-            ? Colors.orangeAccent
-            // 服务端问题：红（确实是那边坏了）
-            : Colors.redAccent);
+              // 本机网络问题：橙色（该动手，但不是"我们坏了"）
+              ? Colors.orangeAccent
+              // 服务端问题：红（确实是那边坏了）
+              : Colors.redAccent);
     final icon = ok
         ? AppIcons.info_outline
         : (r.failure.isLocalNetworkProblem
-            ? AppIcons.wifi_off
-            : AppIcons.error_outline);
+              ? AppIcons.wifi_off
+              : AppIcons.error_outline);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(Sp.x3),
@@ -2633,7 +2600,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   ///    理由：用户之后还能在同一个框里改它 —— 否则「内置」和「自填」
   ///    会变成两条互不相通的路径（改了没生效，又是一处接线坑）。
   Widget _builtinRow(DanmakuPublicInstance p, {required bool selected}) {
-    return InkWell(
+    return ui.InkWell(
       onTap: () => _selectBuiltin(p),
       borderRadius: Radii.rSm,
       child: Container(
@@ -2873,10 +2840,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
        * ```
        */
       _probeReport = st.online
-          ? const DanmakuProbeReport(
-              failure: DanmakuProbeFailure.none,
-              url: '',
-            )
+          ? const DanmakuProbeReport(failure: DanmakuProbeFailure.none, url: '')
           : DanmakuProbeReport(
               failure: DanmakuProbeFailure.connectionTimeout,
               url: ep?.display ?? raw,
@@ -3483,7 +3447,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         if (words.length >= _kBlockSearchMinWords)
           Padding(
             padding: const EdgeInsets.only(bottom: Sp.x2),
-            child: TextField(
+            child: ui.TextField(
               controller: _blockSearch,
               style: const TextStyle(
                 color: DanmakuTextColors.muted,
@@ -3494,7 +3458,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
                 prefixIcon: const Icon(AppIcons.search, size: 18),
                 suffixIcon: _blockSearch.text.isEmpty
                     ? null
-                    : IconButton(
+                    : ui.IconButton(
                         icon: const Icon(AppIcons.close, size: 18),
                         tooltip: '清除搜索',
                         onPressed: () => setState(_blockSearch.clear),
@@ -3530,53 +3494,45 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     return Padding(
       padding: const EdgeInsets.only(bottom: Sp.x2),
       child: Wrap(
+        key: const ValueKey('danmaku-block-words'),
         spacing: Sp.x1,
         runSpacing: Sp.x1,
         children: [
           for (final w in shown)
-            InputChip(
-              /*
-               * ⚠️ The TextStyle MUST carry a colour. `t27_w1_danmaku_contrast_test`
-               * scans the source for `TextStyle(` without `color:`/`foreground:` and
-               * fails on it -- a style with no colour silently inherits the theme's
-               * default, which on this dark panel can end up unreadable.
-               * `labelStyle` below sets the colour too; this one is the label's own
-               * override and has to stand on its own.
-               */
-              label: Text(
-                w,
-                style: const TextStyle(
-                  color: DanmakuTextColors.body,
-                  fontSize: 12,
-                ),
+            miuix.MiuixCard(
+              key: ValueKey<String>('danmaku-block-word:$w'),
+              cornerRadius: Radii.sm,
+              insideMargin: const EdgeInsets.only(left: Sp.x3),
+              colors: miuix.MiuixCardColors(
+                color: DanmakuTextColors.border.withValues(alpha: 0.35),
+                contentColor: DanmakuTextColors.body,
               ),
-              /*
-               * ★★ 2026-10-16（Owner 实测截图：「屏蔽词」下面的药丸看不清）
-               *
-               * 改前 `labelStyle` 是 muted 而 `backgroundColor` 是
-               * `Colors.transparent` ⇒ 药丸**没有自己的底**，直接露出分组卡片的
-               * 浅底；而「1 个」这种计数与药丸挤在同一行时，整体就是一片浅灰
-               * ⇒ 药丸与文字都糊在一起。
-               *
-               * ⇒ 三处都收到 `DanmakuTextColors` 既有灰阶上：
-               *     药丸底  border @35%（比分组卡片略抬一档 ⇒ 看得出是个`药丸`）
-               *     描边    border（与分组卡片同一支灰，1.6:1 装饰线）
-               *     文字    body #E6E6E6（14.5:1，t27_w1 门禁钉着）
-               *     ✕       secondary #B9BEC6（9.7:1）
-               * ⚠️ 面板强制深色 ⇒ 一律不引 colorScheme（见外壳 forceDarkCard）。
-               */
-              labelStyle: const TextStyle(color: DanmakuTextColors.body),
-              deleteIcon: const Icon(
-                AppIcons.close,
-                size: 14,
-                color: DanmakuTextColors.secondary,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    w,
+                    style: const TextStyle(
+                      color: DanmakuTextColors.body,
+                      fontSize: FontSizes.cap,
+                    ),
+                  ),
+                  ui.IconButton(
+                    tooltip: '移除屏蔽词 $w',
+                    constraints: const BoxConstraints.tightFor(
+                      width: 32,
+                      height: 32,
+                    ),
+                    icon: const Icon(
+                      AppIcons.close,
+                      size: 14,
+                      color: DanmakuTextColors.secondary,
+                    ),
+                    // Remove the original value, never a substring match.
+                    onPressed: () => _removeBlockWord(w),
+                  ),
+                ],
               ),
-              // Delete by exact value (shown holds the original strings).
-              onDeleted: () => _removeBlockWord(w),
-              visualDensity: VisualDensity.compact,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              side: const BorderSide(color: DanmakuTextColors.border),
-              backgroundColor: DanmakuTextColors.border.withValues(alpha: 0.35),
             ),
         ],
       ),
@@ -3614,7 +3570,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
     return Row(
       children: [
         Expanded(
-          child: TextField(
+          child: ui.TextField(
             /*
              * Stable key for tests. Before the 2026-10-15 redesign the block
              * word box was the panel's only maxLines==4 EditableText, so tests
@@ -3642,7 +3598,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           ),
         ),
         const SizedBox(width: Sp.x1),
-        IconButton(
+        ui.IconButton(
           tooltip: '添加',
           icon: const Icon(AppIcons.add, size: 20),
           onPressed: () {
@@ -3678,7 +3634,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
             ),
           ),
           Expanded(
-            child: Slider(
+            child: ui.Slider(
               value: value.clamp(min, max),
               min: min,
               max: max,
@@ -3776,8 +3732,10 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         _enabledFeeds.remove(ch);
       }
     });
-    UiPrefs.set(_feedsPreferenceKey,
-      _enabledFeeds.map((channel) => channel.name).join(','));
+    UiPrefs.set(
+      _feedsPreferenceKey,
+      _enabledFeeds.map((channel) => channel.name).join(','),
+    );
     UiPrefs.flush();
     widget.onChanged?.call();
   }
@@ -3794,9 +3752,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   /// ⚠️ 只勾了不算：勾上 dan-api 而宿主没给内容时，它**不进**这里
   ///    （否则读数会凭空多一路 —— 那是捏造）。
   List<DanmakuFeedChannel> get _activeFeedChannels => <DanmakuFeedChannel>[
-        for (final ch in DanmakuFeedChannel.values)
-          if (_enabledFeeds.contains(ch) && _hasDataFor(ch)) ch,
-      ];
+    for (final ch in DanmakuFeedChannel.values)
+      if (_enabledFeeds.contains(ch) && _hasDataFor(ch)) ch,
+  ];
 
   /// 这一路手上有没有**任何**可用读数（逐条内容，或至少一个条数）
   bool _hasDataFor(DanmakuFeedChannel ch) {
@@ -3815,8 +3773,8 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   }
 
   /// 每一路都有**逐条内容**吗（没有就只能计数，不能去重）
-  bool get _canMergeItemByItem => _activeFeedChannels
-      .every((ch) => _feedSamples.containsKey(ch));
+  bool get _canMergeItemByItem =>
+      _activeFeedChannels.every((ch) => _feedSamples.containsKey(ch));
 
   /// 本面板手上**真实可合**的几路样本（宿主没给的就是没有）
   ///
@@ -4039,10 +3997,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
           checked: _enabledFeeds.contains(DanmakuFeedChannel.localService),
           onChanged: (v) => _toggleFeed(DanmakuFeedChannel.localService, v),
           trailing: _probeRunning
-              ? const AppInlineSpinner(
-                  size: 14,
-                  color: DanmakuTextColors.body,
-                )
+              ? const AppInlineSpinner(size: 14, color: DanmakuTextColors.body)
               : _rowAction('检测', _runProbe),
         ),
         const SizedBox(height: Sp.x3),
@@ -4177,7 +4132,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
      * 只读行**不套** InkWell：套了就变成"能点但没反应"，
      * 那与"看起来能点实际上不能点"是同一种谎，只是反过来。
      */
-    return InkWell(
+    return ui.InkWell(
       onTap: () => onChanged(!checked),
       borderRadius: Radii.rSm,
       child: Padding(
@@ -4204,9 +4159,9 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
   );
 
   /// 行内小动作按钮
-  Widget _rowAction(String text, VoidCallback onTap) => TextButton(
+  Widget _rowAction(String text, VoidCallback onTap) => ui.TextButton(
     onPressed: onTap,
-    style: TextButton.styleFrom(
+    style: ui.TextButton.styleFrom(
       minimumSize: const Size(0, 28),
       padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -4273,7 +4228,7 @@ class _DanmakuSettingsDialogState extends State<DanmakuSettingsDialog> {
         ],
         if (a != null && widget.onHintAction != null) ...[
           const SizedBox(height: Sp.x3),
-          FilledButton.icon(
+          ui.FilledButton.icon(
             onPressed: () => widget.onHintAction!(a),
             icon: const Icon(AppIcons.settings, size: 18),
             label: Text(a.label),

@@ -46,13 +46,14 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart'
-    show ValueListenable, ValueNotifier;
+import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart' show SchedulerBinding, FrameTiming;
 // ★ 自拍用（SOURIN_SHOT=1）：RenderRepaintBoundary + toImage
 import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
+
 import 'dart:ui' as ui;
+
 import 'package:material_ui/material_ui.dart';
 /*
  * ★★ 2026-10-18（M4）：本地化委托从 material_ui 改用 flutter_localizations
@@ -95,7 +96,8 @@ import 'core/sourin_api.dart' show SectionSource, SourinApi;
  * 无差别引入 `models.dart` 的全部类型会埋下与页面同名符号冲突的隐患
  * （本项目已因"两套 Material"吃过一次命名冲突的苦）。
  */
-import 'core/models.dart' show Episode, Favorite, Progress, followRemainingByKey;
+import 'core/models.dart'
+    show Episode, Favorite, Progress, followRemainingByKey;
 import 'ui/browse_page.dart';
 import 'ui/spatial_nav.dart';
 import 'ui/app_theme.dart';
@@ -135,6 +137,12 @@ import 'ui/app_palette.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/shell_layouts/bottom_bar_layout.dart';
 import 'ui/shell_layouts/shell_layout.dart';
+import 'ui/shell_layouts/miuix_shell_navigation.dart';
+
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'ui/widgets/miuix_controls.dart' as controls;
+import 'ui/widgets/settings_tabs.dart';
 import './design/icons/app_icons.dart';
 
 /// ★ 是否桌面平台（Windows / macOS / Linux）
@@ -160,20 +168,25 @@ import './design/icons/app_icons.dart';
 /// 存储权限            ✗       ✓      Android 要 manifest 声明
 /// hwdec 后端      d3d11va  mediacodec 各平台硬件加速接口不同
 /// ```
-final bool kIsDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+final bool kIsDesktop =
+    Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
 /// Shell's live route boundary; push completes only when the route exits.
 Future<LivePlaybackSnapshot?> handoffLivePlayback({
   required LivePlaybackSnapshot initialPlayback,
   required PlayerPage Function(
     LivePlaybackSnapshot? initial,
     ValueChanged<LivePlaybackSnapshot>? reportExit,
-  ) buildPlayer,
+  )
+  buildPlayer,
   required Future<void> Function(PlayerPage player) push,
 }) async {
   LivePlaybackSnapshot? returnedPlayback;
-  await push(buildPlayer(initialPlayback, (snapshot) {
-    returnedPlayback = snapshot;
-  }));
+  await push(
+    buildPlayer(initialPlayback, (snapshot) {
+      returnedPlayback = snapshot;
+    }),
+  );
   return returnedPlayback;
 }
 
@@ -587,8 +600,10 @@ Future<void> main() async {
     // ★ 字号那一项取 `AppMetrics.effectiveTextScale`（A1 的**唯一真源**）——
     //   第一版打的是 `Device.textScale`，那是「TV 判定」而不是「真的挂上去了」，
     //   所以手机上这条日志显示 1.0 而屏幕其实被放大了（缺陷藏了很久）。
-    debugPrint('[SHELL] 底栏高度=${Device.isTv ? 72 : 58} '
-        '字号缩放=${AppMetrics.effectiveTextScale} 画焦点环=${Device.needsFocusRing}');
+    debugPrint(
+      '[SHELL] 底栏高度=${Device.isTv ? 72 : 58} '
+      '字号缩放=${AppMetrics.effectiveTextScale} 画焦点环=${Device.needsFocusRing}',
+    );
   });
 
   /*
@@ -790,11 +805,13 @@ Future<void> main() async {
   if (Device.isTouchOnly) {
     try {
       final st = await SourinApi.remoteStop();
-      debugPrint('[SHELL] ★ 手机端已裁剪遥控: stopped=${st.stopped} running=${st.running}');
+      debugPrint(
+        '[SHELL] ★ 手机端已裁剪遥控: stopped=${st.stopped} running=${st.running}',
+      );
     } catch (e) {
       debugPrint('[SHELL] ★ 手机端关闭遥控失败（不影响使用）: $e');
     }
-  }  /*
+  } /*
    * ★ Step 1：预编译液态玻璃的 shader（`liquid_glass_widgets` 要求）
    *
    * 包文档：
@@ -1062,12 +1079,9 @@ Future<String> _resolveDataDir() async {
   }
 
   if (kIsDesktop) {
-    final appdata = Platform.environment['APPDATA'] ??
-        Platform.environment['HOME'] ??
-        '.';
-    final dir = Directory(
-      '$appdata${Platform.pathSeparator}app.sourin.player',
-    );
+    final appdata =
+        Platform.environment['APPDATA'] ?? Platform.environment['HOME'] ?? '.';
+    final dir = Directory('$appdata${Platform.pathSeparator}app.sourin.player');
     lastDataDirAttempt = dir.path;
     // 首次运行（原版没装过）时要建出来，否则核心建库会失败
     if (!await dir.exists()) await dir.create(recursive: true);
@@ -1310,8 +1324,9 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
      * ⚠️ animation 只影响过渡层，child 仍是**同一个稳定实例**
      *    （来自 _contentFor）⇒ 页面 State / 滚动位置 / 解码器都不受影响。
      */
-    final Animation<double> animation =
-        widget.leaving ? const AlwaysStoppedAnimation<double>(1.0) : curved;
+    final Animation<double> animation = widget.leaving
+        ? const AlwaysStoppedAnimation<double>(1.0)
+        : curved;
 
     final Widget transitioned = PageTransition.apply(
       animation: animation,
@@ -1502,6 +1517,7 @@ class _SourinScrollBehavior extends ScrollBehavior {
 
 class SourinApp extends StatefulWidget {
   const SourinApp({super.key, this.coreError, this.coreDataDir});
+
   /// 核心启动失败时的错误消息（null = 启动成功）
   ///
   /// 有值时由 `ShellPage` 显示**接管式**的错误页 —— **不能静默吞掉**：
@@ -1557,8 +1573,7 @@ String stripProviderRoutePrefix(String provider, String id) {
   return id.startsWith('$p:') ? id.substring(p.length + 1) : id;
 }
 
-class _SourinAppState extends State<SourinApp>
-    with WidgetsBindingObserver {
+class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
   /// ★★★ 遥控桥的「全局能力」—— 三件与**页面无关**的事（集成任务 M2）
   ///
   /// ```text
@@ -1582,10 +1597,9 @@ class _SourinAppState extends State<SourinApp>
   /// 而宿主不会重新注册 —— 于是桥里留着旧闭包（虽然当前内容等价，
   /// 但"注册了什么"与"传了什么"从此不一致，是难查的隐患）。
   /// 持有单实例让「传进去的」与「桥里存的」永远是同一个。
-  late final GlobalBridge _globals =
-      RemoteCapabilities.globalsFor(
-        openItem: _openItemFromRemote,
-        /*
+  late final GlobalBridge _globals = RemoteCapabilities.globalsFor(
+    openItem: _openItemFromRemote,
+    /*
          * ★ 直播切频道（task-39）
          *
          * # ⚠️ 为什么走 notifier 而不是直接拿 `_liveKey`
@@ -1605,8 +1619,8 @@ class _SourinAppState extends State<SourinApp>
          *   所以这个命令不该被"当前 tab"过滤掉。
          *   `cycleChannel` 内部按**可见列表**算，语义正确。
          */
-        liveChannelStep: (delta) => _liveChannelStep.value = delta,
-      );
+    liveChannelStep: (delta) => _liveChannelStep.value = delta,
+  );
 
   /// 直播切频道信号（task-39）—— `ShellPage` 订阅它
   ///
@@ -1676,13 +1690,17 @@ class _SourinAppState extends State<SourinApp>
     String? title,
   ) async {
     if (provider.isEmpty || id.isEmpty) {
-      debugPrint('[REMOTE] play_item 参数不完整（provider="$provider" '
-          'id="$id"）—— 忽略');
+      debugPrint(
+        '[REMOTE] play_item 参数不完整（provider="$provider" '
+        'id="$id"）—— 忽略',
+      );
       return;
     }
 
-    debugPrint('[REMOTE] play_item → 打开 $provider:$id'
-        '（手机给的标题="${title ?? "(无)"}"）');
+    debugPrint(
+      '[REMOTE] play_item → 打开 $provider:$id'
+      '（手机给的标题="${title ?? "(无)"}"）',
+    );
 
     // ── ⓪ P1：剥掉 id 里的 provider 路由前缀（理由见函数文档）──
     final nativeId = stripProviderRoutePrefix(provider, id);
@@ -1715,8 +1733,10 @@ class _SourinAppState extends State<SourinApp>
           debugPrint('[REMOTE] play_item 取剧集失败（沿用详情的）: $e');
         }
       }
-      debugPrint('[REMOTE] play_item 已补齐：标题="$shownTitle" '
-          '源=${srcCode ?? "(无)"} 剧集=${eps.length}');
+      debugPrint(
+        '[REMOTE] play_item 已补齐：标题="$shownTitle" '
+        '源=${srcCode ?? "(无)"} 剧集=${eps.length}',
+      );
     } catch (e) {
       /*
        * ⚠️ 补齐失败**不中止** —— 手机端只要求"打开这个片子"。
@@ -2002,7 +2022,7 @@ class _SourinAppState extends State<SourinApp>
         // ↓ 下面这块有 700 行：不整体缩进，否则本次 diff 会变成「全文件重排」，
         //   而这里真正的语义只有一句「WidgetsApp 外面多包一层」。
         child: WidgetsApp(
-      /*
+          /*
        * ★★★ 2026-10-18（M4）：`pageRouteBuilder` **必须给**，否则白屏
        *
        * # 真实故障（本轮实测，第一版 M4 就是这么白的）
@@ -2029,23 +2049,24 @@ class _SourinAppState extends State<SourinApp>
        *   （页面切换是 ShellPage 内部的 IndexedStack），所以无差异。
        * ```
        */
-      pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
-        return PageRouteBuilder<T>(
-          settings: settings,
-          pageBuilder: (context, animation, secondaryAnimation) => builder(context),
-          transitionDuration: Duration.zero,
-          reverseTransitionDuration: Duration.zero,
-        );
-      },
-      /*
+          pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
+            return PageRouteBuilder<T>(
+              settings: settings,
+              pageBuilder: (context, animation, secondaryAnimation) =>
+                  builder(context),
+              transitionDuration: Duration.zero,
+              reverseTransitionDuration: Duration.zero,
+            );
+          },
+          /*
        * ★ WidgetsApp 的 `color` 是**必需参数**（app.dart:351 `required this.color`）。
        *   MaterialApp 把它用作系统 UI 底色（如 Android 任务切换器卡片底）。
        *   取与内容区同源的底色 —— 与下面 `WindowFrame.backdrop` 同一条取法。
        */
-      color: AppTheme.floorColor(brightness),
-      title: '源影',
-      debugShowCheckedModeBanner: false,
-      /*
+          color: AppTheme.floorColor(brightness),
+          title: '源影',
+          debugShowCheckedModeBanner: false,
+          /*
        * ★★★ 2026-10-08（Owner 第 8 条）：把 Navigator 的 key 交给托盘模块
        *
        * # 为什么必须是**这里**的 key
@@ -2061,8 +2082,8 @@ class _SourinAppState extends State<SourinApp>
        *    那个是交付实测用来读当前路由名的（`shell.dart:2932`），
        *    语义完全不同，不要合并。
        */
-      navigatorKey: AppTray.navigatorKey,
-      /*
+          navigatorKey: AppTray.navigatorKey,
+          /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ arm64 内容区全空白的**根因修复**（2026-10-01）
        * ══════════════════════════════════════════════════════════════════
@@ -2134,7 +2155,7 @@ class _SourinAppState extends State<SourinApp>
        *    t435 段10 证明 `Overlay.wrap(hardEdge)` 也触发同类现象。
        *    所以这里只是消掉产品里那一处，不是通用解。
        */
-      /*
+          /*
        * ★★★ 2026-10-18（M4）：`scrollBehavior` 从**参数**改成**包裹**
        *
        * # 为什么要改写法
@@ -2153,7 +2174,7 @@ class _SourinAppState extends State<SourinApp>
        * 会读不到它 ⇒ arm64 修复可能失效。
        * ```
        */
-      /*
+          /*
        * ★★★ 2026-10-21（PR #32 复核线程 1/9）：这段注释**写对了但代码没跟上** ——
        *   M4 那次把 MaterialApp 换成 WidgetsApp 时，`scrollBehavior` 参数被删掉，
        *   `ScrollConfiguration` 却没有补上 ⇒ `_SourinScrollBehavior` 只剩一个
@@ -2164,7 +2185,7 @@ class _SourinAppState extends State<SourinApp>
        *   ⇒ 现在真的包上（见下面 `child: ScrollConfiguration(`），
        *     门禁也改成「剥掉注释后必须找得到这个绑定」。
        */
-      /*
+          /*
        * ★★ 2026-10-18（M4）：从 MaterialApp 改成 WidgetsApp后，
        *   本来的 `GlobalMaterialLocalizations.delegates` 不再适用。
        *
@@ -2183,7 +2204,7 @@ class _SourinAppState extends State<SourinApp>
        * ⇒ 保留包，但**不用任何 Material 组件**。
        * ```
        */
-      /*
+          /*
        * ★★★ 2026-10-18（M4 真机验证抓到）：delegates 里**必须**有 Material 的
        *   delegate，否则弹窗一开就崩。
        *   （当时挂的是 `DefaultMaterialLocalizations` 的英文版；2026-10-22 换成
@@ -2244,9 +2265,9 @@ class _SourinAppState extends State<SourinApp>
        *   集合本体在文件末尾的 `kAppLocalizationsDelegates`（提成顶层常量是为了
        *   门禁能 import 它去真挂，而不是 grep 类名 —— grep 到 ≠ 树上生效）。
        */
-      localizationsDelegates: kAppLocalizationsDelegates,
-      supportedLocales: [Locale("zh", "CN"), Locale("en", "US")],
-      /*
+          localizationsDelegates: kAppLocalizationsDelegates,
+          supportedLocales: [Locale("zh", "CN"), Locale("en", "US")],
+          /*
        * ★ 两层 theme 都要给（2026-09-22 实测踩到）
        *
        * ```text
@@ -2265,7 +2286,7 @@ class _SourinAppState extends State<SourinApp>
        *    所以走 `buildMaterialTheme()`（见 ui/theme_bridge.dart）
        *    把角色补全。这是必须的第二步，不是可选优化。
        */
-      /*
+          /*
        * ★★ 2026-10-18（M4）：**删掉了 `theme: materialTheme`**
        *
        * WidgetsApp 没有 `theme` 参数（它不知道什么叫 Material 主题）。
@@ -2275,7 +2296,7 @@ class _SourinAppState extends State<SourinApp>
        * ⚠️ 若将来要把 `materialTheme` 彻底删掉，
        *   得先把 `theme_bridge.dart` 里那 31 个 Material 子主题全部接管。
        */
-      /*
+          /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ 自绘标题栏必须挂在 **builder 里**（Navigator 之外）
        * ══════════════════════════════════════════════════════════════════
@@ -2324,10 +2345,10 @@ class _SourinAppState extends State<SourinApp>
        * ⚠️ 播放页不在这里隐藏 —— 播放页是全屏视频，标题栏会挡住画面。
        *    用 `_TitleBarHost`（下面）根据"当前是否在播放页"动态收起。
        */
-      builder: (context, child) => _TextScaleHost(
-        child: AppThemeHost(
-          data: materialTheme,
-        /*
+          builder: (context, child) => _TextScaleHost(
+            child: AppThemeHost(
+              data: materialTheme,
+              /*
          * ══════════════════════════════════════════════════════════════
          * ★★★ 2026-10-01：删掉 `FToaster`（原本是 `child: FToaster(`）
          * ══════════════════════════════════════════════════════════════
@@ -2372,7 +2393,7 @@ class _SourinAppState extends State<SourinApp>
          *    `Overlay.wrap(clipBehavior: Clip.none, ...)` 自己包，要么先
          *    在那个平台上实测过再说。
          */
-        /*
+              /*
          * ══════════════════════════════════════════════════════════════
          * ★★ 为什么标题栏在这一层（`MaterialApp.builder`）
          * ══════════════════════════════════════════════════════════════
@@ -2412,8 +2433,8 @@ class _SourinAppState extends State<SourinApp>
          * 所以这里改方向：**让圆角外由我们自己画成主题色**
          * —— `WindowFrame` 现在收一个 `backdrop`。
          */
-        child: WindowFrame(
-          /*
+              child: WindowFrame(
+                /*
            * ★★★ 圆角**外面**那一圈的颜色（2026-09-25 任务 AD）
            *
            * 必须与**内容区同源**，否则又会"与主题相反"。
@@ -2424,8 +2445,8 @@ class _SourinAppState extends State<SourinApp>
            *    这个 `context` 在 `FTheme` **上面**（见下面那段长注释），
            *    两者都会静默兜底成**浅色**。
            */
-          backdrop: AppTheme.floorColor(brightness),
-          /*
+                backdrop: AppTheme.floorColor(brightness),
+                /*
            * ═══════════════════════════════════════════════════════════════
            * ★★★ 这里【不再传】`shadowColor`（2026-09-25 实测撤销）
            * ═══════════════════════════════════════════════════════════════
@@ -2466,7 +2487,7 @@ class _SourinAppState extends State<SourinApp>
            * ⚠️ 若将来要恢复，**必须**先解决"画在窗口外"这个前提
            *    （需要窗口比内容大 + 那块区域真透明）。
            */
-          /*
+                /*
            * ═══════════════════════════════════════════════════════════
            * ★★★ 这里删掉了 `AmbientBackground`，但**保留一层极简底色**
            *     （2026-09-24 实测决定，"理论上应该没问题"是错的）
@@ -2507,8 +2528,8 @@ class _SourinAppState extends State<SourinApp>
            *    forui 的 `neutral.light.background` 是**纯白 #FFFFFF**，
            *    那正是我早先踩过的坑（整个应用变纯白，玻璃全看不见）。
            */
-          child: ColoredBox(
-            /*
+                child: ColoredBox(
+                  /*
              * ⚠⚠ 不能用 `Theme.of(context)` 判断明暗！
              *    （2026-09-24 真机实测抓到）
              *
@@ -2606,8 +2627,8 @@ class _SourinAppState extends State<SourinApp>
              * `colors.background`（`scaffold.dart:194`），
              * 深色下正是 `#0A0A0A` —— 与这层地板**同一个值**。
              */
-            color: AppTheme.floorColor(brightness),
-            /*
+                  color: AppTheme.floorColor(brightness),
+                  /*
              * ★ 手机端裁剪遥控（task-6，2026-10-02）
              *
              * Owner 原话：「手机端不需要遥控,需要裁剪掉」。
@@ -2625,19 +2646,21 @@ class _SourinAppState extends State<SourinApp>
              * TV / 桌面**保留**（TV 靠遥控器操作，见 device.dart 的
              * needsFocusRing；桌面用键盘/鼠标，也不裁）。
              */
-            child: Device.isTouchOnly
-                ? SystemUiHost(
-                    brightness: brightness,
-                    // ★ 与桌面分支同一个 toast 宿主（见下面那段注释）：
-                    //   手机端少了这一层 ⇒ showAppToast 在手机端静默失效，
-                    //   设置页的"已保存/保存失败"全部没反应。
-                    child: ToastHost(
-                      child: _TitleBarHost(child: child ?? const SizedBox()),
-                    ),
-                  )
-                : RemoteBridgeHost(
-              globals: _globals,
-              /*
+                  child: Device.isTouchOnly
+                      ? SystemUiHost(
+                          brightness: brightness,
+                          // ★ 与桌面分支同一个 toast 宿主（见下面那段注释）：
+                          //   手机端少了这一层 ⇒ showAppToast 在手机端静默失效，
+                          //   设置页的"已保存/保存失败"全部没反应。
+                          child: ToastHost(
+                            child: _TitleBarHost(
+                              child: child ?? const SizedBox(),
+                            ),
+                          ),
+                        )
+                      : RemoteBridgeHost(
+                          globals: _globals,
+                          /*
                * ══════════════════════════════════════════════════════
                * ★★★ 局域网遥控桥的挂载点（集成任务 M2，2026-09-24）
                * ══════════════════════════════════════════════════════
@@ -2677,19 +2700,21 @@ class _SourinAppState extends State<SourinApp>
                *    `setGlobals`，虽然单例桥能容忍（后注册的覆盖），
                *    但两个 `dispose` 会互相干扰。
                */
-              /*
+                          /*
                * ★ 统一 toast 宿主 —— 必须在这一层（与自绘标题栏同一层，
                *   Navigator 之外）⇒ 首页/详情页/播放页都能弹到。
                */
-              child: ToastHost(
-                child: _TitleBarHost(child: child ?? const SizedBox()),
+                          child: ToastHost(
+                            child: _TitleBarHost(
+                              child: child ?? const SizedBox(),
+                            ),
+                          ),
+                        ),
+                ),
               ),
             ),
           ),
-        ),
-      ),
-      ),
-      /*
+          /*
        * ★ 交付实测要读「当前路由名」
        *
        * ⚠️ 用 `NavigatorObserver` 而**不是** `onGenerateRoute` ——
@@ -2697,7 +2722,7 @@ class _SourinAppState extends State<SourinApp>
        *    把整个导航废掉（我第一版就是这么写的，幸好没跑）。
        *    observer 只**观察**，不干预路由生成。
        */
-      /*
+          /*
        * ★★★ 进新路由时**主动种焦点**（任务 AI，缺陷② 的本体修复）
        *
        * `FocusPrimingObserver` 是**无条件**注册的（不像下面那个只在
@@ -2708,9 +2733,9 @@ class _SourinAppState extends State<SourinApp>
        * ⚠️ 放在列表**第一个** —— `didPush` 的调用顺序就是注册顺序，
        *    要保证"种焦点"早于任何观察/记录逻辑。
        */
-      navigatorObservers: <NavigatorObserver>[
-        FocusPrimingObserver(),
-        /*
+          navigatorObservers: <NavigatorObserver>[
+            FocusPrimingObserver(),
+            /*
          * ★★★ 路由遮挡 → shell 可见性（2026-10-13，修「从播放页返回卡顿」）
          *
          * # 缺陷（真根因，已读代码坐实）
@@ -2736,19 +2761,19 @@ class _SourinAppState extends State<SourinApp>
          * ```
          * ⚠️ 只**观察**，绝不干预路由生成/转场。
          */
-        _occlusion,
-        ...kDeliveryTest
-            ? <NavigatorObserver>[RouteNameObserver()]
-            : const <NavigatorObserver>[],
-      ],
-      home: ShellPage(
-        key: debugShellKey,
-        coreError: widget.coreError,
-        coreDataDir: widget.coreDataDir,
-        liveChannelStep: _liveChannelStep,
-        occlusion: _occlusion.occluders,
-      ),
-      ),
+            _occlusion,
+            ...kDeliveryTest
+                ? <NavigatorObserver>[RouteNameObserver()]
+                : const <NavigatorObserver>[],
+          ],
+          home: ShellPage(
+            key: debugShellKey,
+            coreError: widget.coreError,
+            coreDataDir: widget.coreDataDir,
+            liveChannelStep: _liveChannelStep,
+            occlusion: _occlusion.occluders,
+          ),
+        ),
       ),
     );
   }
@@ -2841,8 +2866,7 @@ class RouteNameObserver extends NavigatorObserver {
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    lastRouteName =
-        previousRoute?.settings.name ?? '(popped to root)';
+    lastRouteName = previousRoute?.settings.name ?? '(popped to root)';
     super.didPop(route, previousRoute);
   }
 }
@@ -3071,7 +3095,6 @@ class _ShellPageState extends State<ShellPage>
   /// 全局导航 key —— 交付实测要用它读当前路由名
   final _navKey = GlobalKey<NavigatorState>();
 
-
   /// 交付实测只跑一次
   bool _deliveryRan = false;
 
@@ -3217,8 +3240,8 @@ class _ShellPageState extends State<ShellPage>
   ///
   /// ⚠️ `_occluders.value > 0` 而不是 `== 1`：连 push 两层也照样算被盖住。
   void _syncVisibility() {
-    final v = _activeTab.value == AppTab.live &&
-        (widget.occlusion?.value ?? 0) == 0;
+    final v =
+        _activeTab.value == AppTab.live && (widget.occlusion?.value ?? 0) == 0;
     if (_liveVisible.value != v) _liveVisible.value = v;
   }
 
@@ -3243,11 +3266,8 @@ class _ShellPageState extends State<ShellPage>
   /// 返回 `(leavingTabName, leavingFadeValue, leaveControllerValue)`；
   /// 没有离场页时第一项为 null。用于 `.probe/zz_t3_overlap_probe_test.dart`
   /// 逐帧核对 `enter(t) + leavingFade(t) == 1.000`。
-  (String?, double, double) debugLeavingFadeForProbe() => (
-        _leavingTab?.name,
-        _leavingFade.value,
-        _leaveC.value,
-      );
+  (String?, double, double) debugLeavingFadeForProbe() =>
+      (_leavingTab?.name, _leavingFade.value, _leaveC.value);
 
   /// 上一个 tab 的序号 —— 用来算切换方向
   int _prevIndex = 0;
@@ -3314,13 +3334,11 @@ class _ShellPageState extends State<ShellPage>
   /// 全部推导与读数见下面 `_leaveC` 处那段长注释。
   ///
   /// 只在 `t == _leavingTab` 的那一页上生效（见 build 里的传参）。
-  late final Animation<double> _leavingFade = Tween<double>(
-    begin: 1.0,
-    end: 0.0,
-  ).animate(
-    CurvedAnimation(
-      parent: _leaveC,
-      /*
+  late final Animation<double> _leavingFade =
+      Tween<double>(begin: 1.0, end: 0.0).animate(
+        CurvedAnimation(
+          parent: _leaveC,
+          /*
        * [2026-10-09 / Owner 第 3 条「切页文字重叠」] 曲线从 easeInOut 换成
        *   **与进入页同源**的 easeOut。
        *
@@ -3374,10 +3392,10 @@ class _ShellPageState extends State<ShellPage>
        * 曲线**只在**离场侧改；进入页仍是 Motion.easeOut（一行未动）。
        * `Motion.easeInOut` 在 tokens.dart:170 仍被别处使用，**不删**。
        */
-      curve: MotionPrefs.curve(context, Motion.easeOut),
-      reverseCurve: MotionPrefs.curve(context, Motion.easeOut),
-    ),
-  );
+          curve: MotionPrefs.curve(context, Motion.easeOut),
+          reverseCurve: MotionPrefs.curve(context, Motion.easeOut),
+        ),
+      );
 
   /// 保活 Stack 的**绘制顺序**（最后一项画在最上面）
   ///
@@ -3456,8 +3474,7 @@ class _ShellPageState extends State<ShellPage>
       if (!mounted) return;
       if (sum != _unread) {
         setState(() => _unread = sum);
-        _bottomBarState.value =
-            _BottomBarState(tab: _tab, unread: sum);
+        _bottomBarState.value = _BottomBarState(tab: _tab, unread: sum);
       }
       debugPrint('[SHELL] 追更徽标(还剩未看) = $sum（${following.length} 部追更）');
     } catch (e) {
@@ -3513,8 +3530,10 @@ class _ShellPageState extends State<ShellPage>
      *    而 `[HOME] 渲染完成` / `[SHELF] 取收藏失败` 必须**不**出现。
      */
     if (widget.coreError != null) {
-      debugPrint('[SHELL] ★ 核心启动失败页接管内容区'
-          '（发现页不挂载 → 不再有误导性的空态与"错误=无"）');
+      debugPrint(
+        '[SHELL] ★ 核心启动失败页接管内容区'
+        '（发现页不挂载 → 不再有误导性的空态与"错误=无"）',
+      );
     }
 
     /*
@@ -3653,9 +3672,8 @@ class _ShellPageState extends State<ShellPage>
            * 所以推一个真实播放页上去，测完再 pop。
            */
           pushTestPage: (page) {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => page),
-            );
+            Navigator.of(context)
+                .push(MaterialPageRoute<void>(builder: (_) => page));
           },
           popTestPage: () {
             final nav = Navigator.of(context);
@@ -3993,11 +4011,21 @@ class _ShellPageState extends State<ShellPage>
     // ── 输入框守卫：正在打字时不抢方向键 ──
     if (_isTypingInTextField()) return false;
 
+    // A tab group and a slider use horizontal arrows to change their value.
+    // Let their focused handlers run before TV spatial navigation moves away.
+    // Vertical arrows still leave the control through the spatial navigator.
+    if ((event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+            event.logicalKey == LogicalKeyboardKey.arrowRight) &&
+        _focusedControlUsesHorizontalKeys()) {
+      return false;
+    }
+
     /*
      * 只接管**方向键** —— 其余按键照旧走焦点树的正常派发。
      */
     final k = event.logicalKey;
-    final isArrow = k == LogicalKeyboardKey.arrowUp ||
+    final isArrow =
+        k == LogicalKeyboardKey.arrowUp ||
         k == LogicalKeyboardKey.arrowDown ||
         k == LogicalKeyboardKey.arrowLeft ||
         k == LogicalKeyboardKey.arrowRight;
@@ -4055,10 +4083,10 @@ class _ShellPageState extends State<ShellPage>
     final dir = k == LogicalKeyboardKey.arrowUp
         ? NavDir.up
         : k == LogicalKeyboardKey.arrowDown
-            ? NavDir.down
-            : k == LogicalKeyboardKey.arrowLeft
-                ? NavDir.left
-                : NavDir.right;
+        ? NavDir.down
+        : k == LogicalKeyboardKey.arrowLeft
+        ? NavDir.left
+        : NavDir.right;
 
     final moved = moveFocus(dir);
 
@@ -4117,6 +4145,20 @@ class _ShellPageState extends State<ShellPage>
      * Flutter 里对应的就是 `Scrollable` 会拿方向键去滚动。
      */
     return true;
+  }
+
+  bool _focusedControlUsesHorizontalKeys() {
+    var handlesHorizontalKeys = false;
+    FocusManager.instance.primaryFocus?.context?.visitAncestorElements((
+      element,
+    ) {
+      if (element.widget is SettingsTabs || element.widget is controls.Slider) {
+        handlesHorizontalKeys = true;
+        return false;
+      }
+      return true;
+    });
+    return handlesHorizontalKeys;
   }
 
   /// 当前焦点是否在文本输入框里
@@ -4571,8 +4613,8 @@ class _ShellPageState extends State<ShellPage>
      *      它们是"全屏页"，没有"tab 可见性"的概念。
      */
     return ShellScope(
-        notifier: _activeTab,
-        child: AppScaffold(
+      notifier: _activeTab,
+      child: AppScaffold(
         /*
          * ══════════════════════════════════════════════════════════════════
          * ★★★ 关掉 forui 的 childPadding（2026-10-03 双端像素实测反解）
@@ -4722,8 +4764,8 @@ class _ShellPageState extends State<ShellPage>
          *   保留 = 安全；删除 = 需要逐个页面补绘制面，属另一件事。
          */
         child: Material(
-        type: MaterialType.transparency,
-        /*
+          type: MaterialType.transparency,
+          /*
          * ══════════════════════════════════════════════════════════════════
          * ★★★ 必须是 Stack 而不是 Column（2026-09-24 用户指出玻璃不像玻璃）
          * ══════════════════════════════════════════════════════════════════
@@ -4774,16 +4816,16 @@ class _ShellPageState extends State<ShellPage>
          *    原版也是 `position: fixed`，页面靠 `padding-bottom` 留白。
          *    各页面自己留 `bottom` 内边距（见 `_pageFor` 里的 padding）。
          */
-        child: Stack(
-        children: [
-          /*
+          child: Stack(
+            children: [
+              /*
            * ── 内容区 ──
            *
            * ⚠️ 底色（`#EEF0F6`）在 `MaterialApp.builder` 的 `ColoredBox`，
            *    不在这里 —— 它要同时给**标题栏**和**所有路由**做底。
            *    这里只管内容区本身（切 tab 动画等）。
            */
-          /*
+              /*
            * ★★★ 第 14 条：内容区与导航的**摆放**交给布局骨架
            *
            * 原来这里是写死的 `Stack`：
@@ -4800,19 +4842,18 @@ class _ShellPageState extends State<ShellPage>
            *    _KeepAliveTransition / GlobalKey 唯一性）都**原样留在**
            *    `_buildBody()` 里 —— 骨架只拿到「已经算好的 body」，不许重建。
            */
-          _currentLayout(colors).build(
-            context: context,
-            current: _tab,
-            onSelect: _switchTo,
-            body: _buildBody(),
-            tabs: AppTab.values,
+              _currentLayout(colors).build(
+                context: context,
+                current: _tab,
+                onSelect: _switchTo,
+                body: _buildBody(),
+                tabs: AppTab.values,
+              ),
+            ],
           ),
-
-        ],
-      ),
-      ),   // ← Material(type: transparency) 的收尾（见上方的长注释）
-    ),     // ← AppScaffold 的收尾
-    );     // ← ShellScope 的收尾
+        ), // ← Material(type: transparency) 的收尾（见上方的长注释）
+      ), // ← AppScaffold 的收尾
+    ); // ← ShellScope 的收尾
   }
 
   /// ★★★ 第 14 条：**内容区**（保活逻辑全在这里，与改动前逐字一致）
@@ -4823,7 +4864,7 @@ class _ShellPageState extends State<ShellPage>
   ///    搬家搬的是**外面那一层**，里面零改动。
   Widget _buildBody() {
     return ClipRect(
-              /*
+      /*
                * ══════════════════════════════════════════════════════════
                * ★★★ 2026-10-01：这一处**单独改没用** —— 实测读数在下面，
                *     别把它当成 arm64 内容区空白的修复
@@ -4906,8 +4947,8 @@ class _ShellPageState extends State<ShellPage>
                *    桌面那处从 `:4049` 推到 `:4128`）。
                *    引用**内容**（"那个 `Positioned(bottom: 0)`"）比引用**位置**耐用。
                */
-              clipBehavior: Clip.antiAlias,
-              /*
+      clipBehavior: Clip.antiAlias,
+      /*
                * ══════════════════════════════════════════════════════════
                * ★★★ KeepAlive：5 个主 tab **保活**（task-41）
                * ══════════════════════════════════════════════════════════
@@ -4990,7 +5031,7 @@ class _ShellPageState extends State<ShellPage>
                * 换来 = 不重建 / 滚动位置保留 / 不重新走占位
                * ```
                */
-              /*
+      /*
                * ══════════════════════════════════════════════════════════
                * ★★★ F6：内容区的**顶部安全区**（手机状态栏 / 挖孔）
                * ══════════════════════════════════════════════════════════
@@ -5057,13 +5098,13 @@ class _ShellPageState extends State<ShellPage>
                * ⚠️ 包的是**整个三元**（错误页那一支也要安全区）——
                *    核心启动失败时错误页同样会顶到状态栏下面。
                */
-              child: SafeArea(
-                top: true,
-                bottom: false,
-                left: false,
-                right: false,
-                child: widget.coreError != null
-                  /*
+      child: SafeArea(
+        top: true,
+        bottom: false,
+        left: false,
+        right: false,
+        child: widget.coreError != null
+            /*
                    * ★★ 核心启动失败 → 内容区**整体**换成错误页（任务 AM）
                    *
                    * ⚠️ 这一支**不走保活** —— 错误页是"接管式"的一次性视图，
@@ -5073,14 +5114,14 @@ class _ShellPageState extends State<ShellPage>
                    *   但因为它与 `_tab` 无关，用**常量 key** 更贴切
                    *   （切 tab 不重播动画 —— 与原实现意图一致）。
                    */
-                  ? KeyedSubtree(
-                      key: const ValueKey('core-error'),
-                      child: _CoreErrorView(
-                        message: widget.coreError!,
-                        dataDir: widget.coreDataDir,
-                      ),
-                    )
-                  /*
+            ? KeyedSubtree(
+                key: const ValueKey('core-error'),
+                child: _CoreErrorView(
+                  message: widget.coreError!,
+                  dataDir: widget.coreDataDir,
+                ),
+              )
+            /*
                    * ══════════════════════════════════════════════════════
                    * ★★★ 保活内容区（task-41）
                    * ══════════════════════════════════════════════════════
@@ -5099,11 +5140,11 @@ class _ShellPageState extends State<ShellPage>
                    * ⚠️ 动画只作用在**进入的那一页**；隐藏页只是 Offstage，
                    *    不参与动画（省 CPU，也避免"退出页还在动"的怪异感）。
                    */
-                  : Stack(
-                      children: [
-                        for (final t in _stackOrder)
-                          Offstage(
-                            /*
+            : Stack(
+                children: [
+                  for (final t in _stackOrder)
+                    Offstage(
+                      /*
                              * ★★★ task-14 ⑨ 白屏修复（2026-10-04）：必须带 key
                              *
                              * ```text
@@ -5118,12 +5159,12 @@ class _ShellPageState extends State<ShellPage>
                              *    （否则窗口开关会换 key ⇒ 每次切页都重建）。
                              *    见 test/task37_keepalive_placeholder_test.dart 的判据。
                              */
-                            key: ValueKey<AppTab>(t),
-                            /*
+                      key: ValueKey<AppTab>(t),
+                      /*
                              * ★ 保活的**核心**：offstage 而不是"移除"
                              *   —— 子页仍在树上 ⇒ State / 滚动位置 / 解码器都留着
                              */
-                            /*
+                      /*
                              * ★★★ task-14 ⑨ 白屏修复（2026-10-04）
                              *
                              * 离场页（_leavingTab）在窗口期内**不 offstage** ——
@@ -5134,11 +5175,11 @@ class _ShellPageState extends State<ShellPage>
                              * ⚠️ _leavingTab 只在那一个窗口内有值，其余时刻恒 null
                              *    ⇒ 这里退化成 t != _tab（= 改前行为）。
                              */
-                            offstage: t != _tab && t != _leavingTab,
-                            child: TickerMode(
-                              // ★ 隐藏页停 ticker（省 CPU），但**不销毁** State
-                              enabled: t == _tab,
-                              /*
+                      offstage: t != _tab && t != _leavingTab,
+                      child: TickerMode(
+                        // ★ 隐藏页停 ticker（省 CPU），但**不销毁** State
+                        enabled: t == _tab,
+                        /*
                                * ⚠️⚠️ `_KeepAliveTransition` 必须**无条件**在树里
                                *      （哪怕这一页还没访问过，child 先放占位）。
                                *
@@ -5162,8 +5203,8 @@ class _ShellPageState extends State<ShellPage>
                                *   这样首次切过去时是 `didUpdateWidget` ⇒ 动画正常。
                                * ```
                                */
-                              child: ValueListenableBuilder<PageTransitionStyle>(
-                                /*
+                        child: ValueListenableBuilder<PageTransitionStyle>(
+                          /*
                                  * ══════════════════════════════════════
                                  * ★★ task-55：动画风格 —— **监听**用户的选择
                                  * ══════════════════════════════════════
@@ -5193,17 +5234,16 @@ class _ShellPageState extends State<ShellPage>
                                  *    builder 里**有** context ⇒ 无障碍"减少动态效果"
                                  *    也一并生效（系统要求减少 ⇒ 强制 `none`）
                                  */
-                                valueListenable: PageTransitionStyleStore.current,
-                                builder: (context, style, _) =>
-                                    _KeepAliveTransition(
-                                  // 只有当前页参与进入动画
-                                  active: t == _tab,
-                                  /*
+                          valueListenable: PageTransitionStyleStore.current,
+                          builder: (context, style, _) => _KeepAliveTransition(
+                            // 只有当前页参与进入动画
+                            active: t == _tab,
+                            /*
                                    * ★ 离场页：窗口期内只"画着"，不播动画
                                    *   （它拿的是恒为 1 的动画，见 build 里的说明）
                                    */
-                                  leaving: t == _leavingTab,
-                                  /*
+                            leaving: t == _leavingTab,
+                            /*
                                    * ★ 2026-10-08（Owner 第 2 条）：离场页的不透明度。
                                    *
                                    * ⚠️ 必须**只**在离场那一页上生效 —— 给所有页
@@ -5211,28 +5251,26 @@ class _ShellPageState extends State<ShellPage>
                                    *    所以这里用 `t == _leavingTab ? _leavingFade : null`，
                                    *    而不是无条件传。
                                    */
-                                  leavingFade:
-                                      t == _leavingTab ? _leavingFade : null,
-                                  // 方向按 tab 序号算（复用既有逻辑）
-                                  dir: _transitionDir,
-                                  // ★ 用户选的风格（系统要求减少动效时被降级为 none）
-                                  style: MotionPrefs.resolve(context, style),
-                                  /*
+                            leavingFade: t == _leavingTab ? _leavingFade : null,
+                            // 方向按 tab 序号算（复用既有逻辑）
+                            dir: _transitionDir,
+                            // ★ 用户选的风格（系统要求减少动效时被降级为 none）
+                            style: MotionPrefs.resolve(context, style),
+                            /*
                                    * ★ 惰性保活：没访问过的槽位放**尺寸稳定的占位**。
                                    *
                                    * ⚠️ 占位不能省略（不能写成 `if (...)`）——
                                    *    Stack 的子节点**按位置**匹配，
                                    *    槽位数量变化会让后面的页面错位重建（保活失效）。
                                    */
-                                  child: _contentFor(t) ??
-                                      const SizedBox.shrink(),
-                                ),
-                              ),
-                            ),
+                            child: _contentFor(t) ?? const SizedBox.shrink(),
                           ),
-                      ],
-                    ), // Stack（保活）
-              ), // SafeArea（F6 顶部安全区）
+                        ),
+                      ),
+                    ),
+                ],
+              ), // Stack（保活）
+      ), // SafeArea（F6 顶部安全区）
     ); // ClipRect
   }
 
@@ -5257,6 +5295,7 @@ class _ShellPageState extends State<ShellPage>
   ShellLayout _currentLayout(AppPalette colors) {
     return BottomBarShellLayout(
       nav: BottomBarMarker(child: _bottomBar(colors)),
+      rail: _bottomBar(colors, rail: true),
     );
   }
 
@@ -5297,13 +5336,13 @@ class _ShellPageState extends State<ShellPage>
   ///
   /// ⚠️ 底栏的液态玻璃**观感必须逐字不变**（Owner 唯一满意的部分）：
   ///   本改动只改**什么时候重建**，不动 `GlassContainer` 的任何一个参数。
-  Widget _bottomBar(AppPalette colors) {
+  Widget _bottomBar(AppPalette colors, {bool rail = false}) {
     return ValueListenableBuilder<_BottomBarState>(
       valueListenable: _bottomBarState,
-      builder: (context, s, _) => _BottomBar(
+      builder: (context, s, _) => MiuixShellNavigation(
         current: s.tab,
         unread: s.unread,
-        colors: colors,
+        rail: rail,
         onSelect: _switchTo,
       ),
     );
@@ -5403,25 +5442,26 @@ class _ShellPageState extends State<ShellPage>
            * ⇒ 所以这里**必须**把它交出去。
            * ```
            */
-          onWatchLivePlayback: (provider, channelId, name, initialPlayback) async {
-            // 两个播放器交接播放、静音和期望音量，不只传暂停布尔值。
-            // 退出快照须在路由 Future 完成前报告；缺失报告保持未知，
-            // 不把 null 当作播放意图，也不读取暂停清理后的原生状态。
-            return handoffLivePlayback(
-              initialPlayback: initialPlayback,
-              push: (player) async {
-                await Navigator.of(context).push<bool>(
-                  MaterialPageRoute<bool>(builder: (_) => player),
-                );
-              },
-              buildPlayer: (initial, reportExit) => PlayerPage(
-                  initialLivePlayback: initial,
-                  onLivePlaybackExit: reportExit,
-                  provider: provider,
-                  id: channelId,
-                  title: name,
-                  liveChannelId: channelId,
-                  /*
+          onWatchLivePlayback:
+              (provider, channelId, name, initialPlayback) async {
+                // 两个播放器交接播放、静音和期望音量，不只传暂停布尔值。
+                // 退出快照须在路由 Future 完成前报告；缺失报告保持未知，
+                // 不把 null 当作播放意图，也不读取暂停清理后的原生状态。
+                return handoffLivePlayback(
+                  initialPlayback: initialPlayback,
+                  push: (player) async {
+                    await Navigator.of(context).push<bool>(
+                      MaterialPageRoute<bool>(builder: (_) => player),
+                    );
+                  },
+                  buildPlayer: (initial, reportExit) => PlayerPage(
+                    initialLivePlayback: initial,
+                    onLivePlaybackExit: reportExit,
+                    provider: provider,
+                    id: channelId,
+                    title: name,
+                    liveChannelId: channelId,
+                    /*
                    * ★ task-53【#4b】全屏直播里 ↑/↓ 切台（用户第 4 条）。
                    *   分工：直播页 `_liveKey` 是"哪些台可见"的唯一真相
                    *   （探针缓存 + 启用态 + audioOnly 过滤）⇒ 由它算目标台。
@@ -5433,9 +5473,9 @@ class _ShellPageState extends State<ShellPage>
                    *   `_onHardwareKey` 的兜底路径接管（同 Esc，见那里的注释）。
                    * ★ 详细推导见 `player_page.dart::onLiveChannelStep` 的文档。
                    */
-                  onLiveChannelStep: (delta) =>
-                      _liveKey.currentState?.stepChannelForFullscreen(delta),
-                  /*
+                    onLiveChannelStep: (delta) =>
+                        _liveKey.currentState?.stepChannelForFullscreen(delta),
+                    /*
                    * ★★★ task-53【③】「所有直播」列表面板（用户第 3 条）
                    *
                    * ```text
@@ -5448,15 +5488,15 @@ class _ShellPageState extends State<ShellPage>
                    *   入口（#4b 就是这么漏的，见
                    *   `test/zz_t53_live_fullscreen_switch_test.dart`）。
                    */
-                  onLiveChannels: () =>
-                      _liveKey.currentState?.channelsForFullscreen(),
-                  onLiveChannelPick: (c) =>
-                      _liveKey.currentState?.pickChannelForFullscreen(c),
-                  isTv: Device.isTv,
-                  isTouchOnly: Device.isTouchOnly,
-                ),
-            );
-          },
+                    onLiveChannels: () =>
+                        _liveKey.currentState?.channelsForFullscreen(),
+                    onLiveChannelPick: (c) =>
+                        _liveKey.currentState?.pickChannelForFullscreen(c),
+                    isTv: Device.isTv,
+                    isTouchOnly: Device.isTouchOnly,
+                  ),
+                );
+              },
           onWatchReplay: (provider, channelId, title, episodeTitle) {
             /*
              * ★ 回看走的是**同一个直播频道**的时移流
@@ -5665,7 +5705,6 @@ class _ShellPageState extends State<ShellPage>
     );
   }
 
-
   /// 打开**合并页**（task-58：上播放器 + 下详情）
   ///
   /// ══════════════════════════════════════════════════════════════════════
@@ -5843,10 +5882,12 @@ class _ShellPageState extends State<ShellPage>
 
       final rows = await SourinApi.listAllProgress();
       final mine = rows
-          .where((p) =>
-              p.provider == provider &&
-              p.nativeId == id &&
-              (p.episodeId?.isNotEmpty ?? false))
+          .where(
+            (p) =>
+                p.provider == provider &&
+                p.nativeId == id &&
+                (p.episodeId?.isNotEmpty ?? false),
+          )
           .toList();
       if (mine.isEmpty) {
         pushDefault();
@@ -5881,14 +5922,16 @@ class _ShellPageState extends State<ShellPage>
       );
       if (pushed || !mounted) return;
       pushed = true;
-      Navigator.of(context).push(_mediaRoute(
-        provider,
-        id,
-        episodeId: ep.id,
-        episodeTitle: ep.title,
-        episodeIndex: best,
-        episodes: eps,
-      ));
+      Navigator.of(context).push(
+        _mediaRoute(
+          provider,
+          id,
+          episodeId: ep.id,
+          episodeTitle: ep.title,
+          episodeIndex: best,
+          episodes: eps,
+        ),
+      );
     } catch (e) {
       debugPrint('[NAV] 续播定位失败（$e）⇒ 按原路径打开');
       pushDefault();
@@ -5988,9 +6031,11 @@ class _ShellPageState extends State<ShellPage>
   /// 就地换会话"），而不是再叠一层。叠一层会让两个 `Player` 同时解码出声
   ///（`PlayerPage` **没有** `RouteAware`，被盖住时不会暂停）。
   void _openPlayer(PlayRequestData req, {bool replace = false}) {
-    debugPrint('[NAV] 打开播放器: ${req.provider}:${req.id} '
-        'ep=${req.episodeId ?? "(无)"} 共 ${req.episodes.length} 集'
-        '${replace ? "（替换当前播放器）" : ""}');
+    debugPrint(
+      '[NAV] 打开播放器: ${req.provider}:${req.id} '
+      'ep=${req.episodeId ?? "(无)"} 共 ${req.episodes.length} 集'
+      '${replace ? "（替换当前播放器）" : ""}',
+    );
     /*
      * ★ 置位"播放器已打开" —— 让全局方向键 handler 放行
      *   （播放器要用 ←/→ 快退快进、↑/↓ 音量，见 player_page 的 _onKey）
@@ -6087,15 +6132,16 @@ class _ShellPageState extends State<ShellPage>
     // 同 `_openPlayer`：代号守卫（否则被遥控替换掉时，
     // 本路由的 whenComplete 会清掉新播放器的标志，见 `_playerOpenGen`）
     final gen = ++_playerOpenGen;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PlayerPage(
-          // ★ task-6：源来自调用方（旧代码在这里写死 'srcl'）
-          provider: provider,
-          id: channelId,
-          title: name,
-          liveChannelId: channelId,
-          /*
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (_) => PlayerPage(
+              // ★ task-6：源来自调用方（旧代码在这里写死 'srcl'）
+              provider: provider,
+              id: channelId,
+              title: name,
+              liveChannelId: channelId,
+              /*
            * ★ task-53【#4b】遥控进直播也接线 —— 与播放器全屏按钮那条路
            *   （`onWatchLive`）**同一分工**，见那里的长注释。
            *
@@ -6103,20 +6149,21 @@ class _ShellPageState extends State<ShellPage>
            *   ⇒ 不接线的话 TV 用户按方向键只会调音量（而 TV 没有音量键语义），
            *     正是用户第 4 条要解决的问题。
            */
-          onLiveChannelStep: (delta) =>
-              _liveKey.currentState?.stepChannelForFullscreen(delta),
-          // ★ task-53【③】遥控进直播也给「所有直播」入口（同 `onWatchLive` 的分工）
-          onLiveChannels: () =>
-              _liveKey.currentState?.channelsForFullscreen(),
-          onLiveChannelPick: (c) =>
-              _liveKey.currentState?.pickChannelForFullscreen(c),
-          isTv: Device.isTv,
-          isTouchOnly: Device.isTouchOnly,
-        ),
-      ),
-    ).whenComplete(() {
-      if (gen == _playerOpenGen) _playerOpen = false;
-    });
+              onLiveChannelStep: (delta) =>
+                  _liveKey.currentState?.stepChannelForFullscreen(delta),
+              // ★ task-53【③】遥控进直播也给「所有直播」入口（同 `onWatchLive` 的分工）
+              onLiveChannels: () =>
+                  _liveKey.currentState?.channelsForFullscreen(),
+              onLiveChannelPick: (c) =>
+                  _liveKey.currentState?.pickChannelForFullscreen(c),
+              isTv: Device.isTv,
+              isTouchOnly: Device.isTouchOnly,
+            ),
+          ),
+        )
+        .whenComplete(() {
+          if (gen == _playerOpenGen) _playerOpen = false;
+        });
   }
 
   /// 「查看全部」→ 浏览页
@@ -6326,7 +6373,7 @@ class _TitleBarHostState extends State<_TitleBarHost>
               // ★ 时长走 token（`Motion.medium` = 180ms）—— 本仓规矩
               //   「动画统一走 token，不许硬编码 Duration」。该 token 保持
               //   原有的 180ms ⇒ 收展节奏**逐帧不变**（只换写法，不改行为）。
-              duration: Motion.medium,
+              duration: MotionPrefs.duration(context, Motion.medium),
               curve: Curves.easeOutCubic,
               alignment: Alignment.topCenter,
               child: show
@@ -6348,7 +6395,7 @@ class _TitleBarHostState extends State<_TitleBarHost>
             ),
           ),
         ),
-    /*
+        /*
      * ══════════════════════════════════════════════════════════════════
      * ★★★ OPS-20（业主反馈 ①）：整支**自己**钉死默认文字样式
      * ══════════════════════════════════════════════════════════════════
@@ -6447,7 +6494,11 @@ class _TitleBarHostState extends State<_TitleBarHost>
       style: const TextStyle(
         color: _kTitleBarFallbackTextColor,
         fontFamily: 'Microsoft YaHei UI',
-        fontFamilyFallback: <String>['Microsoft YaHei', 'Noto Sans SC', 'Segoe UI'],
+        fontFamilyFallback: <String>[
+          'Microsoft YaHei',
+          'Noto Sans SC',
+          'Segoe UI',
+        ],
         fontSize: 14,
         decoration: TextDecoration.none,
         decorationColor: Colors.transparent,
@@ -6486,124 +6537,13 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = AppPalette.of(context);
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★ 播放页：整条标题栏换成**深色**（修用户报的"闪白条"）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * # 为什么是"变深"而不是"隐藏"
-     *
-     * 标题栏挂在 `MaterialApp.builder`（Navigator **之外**），
-     * 所以它压在所有路由之上。播放页纯黑，标题栏浅色玻璃 → 顶部一条白条。
-     *
-     * 原版 `TitleBar.vue` 直接 `hidden.value = route.name === 'player'`，
-     * 但原版是 WebView，窗口由 Tauri 管，隐藏后**仍可拖**。
-     * 我们去掉了系统标题栏，这条就是**唯一**拖动区 ——
-     * 隐藏它 = 窗口拖不动，而用户为这件事专门纠正过
-     * （`player_page.dart:602-604` 记录了原话）。
-     *
-     * ⇒ 保留功能（还能拖 / 最小化 / 关闭），只把**颜色**压暗。
-     *
-     * 实测（`.probe/real_player_capture.py`）：
-     * ```text
-     * 首页标题栏  #e7eaf2 / #e8ebf3   ← 浅色玻璃（用户看到的"白条"）
-     * 播放页目标  接近 #000000         ← 与纯黑播放页融为一体
-     * ```
-     */
-    final Color barFg = dark ? Colors.white70 : colors.foreground;
-    final Color barFgStrong = dark ? Colors.white : colors.foreground;
-    final Color barBorder =
-        dark ? Colors.white.withValues(alpha: 0.10) : colors.border;
-    /*
-     * 深色态**不用** `GlassContainer` —— 液态玻璃是"折射背后内容"，
-     * 背后是纯黑播放页时它只会得到一条**发灰**的带子（正是"丑"的来源）。
-     * 直接用纯黑 + 极淡分割线，与播放页无缝。
-     */
-    if (dark) {
-      return SizedBox(
-        height: 40,
-        child: ColoredBox(
-          color: Colors.black,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              border: Border(bottom: BorderSide(color: barBorder, width: 1)),
-            ),
-            child: _titleBarRow(barFg, barFgStrong),
-          ),
-        ),
-      );
-    }
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★★★ 标题栏 = 开源包的 `GlassContainer`（2026-09-24 换掉自绘玻璃）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * # 为什么必须换（用户两次打回）
-     *
-     * 用户原话：
-     * > 你看跟液态玻璃有半毛钱关系吗?
-     * > 上面那个操作条,还有下面的这个 …
-     *
-     * 我原来用的是**自己写的**一个 `LiquidGlass`
-     *（已删，原在 `lib/ui/widgets/liquid_glass.dart`），它是：
-     * ```text
-     * ClipRRect > BackdropFilter(blur) > DecoratedBox(白 5%)
-     * ```
-     * **`BackdropFilter` 只能模糊，做不出液态玻璃的核心「折射」** ——
-     * 真液态玻璃要 fragment shader 采样背后纹理、按法线做位移，
-     * 让边缘产生放大/扭曲的光学效果。
-     * 模糊 + 白色半透明 = **毛玻璃（frosted）**，不是液态玻璃。
-     *
-     * 所以现在和底栏用**同一个组件、同一套材质**：
-     * ```text
-     * 底栏    GlassContainer(shape: LiquidRoundedSuperellipse(半高))  → 胶囊
-     * 标题栏  GlassContainer(shape: LiquidRoundedRectangle(0))       → 直角条
-     * ```
-     * 只有**形状**不同（底栏是浮起来的胶囊，标题栏是通栏），
-     * 材质完全一致 —— 这正是用户要的"跟底部的一样"。
-     *
-     * # 形状为什么用 `LiquidRoundedRectangle(borderRadius: 0)`
-     *
-     * 不能用 `LiquidRoundedSuperellipse` —— 那是 squircle（超椭圆），
-     * 即使半径给 0 也会在角上有微妙的连续曲率，通栏会露出背景缝。
-     * 标题栏是"贴满窗口顶部的一条"，必须方角。
-     *
-     * # 那条分割线保留
-     *
-     * 原版 `TitleBar.vue` 有一条**极淡**的分割线：
-     * ```css
-     * box-shadow: inset 0 -1px 0 0 var(--divider);
-     * ```
-     * 原版注释解释了为什么不用实线 `border-bottom`：
-     * > 不用 `border-bottom`（那是实线，在浅色主题下像一条分割线）——
-     * > 改用极淡的渐变，只在需要时勾出边界
-     *
-     * 这里用 `colors.border`（forui 语义角色，本身就是"最淡的那一档"）。
-     */
+    final colors = miuix.MiuixTheme.of(context).colors;
+    final foreground = dark ? Colors.white : colors.onSurface;
     return SizedBox(
-      height: 40,
-      child: GlassContainer(
-        /*
-         * ★ 直角通栏 —— 标题栏贴满窗口顶部，不能有圆角
-         *（底栏是浮起来的胶囊，那个才用 squircle）
-         *
-         * ⚠️ 正确类名是 `GlassContainer`（包的 `lib/widgets/containers/`），
-         *    不是 `LiquidGlassContainer` —— 我踩过这个坑。
-         * ⚠️ 它**没有** `cornerRadius` / `boxShadow` 参数，形状走 `shape:`。
-         */
-        shape: const LiquidRoundedRectangle(borderRadius: 0),
-        // 与底栏同一档（包文档推荐：95% 场景的正确选择）
-        quality: GlassQuality.standard,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border(
-              // 极淡的分割线（与下方内容区分，但不抢视线）
-              bottom: BorderSide(color: barBorder, width: 1),
-            ),
-          ),
-          child: _titleBarRow(barFg, barFgStrong),
-        ),
+      height: Sp.x10,
+      child: miuix.MiuixSurface(
+        color: dark ? Colors.black : colors.surface,
+        child: _titleBarRow(foreground, foreground),
       ),
     );
   }
@@ -6660,6 +6600,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
         ),
 
         _WinButton(
+          key: const ValueKey('shell-window-minimize'),
           icon: AppIcons.remove_rounded,
           onTap: onMinimize,
           // 深色态 hover 用白色微亮，浅色态用主题 secondary
@@ -6667,6 +6608,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
           iconColor: fg,
         ),
         _WinButton(
+          key: const ValueKey('shell-window-maximize'),
           icon: maximized
               ? AppIcons.filter_none_rounded
               : AppIcons.crop_square_rounded,
@@ -6676,6 +6618,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
           small: true,
         ),
         _WinButton(
+          key: const ValueKey('shell-window-close'),
           icon: AppIcons.close_rounded,
           onTap: onClose,
           // ★ 关闭按钮 hover 变红 —— Windows 的既有习惯
@@ -6690,6 +6633,7 @@ class _CustomTitleBar extends StatelessWidget implements PreferredSizeWidget {
 
 class _WinButton extends StatefulWidget {
   const _WinButton({
+    super.key,
     required this.icon,
     required this.onTap,
     required this.hoverColor,
@@ -6703,12 +6647,6 @@ class _WinButton extends StatefulWidget {
   final Color hoverColor;
   final Color? hoverIcon;
   final bool small;
-
-  /// 图标常态色
-  ///
-  /// ⚠️ 必须有这个参数：深色态（播放页）下若还用
-  ///    `AppPalette.of(context).foreground`（深色主题里是**深色**字），
-  ///    图标会变成"黑底黑图标"看不见。
   final Color? iconColor;
 
   @override
@@ -6716,29 +6654,30 @@ class _WinButton extends StatefulWidget {
 }
 
 class _WinButtonState extends State<_WinButton> {
-  bool _hover = false;
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
+    final foreground =
+        widget.iconColor ?? miuix.MiuixTheme.of(context).colors.onSurface;
+    final iconColor = _hovered ? widget.hoverIcon ?? foreground : foreground;
     return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 110),
-          width: 46,
-          height: 40,
-          color: _hover ? widget.hoverColor : Colors.transparent,
-          child: Center(
-            child: Icon(
-              widget.icon,
-              size: widget.small ? 12 : 15,
-              color: _hover && widget.hoverIcon != null
-                  ? widget.hoverIcon
-                  : (widget.iconColor ?? AppPalette.of(context).foreground),
-            ),
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: SizedBox(
+        width: Sp.x12,
+        height: Sp.x10,
+        child: controls.IconButton(
+          onPressed: widget.onTap,
+          icon: Icon(
+            widget.icon,
+            size: widget.small ? FontSizes.cap : FontSizes.base,
+            color: iconColor,
+          ),
+          style: controls.IconButton.styleFrom(
+            backgroundColor: _hovered ? widget.hoverColor : Colors.transparent,
+            foregroundColor: iconColor,
+            shape: const RoundedRectangleBorder(),
           ),
         ),
       ),
@@ -6861,7 +6800,11 @@ class _CoreErrorView extends StatelessWidget {
               // ── ① 一眼可见：出什么事了 ──
               Row(
                 children: [
-                  Icon(AppIcons.error_outline_rounded, size: 30, color: errorColor),
+                  Icon(
+                    AppIcons.error_outline_rounded,
+                    size: 30,
+                    color: errorColor,
+                  ),
                   const SizedBox(width: Sp.x3),
                   Expanded(
                     child: Text(
@@ -6969,7 +6912,7 @@ class _CoreErrorView extends StatelessWidget {
                * 「已在运行 → 直接返回」），所以重复调用是安全的。
                * 用户修好存储权限后**不必重启应用**。
                */
-              OutlinedButton(
+              controls.OutlinedButton(
                 onPressed: _retry,
                 child: const Text('重新尝试启动'),
               ),
@@ -7110,7 +7053,7 @@ class _ErrCard extends StatelessWidget {
                *   不隐藏它：TV 上多一个不可聚焦的按钮不影响遥控操作
                *  （空间导航只收真焦点控件）。
                */
-              TextButton(
+              controls.TextButton(
                 onPressed: () {
                   Clipboard.setData(ClipboardData(text: body));
                   debugPrint('[SHELL] 已复制到剪贴板: $body');
@@ -7128,9 +7071,7 @@ class _ErrCard extends StatelessWidget {
             // 极低 alpha —— 只是"这是一块代码/路径"的视觉暗示，不喧宾夺主
             color: colors.muted.withValues(alpha: 0.5),
             borderRadius: Radii.rMd,
-            border: Border.all(
-              color: colors.border.withValues(alpha: 0.6),
-            ),
+            border: Border.all(color: colors.border.withValues(alpha: 0.6)),
           ),
           child: SelectableText(
             body,
@@ -7193,631 +7134,6 @@ class _BottomBarState {
   int get hashCode => Object.hash(tab, unread);
 }
 
-class _BottomBar extends StatefulWidget {
-  const _BottomBar({
-    required this.current,
-    required this.unread,
-    required this.colors,
-    required this.onSelect,
-  });
-
-  final AppTab current;
-  final int unread;
-  final AppPalette colors;
-  final ValueChanged<AppTab> onSelect;
-
-  @override
-  State<_BottomBar> createState() => _BottomBarPillState();
-}
-
-class _BottomBarPillState extends State<_BottomBar> {
-  /*
-   * ══════════════════════════════════════════════════════════════════
-   * ★★★ task-36（Owner 实测复现）：「按住未选中的 tab 左右滑动，选中态不跟随」
-   * ══════════════════════════════════════════════════════════════════
-   *
-   * # 根因（Lead 已定位，我复核确认）
-   * ```text
-   * 药丸位置 = `_pillLeft(current, tabWidth)` —— **只**由「已选中的 tab」决定；
-   * 而 `current` **只**由 onTap（抬手才触发）改变。
-   * ⇒ 按住拖动期间 current 恒定 ⇒ 药丸纹丝不动。
-   *   不是「动画太慢」，是**根本没有拖动这条路径**。
-   * ```
-   *
-   * # 修法：给药丸位置加一条「手势覆盖」的中间态
-   * ```text
-   * 位置来源按优先级：
-   *   ① `_dragPillLeft != null` ⇒ 用拖动值（**零延迟**，直接 setState）
-   *   ② 否则                    ⇒ 用 `_pillLeft(current, tabWidth)`（原有逻辑，逐字不变）
-   * ```
-   *
-   * ⚠️ **不能用 AnimatedPositioned 去追手**：它固定 420ms 补间，
-   *    手已经移到别处、药丸还在半路上 —— 那正是 Owner 报的观感。
-   *    所以拖动期间把 duration 压到 **Duration.zero**（下面有注释）。
-   *
-   * ⚠️ 点击路径**完全不动**：`_dragPillLeft` 在纯点击时始终保持 null，
-   *    于是 420ms + easeOutBack 那套弹簧手感逐字保留（Owner 只说「加上拖动」）。
-   */
-  double? _dragPillLeft;
-
-  /// 拖动是否已经越过「算拖动」的阈值（用来区分「点击」与「按住拖动」）
-  ///
-  /// ★ 阈值存在的意义：Owner 的原始 bug 是「按住 + 滑动」，但如果用户
-  ///   只是**手指轻抖一下**（触摸屏/触控板常见），那仍然应该算点击。
-  ///   判据用「累计横向位移」而不是「时间」，因为时间判据会让慢速点击变形。
-  bool _dragging = false;
-
-  /// 抬起时吸附过去的 tab（拖动中高亮用，**不**立即切换内容）
-  AppTab? _dragHoverTab;
-
-  /// 当前 tab 宽度（由 build 里的 `_tabWidthFor` 写入）
-  ///
-  /// ⚠️ 手势回调拿不到 build 的局部变量，所以必须存成字段。
-  ///   它只由 build 写、只读用于手势算术，**不是**第二份真相
-  ///   （唯一算法仍在 `_tabWidthFor`）。
-  double _tabW = 0;
-
-  /// 拖动值 → 吸附/复位 的统一入口
-  void _endDrag({required AppTab snapped, required bool commit}) {
-    setState(() {
-      // ★ 清掉覆盖 ⇒ 药丸位置重新由 `current` 决定。
-      //   commit==true 时 onSelect 会改 current（父级重建），流动方向一致。
-      _dragPillLeft = null;
-      _dragging = false;
-      _dragHoverTab = null;
-    });
-    if (commit && snapped != widget.current) widget.onSelect(snapped);
-  }
-
-  /// ★★★ task-36：药丸位置的**唯一**取用点
-  ///
-  /// 优先级：拖动覆盖值 > 已选中 tab 的算术位置。
-  /// ⚠️ 拖动期间必须是**零延迟**（不能用补间去追手）—— 见类顶部的注释。
-  double _pillLeftFor(AppTab currentTab, double tabWidth) {
-    final drag = _dragPillLeft;
-    if (drag != null) return drag;
-    return _pillLeft(currentTab, tabWidth);
-  }
-
-  /// 药丸当前**是否处于拖动态**（决定用不用补间）
-  bool get _pillIsDragging => _dragPillLeft != null;
-
-  /// 点击某个 tab —— **纯点击路径，与改动前逐字等价**
-  void _onTapTab(AppTab t) {
-    // ⚠️ 拖动结束时抬起手指**也会**触发内层 onTap（手势竞技场的正常结果）。
-    //    若不挡住，会先 onSelect(拖动落点) 再 onTap(按下点) 覆盖一次 ——
-    //    表现为「拖到 C 却跳回 A」。用 _dragging 做闸门。
-    if (_dragging) return;
-    widget.onSelect(t);
-  }
-
-  /// ★★★ task-36：横向拖动整条导航栏 ⇒ 药丸实时跟随
-  void _onDragStart(DragStartDetails d) {
-    setState(() {
-      _dragging = true;
-      _dragPillLeft = widget.current.index * _tabW;
-    });
-  }
-
-  void _onDragUpdate(DragUpdateDetails d) {
-    final w = _tabW;
-    if (w <= 0) return;
-    // 手指位移量 = 药丸位移量（1:1，不加速度、不设阻尼）
-    final next = (_dragPillLeft ?? widget.current.index * w) + d.delta.dx;
-    // ★ 夹在导航栏内：拖出范围不飞出去（松开时再判是否取消）
-    final clamped = next.clamp(0.0, (AppTab.values.length - 1) * w);
-    setState(() {
-      _dragPillLeft = clamped;
-      // ② 拖动经过的 tab 高亮（**不**切换内容，只改视觉）
-      _dragHoverTab = _nearestTab(clamped, w);
-    });
-  }
-
-  void _onDragEnd(DragEndDetails d) {
-    final w = _tabW;
-    final left = _dragPillLeft;
-    if (left == null || w <= 0) {
-      setState(() => _dragging = false);
-      return;
-    }
-    _endDrag(snapped: _nearestTab(left, w), commit: true);
-  }
-
-  void _onDragCancel() {
-    // ④ 拖出范围/手势被取消 ⇒ 回原位，**不**切换
-    setState(() {
-      _dragPillLeft = null;
-      _dragging = false;
-      _dragHoverTab = null;
-    });
-  }
-
-  /// 离 `left` 最近的 tab 中心（吸附目标）
-  AppTab _nearestTab(double left, double w) {
-    final i = (left / w).round().clamp(0, AppTab.values.length - 1);
-    return AppTab.values[i];
-  }
-  @override
-  Widget build(BuildContext context) {
-    return _buildBar(context);
-  }
-
-  Widget _buildBar(BuildContext context) {
-    /*
-     * ★ TV 焦点导航：Focus + onKeyEvent 显式处理方向键（2026-09-22）
-     *
-     * # 第一版为什么失败（实测 PASS=5 FAIL=3）
-     *
-     * 我原本用的是
-     * ```dart
-     * FocusTraversalGroup(policy: ReadingOrderTraversalPolicy())
-     * ```
-     * 以为方向键会自动在 tab 之间移动焦点。**实测按 → 十次，
-     * tab 一直停在 home** —— 与契约里记录的那个真机 bug 表现一模一样。
-     *
-     * 原因：`ReadingOrderTraversalPolicy` 只响应 **Tab / Shift+Tab**，
-     * 方向键默认**不参与遍历**。方向键要走 `DirectionalFocusIntent`，
-     * 而那个 action 依赖 `WidgetsApp` 注入的默认 shortcuts 映射 ——
-     * 在自绘的底栏里没有这层保障。
-     *
-     * # 最终方案：按键处理**上移到 shell 层级**
-     *
-     * 底栏这里只负责**渲染**，不接按键 —— 原因见 `_ShellPageState.build`
-     * 里那段注释（按键只沿主焦点的祖先链冒泡，底栏与主焦点是兄弟关系，
-     * 收不到事件）。
-     *
-     * 焦点环仍然保留在每个 item 上 —— 确认键 / 悬停各走自己的路径。
-     */
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★★★ 悬浮液态玻璃底栏（2026-09-24 用户指出「悬浮底栏没做」）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * # 原版是什么样（`liquid-glass.css` 的 `.tabbar`）
-     *
-     * ```css
-     * .tabbar {
-     *   position: fixed;
-     *   left: 50%;
-     *   bottom: calc(var(--tabbar-bottom) + var(--safe-bottom));
-     *   transform: translateX(-50%);       /* ★ 居中 */
-     *   width: max-content;                /* ★ 内容宽度，不是满宽 */
-     *   max-width: calc(100vw - var(--sp-8));
-     *   border-radius: var(--r-full);      /* ★ 全圆角 */
-     *   padding: 7px;
-     *
-     *   --lg-tint: rgb(255 255 255 / 0.06);
-     *   --lg-blur: 18px;
-     *   --lg-shadow: 0 16px 44px -12px rgb(0 0 0 / 0.62), ...;
-     * }
-     * ```
-     * 原版注释还记录了一次调整：
-     * > ★ 2026-09-15 调整：blur 30px → 18px、tint 0.085 → 0.06
-     * > 实测 30px 会把背景糊成一片纯色块，底栏看起来像**乳白塑料**
-     * > 而不是玻璃。降到 18px 后仍能看见背后的海报结构，
-     * > 「透」的观感明显更强
-     *
-     * # 我之前做成了什么
-     *
-     * ```text
-     * Container(height: 58, border: 顶边实线) + Row(Expanded × 5)
-     * ```
-     * 即**满宽 + 贴底 + 实心 + 顶边线性分割** —— 一条"普通应用底栏"，
-     * 与"液态玻璃悬浮药丸"完全是两种东西。
-     *
-     * # 现在
-     *
-     * ```text
-     * 外层  透明容器，只负责留出悬浮的空间（底部 12px 间隙）
-     * 内层  居中 + width: max-content（内容宽度）+ 全圆角 + 玻璃 + 外投影
-     * ```
-     *
-     * ⚠️ 与空间导航的契约（`spatial_nav.dart`）：
-     *    底栏仍然包在 `BottomBarMarker` 里，且 `↓` 到这里的判定
-     *    靠的是**结构标记**不是几何位置 —— 悬浮后底栏不再贴屏幕底边，
-     *    如果当初用"矩形在屏幕下方 15%"那种几何判据就会**失效**。
-     *    （那轮已经改成结构判据了，这里正好验证那个决定的正确性。）
-     */
-    final barHeight = Device.isTv ? 72.0 : 58.0;
-    /*
-     * ★ tab 宽度**随可用宽度收缩**（2026-09-30 修）
-     *
-     * 原来这里是常量（`Device.isTv ? 152 : 118`）—— 手机逻辑宽 411.43、
-     * 真正能给 tab 用的只有 `411.43 − 72 = 339.43`，而 5 × 118 = 590
-     * ⇒ 第 4/5 项（搜索 / 设置）被画到屏幕外（详见 `_tabWidthFor`）。
-     *
-     * 药丸（下面 `AnimatedPositioned`）与每个 `SizedBox` 必须用
-     * **同一个** `tabWidth` 变量，否则药丸会和图标错位。
-     */
-    final tabWidth = _tabWidthFor(MediaQuery.of(context).size.width);
-    _tabW = tabWidth; // 供手势回调使用（见字段注释）
-    // 药丸配色（药丸 + 文字 + 阴影三者成对取自同一个调色板）
-    final pill = _BottomPalette.of(context);
-
-    return Padding(
-      /*
-       * 悬浮间隙：底栏**不贴屏幕底边**，留出一圈让投影可见 ——
-       * 这就是"悬浮"的视觉来源。原版用
-       * `bottom: calc(var(--tabbar-bottom) + var(--safe-bottom))`。
-       *
-       * ⚠️ 2026-10-05：这里**只**负责 `--tabbar-bottom`（12 / 18dp）。
-       *    原版公式的另一半 `--safe-bottom` 补在**外层** ——
-       *    `Positioned(bottom: MediaQuery.paddingOf(context).bottom)`
-       *    （`shell.dart` 的底栏块）。★ 别在这里再加一次，会双倍。
-       */
-      padding: EdgeInsets.only(
-        bottom: Device.isTv ? 18 : 12,
-        left: Sp.x6,
-        right: Sp.x6,
-      ),
-      child: Center(
-        // ★ width: max-content —— 内容多宽就多宽，不撑满
-        child: IntrinsicWidth(
-          child: ConstrainedBox(
-            // 原版 `max-width: calc(100vw - var(--sp-8))`
-            constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width - Sp.x8,
-            ),
-            child: SizedBox(
-              height: barHeight,
-              /*
-               * ══════════════════════════════════════════════════════════
-               * ★★★ 用**开源包的真液态玻璃**（2026-09-24 用户要求）
-               * ══════════════════════════════════════════════════════════
-               *
-               * 用户原话：
-               * > 你可以参考github开源的项目做,不要硬自己实现
-               *
-               * # 我之前自己撸的那套差在哪
-               *
-               * ```dart
-               * ClipRRect > BackdropFilter(blur) > DecoratedBox(白 6%)
-               * ```
-               * `BackdropFilter` **只能模糊**，做不出液态玻璃的核心
-               * —— **折射（refraction）**。真正的液态玻璃是
-               * fragment shader 采样背后纹理、按法线做**位移**，
-               * 让边缘产生"放大/扭曲"的光学效果。那是 shader 的活。
-               *
-               * 所以用户说"跟液态玻璃有半毛钱关系吗"是对的：
-               * 模糊 + 白色半透明 = **毛玻璃（frosted）**，不是液态玻璃。
-               *
-               * # 这个包做了什么
-               *
-               * ```text
-               * Impeller  → 两遍管线：blur pass + shader pass（折射、
-               *              边缘光照、玻璃染色、色差）
-               * Skia/Web  → 单遍 lightweight shader
-               * ```
-               * 在 Windows 上走 Impeller(ANGLE) 的轻量 2D shader。
-               *
-               * `LiquidGlassContainer` 是它的低层积木
-               * （`GlassCard` 是高层封装，但那个带自己的内边距/语义，
-               * 我们要的是"纯粹的玻璃底板 + 自己的 Row"）。
-               */
-              child: GlassContainer(
-                /*
-                 * ★ 全圆角药丸 —— 原版 `border-radius: var(--r-full)`
-                 *
-                 * 用 `LiquidRoundedSuperellipse`（超椭圆 / squircle）
-                 * 而不是普通圆角矩形 —— 那正是 iOS 26 液态玻璃的轮廓语言。
-                 * 半径给足（= 高度一半）就是胶囊形。
-                 */
-                shape: LiquidRoundedSuperellipse(
-                  borderRadius: barHeight / 2,
-                ),
-                /*
-                 * `GlassQuality.standard` 是包文档推荐的默认档：
-                 * > The right choice for 95% of use cases.
-                 * > Works on every platform with iOS 26-accurate glass.
-                 *
-                 * ⚠️ **不用** `premium` —— 那个是 Impeller-only，
-                 *    且包文档明确说"Use Premium only for static,
-                 *    non-scrolling surfaces"，底栏下面有滚动内容。
-                 */
-                quality: GlassQuality.standard,
-                /*
-                 * ══════════════════════════════════════════════════════════
-                 * ★★★ 用 Stack 加"滑动选中药丸"（2026-09-24 用户指出「没有选中效果」）
-                 * ══════════════════════════════════════════════════════════
-                 *
-                 * # 原版的核心认知（`liquid-glass.css` 的注释）
-                 *
-                 * > 关键认知：**「选中」的主信号是底下那个药丸，不是文字亮度**。
-                 * > 所以悬停只需轻微提亮；跳到与选中同亮度就会喧宾夺主。
-                 *
-                 * 原版还有个**真 bug 记录**：
-                 * > 原写法把 hover 与 is-active 都设成 `--tab-fg-strong`：
-                 * > `两者渲染完全一样`，于是鼠标划过哪个 tab，哪个就像「已选中」
-                 * > —— 用户分不清自己在哪一页
-                 *
-                 * # 我之前漏了什么
-                 *
-                 * 只做了"选中 → 图标文字变亮"，**完全没有药丸**。
-                 * 于是：
-                 * ```text
-                 * 悬停   = 变亮 → 看起来像选中
-                 * 选中   = 变亮 → 和悬停一样
-                 * ```
-                 * 正是原版明确记录过的那个 bug。用户说"没有选中效果"就是这个。
-                 *
-                 * # 三层结构
-                 * ```text
-                 * Stack
-                 *  ├ AnimatedPositioned  选中药丸（滑过去，带 spring 曲线）
-                 *  └ Row                 五个 tab（文字/图标在上层）
-                 * ```
-                 */
-                /*
-                 * ★★★ task-36：把**整条导航栏**包进横向拖动识别器
-                 *
-                 * # ⚠️ 手势竞技场：内层 tab 的 onTap 会跟这里抢
-                 * ```text
-                 * 每个 tab 内部有自己的 `GestureDetector(onTap:)`（`_BottomItem`）。
-                 * `GestureDetector` 的 **tap** 与 **horizontalDrag** 在竞技场里：
-                 *   · tap 只要「按下」就进入竞技场；
-                 *   · drag 要等手指移动超过 `kTouchSlop` 才宣告胜出。
-                 * ⇒ 拖动时 drag **会**赢（tap 在移动超阈值时自动认输），
-                 *   所以**不需要** RawGestureDetector 提权 —— 我一开始也以为要，
-                 *   实测 Flutter 的默认竞技场行为已经够用（见下方验证）。
-                 * ⚠️ 但有个**副作用**必须挡住：drag 赢了之后抬起手指，
-                 *   内层 tap 仍可能补一次 `onTap`（手势竞技场正常结果）⇒
-                 *   表现为「拖到 C 却跳回 A」。所以 `_onTapTab` 里用 `_dragging` 做闸门。
-                 * ```
-                 *
-                 * # 为什么包在**玻璃容器外层**（Stack 外面）
-                 * ```text
-                 * 要接住整条栏上的拖动（包括 tab 之间的空隙），
-                 * 范围必须 ≥ 药丸的活动范围。包在 Stack 外层最直接。
-                 * `behavior: HitTestBehavior.translucent` —— 让**空白处**也能起拖，
-                 * 同时不吞掉子节点的点击（opaque 会挡掉 tab 自己的命中）。
-                 * ```
-                 */
-                child: GestureDetector(
-                  /*
-                   * ★ 测试锚点：底栏是私有类，测试需要稳定定位；不是业务逻辑。
-                   *
-                   * 为什么必须有它（task-36 实测踩到）：
-                   * ```text
-                   * 底栏是私有 `_BottomBar` ⇒ 测试只能从整个 `ShellPage` 里找它。
-                   * 第一版按「带渐变的 DecoratedBox」找，结果全树有 2 个：
-                   *   #0 (84.5,116)-(180.5,152)   ← 页面内容里的，不是药丸
-                   *   #1 (286,736)-(404,782)      ← 这才是底栏药丸
-                   * `find.first` 一直读到 #0 ⇒ 无论怎么拖都是 84.5（**假红**）。
-                   * ```
-                   * ⇒ 按坐标或按样式找都不稳；一个 Key 是零行为影响的常量，
-                   *   不属于「为了让测试变绿而改产品」。
-                   */
-                  key: const ValueKey('t36-bar'),
-                  behavior: HitTestBehavior.translucent,
-                  onHorizontalDragStart: _onDragStart,
-                  onHorizontalDragUpdate: _onDragUpdate,
-                  onHorizontalDragEnd: _onDragEnd,
-                  onHorizontalDragCancel: _onDragCancel,
-                  child: Stack(
-                children: [
-                  // ── 滑动选中药丸 ──
-                  AnimatedPositioned(
-                    /*
-                     * ★★★ task-36 的核心：**拖动时零延迟，抬手后恢复 420ms**
-                     *
-                     * # 为什么必须切换 duration（不是调小）
-                     * ```text
-                     * 拖动时若仍用 420ms，手已经移到 B、药丸还在去 A 的半路上
-                     * ⇒ 就是 Owner 说的「选中态不跟随」。
-                     * 而**不能**为了拖动把全局 duration 改成 0 ——
-                     * 那会把「点击切换」的弹簧手感一起废掉（规格④明令不许）。
-                     * ⇒ 按 _pillIsDragging 分支：拖动态 zero，其余保持 420ms。
-                     * ```
-                     *
-                     * ⚠️ 用 Duration.zero 而不是 null：duration 是 required 的。
-                     * ⚠️ 曲线在 zero 时长下不生效，拖动期给 linear 只是不参与。
-                     */
-                    duration: _pillIsDragging
-                        ? Duration.zero
-                        : const Duration(milliseconds: 420),
-                    curve: _pillIsDragging ? Curves.linear : Curves.easeOutBack,
-                    /*
-                     * ★ 药丸的位置与宽度必须与每个 `SizedBox` **同源**
-                     *   —— 都用上面按窗口宽算出的 `tabWidth`。
-                     *   窄屏收缩后若还用常量算，药丸会和图标错位。
-                     */
-                    left: _pillLeftFor(widget.current, tabWidth),
-                    top: 6,
-                    bottom: 6,
-                    width: tabWidth,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        /*
-                         * ══════════════════════════════════════════════════
-                         * ★★★ 选中药丸**必须按主题分支**（bug ③ 修复）
-                         * ══════════════════════════════════════════════════
-                         *
-                         * # 之前是什么样（用户报的"黑色模式下有问题"）
-                         *
-                         * 这里**硬编码**了浅色那一套值，没有任何主题分支：
-                         * ```dart
-                         * colors: [
-                         *   Colors.white.withValues(alpha: 0.96),
-                         *   Colors.white.withValues(alpha: 0.80),
-                         * ],
-                         * ```
-                         * 深色主题下就是**白药丸 + `#FAFAFA` 文字 = 白底白字**，
-                         * 用户看不出当前选中在哪一页。
-                         *
-                         * 这个 bug 的全部特征是「**不报错**」：
-                         * 编译过、analyze 0 error、能跑起来，只有量像素或看截图
-                         * 才发现（实测深色底栏药丸 `(250,250,250)`，而同屏
-                         * 「我的」分段控件是 `(59,59,59)`）。
-                         *
-                         * # 原版是**两套值**，不是一个值配两个底
-                         *
-                         * ```css
-                         * 深色（src/design/tokens.css:293，默认主题）
-                         * --tab-pill-bg: linear-gradient(180deg,
-                         *                  rgb(255 255 255 / 0.19),
-                         *                  rgb(255 255 255 / 0.10));
-                         *
-                         * 浅色（src/design/theme-light.css:65）
-                         * --tab-pill-bg: linear-gradient(180deg,
-                         *                  rgb(255 255 255 / 0.96),
-                         *                  rgb(255 255 255 / 0.80));
-                         * ```
-                         * 深色那套合成到 `#0A0A0A` 上约 `(57,57,57)` ——
-                         * 与「我的」分段控件的 `(59,59,59)` 基本一致，
-                         * 那正是原版"对齐已有同类控件"的设计意图
-                         * （`tokens.css:325-330` 的注释：做新的"选中药丸"之前
-                         *   应该先找**已有的同类控件**对齐，而不是自己发明材质）。
-                         *
-                         * ⚠️ **不能用语义角色去推这个值**。
-                         *    `colors.foreground` 在浅色下是近黑、深色下是近白，
-                         *    拿它当"提亮层"会在浅色主题下画出**暗药丸**
-                         *    （`source_bar.dart` 那边正是这么翻车的）。
-                         *    药丸是"白色叠多少"这个与主题无关的原始 alpha，
-                         *    forui 没有对应角色 —— 所以只能显式分支。
-                         *
-                         * ★ 参照物：`lib/ui/widgets/my_shelf.dart` 的
-                         *   `_ShelfPalette.of(isLight)` —— 它是这个项目里
-                         *   **唯一做对了**的药丸样板（药丸 + 文字 + 阴影
-                         *   三者**成对**定义，不散落 `isLight ? : `）。
-                         */
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: pill.pillGradient,
-                        ),
-                        borderRadius: BorderRadius.circular(barHeight / 2),
-                        /*
-                         * 原版 `--tab-pill-shadow`（两套主题各一份）：
-                         * ```css
-                         * 深色 tokens.css:294
-                         *   inset 0 1px 0 rgb(255 255 255 / 0.28),
-                         *   0 2px 10px -2px rgb(0 0 0 / 0.34)
-                         * 浅色 theme-light.css:66
-                         *   inset 0 1px 0 rgb(255 255 255 / 1),
-                         *   0 2px 8px -2px rgb(16 18 26 / 0.16)
-                         * ```
-                         * 内顶高光 + 下方淡投影 = 药丸"浮"在玻璃上。
-                         * ⚠️ 阴影也必须跟着主题走：深色下药丸自己就很淡，
-                         *    投影不给足就"贴"在玻璃上没有层次；浅色下投影过重
-                         *    会像脏边。
-                         */
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black
-                                .withValues(alpha: pill.pillShadow),
-                            blurRadius: 8,
-                            spreadRadius: -2,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  // ── 五个 tab ──
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                  children: [
-                    /*
-                     * ⚠️ 每个 item 必须有**显式宽度**（2026-09-24 实测踩到）
-                     *
-                     * 第一版直接 `_BottomItem` 裸放进 `MainAxisSize.min` 的
-                     * Row 里，配合外层 `IntrinsicWidth` —— 结果五个 tab
-                     * **挤成一团**（截图里图标和文字叠在一起）。
-                     *
-                     * 原因：`_BottomItem` 内部是「图标 + 文字」的 Column，
-                     * 在 `MainAxisSize.min` 下它自己也不知道该多宽，
-                     * `IntrinsicWidth` 又只按"最小内在宽度"算 ——
-                     * 三者互相谦让，最后谁都没拿到宽度。
-                     *
-                     * 解法：给每个 tab 一个**明确宽度**。
-                     * 原版是 CSS `width: max-content` + `padding: 7px` +
-                     * `gap: 2px`，每个 tab 由内容自然撑开；
-                     * Flutter 里显式给宽度最直接、也最可预测。
-                     */
-                    for (final t in AppTab.values)
-                      SizedBox(
-                        width: tabWidth,
-                        child: _BottomItem(
-                          tab: t,
-                          /*
-                           * ★ task-36 规格②：拖动经过的 tab **视觉高亮**，
-                           *   但**不**切换内容（内容切换只在抬手时发生）。
-                           *   拖动中当前高亮 = 手指下的 tab；不拖时 = 已选中的 tab。
-                           */
-                          active: t == (_dragHoverTab ?? widget.current),
-                          badge: t == AppTab.follow ? widget.unread : 0,
-                          colors: widget.colors,
-                          onTap: () => _onTapTab(t),
-                        ),
-                      ),
-                  ],
-                  ),
-                ],
-                ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-//  ★★ task-11 A1（2026-10-04）—— TV 字号 ×1.25 的**唯一**接线点
-// ══════════════════════════════════════════════════════════════════════════
-//
-// # Owner 要求
-// 「都按照推荐的做」⇒ A1（TV 字号 ×1.25）落地。
-// 原版 `device.ts` 在 leanback 设备上把整套 `--fs-*` 调大一档
-// （cap 12→14、base 16→20…）。本项目里那个系数**早就定义了**
-// （`lib/core/device.dart:192` / `lib/ui/tokens.dart:222`），
-// 但**从来没有被接上** —— 是死代码。
-//
-// # 为什么挂在 `MaterialApp.builder`（而不是 `Device` 里）
-//
-// Flutter 里「整套字号放大」只有一个正规入口：`MediaQuery.textScaler`。
-// 而 `MediaQuery` 由 `View` → `MediaQuery.fromView` 在**应用最外层**建立
-// （SDK `widgets/view.dart:275`），所以只能在它**下面**覆写；
-// `MaterialApp.builder` 正好在 Navigator 外面、又在 View 里面 —— 唯一的位置。
-//
-// # ★★ 条件必须同时看「平台」与「设备」（2026-10-04 修的一个真缺陷）
-//
-// 第一版这里只判**平台**（`android` / `fuchsia` ⇒ ×1.25）——
-// 于是**安卓手机也被整体放大**：字号大了一档，而放大字号的两条理由
-// （10 英尺原则 / 沙发距离）在手机上一条都不成立。
-//
-// 平台只是**必要**条件。安卓上既可能是 TV 也可能是手机，区分它们的是
-// `Device.isTv`（`sourin/device` 通道读 `android.software.leanback` 与
-// `FEATURE_TOUCHSCREEN`，见 `lib/core/device.dart:273-301`）。
-// ⇒ 条件 = 平台 ∈ {android, fuchsia} **且** `Device.isTv`。
-//
-// 第一版注释当时列了两条「不敢用 `Device.isTv`」的理由，**两条都已不成立**：
-// 1. 「异步填的、首帧拿不到」—— `Device.init()` 在 `runApp` **之前** await
-//    完成（本文件 `main()` 里那句 `await Device.init();`）⇒ TV 上首帧
-//    `Device.isTv` 已经是 true，不会闪。
-// 2. 「测试覆盖不到」—— `flutter test` 里 `defaultTargetPlatform` 被**强制**
-//    成 `TargetPlatform.android`（SDK `foundation/_platform_io.dart` 的
-//    `FLUTTER_TEST` 分支）⇒ 只判平台的写法在测试里**恒**走放大分支；
-//    加上 `Device.isTv` 这道门后，`Device.overrideKind(DeviceKind.tv)`
-//    才是放大 ⇒ 这条分支反而**变成可断言的了**。
-//
-// ⚠️ 判定**只此一处**（`AppMetrics.effectiveTextScale`）—— 本文件只负责取用。
-//
-// # 与 Windows 的关系（重要）
-//
-// `defaultTargetPlatform` 在 **Windows 上也是 `TargetPlatform.windows`**
-// （不是 `android`）⇒ 桌面端恒为 1.0，**一个像素都不会变**。
-// 这正是 A1 要的：只放大 TV，不动桌面。
-//
-// # 为什么用 `_TextScaleHost` 而不是直接写 `MediaQuery(…)`
-//
-// 因为要**读**（`MediaQuery.maybeOf`）才能**覆写**一个字段而保留其余
-// （padding / size / brightness …）。把它写成一个带 `BuildContext` 的
-// widget 比在 `builder:` 里塞一段内联代码干净，也让「只挂一处」这条
-// 约定（见 `remote_bridge.dart` 的警告）有唯一的落点。
 class _TextScaleHost extends StatelessWidget {
   const _TextScaleHost({required this.child});
 
@@ -7857,424 +7173,6 @@ class _TextScaleHost extends StatelessWidget {
 /// ```text
 /// 桌面 1280 / TV 960 等宽屏 → 上限命中 ⇒ 与改前逐像素相同（无回归）
 /// ```
-double get _tabWidthMax => Device.isTv ? 152 : 118;
-
-/// 单个 tab 的**可读下限**
-///
-/// 图标 21 + 两字标签 ≈ 21 ⇒ 44 是"还能看"的底线。
-/// 存在的意义：不许靠"把 tab 压成 1px"来假装 5 项都放得下。
-const double _tabWidthMin = 44;
-
-/// 一行 5 个 tab 的横向**净损失**（窗口宽 → 真正能给 Row 用的宽）
-///
-/// ```text
-/// 本文件 _BottomBar 的 Padding   Sp.x6/side × 2     = 48
-/// ```
-///
-/// ⚠️ 用 `Sp` 组合而**不写 48** —— 这个数改了这里要跟着改，
-///    写死数字就会悄悄失真（这个项目踩过：常量散落各处只改一处）。
-///
-/// ⚠️ 这个数是**实测反解**出来的，不是猜的：
-///    · 手机 1080×2400 @420dpi（逻辑 411.43）像素反解面板
-///      左边界 `35.86`、宽 `339.71`；本文件按 `Sp.x6` 与 `W − 72`
-///      算出的是 **左 36.0 / 宽 339.43** —— 两个**独立仪器**同值
-///      （这是 `childPad: false` **之前**的读数 ⇒ 那 12/side 确实存在）
-///
-/// ★★ 2026-10-03 修：**原来这里是 72，多算了 forui 的 12/side**
-/// ```text
-///   原来  forui FScaffold.childPadding  horizontal 12/side = 24
-///         本文件 _BottomBar 的 Padding                 = 48
-///                                          合计       = 72
-///   现在  `AppScaffold(childPad: false)` 关掉 forui 那 24
-///         ⇒ 只剩我们自己的 48
-/// ```
-/// 那 12/side 来自 forui 的两个默认值（不是我们的代码）：
-///    `forui widgets/scaffold.dart:105-107`  `if (childPad) Padding(childPadding)`
-///    `forui widgets/scaffold.dart:191-202`
-///      `childPadding = style.pagePadding.copyWith(top: 0, bottom: 0)`
-///    `forui theme/style.dart:37`
-///      `pagePadding = .symmetric(vertical: 8, horizontal: 12)`
-/// 修在**真实外壳**的 `AppScaffold(childPad: false)`（见本文件上方那段
-/// 长注释）—— 只改外壳，`Layout` 的数值与语义一个都不动。
-///
-/// ⚠️ 若这里漏改，窄屏下 `usable` 会**少算 24**：手机 411.43 下
-///    `_tabWidthFor` 拿到 363.43/5 = 72.69，而真实可用是
-///    `411.43 − 48 = 363.43` ⇒ 药丸与 `SizedBox(width:)` 同源，
-///    两者一起偏 ⇒ 5 个 tab **画到面板外**。
-const double _kTabRowHorizontalLoss = Sp.x6 * 2;
-
-/// 单个 tab 的宽度（药丸滑动要用同一个值算位置）
-///
-/// ★ 2026-09-30 修：这里**原来是与可用宽度无关的常量**
-///   （`Device.isTv ? 152 : 118`）。
-///
-/// # 缺陷（Owner 手机实测）
-///
-/// 手机（1080×2400 @420dpi ⇒ DPR 2.625 ⇒ 逻辑宽 **411.43**）底栏只画出
-/// **3 项**：发现 / 直播 / 追更 —— 「搜索」「设置」被画到屏幕外，
-/// 用户**根本没有这两个入口**。
-///
-/// 根因：`5 × 118 = 590` 远超可用宽（`411.43 − 72 = 339.43`）；
-/// `Row(MainAxisSize.min)` 被约束夹到上限后**仍然从 x=0 往外画**，
-/// 第 4/5 项落到屏外 —— 而 `RenderFlex` 默认 `Clip.none`
-/// ⇒ **不裁剪、不报错、release 下也不打印 overflow**（所以一直没被发现）。
-///
-/// # 修法
-///
-/// 「装得下就保持原样，装不下就等分」，上限夹住：
-/// ```text
-/// 上限 _tabWidthMax   宽屏立刻命中 ⇒ 与改前逐像素相同（零回归）
-/// 下限 _tabWidthMin   只在够得着的时候才用它当"舒适线"
-/// ```
-/// 只有窗口宽 > `5×118 + 72 = 662` 时上限才不命中 ⇒ 宽屏完全不受影响。
-///
-/// # ★ 2026-09-30 二次修：下限**自己会把同一个缺陷造回来**
-///
-/// 第一版写成 `fit.clamp(_tabWidthMin, _tabWidthMax)`。缺陷在**更窄**处复现：
-/// 下限一旦生效，`5 × 44 = 220` 就**超过**可用宽 `W − 72` ⇒ 第 4/5 项
-/// 又一次被画到屏外，而且 `RenderFlex` 是 `Clip.none`
-/// ⇒ **同样不裁剪、不报错、release 不打印** —— 与上面那个缺陷一模一样。
-///
-/// 阈值：`5 × 44 + 72 = 292` ⇒ **任何逻辑宽 < 292 都会溢出**：
-/// ```text
-/// W=291 → 超 1.0px   W=280 → 超 12.0px   W=240 → 超 52.0px
-/// W=205 → 超 87.0px  W=150 → 超 142.0px  W=292 → 恰好 0
-/// ```
-///
-/// # ★ 哪一端真的碰得到（逐条查过，别照抄"窗口能拖窄"这种话）
-/// ```text
-/// Windows  不可达 —— `:346 minimumSize: Size(900, 600)`（= 原版 Tauri 的值）
-///          ⇒ 底栏所在的这个 shell 永远 ≥ 900 宽。
-///          （`core\pip.dart:224` 确实把下限降到 Size.zero，但那是
-///           **画中画**路径：`:79 _pipWidth = 420`、且 PiP 里挂的是播放页
-///           不是 shell ⇒ 底栏不参与。）
-/// Android  可 ✓ —— 清单 `android\app\src\main\AndroidManifest.xml:83`
-///          `android:resizeableActivity="true"` ⇒ 分屏 / 自由窗口成立；
-///          `:79 configChanges` 已含 `screenSize|smallestScreenSize` ⇒
-///          不重建 Activity，只是 FlutterView 变窄 ⇒ MediaQuery 跟着变。
-///          手机 411.43 对半分 ≈ **205**。
-/// ```
-/// ⇒ 判据覆盖到 205 不是"追一个生产上不可达的尺寸"（那种错本项目犯过，
-///    见 `:335-337` 的自我批评），而是**Android 分屏的真实宽度**。
-///
-/// # 判据：极窄时**可见性优先于舒适下限**
-///
-/// 44 是"图标 21 + 两字标签 ≈ 21，还能看"的**舒适**线，不是硬约束。
-/// 一个被画到屏外的 tab 不是"小"，是**入口不存在**（这正是 Owner 报的
-/// 那个缺陷）。所以下限只允许在**不引起溢出**时才起作用：
-/// `fit < 44` ⇒ 直接返回 `fit`。
-///
-/// 代价（照实记）：W=205 时每项 26.6px —— 已经很挤，图标和两字标签
-/// 都放不下，但 5 个入口都在、都点得到。真到那种宽度，"挤"是唯一
-/// 诚实的选择；把第 5 项画到屏外才是真的坏。
-///
-/// ⚠️ 必须与 `SizedBox(width:)` 和 `_pillLeft` 用**同一个来源** ——
-///    写两处的话改一处就会错位（药丸和图标对不上）。
-double _tabWidthFor(double windowWidth) {
-  final usable = windowWidth - _kTabRowHorizontalLoss;
-  final fit = usable / AppTab.values.length;
-  if (fit >= _tabWidthMin) return fit < _tabWidthMax ? fit : _tabWidthMax;
-  // 极窄：让位给可见性。绝不返回高于 fit 的值，否则就会溢出。
-  // 夹在 0 以上 —— 负宽会让 SizedBox 直接断言炸掉。
-  return fit > 0 ? fit : 0;
-}
-
-/// 选中药丸的左偏移
-///
-/// 原版是 JS 量 DOM 位置；这里是纯算术（等宽 tab，位置 = 序号 × 宽度）。
-/// 用算术更稳 —— 不依赖布局完成的时机。
-///
-/// ⚠️ 形参是 `tabWidth` **不是** `barHeight` —— 药丸的平移量只由 tab 宽度
-///    决定。两者必须与 `SizedBox(width:)` 同源，否则窄屏收缩后药丸会跑偏。
-double _pillLeft(AppTab current, double tabWidth) =>
-    current.index * tabWidth;
-
-class _BottomItem extends StatefulWidget {
-  const _BottomItem({
-    required this.tab,
-    required this.active,
-    required this.badge,
-    required this.colors,
-    required this.onTap,
-  });
-
-  final AppTab tab;
-  final bool active;
-  final int badge;
-  final AppPalette colors;
-  final VoidCallback onTap;
-
-  @override
-  State<_BottomItem> createState() => _BottomItemState();
-}
-
-class _BottomItemState extends State<_BottomItem> {
-  bool _hover = false;
-
-  /// ★ 是否拥有焦点（TV 上这个才是关键状态）
-  bool _focused = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final on = widget.active;
-    final pill = _BottomPalette.of(context);
-
-    /*
-     * 颜色优先级：焦点 > 悬停 > 激活 > 默认
-     *
-     * 为什么焦点排在激活之上：TV 上用户需要知道"我按确认会去哪"，
-     * 那个位置必须最显眼 —— 哪怕它已经是当前页。
-     *
-     * ★ 但**激活**那一档不能再用 `colors.foreground`（2026-09-24，bug ③）
-     *
-     * `colors.foreground` 是"背景色上的前景色"：
-     * ```text
-     * 深色  #FAFAFA（近白）
-     * 浅色  #0A0A0A（近黑）
-     * ```
-     * 而选中的那个 tab 的文字/图标**压在药丸上**，药丸是"白色叠多少"
-     * 这个与主题无关的 alpha 算出来的：浅色下药丸≈纯白、深色下≈`(57,57,57)`。
-     * 于是浅色主题下 `foreground`(#0A0A0A) 恰好可用，深色主题下
-     * `foreground`(#FAFAFA) 也恰好可用 —— 看着"两套都对"，
-     * **但那只是巧合**：真正决定它的是**药丸的明暗**，不是主题的明暗。
-     *
-     * 修 bug ③ 时如果只换药丸渐变、不动这里，浅色主题就会变成
-     * 「白药丸 + `colors.foreground`」——在**浅色**下 `foreground` 确实
-     * 是近黑，还能看；但一旦哪天主题映射改成浅色 `foreground` = 近白，
-     * 就立刻重现同一个白底白字。所以这里显式取 `--tab-fg-strong`
-     * （浅 `rgb(16 18 26 / .94)` / 深 `#ffffff`），与药丸**成对**定义，
-     * 让"药丸亮 → 字暗 / 药丸暗 → 字亮"这条约束写在代码里。
-     *
-     * ⚠️ 焦点/悬停态**不**用药丸色：那两种状态下文字在**玻璃**上，
-     *    不在药丸上，用 `colors.*`（跟随主题）才是对的。
-     */
-    final color = _focused
-        ? widget.colors.foreground
-        : on
-            ? pill.activeForeground
-            : (_hover ? widget.colors.foreground : widget.colors.mutedForeground);
-
-    // 焦点态的背景与描边（TV 上可见性全靠它）
-    final showFocus = _focused && Device.needsFocusRing;
-
-    /*
-     * ★ FocusableActionDetector 而不是 GestureDetector
-     *
-     * 它同时提供三件事：
-     * ```text
-     * ① onFocusChange  → 知道何时获得/失去焦点
-     * ② actions        → 把「确认键」映射到激活行为
-     * ③ shortcuts      → 自定义按键（方向键由外层遍历策略处理）
-     * ```
-     * 用 GestureDetector 的话，遥控器的「确认」不产生 onTap
-     * —— 那是触摸/鼠标事件，遥控器走的是按键通道。
-     */
-    return FocusableActionDetector(
-      // 当前 tab 初始就拿到焦点，否则用户按方向键毫无反应
-      autofocus: on,
-      /*
-       * ★★ 必须用 `onFocusChange`，不能用 `onShowFocusHighlight`
-       *
-       * `onShowFocusHighlight` 只在「高亮模式」（`highlightMode`）下
-       * 触发 —— 那是**桌面键盘 Tab** 那条路。遥控器 / 手柄的焦点**不产生
-       * 高亮模式** ⇒ TV 上 `_focused` 永远是 false ⇒ `showFocus` 恒 false
-       * ⇒ 焦点环一次都画不出来（android-tv 在真机上量到的就是这样：
-       *   按方向键焦点确实在移动，但底栏一直是「未选中」的样子）。
-       *
-       * `onFocusChange` 两种输入都会回调，是这里唯一正确的信号源。
-       */
-      onFocusChange: (v) => setState(() => _focused = v),
-      onShowHoverHighlight: (v) => setState(() => _hover = v),
-      /*
-       * 把「确认」与「点击」都映射到同一行为。
-       *
-       * `ActivateIntent` 是 Flutter 对 Enter / 空格 / 遥控器确认键的
-       * 统一抽象 —— 映射它就能覆盖遥控器，不用逐个键判断。
-       */
-      actions: <Type, Action<Intent>>{
-        ActivateIntent: CallbackAction<ActivateIntent>(
-          onInvoke: (_) {
-            widget.onTap();
-            return null;
-          },
-        ),
-      },
-      mouseCursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          decoration: BoxDecoration(
-            // 焦点态：淡色背景 + 底部粗线（电视上远距离也能看见）
-            color: showFocus
-                ? widget.colors.foreground.withValues(alpha: 0.10)
-                : Colors.transparent,
-            border: showFocus
-                ? Border(
-                    bottom: BorderSide(
-                      color: widget.colors.foreground,
-                      width: 3,
-                    ),
-                  )
-                : null,
-          ),
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    widget.tab.icon(active: on),
-                    size: _focused ? 24 : 21, // 焦点态略放大
-                    color: color,
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    widget.tab.label,
-                    style: TextStyle(
-                      fontSize: _focused ? 12 : 10.5,
-                      color: color,
-                      fontWeight:
-                          on || _focused ? FontWeight.w600 : FontWeights.regular,
-                    ),
-                  ),
-                ],
-              ),
-              // 未读小红点（原版 badge）
-              if (widget.badge > 0)
-                Positioned(
-                  top: 8,
-                  right: 34,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEF4444),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    constraints: const BoxConstraints(minWidth: 16),
-                    child: Text(
-                      widget.badge > 99 ? '99+' : '${widget.badge}',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: FontSizes.cap,
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 底栏「选中药丸」的配色 —— **浅色/深色两套，成对定义**
-///
-/// # 为什么要有这个类（而不是就地写 `isLight ? a : b`）
-///
-/// bug ③ 的成因不是"值写错了"，而是**值散落在各处、只写了一套**：
-/// ```text
-/// 药丸渐变   写死浅色值（无分支）
-/// 药丸阴影   写死 0.16（浅色的值，参考 my_shelf.dart）
-/// 选中文字   #FAFAFA ← 从 colors.foreground 来，深色下恰好也是近白
-/// ```
-/// 三处**各自**看都"挺合理"，合起来就是深色下的**白底白字**。
-/// 把三样集中到一处、**成对**给值，漏改一处的可能性就没了
-/// —— 这正是 `lib/ui/widgets/my_shelf.dart` 的 `_ShelfPalette` 的做法
-/// （原版 `tokens.css:325-330` 的教训：做新的"选中药丸"之前先找已有的
-///   同类控件对齐，而不是自己发明一套材质）。
-///
-/// # 判据用 forui 的 `colors.brightness`，不用 Material 的
-///
-/// `AppPalette` **自带 `brightness`**（forui `src/theme/colors.dart:32`），
-/// 而 `AppPalette.of(context)` 是**本文件已经在用**的那一条链路
-/// （`_BottomItem` 的 `widget.colors` 就是从这里传下来的）。
-/// `Theme.of(context).brightness` 在「同一个 shell 里两套 Material 串台」
-/// 那类 bug 下会走兜底值 —— 本项目为这个已经踩过一次 1.16:1 的对比度事故，
-/// 所以这里刻意选**不依赖 Material** 的判据。
-///
-/// # 值来自哪里
-///
-/// ```css
-/// /* src/design/tokens.css:293（深色，默认主题） */
-/// --tab-pill-bg: linear-gradient(180deg,
-///                  rgb(255 255 255 / 0.19), rgb(255 255 255 / 0.10));
-/// --tab-pill-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28),
-///                    0 2px 10px -2px rgb(0 0 0 / 0.34);
-/// --tab-fg-strong: #ffffff;
-///
-/// /* src/design/theme-light.css:65（浅色） */
-/// --tab-pill-bg: linear-gradient(180deg,
-///                  rgb(255 255 255 / 0.96), rgb(255 255 255 / 0.80));
-/// --tab-pill-shadow: inset 0 1px 0 rgb(255 255 255 / 1),
-///                    0 2px 8px -2px rgb(16 18 26 / 0.16);
-/// --tab-fg-strong: rgb(16 18 26 / 0.94);
-/// ```
-/// ⚠️ 同一套 `--tab-pill-bg` **也被「我的」分段控件复用**（原版有意为之），
-///    所以底栏与分段控件**本来就该长得一样**；
-///    而首页**源条**用的是另一个令牌 `--srcbar-pill-bg`（= `--surface-4`），
-///    深色 0.17 / 浅色 1.0 —— **值不同但两边都对**，见 `source_bar.dart`。
-class _BottomPalette {
-  const _BottomPalette({
-    required this.pillGradient,
-    required this.pillShadow,
-    required this.activeForeground,
-  });
-
-  /// 药丸的白色渐变（上亮下暗，模拟玻璃高光；原版 `180deg`）
-  final List<Color> pillGradient;
-
-  /// 药丸投影的不透明度 —— 深色下药丸自己很淡，靠阴影分层，所以更重
-  final double pillShadow;
-
-  /// 选中 tab 的文字/图标色（**必须与药丸明暗相反**）
-  final Color activeForeground;
-
-  static _BottomPalette of(BuildContext context) {
-    final isLight = AppPalette.of(context).brightness == Brightness.light;
-    return isLight ? _light : _dark;
-  }
-
-  /// 浅色 —— `theme-light.css:65` 的 `--tab-pill-bg`
-  ///
-  /// ⚠️ 这里刻意写成 `Colors.white.withValues(alpha: 0.96)` 而不是
-  ///    `const Color(0xF5FFFFFF)`：两个值必须**以 alpha 的形式可读**——
-  ///    `test/theme_tokens_test.dart` 的 ③ 就是按 `alpha: 0.96` 这种
-  ///    带前缀的片段去判定"两套值都在"的。写成打包好的 ARGB 字面量
-  ///    虽然渲染完全等价，却会让那条断言**假红**（判据是文本级的不变量，
-  ///    不是渲染级的——渲染级由真机截图负责）。
-  static final _light = _BottomPalette(
-    pillGradient: [
-      Colors.white.withValues(alpha: 0.96),
-      Colors.white.withValues(alpha: 0.80),
-    ],
-    pillShadow: 0.16,
-    // `--tab-fg-strong: rgb(16 18 26 / 0.94)`
-    activeForeground: const Color(0xFF10121A).withValues(alpha: 0.94),
-  );
-
-  /// 深色 —— `tokens.css:293` 的 `--tab-pill-bg`
-  ///
-  /// 这是本 bug 的核心：深色下药丸**不是白色**，是"白 19%→10%"
-  /// 叠在深色玻璃上（合成到 `#0A0A0A` 约 `(57,57,57)`），
-  /// 与「我的」分段控件的实测 `(59,59,59)` 对齐。
-  static final _dark = _BottomPalette(
-    pillGradient: [
-      Colors.white.withValues(alpha: 0.19),
-      Colors.white.withValues(alpha: 0.10),
-    ],
-    pillShadow: 0.34,
-    // `--tab-fg-strong: #ffffff`
-    activeForeground: Colors.white,
-  );
-}
-
 // ═══════════════════════════════════════════════════════════════════════
 //  task-98：帧耗时取证（环境变量门控，生产恒不开）
 // ═══════════════════════════════════════════════════════════════════════
@@ -8362,17 +7260,19 @@ void _installFrameLogger() {
       unawaited(
         f
             .writeAsString(
-          chunk,
-          mode: firstWrite ? FileMode.write : FileMode.append,
-        )
+              chunk,
+              mode: firstWrite ? FileMode.write : FileMode.append,
+            )
             .then<Object?>((v) => v)
             .catchError((Object e) {
-          /* 落盘失败不致命 —— 返回 null 与 Future<Object?> 的元素类型一致 */
-          return null;
-        }),
+              /* 落盘失败不致命 —— 返回 null 与 Future<Object?> 的元素类型一致 */
+              return null;
+            }),
       );
       firstWrite = false;
-    } catch (_) {/* 落盘失败不致命 */}
+    } catch (_) {
+      /* 落盘失败不致命 */
+    }
   }
 
   buf.writeln('══════ task-98 帧耗时取证 ══════');
@@ -8397,14 +7297,18 @@ void _installFrameLogger() {
       final r = ft.rasterDuration.inMicroseconds;
       if (b <= 16700 && r <= 16700) continue;
       buf.writeln('');
-      buf.writeln('★ 超预算帧 #$i  build=${b}us  raster=${r}us  '
-          '(${(b / 16700 * 100).round()}% / ${(r / 16700 * 100).round()}% of 16.7ms)');
+      buf.writeln(
+        '★ 超预算帧 #$i  build=${b}us  raster=${r}us  '
+        '(${(b / 16700 * 100).round()}% / ${(r / 16700 * 100).round()}% of 16.7ms)',
+      );
       // 前 3 帧
       for (var k = i - 3; k < i; k++) {
         if (k < 0) continue;
         final p = all[k];
-        buf.writeln('    前${i - k}: build=${p.buildDuration.inMicroseconds}us '
-            'raster=${p.rasterDuration.inMicroseconds}us');
+        buf.writeln(
+          '    前${i - k}: build=${p.buildDuration.inMicroseconds}us '
+          'raster=${p.rasterDuration.inMicroseconds}us',
+        );
       }
       // 后 3 帧（下一批 timings 投递时才会有；先留空由下轮补）
       /*
@@ -8431,14 +7335,20 @@ void _installFrameLogger() {
       final rasters = [for (final x in all) x.rasterDuration.inMicroseconds];
       final jb = builds.where((x) => x > 16700).length;
       final jr = rasters.where((x) => x > 16700).length;
-      buf.writeln('── 汇总 @${now.toIso8601String().substring(11, 19)} '
-          '累计帧=${all.length}');
-      buf.writeln('   build : p50=${pct(builds, .5)} p95=${pct(builds, .95)} '
-          'max=${builds.isEmpty ? -1 : builds.reduce((a, b) => a > b ? a : b)} '
-          '超预算=$jb');
-      buf.writeln('   raster: p50=${pct(rasters, .5)} p95=${pct(rasters, .95)} '
-          'max=${rasters.isEmpty ? -1 : rasters.reduce((a, b) => a > b ? a : b)} '
-          '超预算=$jr');
+      buf.writeln(
+        '── 汇总 @${now.toIso8601String().substring(11, 19)} '
+        '累计帧=${all.length}',
+      );
+      buf.writeln(
+        '   build : p50=${pct(builds, .5)} p95=${pct(builds, .95)} '
+        'max=${builds.isEmpty ? -1 : builds.reduce((a, b) => a > b ? a : b)} '
+        '超预算=$jb',
+      );
+      buf.writeln(
+        '   raster: p50=${pct(rasters, .5)} p95=${pct(rasters, .95)} '
+        'max=${rasters.isEmpty ? -1 : rasters.reduce((a, b) => a > b ? a : b)} '
+        '超预算=$jr',
+      );
       flush();
     }
   });
@@ -8483,9 +7393,11 @@ void _installFrameLogger() {
         buf.writeln('── AB 相位 P$phase：PUSH 播放页（帧 ${all.length}）');
         flush();
         try {
-          unawaited(nav.push(MaterialPageRoute<void>(
-            builder: (_) => const _AbHeavyPage(),
-          )));
+          unawaited(
+            nav.push(
+              MaterialPageRoute<void>(builder: (_) => const _AbHeavyPage()),
+            ),
+          );
         } catch (e) {
           buf.writeln('   push 失败: $e');
         }
@@ -8571,7 +7483,8 @@ void _installTabProbe() {
       final idx = phase * 10 + k;
       Future<void>.delayed(Duration(milliseconds: 40 * k), () async {
         await _selfCaptureOnce(
-            '.probe/tabshot_${idx.toString().padLeft(3, '0')}.png');
+          '.probe/tabshot_${idx.toString().padLeft(3, '0')}.png',
+        );
       });
     }
   }
@@ -8635,8 +7548,10 @@ class _AbHeavyPage extends StatelessWidget {
         itemCount: 300,
         itemBuilder: (_, i) => SizedBox(
           height: 28,
-          child: Text('AB row $i',
-              style: const TextStyle(color: Colors.white70, fontSize: 12)),
+          child: Text(
+            'AB row $i',
+            style: const TextStyle(color: Colors.white70, fontSize: 12),
+          ),
         ),
       ),
     );
@@ -8705,8 +7620,7 @@ Size _probeWindowSize() {
  */
 const List<LocalizationsDelegate<dynamic>> kAppLocalizationsDelegates =
     <LocalizationsDelegate<dynamic>>[
-  GlobalMaterialLocalizations.delegate,
-  GlobalWidgetsLocalizations.delegate,
-  GlobalCupertinoLocalizations.delegate,
-];
-
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ];

@@ -163,6 +163,8 @@
 // 否则量到的全是仪器的 400。
 library;
 
+import 'miuix_controls.dart' as ui;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -334,7 +336,6 @@ class SpeedTestCancelToken {
   @visibleForTesting
   static int get liveCount => _live.length;
 }
-
 
 /// 速率配色阈值（MB/s）—— ���影响颜色，不改数字
 const double _slowMiBps = 0.5;
@@ -674,9 +675,8 @@ class PluginSpeedTestRunner {
         return await _measure(pluginId, budget, t).timeout(
           _timeout,
           // 超时也要**如实**说明是多少秒的预算，不是一句"超时了"
-          onTimeout: () => throw _BudgetExceeded(
-            '超过 ${_timeout.inSeconds} 秒预算（还没读到可用分片）',
-          ),
+          onTimeout: () =>
+              throw _BudgetExceeded('超过 ${_timeout.inSeconds} 秒预算（还没读到可用分片）'),
         );
       } on _BudgetExceeded catch (e) {
         return _fail(budget, e.message);
@@ -802,8 +802,7 @@ class PluginSpeedTestRunner {
       var segs = 0; // ★ 计时窗口内读完的分片数
       var timed = false;
       var stoppedEarly = false;
-      String? note =
-          playlist.encrypted ? '这条流是加密的，只有部分分片能直接下' : null;
+      String? note = playlist.encrypted ? '这条流是加密的，只有部分分片能直接下' : null;
       var segIndex = 0;
 
       for (final seg in playlist.segments) {
@@ -832,7 +831,9 @@ class PluginSpeedTestRunner {
           break;
         }
         if (total >= _maxBytes) break;
-        if (timed && sw.elapsed >= _windowCap && segs >= _minSegmentsForWindow) {
+        if (timed &&
+            sw.elapsed >= _windowCap &&
+            segs >= _minSegmentsForWindow) {
           break;
         }
 
@@ -1281,9 +1282,9 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
       AppLog.write(
         'SPEED',
         '${widget.providerId} '
-        '${r.ok ? PluginSpeedTest.speedText(r.mbPerSec) : '失败'}  '
-        '${r.bytes} B / ${r.ms} ms / ${r.segments} 片'
-        '${r.error == null ? '' : '  err=${r.error}'}',
+            '${r.ok ? PluginSpeedTest.speedText(r.mbPerSec) : '失败'}  '
+            '${r.bytes} B / ${r.ms} ms / ${r.segments} 片'
+            '${r.error == null ? '' : '  err=${r.error}'}',
       );
     } finally {
       /*
@@ -1387,8 +1388,9 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
            */
           if (_busy) ...[
             const SizedBox(width: Sp.x1),
-            Tooltip(
-              message: '暂停（在下一个分片边界停下，最坏等 1 秒；'
+            ui.Tooltip(
+              message:
+                  '暂停（在下一个分片边界停下，最坏等 1 秒；'
                   '已读到的部分照样计入读数）',
               /*
                * ★ 去 Material：原来只为了给 ActionChip 一个绘制面
@@ -1397,22 +1399,28 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
                * 实测：去掉后 t98_speedtest_pause_concurrency_test +11 全绿，
                *      「ink splashes may be invisible」断言出现 0 次。
                */
-              child: ActionChip(
+              child: ui.TextButton.icon(
                 onPressed: _pause,
-                avatar: Icon(AppIcons.pause, size: 14, color: colors.primary),
+                icon: Icon(AppIcons.pause, size: 14, color: colors.primary),
                 label: Text(
                   '暂停',
-                  style: TextStyle(fontSize: FontSizes.cap, color: colors.primary),
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: colors.primary,
+                  ),
                 ),
-                side: BorderSide(color: colors.outlineVariant),
-                shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Sp.x2,
-                  vertical: Sp.x1 + 2,
+                style: ui.TextButton.styleFrom(
+                  foregroundColor: colors.primary,
+                  minimumSize: const Size(0, 28),
+                  side: BorderSide(color: colors.outlineVariant),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: Radii.rFull,
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: Sp.x2,
+                    vertical: Sp.x1 + 2,
+                  ),
                 ),
-                labelPadding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ),
           ],
@@ -1424,7 +1432,9 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
            *   （同一类问题在 _ProviderCard._actions 里实测过一次 31px 溢出，
            *     那处有完整的宽度预算加法。）
            */
-          Expanded(child: Tooltip(message: _tooltip(last), child: detail)),
+          Expanded(
+            child: ui.Tooltip(message: _tooltip(last), child: detail),
+          ),
         ],
       ),
     );
@@ -1444,9 +1454,7 @@ class _PluginSpeedTestPanelState extends State<PluginSpeedTestPanel> {
         ..writeln('')
         ..writeln('最近一次：${PluginSpeedTest.agoText(last.ts)}');
       if (last.sampleTitle != null) {
-        b.writeln(
-          '样本：《${last.sampleTitle}》（${last.sampleId ?? '-'}）',
-        );
+        b.writeln('样本：《${last.sampleTitle}》（${last.sampleId ?? '-'}）');
       }
       if (last.ok) {
         b.writeln(
@@ -1498,8 +1506,9 @@ class _SpeedBadge extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final fast = run.mbPerSec >= _fastMiBps;
     final slow = run.mbPerSec < _slowMiBps;
-    final tone =
-        fast ? colors.primary : (slow ? colors.error : colors.onSurfaceVariant);
+    final tone = fast
+        ? colors.primary
+        : (slow ? colors.error : colors.onSurfaceVariant);
     // ★ 三档，不做小数分级 —— 用户比的是「哪个快」，不是「快多少」
     final label = fast ? '快' : (slow ? '慢' : '中');
 
@@ -1546,21 +1555,19 @@ class _SpeedButton extends StatelessWidget {
     final on = enabled && !busy;
     final fg = on ? colors.primary : colors.onSurfaceVariant;
 
-    return Tooltip(
-      message: !enabled
-          ? '这个源已停用 —— 启用后才能测速'
-          : '随机挑一部影片，真下一段算下载速率',
+    return ui.Tooltip(
+      message: !enabled ? '这个源已停用 —— 启用后才能测速' : '随机挑一部影片，真下一段算下载速率',
       /*
        * ★ 去 Material：与上面「暂停」那一处同理（ActionChip 不要求 Material 祖先），
        *   实测同上：0 条 ink-splashes 断言，+11 全绿。
        */
-      child: ActionChip(
+      child: ui.TextButton.icon(
         onPressed: on ? onPressed : null,
-        avatar: busy
+        icon: busy
             ? SizedBox(
                 width: 13,
                 height: 13,
-                child: CircularProgressIndicator(
+                child: ui.CircularProgressIndicator(
                   strokeWidth: 2,
                   color: colors.primary,
                 ),
@@ -1574,15 +1581,16 @@ class _SpeedButton extends StatelessWidget {
           busy ? '测速中' : '测速',
           style: TextStyle(fontSize: FontSizes.cap, color: fg),
         ),
-        side: BorderSide(color: colors.outlineVariant),
-        shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x1 + 2,
+        style: ui.TextButton.styleFrom(
+          foregroundColor: colors.primary,
+          minimumSize: const Size(0, 28),
+          side: BorderSide(color: colors.outlineVariant),
+          shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
+          padding: const EdgeInsets.symmetric(
+            horizontal: Sp.x3,
+            vertical: Sp.x1 + 2,
+          ),
         ),
-        labelPadding: EdgeInsets.zero,
-        visualDensity: VisualDensity.compact,
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
     );
   }
@@ -1865,7 +1873,7 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
           SizedBox(
             width: 14,
             height: 14,
-            child: CircularProgressIndicator(
+            child: ui.CircularProgressIndicator(
               strokeWidth: 2,
               color: colors.primary,
             ),
@@ -1889,14 +1897,14 @@ class _PluginSpeedTestAllButtonState extends State<PluginSpeedTestAllButton> {
       );
     }
 
-    return Tooltip(
+    return ui.Tooltip(
       message: empty
           ? '没有可测速的源'
           : '测 ${widget.pluginIds.length} 个源，每个真下一段'
-              '（$_allConcurrency 路并发，全部跑完约 '
-              '${(widget.pluginIds.length / _allConcurrency).ceil()}~'
-              '${(widget.pluginIds.length / _allConcurrency).ceil() * 4} 秒）',
-      child: OutlinedButton.icon(
+                '（$_allConcurrency 路并发，全部跑完约 '
+                '${(widget.pluginIds.length / _allConcurrency).ceil()}~'
+                '${(widget.pluginIds.length / _allConcurrency).ceil() * 4} 秒）',
+      child: ui.OutlinedButton.icon(
         onPressed: empty ? null : _runAll,
         icon: const Icon(AppIcons.speed, size: 16),
         label: Text(widget.label),
@@ -1921,9 +1929,9 @@ class PluginSpeedTestClearButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
+    return ui.Tooltip(
       message: '清空这些源的测速记录（只删记录，不动插件）',
-      child: OutlinedButton.icon(
+      child: ui.OutlinedButton.icon(
         onPressed: pluginIds.isEmpty
             ? null
             : () {
@@ -1932,10 +1940,7 @@ class PluginSpeedTestClearButton extends StatelessWidget {
                 // ★ 2026-10-18（轨道 E 第 5 步）：SnackBar → showAppToast
                 //   理由见 lib/ui/cache_page.dart 的 _say 注释
                 //   （`?.` 不保证能显示，skip_marker_dialog 有真实事故记录）
-                showAppToast(
-                  context,
-                  n == 0 ? '没有测速记录可以清空' : '已清空 $n 个源的测速记录',
-                );
+                showAppToast(context, n == 0 ? '没有测速记录可以清空' : '已清空 $n 个源的测速记录');
               },
         icon: const Icon(AppIcons.delete_sweep_outlined, size: 16),
         label: const Text('清空测速记录'),

@@ -1,35 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  布局骨架抽象（Owner 第 14 条 · 2026-10-17 确认选 A）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # Owner 要的是什么（先划清边界，避免做成换肤）
-// ```text
-// ❌ 不是：换颜色 / 换圆角 / 换字体   ← 那是现有 9 套配色主题做的事
-// ✅ 是：换**页面骨架** —— 导航位置、内容区组织方式
-// ```
-// ⇒ 判据：三套骨架在**同一页面上，控件位置不同**。
-//
-// # 为什么抽这一层（而不是在 ShellPage 里 if/else 三份）
-// ```text
-// ShellPage 的 build 里有大量**与骨架无关**的东西：
-//   · 保活 Stack（_stackOrder / Offstage / TickerMode / _KeepAliveTransition）
-//   · 顶部安全区 SafeArea
-//   · ClipRect / 转场动画 / 页面缓存 _contentFor
-// ⇒ 这些**三套骨架共用**。若每套各写一份，保活逻辑就有三份副本，
-//   迟早漂移（本项目已有『两处同构必须一起改』的教训）。
-//
-// 所以：ShellPage 只负责**算出 body**（已保活的内容区），
-//       然后 layout.build(body: ...) 决定「body 怎么摆、导航放哪」。
-// ⇒ 切骨架**不动页面代码**，也不动保活逻辑。
-// ```
-//
-// # ⚠️ 与配色主题**正交**
-// ```text
-// 配色：9 套（theme_pack.dart）    骨架：3 套（本目录）
-// ⇒ 27 种组合。骨架存 UiPrefs，**不放进 ThemePack** ——
-//   用户导入别人的配色主题时，不该被改掉布局。
-// ```
-
+// ShellPage owns page state; layouts only place its cached content and navigation.
 import 'package:flutter/widgets.dart';
 
 import '../../shell.dart' show AppTab;
@@ -39,7 +8,7 @@ import '../../shell.dart' show AppTab;
 /// 实现必须满足：
 /// ```text
 /// ① 不持有 body 的 State（body 由 ShellPage 保活，骨架只是摆放）
-/// ② 切骨架时 body **不能重建**（判据 3：当前页不丢失）
+/// ② 切换布局后当前页状态和滚动位置必须保留。
 /// ③ 导航必须能切全部 6 个 tab（判据 2）
 /// ```
 abstract class ShellLayout {

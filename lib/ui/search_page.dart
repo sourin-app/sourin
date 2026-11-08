@@ -47,6 +47,9 @@
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'widgets/miuix_controls.dart' as ui;
 
 import '../core/ffi.dart';
 import '../core/sourin_api.dart';
@@ -93,8 +96,7 @@ typedef SearchHitGroup = ({
 List<SearchHitGroup> rankHitGroups(
   String keyword,
   List<SearchHitGroup> groups,
-) =>
-    stableRankDesc(groups, (g) => bestTitleScore(keyword, g.items));
+) => stableRankDesc(groups, (g) => bestTitleScore(keyword, g.items));
 
 /// 从聚合条目的 id 里取出**子站 id**
 ///
@@ -167,11 +169,7 @@ List<SearchHitGroup> splitAggregateHit(
 
 /// 搜索页
 class SearchPage extends StatefulWidget {
-  const SearchPage({
-    super.key,
-    this.onOpenDetail,
-    this.isTv = false,
-  });
+  const SearchPage({super.key, this.onOpenDetail, this.isTv = false});
 
   /// 点结果卡片 → 详情页
   ///
@@ -352,9 +350,7 @@ class SearchPageState extends State<SearchPage> {
   /// 失败源不进左栏（它们在 `_SkippedList` 有专门的去处，两处不重复）。
   List<({String name, int count})>? get _sourceRailData => _hits.isEmpty
       ? null
-      : [
-          for (final h in _hits) (name: h.name, count: h.items.length),
-        ];
+      : [for (final h in _hits) (name: h.name, count: h.items.length)];
 
   /// 被跳过的源：(provider, reason)
   List<({String provider, String name, String reason})> _skipped = [];
@@ -400,9 +396,7 @@ class SearchPageState extends State<SearchPage> {
     final p = await TvboxAggChannelApi.channelsReal();
     // ⚠️ 名字为空 ⇒ 用 id 兜底（`AggChannel.fromJson` 已经这样做了，这里再过一遍
     //   是为了"契约万一变了"也不画空标题）
-    return {
-      for (final c in p.channels) c.id: c.name.isEmpty ? c.id : c.name,
-    };
+    return {for (final c in p.channels) c.id: c.name.isEmpty ? c.id : c.name};
   }
 
   Future<void> _loadAggChannelNames() async {
@@ -774,8 +768,7 @@ class SearchPageState extends State<SearchPage> {
     );
   }
 
-  int get _totalResults =>
-      _hits.fold(0, (n, h) => n + h.items.length);
+  int get _totalResults => _hits.fold(0, (n, h) => n + h.items.length);
 
   @override
   Widget build(BuildContext context) {
@@ -834,63 +827,64 @@ class SearchPageState extends State<SearchPage> {
            * 两种形态同一份交互：点源 ⇒ 只看该源；点「全部」⇒ 还原。
            * ```
            */
-          child: LayoutBuilder(builder: (context, cons) {
-            final rail = _sourceRailData;
-            final results = CustomScrollView(
-            // ★ 主滚动区**显式 key**：门禁按 key 定位它再滚动
-            //
-            // 为什么不能靠 `find.byType(Scrollable).first`：
-            // ```text
-            // 那是**隐式假设"页面只有一个滚动区"**。将来加横向分类条 / rails 时，
-            // `.first` 会滚到**错的**那个 Scrollable，且**不报错**（滚了没反应）
-            // —— 典型假绿来源。⇒ 主滚动区必须有 key。
-            // ```
-            key: const ValueKey<String>('search-results-scroll'),
-            clipBehavior: Clip.antiAlias,
-            slivers: [
-        // ── 页头 ──（随内容滚走）
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: EdgeInsets.only(
-              top: Sp.x8,
-              // ★ 窄屏收一档（16）—— 与原版 `.container` 的 640px 断点一致
-              left: Layout.contentPaddingOf(context),
-              right: Layout.contentPaddingOf(context),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '搜索',
-                  style: TextStyle(
-                    fontSize: FontSizes.xl,
-                    fontWeight: FontWeights.semibold,
-                    color: colors.onSurface,
+          child: LayoutBuilder(
+            builder: (context, cons) {
+              final rail = _sourceRailData;
+              final results = CustomScrollView(
+                // ★ 主滚动区**显式 key**：门禁按 key 定位它再滚动
+                //
+                // 为什么不能靠 `find.byType(Scrollable).first`：
+                // ```text
+                // 那是**隐式假设"页面只有一个滚动区"**。将来加横向分类条 / rails 时，
+                // `.first` 会滚到**错的**那个 Scrollable，且**不报错**（滚了没反应）
+                // —— 典型假绿来源。⇒ 主滚动区必须有 key。
+                // ```
+                key: const ValueKey<String>('search-results-scroll'),
+                clipBehavior: Clip.antiAlias,
+                slivers: [
+                  // ── 页头 ──（随内容滚走）
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        top: Sp.x8,
+                        // ★ 窄屏收一档（16）—— 与原版 `.container` 的 640px 断点一致
+                        left: Layout.contentPaddingOf(context),
+                        right: Layout.contentPaddingOf(context),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '搜索',
+                            style: TextStyle(
+                              fontSize: FontSizes.xl,
+                              fontWeight: FontWeights.semibold,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: Sp.x1),
+                          Text(
+                            '同时搜索全部已启用内容源',
+                            style: TextStyle(
+                              fontSize: FontSizes.sm,
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(height: Sp.x1),
-                Text(
-                  '同时搜索全部已启用内容源',
-                  style: TextStyle(
-                    fontSize: FontSizes.sm,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
 
-        // ── 搜索框 ──（★ pinned：滚到哪都留在视口顶）
-        SliverPersistentHeader(
-          pinned: true,
-          delegate: _StickySearchBar(
-            minExtent: _searchBarHeight,
-            maxExtent: _searchBarHeight + AppMetrics.homeTopPadding,
-            background: colors.surface,
-            child: Padding(
-              padding: Layout.contentInsetOf(context),
-              /*
+                  // ── 搜索框 ──（★ pinned：滚到哪都留在视口顶）
+                  SliverPersistentHeader(
+                    pinned: true,
+                    delegate: _StickySearchBar(
+                      minExtent: _searchBarHeight,
+                      maxExtent: _searchBarHeight + AppMetrics.homeTopPadding,
+                      background: colors.surface,
+                      child: Padding(
+                        padding: Layout.contentInsetOf(context),
+                        /*
                * ★★★ 第 66 轮轨道 F / L2-b：搜索框**不再跟着窗口无限拉伸**
                *
                * # 改前（实测，`.probe/t66_l1g_inputs.txt`）
@@ -920,160 +914,119 @@ class SearchPageState extends State<SearchPage> {
                * ⇒ 现在：**搜索框与页头、结果栅格共用同一条左基线**，
                *   三者一起被内容带的上限带着居中。这才是"对齐"，不是"各自居中"。
                */
-              child: Container(
-                key: _searchBoxKey,
-                padding: const EdgeInsets.symmetric(horizontal: Sp.x3),
-                decoration: BoxDecoration(
-                  color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
-                  borderRadius: Radii.rLg,
-                  /*
-                   * ★ L2-c：聚焦时描边转主色（改前恒为 outlineVariant）
-                   *
-                   * 改前用户点进搜索框**界面毫无变化**（InputDecoration
-                   * 各级都被压成 none，见下面 TextField 的那段长注释）。
-                   * ⇒ 焦点态由**这一层**负责 —— 它本来就是画描边的那一层。
-                   *
-                   * ⚠️ 只改**颜色**，不加粗：加粗会让框宽高变化 1px，
-                   *    而 `_searchBarHeight = 50` 是写死的紧约束
-                   *    ⇒ 加粗必然 `RenderFlex overflowed`（见那个常量的说明）。
-                   */
-                  border: Border.all(
-                    color: _focusNode.hasFocus
-                        ? colors.primary
-                        : colors.outlineVariant,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      AppIcons.search,
-                      size: 18,
-                      color: colors.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: Sp.x2),
-                    Expanded(
-                      child: TextField(
-                        controller: _controller,
-                        focusNode: _focusNode,
-                        // ★ TV / 键盘唯一的入口：没有它遥控器永远进不了输入框
-                        //  （`_searchBoxKey` 只用来 ensureVisible 滚动，不管焦点）
-                        autofocus: true,
-                        textInputAction: TextInputAction.search,
-                        onSubmitted: (_) => _doSearch(),
-                        // ★ task-3 IME：重建走闸门 —— 组合期（拼音未上屏）
-                        //   的每次组合更新只更新 controller，不重建全页；
-                        //   「空/非空」翻转时才 setState（见 _onSearchChanged）。
-                        onChanged: (_) => _onSearchChanged(),
-                        decoration: const InputDecoration(
-                          hintText: '输入片名、剧名或关键词…',
-                          /*
-                           * ⚠️⚠️ 2026-10-13 修（Owner 反馈「聚焦时有奇怪的边界线」）：
-                           *      **只写 `border: none` 不够！**
-                           *
-                           * `InputDecoration` 的各级描边**优先级高于 `border`**：
-                           * ```text
-                           * focusedBorder > enabledBorder > border
-                           * ```
-                           * 而全局主题（`theme_bridge.dart:480-505`）给这几级**都**设了
-                           * `OutlineInputBorder`（聚焦还转主色）⇒ 本框一聚焦就画出
-                           * 一条**主色圆角描边**，叠在外层 `Container` 已有的
-                           * `outlineVariant` 描边里面 ⇒ 看上去就是"奇怪的边界线"。
-                           *
-                           * ⇒ 本框的边框由**外层 Container** 负责（见上面
-                           *   `Border.all(color: colors.outlineVariant)`），
-                           *   所以这里要把**每一级**都显式压成 `none`。
-                           * ```
-                           * ★ 教训：`InputBorder.none` 是"默认态"的开关，不是"全部态"的。
-                           * ```
-                           */
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          errorBorder: InputBorder.none,
-                          focusedErrorBorder: InputBorder.none,
-                          disabledBorder: InputBorder.none,
+                        child: miuix.MiuixCard(
+                          key: _searchBoxKey,
+                          insideMargin: const EdgeInsets.symmetric(
+                            horizontal: Sp.x3,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                AppIcons.search,
+                                size: 18,
+                                color: colors.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: Sp.x2),
+                              Expanded(
+                                child: ui.TextField(
+                                  controller: _controller,
+                                  focusNode: _focusNode,
+                                  // ★ TV / 键盘唯一的入口：没有它遥控器永远进不了输入框
+                                  //  （`_searchBoxKey` 只用来 ensureVisible 滚动，不管焦点）
+                                  autofocus: true,
+                                  textInputAction: TextInputAction.search,
+                                  onSubmitted: (_) => _doSearch(),
+                                  // ★ task-3 IME：重建走闸门 —— 组合期（拼音未上屏）
+                                  //   的每次组合更新只更新 controller，不重建全页；
+                                  //   「空/非空」翻转时才 setState（见 _onSearchChanged）。
+                                  onChanged: (_) => _onSearchChanged(),
+                                  decoration: const InputDecoration(
+                                    isDense: true,
+                                    hintText: '输入片名、剧名或关键词…',
+                                  ),
+                                  style: const TextStyle(
+                                    fontSize: FontSizes.base,
+                                  ),
+                                ),
+                              ),
+                              if (_controller.text.isNotEmpty)
+                                ui.IconButton(
+                                  onPressed: _clear,
+                                  icon: const Icon(AppIcons.close, size: 16),
+                                  tooltip: '清空',
+                                ),
+                              const SizedBox(width: Sp.x1),
+                              ui.FilledButton(
+                                onPressed:
+                                    (_searching ||
+                                        _controller.text.trim().isEmpty)
+                                    ? null
+                                    : _doSearch,
+                                child: Text(_searching ? '搜索中…' : '搜索'),
+                              ),
+                            ],
+                          ),
                         ),
-                      style: const TextStyle(fontSize: FontSizes.base),
                       ),
                     ),
-                    if (_controller.text.isNotEmpty)
-                      IconButton(
-                        onPressed: _clear,
-                        icon: const Icon(AppIcons.close, size: 16),
-                        tooltip: '清空',
+                  ),
+
+                  const SliverToBoxAdapter(child: SizedBox(height: Sp.x6)),
+
+                  // ── 无可搜索源 ──
+                  if (_totalProviders == 0)
+                    const SliverToBoxAdapter(
+                      child: EmptyState(
+                        icon: AppIcons.travel_explore_outlined,
+                        title: '当前没有支持搜索的内容源',
+                        hint: '某电视台官方无公开搜索接口。启用其它内容源后即可在这里一起搜索。',
                       ),
-                    const SizedBox(width: Sp.x1),
-                    FilledButton(
-                      onPressed:
-                          (_searching || _controller.text.trim().isEmpty)
-                              ? null
-                              : _doSearch,
-                      child: Text(_searching ? '搜索中…' : '搜索'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-
-        const SliverToBoxAdapter(child: SizedBox(height: Sp.x6)),
-
-        // ── 无可搜索源 ──
-        if (_totalProviders == 0)
-          const SliverToBoxAdapter(
-            child: EmptyState(
-              icon: AppIcons.travel_explore_outlined,
-              title: '当前没有支持搜索的内容源',
-              hint: '某电视台官方无公开搜索接口。启用其它内容源后即可在这里一起搜索。',
-            ),
-          )
-
-        // ── ★★ 骨架只在「一个源都还没回来」时显示 ──
-        else if (_searching && _hits.isEmpty)
-          const SliverToBoxAdapter(child: _SearchSkeleton())
-
-        // ── 结果 ──
-        //
-        // ★ task-80：骨架 → 内容 的淡入（与首页 `home_page.dart` 同款）
-        //
-        // ## 为什么只包**内容侧**，不包骨架侧
-        //
-        // 骨架屏是**立刻反馈** —— 它的职责是马上告诉用户"在加载了"。
-        // 给它加 200ms 淡入等于**延迟反馈**，与它存在的目的相反。
-        // 该淡入的是**取代它的内容**（首页也是这么做的）。
-        //
-        // ## 为什么是 `FadeInSliver` 而不是 `AnimatedOpacity`
-        //
-        // 这里是**首次挂载**（初值 == 目标值）⇒ `AnimatedOpacity` 要等
-        // "目标值变化"才补间 ⇒ **不会播**。`FadeInSliver` 内部的
-        // `TweenAnimationBuilder` 首帧就开始补间 ⇒ 天然"出现"动画。
-        //
-        // ⚠️ 而且它包的是 **sliver 版**（`SliverFadeTransition`）——
-        //    换成盒模型的 `Opacity` 就得套 `SliverToBoxAdapter`，
-        //    那会把整个 `SliverList` 变成盒模型孩子 ⇒ **丢掉懒加载**。
-        //
-        // ## Reduce Motion
-        //
-        // `FadeInSliver` 内部走 `MotionPrefs.duration` ⇒ 系统关掉动画时
-        // duration 变 `Duration.zero`，**第 0 帧就到位**（不播）。
-        else if (_searched)
-          FadeInSliver(
-            sliver: SliverList(
-              delegate: SliverChildListDelegate([
-                /*
+                    )
+                  // ── ★★ 骨架只在「一个源都还没回来」时显示 ──
+                  else if (_searching && _hits.isEmpty)
+                    const SliverToBoxAdapter(child: _SearchSkeleton())
+                  // ── 结果 ──
+                  //
+                  // ★ task-80：骨架 → 内容 的淡入（与首页 `home_page.dart` 同款）
+                  //
+                  // ## 为什么只包**内容侧**，不包骨架侧
+                  //
+                  // 骨架屏是**立刻反馈** —— 它的职责是马上告诉用户"在加载了"。
+                  // 给它加 200ms 淡入等于**延迟反馈**，与它存在的目的相反。
+                  // 该淡入的是**取代它的内容**（首页也是这么做的）。
+                  //
+                  // ## 为什么是 `FadeInSliver` 而不是 `AnimatedOpacity`
+                  //
+                  // 这里是**首次挂载**（初值 == 目标值）⇒ `AnimatedOpacity` 要等
+                  // "目标值变化"才补间 ⇒ **不会播**。`FadeInSliver` 内部的
+                  // `TweenAnimationBuilder` 首帧就开始补间 ⇒ 天然"出现"动画。
+                  //
+                  // ⚠️ 而且它包的是 **sliver 版**（`SliverFadeTransition`）——
+                  //    换成盒模型的 `Opacity` 就得套 `SliverToBoxAdapter`，
+                  //    那会把整个 `SliverList` 变成盒模型孩子 ⇒ **丢掉懒加载**。
+                  //
+                  // ## Reduce Motion
+                  //
+                  // `FadeInSliver` 内部走 `MotionPrefs.duration` ⇒ 系统关掉动画时
+                  // duration 变 `Duration.zero`，**第 0 帧就到位**（不播）。
+                  else if (_searched)
+                    FadeInSliver(
+                      sliver: SliverList(
+                        delegate: SliverChildListDelegate([
+                          /*
                  * 「没找到」只在**搜索全部结束**后才下结论
                  *
                  * ⚠️ 如果一有结果就判空，搜索刚开始（还没源回来）就会
                  *    闪一下"没有找到相关内容" —— 那是误报。
                  */
-                if (_totalResults == 0 && !_searching)
-                  const _NoResult()
-                else if (_totalResults > 0)
-                  // ★ 左栏选中某源时只渲染该组（_visibleHits 已按 _selectedSource 过滤）
-                  for (final h in _visibleHits) _ResultGroup(group: h, onOpen: _open),
+                          if (_totalResults == 0 && !_searching)
+                            const _NoResult()
+                          else if (_totalResults > 0)
+                            // ★ 左栏选中某源时只渲染该组（_visibleHits 已按 _selectedSource 过滤）
+                            for (final h in _visibleHits)
+                              _ResultGroup(group: h, onOpen: _open),
 
-                /*
+                          /*
                  * ★ 还在搜：进度行**与「有没有结果」无关**，一律显示
                  *
                  * 原来它被关在 `else if (_totalResults > 0)` 里面 ⇒
@@ -1081,20 +1034,22 @@ class SearchPageState extends State<SearchPage> {
                  * 结果区**整块是空的** —— 用户看到的是"搜了但什么都没发生"。
                  * 现在连「暂无结果，先给你个进度」这一段也一起给。
                  */
-                if (_searching) _SearchProgress(settled: _settled, total: _totalProviders),
+                          if (_searching)
+                            _SearchProgress(
+                              settled: _settled,
+                              total: _totalProviders,
+                            ),
+                        ]),
+                      ),
+                    )
+                  // ── 未搜索：空态引导（对齐 SearchView.vue 的 `未搜索` 分支）──
+                  //
+                  // ⚠：`slivers:` 里只能放 Sliver。这里用
+                  //    `SliverToBoxAdapter` 包一个普通 Box widget（同 `_NoResult`）。
+                  else
+                    const SliverToBoxAdapter(child: _IdleHint()),
 
-              ]),
-            ),
-          )
-
-        // ── 未搜索：空态引导（对齐 SearchView.vue 的 `未搜索` 分支）──
-        //
-        // ⚠：`slivers:` 里只能放 Sliver。这里用
-        //    `SliverToBoxAdapter` 包一个普通 Box widget（同 `_NoResult`）。
-        else
-          const SliverToBoxAdapter(child: _IdleHint()),
-
-        /*
+                  /*
          * ★★ 2026-10-26（可诊断性缺口）：**被跳过的源**与"有没有结果 / 是否还在搜"
          * **无关** —— 所以它是上面整条 if/else 链的**并列元素**，不是替身：
          * ```text
@@ -1105,48 +1060,52 @@ class SearchPageState extends State<SearchPage> {
          * ```
          * ⚠️ 判据见 `zz_t1052` ④：全源失败时**两者都必须在**；没有 skipped 时**不许**画空列表头。
          */
-        if (_searched && _skipped.isNotEmpty)
-          SliverToBoxAdapter(child: _SkippedList(skipped: _skipped)),
-        // ── 底部让位（悬浮底栏盖在所有路由之上）──
-        //
-        // ⚠️ 这里**不能**加 `const`：`Sp.bottomBarInset` 是 getter
-        //    （`Device.isTv ? 110 : 90`，见 `lib/ui/tokens.dart:73`），
-        //    不是编译期常量 ⇒ `const SliverToBoxAdapter(...)` 会报
-        //    `invalid_constant`。同款写法见 `settings_sub_page.dart:275`。
-        SliverToBoxAdapter(child: SizedBox(height: Sp.bottomBarInset)),
-          ],
-        );
-            if (rail == null) return results;
-            if (cons.maxWidth >= _kSourceRailBreakpoint) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: _kSourceRailWidth,
-                    child: _SourceRail(
-                      key: const ValueKey<String>('search-source-rail'),
-                      selected: _selectedSource,
-                      sources: rail,
-                      onSelect: (name) => setState(() => _selectedSource = name),
-                    ),
+                  if (_searched && _skipped.isNotEmpty)
+                    SliverToBoxAdapter(child: _SkippedList(skipped: _skipped)),
+                  // ── 底部让位（悬浮底栏盖在所有路由之上）──
+                  //
+                  // ⚠️ 这里**不能**加 `const`：`Sp.bottomBarInset` 是 getter
+                  //    （`Device.isTv ? 110 : 90`，见 `lib/ui/tokens.dart:73`），
+                  //    不是编译期常量 ⇒ `const SliverToBoxAdapter(...)` 会报
+                  //    `invalid_constant`。同款写法见 `settings_sub_page.dart:275`。
+                  SliverToBoxAdapter(
+                    child: SizedBox(height: Sp.bottomBarInset),
                   ),
-                  const SizedBox(width: Sp.x4),
+                ],
+              );
+              if (rail == null) return results;
+              if (cons.maxWidth >= _kSourceRailBreakpoint) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: _kSourceRailWidth,
+                      child: _SourceRail(
+                        key: const ValueKey<String>('search-source-rail'),
+                        selected: _selectedSource,
+                        sources: rail,
+                        onSelect: (name) =>
+                            setState(() => _selectedSource = name),
+                      ),
+                    ),
+                    const SizedBox(width: Sp.x4),
+                    Expanded(child: results),
+                  ],
+                );
+              }
+              return Column(
+                children: [
+                  _SourceChips(
+                    key: const ValueKey<String>('search-source-chips'),
+                    selected: _selectedSource,
+                    sources: rail,
+                    onSelect: (name) => setState(() => _selectedSource = name),
+                  ),
                   Expanded(child: results),
                 ],
               );
-            }
-            return Column(
-              children: [
-                _SourceChips(
-                  key: const ValueKey<String>('search-source-chips'),
-                  selected: _selectedSource,
-                  sources: rail,
-                  onSelect: (name) => setState(() => _selectedSource = name),
-                ),
-                Expanded(child: results),
-              ],
-            );
-          }),
+            },
+          ),
         ),
       ),
     );
@@ -1237,8 +1196,10 @@ class _StickySearchBar extends SliverPersistentHeaderDelegate {
      *   （那里是"返回条 + 大标题收起"，这里是"搜索框 + 顶距收起"）。
      */
     final h = (maxExtent - shrinkOffset).clamp(minExtent, maxExtent);
-    final padTop = ((maxExtent - shrinkOffset) - minExtent)
-        .clamp(0.0, maxExtent - minExtent);
+    final padTop = ((maxExtent - shrinkOffset) - minExtent).clamp(
+      0.0,
+      maxExtent - minExtent,
+    );
     return Container(
       height: h,
       color: background,
@@ -1329,27 +1290,27 @@ class _ResultGroup extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-          Padding(
-            padding: EdgeInsets.only(
-              bottom: Sp.x2,
-              left: Layout.contentPaddingOf(context),
-              right: Layout.contentPaddingOf(context),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 4,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    color: colors.primary,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
+              Padding(
+                padding: EdgeInsets.only(
+                  bottom: Sp.x2,
+                  left: Layout.contentPaddingOf(context),
+                  right: Layout.contentPaddingOf(context),
                 ),
-                const SizedBox(width: Sp.x2),
-                Text(
-                  group.name,
-                  style: TextStyle(
-                    /*
+                child: Row(
+                  children: [
+                    Container(
+                      width: 4,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: colors.primary,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: Sp.x2),
+                    Text(
+                      group.name,
+                      style: TextStyle(
+                        /*
                      * ★★★ 2026-10-09（Owner 第 12 条「文字大小/粗细不一致」）
                      *     这里原本是 `FontSizes.base`(16)，已统一为 `lg`(20)。
                      * ```text
@@ -1367,51 +1328,51 @@ class _ResultGroup extends StatelessWidget {
                      *    不要因为「搜索页字小一点更紧凑」再把它改回 base ——
                      *    那会让同角色刻度再次分裂。
                      */
-                    fontSize: FontSizes.lg,
-                    fontWeight: FontWeight.w600,
-                    color: colors.onSurface,
+                        fontSize: FontSizes.lg,
+                        fontWeight: FontWeight.w600,
+                        color: colors.onSurface,
+                      ),
+                    ),
+                    const SizedBox(width: Sp.x2),
+                    Text(
+                      '${group.items.length} 个结果',
+                      style: TextStyle(
+                        fontSize: FontSizes.cap,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: Sp.x4),
+              Padding(
+                padding: Layout.contentInsetOf(context),
+                child: GridView.builder(
+                  clipBehavior: Clip.antiAlias,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: cols,
+                    // ★ 宽档 16（原版 `--poster-gap`）/ 窄档 12，与列数同源
+                    crossAxisSpacing: Layout.gapFor(band),
+                    mainAxisSpacing: Sp.x5,
+                    // 高度 = 海报高 + 标题两行（原版 base.css:844-854 固定两行）
+                    childAspectRatio:
+                        AppMetrics.posterWidth /
+                        (AppMetrics.posterWidth / AppMetrics.posterAspect +
+                            AppMetrics.posterMetaHeight(titleLines: 2)),
+                  ),
+                  itemCount: group.items.length,
+                  itemBuilder: (_, i) => PosterCard(
+                    title: group.items[i].title,
+                    cover: group.items[i].cover,
+                    subtitle: group.items[i].note,
+                    titleLines: 2,
+                    onTap: () => onOpen(group.items[i]),
                   ),
                 ),
-                const SizedBox(width: Sp.x2),
-                Text(
-                  '${group.items.length} 个结果',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: Sp.x4),
-          Padding(
-            padding: Layout.contentInsetOf(context),
-            child: GridView.builder(
-              clipBehavior: Clip.antiAlias,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: cols,
-                // ★ 宽档 16（原版 `--poster-gap`）/ 窄档 12，与列数同源
-                crossAxisSpacing: Layout.gapFor(band),
-                mainAxisSpacing: Sp.x5,
-                // 高度 = 海报高 + 标题两行（原版 base.css:844-854 固定两行）
-                childAspectRatio: AppMetrics.posterWidth /
-                    (AppMetrics.posterWidth /
-                        AppMetrics.posterAspect +
-                        AppMetrics.posterMetaHeight(titleLines: 2)),
               ),
-              itemCount: group.items.length,
-              itemBuilder: (_, i) => PosterCard(
-                title: group.items[i].title,
-                cover: group.items[i].cover,
-                subtitle: group.items[i].note,
-                titleLines: 2,
-                onTap: () => onOpen(group.items[i]),
-              ),
-            ),
-          ),
-        ],
+            ],
           ),
         );
       },
@@ -1449,10 +1410,7 @@ class _SearchProgress extends StatelessWidget {
           SizedBox(
             width: 15,
             height: 15,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: colors.primary,
-            ),
+            child: miuix.MiuixCircularProgressIndicator(strokeWidth: 2),
           ),
           const SizedBox(width: Sp.x3),
           Text(
@@ -1478,13 +1436,8 @@ class _SkippedList extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     return Padding(
       padding: Layout.contentInsetOf(context),
-      child: Container(
-        padding: const EdgeInsets.all(Sp.x4),
-        decoration: BoxDecoration(
-          color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
-          borderRadius: Radii.rLg,
-          border: Border.all(color: colors.outlineVariant),
-        ),
+      child: miuix.MiuixCard(
+        insideMargin: const EdgeInsets.all(Sp.x4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1542,10 +1495,10 @@ class _NoResult extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const EmptyState(
-        icon: AppIcons.search_off,
-        title: '没有找到相关内容',
-        hint: '换个关键词试试，或检查是否已启用对应内容源',
-      );
+    icon: AppIcons.search_off,
+    title: '没有找到相关内容',
+    hint: '换个关键词试试，或检查是否已启用对应内容源',
+  );
 }
 
 /// 搜索页的「还没搜」引导
@@ -1558,10 +1511,10 @@ class _IdleHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const EmptyState(
-        icon: AppIcons.search,
-        title: '搜索全部内容源',
-        hint: '输入关键词后回车即可同时搜索',
-      );
+    icon: AppIcons.search,
+    title: '搜索全部内容源',
+    hint: '输入关键词后回车即可同时搜索',
+  );
 }
 
 class _SearchSkeleton extends StatelessWidget {
@@ -1591,13 +1544,13 @@ class _SearchSkeleton extends StatelessWidget {
     final gap = Layout.gapFor(band);
 
     Widget bar(double w, double h) => Container(
-          width: w,
-          height: h,
-          decoration: BoxDecoration(
-            color: colors.onSurface.withValues(alpha: 0.07),
-            borderRadius: BorderRadius.circular(4),
-          ),
-        );
+      width: w,
+      height: h,
+      decoration: BoxDecoration(
+        color: colors.onSurface.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(4),
+      ),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1632,9 +1585,9 @@ class _SearchSkeleton extends StatelessWidget {
                       crossAxisCount: cols,
                       crossAxisSpacing: gap,
                       mainAxisSpacing: Sp.x5,
-                      childAspectRatio: AppMetrics.posterWidth /
-                          (AppMetrics.posterWidth /
-                              AppMetrics.posterAspect +
+                      childAspectRatio:
+                          AppMetrics.posterWidth /
+                          (AppMetrics.posterWidth / AppMetrics.posterAspect +
                               AppMetrics.posterMetaHeight(titleLines: 2)),
                     ),
                     itemCount: cols * 2,
@@ -1667,7 +1620,7 @@ class _SearchSkeleton extends StatelessWidget {
 // · 「全部」永远在第一行（选中态即默认态 ⇒ 零破坏）；
 // · 每源一行 = 源显示名 + 该源条数（用户凭它判断"哪个源有货"）；
 // · 失败源不在这里（`_SkippedList` 是它们的去处，两处不重复）；
-// · 视觉沿用玻璃卡片配方（surfaceContainerHigh + Radii.rLg，与 AppGlassDialog 内层一致）。
+// · 列表和结果区域使用实际 Miuix 卡片，颜色由当前 Miuix 主题提供。
 // ```
 
 /// 左栏（宽窗口）：玻璃卡 + 「全部 N」+ 每源行
@@ -1685,20 +1638,7 @@ class _SourceRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // ⚠️ 用 Material 语义色（Theme.of）而不是 AppTheme.of——后者对 AppThemeScope
-    //   祖先有硬断言，本页既有测试宿主都不包它 ⇒ 左栏一出现整页崩。
-    //   surfaceContainerHigh 与玻璃卡语义色是同一映射（见 AppGlassDialog 注释）。
-    final c = Theme.of(context).colorScheme;
-    return Container(
-      decoration: BoxDecoration(
-        color: c.surfaceContainerHigh,
-        borderRadius: Radii.rLg,
-      ),
-      // 玻璃卡的 1px 描边（与 AppGlassDialog 内层同款视觉锚）
-      foregroundDecoration: BoxDecoration(
-        borderRadius: Radii.rLg,
-        border: Border.all(color: c.outline.withValues(alpha: 0.4)),
-      ),
+    return miuix.MiuixCard(
       child: ListView.builder(
         padding: const EdgeInsets.all(Sp.x2),
         /*
@@ -1724,7 +1664,12 @@ class _SourceRail extends StatelessWidget {
             );
           }
           final s = sources[i - 1];
-          return _sourceRow(context, name: s.name, count: s.count, isAll: false);
+          return _sourceRow(
+            context,
+            name: s.name,
+            count: s.count,
+            isAll: false,
+          );
         },
       ),
     );
@@ -1742,41 +1687,19 @@ class _SourceRail extends StatelessWidget {
     return Padding(
       key: rowKey ?? ValueKey<String>('search-source-row-$name'),
       padding: const EdgeInsets.only(bottom: Sp.x1),
-      child: Material(
-        color: isSel ? c.primary.withValues(alpha: 0.14) : Colors.transparent,
-        borderRadius: Radii.rMd,
-        child: InkWell(
-          borderRadius: Radii.rMd,
-          onTap: () => onSelect(isAll ? null : name),
-          child: Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: Sp.x2),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      fontWeight:
-                          isSel ? FontWeights.semibold : FontWeights.regular,
-                      color: isSel ? c.primary : c.onSurface,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: Sp.x1),
-                Text(
-                  '$count',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: isSel ? c.primary : c.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
+      child: miuix.MiuixCard(
+        colors: miuix.MiuixCardColors(
+          color: isSel ? c.primaryContainer : Colors.transparent,
+          contentColor: isSel ? c.onPrimaryContainer : c.onSurface,
+        ),
+        child: miuix.MiuixBasicComponent(
+          title: name,
+          insideMargin: const EdgeInsets.symmetric(
+            horizontal: Sp.x2,
+            vertical: Sp.x2,
           ),
+          onClick: () => onSelect(isAll ? null : name),
+          endActions: [Text('$count')],
         ),
       ),
     );
@@ -1798,45 +1721,27 @@ class _SourceChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = Theme.of(context).colorScheme;
     Widget chip({
       required String label,
       required bool isSel,
       required VoidCallback onTap,
       Key? key,
-    }) =>
-        Padding(
-          key: key,
-          padding: const EdgeInsets.only(right: Sp.x2),
-          child: Material(
-            color: isSel
-                ? c.primary.withValues(alpha: 0.14)
-                : c.surfaceContainerHigh,
-            borderRadius: Radii.rLg,
-            child: InkWell(
-              borderRadius: Radii.rLg,
-              onTap: onTap,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: Sp.x3, vertical: Sp.x1),
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    fontWeight:
-                        isSel ? FontWeights.semibold : FontWeights.regular,
-                    color: isSel ? c.primary : c.onSurface,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
+    }) => Padding(
+      key: key,
+      padding: const EdgeInsets.only(right: Sp.x2),
+      child: ui.ChoiceChip(
+        selected: isSel,
+        label: Text(label),
+        onSelected: (_) => onTap(),
+      ),
+    );
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       // ⚠️ contentPaddingOf 不是常量 ⇒ 这里不能 const（analyze E0067）
       padding: EdgeInsets.symmetric(
-          horizontal: Layout.contentPaddingOf(context), vertical: Sp.x2),
+        horizontal: Layout.contentPaddingOf(context),
+        vertical: Sp.x2,
+      ),
       child: Row(
         children: [
           chip(

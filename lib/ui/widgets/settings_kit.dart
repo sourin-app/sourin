@@ -28,10 +28,10 @@
 //    这正是项目铁律⑥「断言跟着实际承担者走」，不是把定义搬回去。
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../tokens.dart';
-import '../../design/icons/app_icons.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  区块外壳
@@ -193,19 +193,12 @@ class SettingsBlock extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           titleText,
-          if (trailing != null) ...[
-            const SizedBox(height: Sp.x1),
-            trailing!,
-          ],
+          if (trailing != null) ...[const SizedBox(height: Sp.x1), trailing!],
         ],
       );
     } else {
       header = Row(
-        children: [
-          titleText,
-          const Spacer(),
-          if (trailing != null) trailing!,
-        ],
+        children: [titleText, const Spacer(), if (trailing != null) trailing!],
       );
     }
 
@@ -258,10 +251,7 @@ class SettingsBlock extends StatelessWidget {
             miuix.MiuixCard(
               cornerRadius: Radii.lg,
               insideMargin: const EdgeInsets.all(Sp.x4),
-              child: Material(
-                type: MaterialType.transparency,
-                child: inner,
-              ),
+              child: Material(type: MaterialType.transparency, child: inner),
             ),
         ],
       ),
@@ -292,12 +282,17 @@ class SettingsGestureToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return miuix.MiuixSwitchPreference(
-      value: value,
-      onChanged: onChanged,
-      title: label,
-      summary: hint,
-      insideMargin: const EdgeInsets.symmetric(vertical: Sp.x3),
+    return Shortcuts(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+      },
+      child: miuix.MiuixSwitchPreference(
+        value: value,
+        onChanged: onChanged,
+        title: label,
+        summary: hint,
+        insideMargin: const EdgeInsets.symmetric(vertical: Sp.x3),
+      ),
     );
   }
 }
@@ -379,15 +374,23 @@ class SettingsGesturePill extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       selected: selected,
-      child: miuix.MiuixButton(
-        onPressed: onTap,
-        minHeight: Sp.x10,
-        cornerRadius: Radii.md,
-        insideMargin: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x2),
-        colors: selected
-            ? miuix.MiuixButtonDefaults.buttonColorsPrimary(context)
-            : miuix.MiuixButtonDefaults.buttonColors(context),
-        child: Text(text, style: const TextStyle(fontSize: FontSizes.sm)),
+      child: Shortcuts(
+        shortcuts: const {
+          SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        },
+        child: miuix.MiuixButton(
+          onPressed: onTap,
+          minHeight: Sp.x10,
+          cornerRadius: Radii.md,
+          insideMargin: const EdgeInsets.symmetric(
+            horizontal: Sp.x4,
+            vertical: Sp.x2,
+          ),
+          colors: selected
+              ? miuix.MiuixButtonDefaults.buttonColorsPrimary(context)
+              : miuix.MiuixButtonDefaults.buttonColors(context),
+          child: Text(text, style: const TextStyle(fontSize: FontSizes.sm)),
+        ),
       ),
     );
   }
@@ -449,11 +452,7 @@ class EmptyState extends StatelessWidget {
                 color: colors.onSurface.withValues(alpha: 0.08),
               ),
             ),
-            child: Icon(
-              icon,
-              size: iconSize,
-              color: colors.onSurfaceVariant,
-            ),
+            child: Icon(icon, size: iconSize, color: colors.onSurfaceVariant),
           ),
           const SizedBox(height: Sp.x5),
           Text(
@@ -501,7 +500,6 @@ class EmptyState extends StatelessWidget {
 //   需要 AlertDialog 语义的地方（如 update_dialog 的遥控器方向键焦点）
 //   仍直接使用框架 `AlertDialog`，不走这里。
 
-
 // ═══════════════════════════════════════════════════════════════════════
 //  信息行 / 入口行
 // ═══════════════════════════════════════════════════════════════════════
@@ -510,11 +508,7 @@ class EmptyState extends StatelessWidget {
 ///
 /// 原名 `_InfoRow`。
 class SettingsInfoRow extends StatelessWidget {
-  const SettingsInfoRow({
-    super.key,
-    required this.label,
-    required this.value,
-  });
+  const SettingsInfoRow({super.key, required this.label, required this.value});
 
   final String label;
   final String value;
@@ -540,10 +534,7 @@ class SettingsInfoRow extends StatelessWidget {
           Expanded(
             child: SelectableText(
               value,
-              style: TextStyle(
-                fontSize: FontSizes.sm,
-                color: colors.onSurface,
-              ),
+              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
             ),
           ),
         ],
@@ -608,152 +599,51 @@ class SettingsEntryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    // ★ 内容带（t509）：左右那两层已去掉（理由同 `SettingsBlock`）。
+    final colors = miuix.MiuixTheme.of(context).colors;
     return Padding(
       padding: const EdgeInsets.only(bottom: Sp.x2),
-      child: Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: Radii.rLg,
-          /*
-           * ★★★ 业主反馈 ⑧：焦点高亮**不能**画成整行填充
-           *
-           * # 缺陷现场（业主原话）
-           *
-           * > 设置页,点击这个js插件,返回之后,这里也还是选中状态
-           *
-           * 逐像素量业主截图（1444x805 浅色）：
-           *   页面底色            238,240,246   (= LightTokens.bgBase)
-           *   「JS 插件」那一行   220,222,226   ← 他说的「还是选中」
-           *   下面「Emby」那一行  240,242,247   ← 正常
-           *
-           * 行的填充 = surfaceContainerHighest(#F5F7FA) x 0.3 叠在底色上：
-           *   245,247,250 x 0.3 + 238,240,246 x 0.7 = 240,242,247  ✓ 正常行
-           * 再叠一层**纯黑 12%**（墨层画在填充**下面** —— 见 material.dart
-           * 的 _RenderInkFeatures.paint，它先画 ink 再 super.paint(child)）：
-           *   238,240,246 x 0.88 = 209.4,211.2,216.5
-           *   245,247,250 x 0.3 + 209.4,211.2,216.5 x 0.7 = 220.1,221.9,226.5
-           *   ^^^ 逐通道命中 220,222,226 ✓
-           *
-           * 那层「纯黑 12%」就是 **ThemeData.focusColor**
-           * （theme_data.dart:467  focusColor ??= 浅色 black 12%）。
-           * ⇒ 业主看到的**不是** selected 标志位（本组件根本没有 selected
-           *   参数，settings_page.dart 里也搜不到任何选中态字段），
-           *   而是 **InkWell 的焦点高亮填充**。
-           *
-           * # 为什么返回之后它还在
-           *
-           * 焦点落在这一行的 InkWell 上（遥控方向键 / 桌面 Tab 都会落到）。
-           * 二级页 pop 回来时焦点**回到原来那个 FocusNode**（Flutter 的
-           * focus 恢复语义）⇒ 高亮重新亮起；而指针没动过（鼠标还停在原行）
-           * ⇒ 用户看到的正是「点进去、返回，这行还是灰的」。
-           *
-           * # 为什么是「填充」而不是「焦点环」
-           *
-           * 本项目对「焦点可见」的既有约定是**描边环**，不是整块填色：
-           *   episode_strip.dart:1012  AnimatedContainer(foregroundDecoration:
-           *       Border.all(color: _focused ? primary : transparent,
-           *                  width: _kFocusRingWidth = 2))
-           *   poster_card.dart:184      ringed = focused || (_focused && needsFocusRing)
-           * 而整块填色与「悬停遮罩」在视觉上**无法区分** —— 这正是业主
-           * 把它读成「选中状态」的原因（一行灰底看着就像被选中了）。
-           *
-           * ⇒ 这里把 InkWell 的填充类 overlay 全部显式置 null（透明），
-           *   焦点态改用与上面两处**同一个零件**（primary 描边环）。
-           *   ⚠️ 环的显隐由 highlightMode 决定，见 _SettingsFocusRing。
-           *
-           * ⚠️ **只关 focusColor 这一个。** 另外三个是合法反馈，
-           *   不能顺手一起关 —— 那是超出缺陷范围的改动：
-           *
-           *   · hoverColor（theme_data.dart:468 浅色 black 4%）：
-           *     指针**真的停在行上**才亮，指针一走就灭，是「这里可以点」
-           *     的正常提示。而且它**不持久** ⇒ 与本次缺陷无关。
-           *     判据（不是推测）：业主量到的 220,222,226 是**纯焦点**色。
-           *     若 hover 也叠着，会是 214,216,221（两轮自检实测）。
-           *   · highlightColor / splashColor：按压反馈，松手即散，
-           *     返回后不会留下任何东西（实测 ⑥b = 220,222,226，纯焦点）。
-           *     关掉它们 = 这一行「点了没反应」，那是**新**缺陷。
-           *
-           * ⇒ focusColor 是这三者里唯一一个**会自己回来并一直挂着**的层
-           *   （焦点在 pop 之后被 Flutter 恢复到原来那个节点）。
-           */
-          focusColor: Colors.transparent,
-          /*
-           * ★ Builder 不是装饰：它把 context 挪到 InkWell 的 Focus **下面**。
-           *
-           * `InkWell` 内部是 `Focus(child: MouseRegion(child: ... child:
-           * widget.child))`（ink_well.dart:1386-1421）⇒ 在它的 child 子树里
-           * `Focus.of(ctx)` 拿到的**正是 InkWell 自己那个 FocusNode**，
-           * 也就是焦点高亮原来挂着的那个节点。
-           *
-           * ⚠️ 不能在本方法顶部（InkWell 外面）取 —— 那里 `Focus.of` 拿到的是
-           *   祖先的焦点作用域，永远不是这一行的。
-           */
-          child: Builder(
-            builder: (ctx) => _SettingsFocusRing(
-              node: Focus.of(ctx),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: Sp.x4,
-                  vertical: Sp.x3,
-                ),
-                decoration: BoxDecoration(
-                  color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
-                  borderRadius: Radii.rLg,
-                  border: Border.all(color: colors.outlineVariant),
-                ),
-                child: Row(
-                  children: [
-                    if (icon != null) ...[
-                      Container(
-                        width: _iconPlate,
-                        height: _iconPlate,
-                        decoration: BoxDecoration(
-                          color: colors.onSurface.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(_iconPlate / 3),
-                        ),
-                        child: Icon(
-                          icon,
-                          size: 18,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(width: Sp.x3),
-                    ],
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            title,
-                            style: TextStyle(
-                              fontSize: FontSizes.base,
-                              fontWeight: FontWeights.regular,
-                              color: colors.onSurface,
+      child: FocusableActionDetector(
+        mouseCursor: SystemMouseCursors.click,
+        shortcuts: const <ShortcutActivator, Intent>{
+          SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        },
+        actions: <Type, Action<Intent>>{
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (_) {
+              onTap();
+              return null;
+            },
+          ),
+        },
+        child: Builder(
+          builder: (ctx) => _SettingsFocusRing(
+            node: Focus.of(ctx),
+            child: miuix.MiuixCard(
+              cornerRadius: Radii.lg,
+              child: ExcludeFocus(
+                child: miuix.MiuixArrowPreference(
+                  title: title,
+                  summary: subtitle,
+                  onClick: onTap,
+                  insideMargin: const EdgeInsets.symmetric(
+                    horizontal: Sp.x4,
+                    vertical: Sp.x3,
+                  ),
+                  startAction: icon == null
+                      ? null
+                      : Padding(
+                          padding: const EdgeInsets.only(right: Sp.x3),
+                          child: SizedBox.square(
+                            dimension: _iconPlate,
+                            child: Icon(
+                              icon,
+                              size: Sp.x5,
+                              color: colors.primary,
                             ),
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            subtitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: FontSizes.cap,
-                              color: colors.onSurfaceVariant,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: Sp.x2),
-                    Icon(
-                      AppIcons.chevron_right,
-                      size: 20,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ],
+                        ),
                 ),
               ),
             ),
@@ -799,7 +689,7 @@ class SettingsEntryRow extends StatelessWidget {
 class _SettingsFocusRing extends StatefulWidget {
   const _SettingsFocusRing({required this.node, required this.child});
 
-  /// 被观察的焦点节点（= 那个 InkWell 的 Focus）
+  /// 被观察的入口行焦点节点。
   final FocusNode node;
 
   final Widget child;
@@ -846,7 +736,8 @@ class _SettingsFocusRingState extends State<_SettingsFocusRing> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final show = widget.node.hasFocus &&
+    final show =
+        widget.node.hasFocus &&
         FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
     return Container(
       // ⚠️ 环画在**前景**：行自己那层 outlineVariant 描边仍在背景层，
@@ -915,9 +806,7 @@ class SettingsGroupLabel extends StatelessWidget {
           const SizedBox(width: Sp.x3),
           // ★ 余下的空间画一条细线：把"到这一行为止是同一组"说成视觉事实，
           //   而不是靠留白暗示。
-          Expanded(
-            child: Container(height: 1, color: colors.outlineVariant),
-          ),
+          Expanded(child: Container(height: 1, color: colors.outlineVariant)),
         ],
       ),
     );

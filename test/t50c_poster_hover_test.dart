@@ -149,8 +149,7 @@ Finder get _glowFade =>
 /// 悬停高亮层的**当前**不透明度（精确 double）
 double _opacity(WidgetTester t) {
   final f = _glowFade;
-  expect(f.evaluate(), isNotEmpty,
-      reason: '★ 悬停高亮层不在树里 —— 读不到读数（不是"动画没播"）');
+  expect(f.evaluate(), isNotEmpty, reason: '★ 悬停高亮层不在树里 —— 读不到读数（不是"动画没播"）');
   return t.widget<FadeTransition>(f.first).opacity.value;
 }
 
@@ -169,7 +168,8 @@ Future<void> _hoverToZero(WidgetTester t, {String tag = ''}) async {
   expect(
     target,
     1.0,
-    reason: '★★ $tag 前提不成立：悬停后 `AnimatedOpacity.opacity` 的**目标值**'
+    reason:
+        '★★ $tag 前提不成立：悬停后 `AnimatedOpacity.opacity` 的**目标值**'
         '仍是 $target ⇒ `MouseRegion.onEnter` 没触发（或 `_hover` 没接上）。'
         '★ 这与"动画没播"是**两件不同的事**，必须分开报',
   );
@@ -203,8 +203,7 @@ double _minGap(List<double> xs) {
   return m;
 }
 
-String _fmt(List<double> xs) =>
-    xs.map((e) => e.toStringAsFixed(6)).join(' / ');
+String _fmt(List<double> xs) => xs.map((e) => e.toStringAsFixed(6)).join(' / ');
 
 /// 读生产源码并**剥掉注释**
 ///
@@ -224,8 +223,7 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
 
   group('A. 悬停淡入的四刻读数', () {
-    testWidgets('★★★ C1 四刻读数单调上升，起点 0、终点 1，最小间距远大于仪器分辨率',
-        (t) async {
+    testWidgets('★★★ C1 四刻读数单调上升，起点 0、终点 1，最小间距远大于仪器分辨率', (t) async {
       await _mount(t, PosterCard(title: '怒鲨狂潮', onTap: () {}));
       expect(_glow, findsOneWidget, reason: '★ 可点卡片必须有悬停高亮层');
 
@@ -247,21 +245,35 @@ void main() {
        */
       const double kT80Resolution = 0.006435753;
       final ratio = gap / kT80Resolution;
-      _rec('[T50C] C1 最小两两间距 = ${gap.toStringAsFixed(6)}'
-          '（= ${ratio.toStringAsFixed(2)} × task-80 的 $kT80Resolution）');
+      _rec(
+        '[T50C] C1 最小两两间距 = ${gap.toStringAsFixed(6)}'
+        '（= ${ratio.toStringAsFixed(2)} × task-80 的 $kT80Resolution）',
+      );
 
-      expect(xs.first, 0.0,
-          reason: '★★ t=0 必须是**恰好** 0.0 —— 不是"接近 0"。'
-              '实测=${xs.first.toStringAsFixed(6)}。'
-              '若这里是 1.0 ⇒ 动画被跳过了（`duration` 被改成 0，或根本没动画）');
-      expect(xs.last, 1.0,
-          reason: '★ t=150ms 必须已经到 1.0（`Motion.fast` = 150ms）。'
-              '实测=${xs.last.toStringAsFixed(6)}');
+      expect(
+        xs.first,
+        0.0,
+        reason:
+            '★★ t=0 必须是**恰好** 0.0 —— 不是"接近 0"。'
+            '实测=${xs.first.toStringAsFixed(6)}。'
+            '若这里是 1.0 ⇒ 动画被跳过了（`duration` 被改成 0，或根本没动画）',
+      );
+      expect(
+        xs.last,
+        1.0,
+        reason:
+            '★ t=150ms 必须已经到 1.0（`Motion.fast` = 150ms）。'
+            '实测=${xs.last.toStringAsFixed(6)}',
+      );
 
       for (var i = 1; i < xs.length; i++) {
-        expect(xs[i], greaterThan(xs[i - 1]),
-            reason: '★ 必须**严格单调**上升：第 $i 刻 ${xs[i].toStringAsFixed(6)} '
-                '不大于前一帧 ${xs[i - 1].toStringAsFixed(6)}');
+        expect(
+          xs[i],
+          greaterThan(xs[i - 1]),
+          reason:
+              '★ 必须**严格单调**上升：第 $i 刻 ${xs[i].toStringAsFixed(6)} '
+              '不大于前一帧 ${xs[i - 1].toStringAsFixed(6)}',
+        );
       }
 
       /*
@@ -276,11 +288,15 @@ void main() {
        *   Lead 在 m02627 里给的判据（"至少要有明显大于它的间距才算有分辨力"），
        *   实测倍数会打印在上一行日志里，谁都能复核。
        */
-      expect(gap, greaterThan(5 * kT80Resolution),
-          reason: '★★ 最小两两间距必须 > 5 × task-80 的仪器分辨率 '
-              '($kT80Resolution)，即 > ${(5 * kT80Resolution).toStringAsFixed(6)}。'
-              '实测=$gap（= ${ratio.toStringAsFixed(2)} ×）。'
-              '若 ≈0 ⇒ 四刻读的是**同一个值** ⇒ 仪器测不出动画');
+      expect(
+        gap,
+        greaterThan(5 * kT80Resolution),
+        reason:
+            '★★ 最小两两间距必须 > 5 × task-80 的仪器分辨率 '
+            '($kT80Resolution)，即 > ${(5 * kT80Resolution).toStringAsFixed(6)}。'
+            '实测=$gap（= ${ratio.toStringAsFixed(2)} ×）。'
+            '若 ≈0 ⇒ 四刻读的是**同一个值** ⇒ 仪器测不出动画',
+      );
     });
 
     testWidgets('★★ C1 时长**恰好** 150ms（140ms 时未到、150ms 时已到）', (t) async {
@@ -292,14 +308,23 @@ void main() {
       await t.pump(const Duration(milliseconds: 10));
       final at150 = _opacity(t);
 
-      _rec('[T50C] C1 时长：t=140ms → ${at140.toStringAsFixed(6)}；'
-          't=150ms → ${at150.toStringAsFixed(6)}');
+      _rec(
+        '[T50C] C1 时长：t=140ms → ${at140.toStringAsFixed(6)}；'
+        't=150ms → ${at150.toStringAsFixed(6)}',
+      );
 
-      expect(at140, lessThan(1.0),
-          reason: '★★ t=140ms 时**必须还没到** 1.0 —— 实测=$at140。'
-              '若这里已是 1.0 ⇒ 实际时长短于 150ms（判据②的读数就不成立）');
-      expect(at150, 1.0,
-          reason: '★ t=150ms 时**必须**已到 1.0 —— 实测=$at150 ⇒ 时长正好 150ms');
+      expect(
+        at140,
+        lessThan(1.0),
+        reason:
+            '★★ t=140ms 时**必须还没到** 1.0 —— 实测=$at140。'
+            '若这里已是 1.0 ⇒ 实际时长短于 150ms（判据②的读数就不成立）',
+      );
+      expect(
+        at150,
+        1.0,
+        reason: '★ t=150ms 时**必须**已到 1.0 —— 实测=$at150 ⇒ 时长正好 150ms',
+      );
     });
   });
 
@@ -314,29 +339,46 @@ void main() {
         PosterCard(title: '怒鲨狂潮', onTap: () {}),
         reduceMotion: true,
       );
-      expect(_glow, findsOneWidget,
-          reason: '★ 减少动态效果**不等于**不要这个状态 —— 高亮层仍应在树里');
+      expect(
+        _glow,
+        findsOneWidget,
+        reason: '★ 减少动态效果**不等于**不要这个状态 —— 高亮层仍应在树里',
+      );
 
       await _hoverToZero(t, tag: 'C1-reduce');
       final xs = await _fourPoints(t, tag: 'C1-reduce');
 
       final gap = _minGap(xs);
-      _rec('[T50C] C1-reduce 最小两两间距 = ${gap.toStringAsFixed(6)}'
-          '（★ 必须恰好 0.000000）');
+      _rec(
+        '[T50C] C1-reduce 最小两两间距 = ${gap.toStringAsFixed(6)}'
+        '（★ 必须恰好 0.000000）',
+      );
 
-      expect(xs, everyElement(1.0),
-          reason: '★★ 减少动态效果时 `MotionPrefs.duration` 返回 `Duration.zero`'
-              ' ⇒ 状态**瞬间**到位 ⇒ 四刻读数必须**全部**是 1.0（逐位相同，'
-              '不是"差不多"）。实测=${_fmt(xs)}');
-      expect(gap, 0.0,
-          reason: '★★ 间距必须**恰好** 0.0。'
-              '★ 这正是"仪器测的是动画、不是别的东西"的证据：'
-              '动画被去掉后，我的读数**完全不再变化**');
+      expect(
+        xs,
+        everyElement(1.0),
+        reason:
+            '★★ 减少动态效果时 `MotionPrefs.duration` 返回 `Duration.zero`'
+            ' ⇒ 状态**瞬间**到位 ⇒ 四刻读数必须**全部**是 1.0（逐位相同，'
+            '不是"差不多"）。实测=${_fmt(xs)}',
+      );
+      expect(
+        gap,
+        0.0,
+        reason:
+            '★★ 间距必须**恰好** 0.0。'
+            '★ 这正是"仪器测的是动画、不是别的东西"的证据：'
+            '动画被去掉后，我的读数**完全不再变化**',
+      );
 
       // ★ 信息仍在：不是"因无障碍而丢功能"
-      expect(t.widget<AnimatedOpacity>(_glow).opacity, 1.0,
-          reason: '★ 反馈的**信息**（鼠标在这儿）必须保留，只是去掉了**动效**。'
-              '若这里也是 0 ⇒ 那是"因无障碍而损失功能"，不是我们想要的');
+      expect(
+        t.widget<AnimatedOpacity>(_glow).opacity,
+        1.0,
+        reason:
+            '★ 反馈的**信息**（鼠标在这儿）必须保留，只是去掉了**动效**。'
+            '若这里也是 0 ⇒ 那是"因无障碍而损失功能"，不是我们想要的',
+      );
     });
   });
 
@@ -351,7 +393,8 @@ void main() {
       expect(
         find.descendant(of: _glow, matching: find.byType(Transform)),
         findsNothing,
-        reason: '★★ 悬停层必须是 `AnimatedOpacity`（→ `FadeTransition` → '
+        reason:
+            '★★ 悬停层必须是 `AnimatedOpacity`（→ `FadeTransition` → '
             '`RenderOpacity`，**零 Transform**）。'
             '★ 若这里插了 `AnimatedScale`，`t50a_poster_press_test.dart` 的'
             '「恰好一层 Transform」立刻变红',
@@ -362,7 +405,8 @@ void main() {
           matching: find.byType(AnimatedScale),
         ),
         findsOneWidget,
-        reason: '★ 卡片子树里仍**恰好一个** `AnimatedScale`（按下反馈那个）'
+        reason:
+            '★ 卡片子树里仍**恰好一个** `AnimatedScale`（按下反馈那个）'
             '—— 悬停没有偷偷再插一个',
       );
     });
@@ -384,24 +428,35 @@ void main() {
         <Object>['width', r1.width, r2.width],
         <Object>['height', r1.height, r2.height],
       ]) {
-        expect(pair[1] as double, closeTo(pair[2] as double, 1e-6),
-            reason: '★ 悬停层用 `Positioned.fill` 塞进**已有** Stack ⇒ '
-                '不得改变 `PosterCard` 的 ${pair[0]}'
-                '（`t50a` C5 / `t75_search_pinned_test` / '
-                '`task37_poster_placeholder_test` 都依赖这个几何）');
+        expect(
+          pair[1] as double,
+          closeTo(pair[2] as double, 1e-6),
+          reason:
+              '★ 悬停层用 `Positioned.fill` 塞进**已有** Stack ⇒ '
+              '不得改变 `PosterCard` 的 ${pair[0]}'
+              '（`t50a` C5 / `t75_search_pinned_test` / '
+              '`task37_poster_placeholder_test` 都依赖这个几何）',
+        );
       }
     });
 
     testWidgets('★★ C1 `onTap == null` ⇒ 不画悬停层（不做假的可点击暗示）', (t) async {
       await _mount(t, const PosterCard(title: '怒鲨狂潮'));
 
-      expect(_glow, findsNothing,
-          reason: '★★ 不可点的卡片"移上去会亮"是**假的可点击暗示** —— '
-              '与 `PressFeedback` 的 `enabled: widget.onTap != null` 同一个理由');
+      expect(
+        _glow,
+        findsNothing,
+        reason:
+            '★★ 不可点的卡片"移上去会亮"是**假的可点击暗示** —— '
+            '与 `PressFeedback` 的 `enabled: widget.onTap != null` 同一个理由',
+      );
 
       // ★ 阳性对照：这条"零"不是"整棵树都没渲染"造成的
-      expect(find.text('怒鲨狂潮'), findsOneWidget,
-          reason: '★★ 阳性对照：卡片本身必须照常渲染（否则上面那条"零"是空的）');
+      expect(
+        find.text('怒鲨狂潮'),
+        findsOneWidget,
+        reason: '★★ 阳性对照：卡片本身必须照常渲染（否则上面那条"零"是空的）',
+      );
     });
   });
 
@@ -410,40 +465,69 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
 
   group('D. 静态审计（剥注释后断言）', () {
-    test('★★ C1 接线齐全：MouseRegion + onEnter/onExit + AnimatedOpacity + MotionPrefs',
-        () {
-      final code = _src(kPosterSrc);
+    test(
+      '★★ C1 接线齐全：MouseRegion + onEnter/onExit + AnimatedOpacity + MotionPrefs',
+      () {
+        final code = _src(kPosterSrc);
 
-      expect(code.contains('MouseRegion('), isTrue,
-          reason: '★ 必须有 `MouseRegion`（改之前命中 = 0）');
-      expect(code.contains('onEnter:'), isTrue);
-      expect(code.contains('onExit:'), isTrue);
-      expect(code.contains("ValueKey<String>('poster-hover-glow')"), isTrue,
-          reason: '★ 悬停层必须带 Key（测试靠它定位）');
-      expect(code.contains('AnimatedOpacity('), isTrue,
-          reason: '★ 判据⑤：隐式动画（`AnimatedOpacity`），不手写 controller');
-      expect(code.contains('MotionPrefs.duration(context, Motion.fast)'), isTrue,
-          reason: '★★ 判据②④：150ms + 尊重 Reduce Motion —— 必须**逐字**在');
-      expect(code.contains('MotionPrefs.curve(context, Motion.easeOut)'), isTrue);
-      expect(code.contains('IgnorePointer('), isTrue,
-          reason: '★ 悬停层铺满海报 ⇒ 必须忽略指针，命中测试结果才与加层前一致');
+        expect(
+          code.contains('MouseRegion('),
+          isTrue,
+          reason: '★ 必须有 `MouseRegion`（改之前命中 = 0）',
+        );
+        expect(code.contains('onEnter:'), isTrue);
+        expect(code.contains('onExit:'), isTrue);
+        final hoverKey = RegExp(
+          r"ValueKey<String>\(\s*'poster-hover-glow'\s*,?\s*\)",
+        ).firstMatch(code);
+        expect(hoverKey, isNotNull, reason: '★ 悬停层必须带 Key（测试靠它定位）');
+        expect(
+          code.contains('AnimatedOpacity('),
+          isTrue,
+          reason: '★ 判据⑤：隐式动画（`AnimatedOpacity`），不手写 controller',
+        );
+        expect(
+          RegExp(
+            r'MotionPrefs\.duration\(\s*context\s*,\s*Motion\.fast\s*,?\s*\)',
+          ).hasMatch(code),
+          isTrue,
+          reason: '★★ 判据②④：150ms + 尊重 Reduce Motion —— 必须**逐字**在',
+        );
+        expect(
+          RegExp(
+            r'MotionPrefs\.curve\(\s*context\s*,\s*Motion\.easeOut\s*,?\s*\)',
+          ).hasMatch(code),
+          isTrue,
+        );
+        expect(
+          code.contains('IgnorePointer('),
+          isTrue,
+          reason: '★ 悬停层铺满海报 ⇒ 必须忽略指针，命中测试结果才与加层前一致',
+        );
 
-      // ★ 悬停层不得用 `Container(color:)`：`task37_poster_placeholder_test`
-      //   的 `placeholderColorOf` 取"子树里第一个 color != null 的 Container"
-      //   ⇒ 会被悬停层抢先取到，让占位色断言读错对象
-      final glowBlock = code.substring(
-        code.indexOf("ValueKey<String>('poster-hover-glow')"),
-      );
-      expect(glowBlock.contains('DecoratedBox('), isTrue,
-          reason: '★ 悬停层必须用 `DecoratedBox` 画底色（不能用 `Container`）');
-    });
+        // ★ 悬停层不得用 `Container(color:)`：`task37_poster_placeholder_test`
+        //   的 `placeholderColorOf` 取"子树里第一个 color != null 的 Container"
+        //   ⇒ 会被悬停层抢先取到，让占位色断言读错对象
+        final glowBlock = code.substring(hoverKey!.start);
+        expect(
+          glowBlock.contains('DecoratedBox('),
+          isTrue,
+          reason: '★ 悬停层必须用 `DecoratedBox` 画底色（不能用 `Container`）',
+        );
+      },
+    );
 
     test('★★ C1 仍然只 import material_ui（仓库硬纪律）', () {
       final code = _src(kPosterSrc);
-      expect(code.contains("import 'package:material_ui/material_ui.dart';"),
-          isTrue);
-      expect(code.contains('package:flutter/material.dart'), isFalse,
-          reason: '★ 生产代码只用 material_ui（有全仓测试强制这条）');
+      expect(
+        code.contains("import 'package:material_ui/material_ui.dart';"),
+        isTrue,
+      );
+      expect(
+        code.contains('package:flutter/material.dart'),
+        isFalse,
+        reason: '★ 生产代码只用 material_ui（有全仓测试强制这条）',
+      );
     });
 
     test('★★★ 阳性对照：`_src` 真的剥掉了注释（否则上面几条可能是空的）', () {
@@ -451,13 +535,19 @@ void main() {
       final code = _src(kPosterSrc);
 
       // ★ 注释里**逐字**引用了旧写法 `? '?'`（task-63 的历史记录）
-      expect(raw.contains("? '?'"), isTrue,
-          reason: '★ 阳性对照：**原文**里确有这个注释片段');
-      expect(code.contains("? '?'"), isFalse,
-          reason: '★★★ 剥注释后必须**看不见**它 —— 否则说明 `_src` 没在剥注释，'
-              '那么任何"源码里没有 X"的断言都是假的');
-      expect(code.contains('class PosterCard'), isTrue,
-          reason: '★ 阳性对照：剥注释不能把真代码也剥掉');
+      expect(raw.contains("? '?'"), isTrue, reason: '★ 阳性对照：**原文**里确有这个注释片段');
+      expect(
+        code.contains("? '?'"),
+        isFalse,
+        reason:
+            '★★★ 剥注释后必须**看不见**它 —— 否则说明 `_src` 没在剥注释，'
+            '那么任何"源码里没有 X"的断言都是假的',
+      );
+      expect(
+        code.contains('class PosterCard'),
+        isTrue,
+        reason: '★ 阳性对照：剥注释不能把真代码也剥掉',
+      );
     });
   });
 }

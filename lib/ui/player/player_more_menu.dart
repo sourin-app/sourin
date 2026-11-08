@@ -15,10 +15,11 @@
 //  ⇒ 它是**二级**面板：本件里选一项 = 打开第三层（对话框）。
 //
 //  # 触达性：TV 方向键
-//  每一项都是普通 `InkWell`（自带焦点）⇒ 方向键遍历、Esc / 返回键关闭
+//  每一项使用 MiuixPressable 的焦点与键盘激活；Esc / 返回键关闭
 //  由 `PopoverController` 那一份真值源承担。
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../tokens.dart';
 import 'player_popover.dart';
@@ -81,8 +82,8 @@ class PlayerMoreMenu extends StatelessWidget {
               if (gi > 0) const SizedBox(height: Sp.x1),
               PopoverGroupLabel(groups[gi].title),
               for (final e in groups[gi].entries)
-                InkWell(
-                  onTap: e.enabled && e.trailing == null
+                miuix.MiuixPressable(
+                  onPressed: e.enabled && e.trailing == null
                       ? () {
                           onDismiss();
                           e.onTap();

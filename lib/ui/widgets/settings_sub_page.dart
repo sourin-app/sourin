@@ -42,9 +42,13 @@
 // （`player_page.dart:4184` 的 `Focus(autofocus: true, onKeyEvent: _onKey)`）。
 
 import 'package:material_ui/material_ui.dart';
+
+import 'miuix_controls.dart' as ui;
+
 import 'package:flutter/services.dart';
 
 import '../tokens.dart';
+import '../app_scaffold.dart';
 import '../../design/icons/app_icons.dart';
 
 /// 设置页二级页的共用外壳
@@ -160,7 +164,7 @@ class SettingsSubPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
-    return Scaffold(
+    return AppScaffold(
       // 与设置页同一底色 —— 跳转时不应出现色差闪烁
       backgroundColor: colors.surface,
       /*
@@ -200,7 +204,7 @@ class SettingsSubPage extends StatelessWidget {
        * ⚠️ 桌面/TV 上 `padding.top == 0` ⇒ 这一层是**严格 no-op**，
        *    不会改变既有观感（与 shell 那条的负对照同理）。
        */
-      body: SafeArea(
+      child: SafeArea(
         top: true,
         bottom: false,
         left: false,
@@ -256,10 +260,7 @@ class SettingsSubPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: _backButton(context),
-          ),
+          Align(alignment: Alignment.centerLeft, child: _backButton(context)),
           const SizedBox(height: Sp.x3),
           Text(
             title,
@@ -346,16 +347,11 @@ class SettingsSubPage extends StatelessWidget {
         ),
         // ② 标题 + 副标题（正常滚走）
         SliverToBoxAdapter(
-          child: Padding(
-            padding: EdgeInsets.zero,
-            child: _titles(context),
-          ),
+          child: Padding(padding: EdgeInsets.zero, child: _titles(context)),
         ),
         const SliverToBoxAdapter(child: SizedBox(height: Sp.x6)),
         // ③ 正文
-        SliverList(
-          delegate: SliverChildListDelegate(children),
-        ),
+        SliverList(delegate: SliverChildListDelegate(children)),
         // ④ 底部让位（悬浮底栏盖在所有路由之上）
         SliverToBoxAdapter(child: SizedBox(height: Sp.bottomBarInset)),
       ],
@@ -367,13 +363,10 @@ class SettingsSubPage extends StatelessWidget {
 
   /// 只有返回按钮那一行（★ 不含标题 —— 标题在它下面的 sliver 里滚）
   Widget _backRow(BuildContext context) => Padding(
-        // ★ 内容带（t509）：带已由 `build` 提供 ⇒ 这里归零。
-        padding: EdgeInsets.zero,
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: _backButton(context),
-        ),
-      );
+    // ★ 内容带（t509）：带已由 `build` 提供 ⇒ 这里归零。
+    padding: EdgeInsets.zero,
+    child: Align(alignment: Alignment.centerLeft, child: _backButton(context)),
+  );
 
   /// 「返回设置」按钮 —— **单点定义**（task-14 ⑤）
   ///
@@ -398,7 +391,7 @@ class SettingsSubPage extends StatelessWidget {
   /// # 我们为什么也要抽
   /// ```text
   /// 改前 [_header] 与 [_backRow] 各写了一份**逐字相同**的
-  /// `OutlinedButton.icon(...)`。本次要给返回加 [onBack] 分层拦截 ——
+  /// `ui.OutlinedButton.icon(...)`。本次要给返回加 [onBack] 分层拦截 ——
   /// 两份写法就必须改两处，漏一处 = 「有的结构能分层返回、有的不能」
   /// 的静默不一致（而且只有 `scrollBody == null` 的页面会露馅）。
   /// ⇒ 抽成一个方法后，行为只有**一个**定义点。
@@ -421,15 +414,15 @@ class SettingsSubPage extends StatelessWidget {
   /// （6 个调用方全是 `Navigator.push(MaterialPageRoute(...))`）⇒
   /// 判断永远为真，加它只是多一条死分支。
   /// ```
-  Widget _backButton(BuildContext context) => OutlinedButton.icon(
-        onPressed: () {
-          // ★ 先问本页「这一层要不要自己消费」（见 [onBack]）
-          if (onBack != null && onBack!(context)) return;
-          Navigator.of(context).maybePop();
-        },
-        icon: const Icon(AppIcons.arrow_back, size: 18),
-        label: const Text('返回设置'),
-      );
+  Widget _backButton(BuildContext context) => ui.OutlinedButton.icon(
+    onPressed: () {
+      // ★ 先问本页「这一层要不要自己消费」（见 [onBack]）
+      if (onBack != null && onBack!(context)) return;
+      Navigator.of(context).maybePop();
+    },
+    icon: const Icon(AppIcons.arrow_back, size: 18),
+    label: const Text('返回设置'),
+  );
 
   /// 标题 + 副标题（滚走的部分）
   ///
@@ -477,17 +470,17 @@ class SettingsSubPage extends StatelessWidget {
   /// ```
   /// ⇒ 页头 + [pinnedHeader] 一起固定，只有结果区滚动。
   Widget _pinnedBody(BuildContext context) => Column(
-        children: [
-          Padding(
-            padding: EdgeInsets.only(top: AppMetrics.homeTopPadding),
-            child: _header(context),
-          ),
-          const SizedBox(height: Sp.x4),
-          if (pinnedHeader != null) pinnedHeader!,
-          const SizedBox(height: Sp.x2),
-          Expanded(child: scrollBody!),
-        ],
-      );
+    children: [
+      Padding(
+        padding: EdgeInsets.only(top: AppMetrics.homeTopPadding),
+        child: _header(context),
+      ),
+      const SizedBox(height: Sp.x4),
+      if (pinnedHeader != null) pinnedHeader!,
+      const SizedBox(height: Sp.x2),
+      Expanded(child: scrollBody!),
+    ],
+  );
 
   /// 键盘 / 遥控器返回
   ///
@@ -509,8 +502,7 @@ class SettingsSubPage extends StatelessWidget {
   KeyEventResult _onKey(BuildContext context, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final k = event.logicalKey;
-    if (k == LogicalKeyboardKey.escape ||
-        k == LogicalKeyboardKey.goBack) {
+    if (k == LogicalKeyboardKey.escape || k == LogicalKeyboardKey.goBack) {
       /*
        * ★ 分层返回（task-14 ⑤）—— 先退**内层**，再退页面。
        *   范式来自 FlClash `scaffold.dart:497-500` 的
@@ -564,7 +556,11 @@ class _StickyBackBar extends SliverPersistentHeaderDelegate {
   final Widget child;
 
   @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
     /*
      * ★ 收起量 = `shrinkOffset`（0 = 完全展开，maxExtent-minExtent = 完全收起）
      *
@@ -579,8 +575,10 @@ class _StickyBackBar extends SliverPersistentHeaderDelegate {
      *   展开时 = homeTopPadding（20）；吸顶后 = 0。
      * ⇒ 这样它不占"永远都在的 20px"，又与原来的视觉起点一致。
      */
-    final padTop = ((maxExtent - shrinkOffset) - minExtent)
-        .clamp(0.0, maxExtent - minExtent);
+    final padTop = ((maxExtent - shrinkOffset) - minExtent).clamp(
+      0.0,
+      maxExtent - minExtent,
+    );
 
     return Container(
       height: h,

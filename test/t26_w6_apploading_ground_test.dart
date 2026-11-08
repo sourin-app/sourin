@@ -52,6 +52,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/app_scaffold.dart' show AppThemeHost;
@@ -68,12 +69,12 @@ const Color kOnDark = Color(0xFFFAFAFA);
 /// ⚠ 必须自己套 [Directionality]：`AppThemeHost` 只注入 ThemeData，
 ///   生产里这层是 MaterialApp 给的（同 test/zz_cr_loading_style_test.dart:41-47）。
 Widget _host(Widget child, Brightness b) => Directionality(
-      textDirection: TextDirection.ltr,
-      child: AppThemeHost(
-        data: AppTheme.themeFor(b),
-        child: Center(child: child),
-      ),
-    );
+  textDirection: TextDirection.ltr,
+  child: AppThemeHost(
+    data: AppTheme.themeFor(b),
+    child: Center(child: child),
+  ),
+);
 
 /// 取转圈当前的**颜色**（CR #11 判的就是这个值）
 ///
@@ -89,15 +90,19 @@ Widget _host(Widget child, Brightness b) => Directionality(
 ///
 /// 为什么用 dynamic：painter 是私有 `_SpinnerPainter`，测试无法 import。
 Color _ringColor(WidgetTester tester) {
+  final actual = find.descendant(
+    of: find.byType(AppLoading),
+    matching: find.byType(miuix.MiuixCircularProgressIndicator),
+  );
+  expect(actual, findsOneWidget, reason: '真实渲染Miuix进度圈');
   final paints = tester
-      .widgetList<CustomPaint>(find.descendant(
-        of: find.byType(AppLoading),
-        matching: find.byType(CustomPaint),
-      ))
-      .where((w) => w.painter != null)
+      .widgetList<CustomPaint>(
+        find.descendant(of: actual, matching: find.byType(CustomPaint)),
+      )
+      .where((paint) => paint.painter != null)
       .toList();
-  expect(paints.length, 1, reason: '应当恰好渲染出一个转圈');
-  return (paints.single.painter! as dynamic).color as Color;
+  expect(paints, hasLength(1));
+  return (paints.single.painter as dynamic).foregroundColor as Color;
 }
 
 /// ★ 像素读数：把前景色（可能半透明）压到 [bg] 上合成出的那个像素
@@ -120,16 +125,19 @@ String _stripComments(String s) => s
 
 void main() {
   group('T26-W6 · 转圈颜色按底色取（CR #11）', () {
-    testWidgets('浅色主题 + 黑遮罩：转圈像素 = (250,250,250)，不再是 (112,114,122)',
-        (tester) async {
+    testWidgets('浅色主题 + 黑遮罩：转圈像素 = (250,250,250)，不再是 (112,114,122)', (
+      tester,
+    ) async {
       // 播放页 _LoadingOverlay 的**逐字**形状：黑54 遮罩 + 居中 + 带文案
-      await tester.pumpWidget(_host(
-        const ColoredBox(
-          color: Colors.black54,
-          child: Center(child: AppLoading(label: '正在加载…')),
+      await tester.pumpWidget(
+        _host(
+          const ColoredBox(
+            color: Colors.black54,
+            child: Center(child: AppLoading(label: '正在加载…')),
+          ),
+          Brightness.light,
         ),
-        Brightness.light,
-      ));
+      );
 
       final c = _ringColor(tester);
       expect(c, kOnDark, reason: '浅色主题下压在黑遮罩上的转圈必须是深底档 #FAFAFA');
@@ -145,61 +153,75 @@ void main() {
     });
 
     testWidgets('与主题解耦：同一段代码在深色主题下读数一模一样', (tester) async {
-      await tester.pumpWidget(_host(
-        const ColoredBox(
-          color: Colors.black54,
-          child: Center(child: AppLoading()),
+      await tester.pumpWidget(
+        _host(
+          const ColoredBox(
+            color: Colors.black54,
+            child: Center(child: AppLoading()),
+          ),
+          Brightness.dark,
         ),
-        Brightness.dark,
-      ));
+      );
       expect(_pixel(_ringColor(tester), kMaskOverBlack), (250, 250, 250));
     });
 
     testWidgets('反方向：深色主题 + 白卡 ⇒ 取浅底档，不是无脑 #FAFAFA', (tester) async {
       final theme = AppTheme.themeFor(Brightness.dark);
-      await tester.pumpWidget(_host(
-        const ColoredBox(
-          color: Colors.white,
-          child: Center(child: AppLoading()),
+      await tester.pumpWidget(
+        _host(
+          const ColoredBox(
+            color: Colors.white,
+            child: Center(child: AppLoading()),
+          ),
+          Brightness.dark,
         ),
-        Brightness.dark,
-      ));
+      );
       expect(_ringColor(tester), _kLightGround);
     });
 
     testWidgets('优先级：显式 ground 压过祖先 ColoredBox', (tester) async {
       final theme = AppTheme.themeFor(Brightness.light);
-      await tester.pumpWidget(_host(
-        const ColoredBox(
-          color: Colors.black54,
-          child: Center(child: AppLoading(ground: Colors.white)),
+      await tester.pumpWidget(
+        _host(
+          const ColoredBox(
+            color: Colors.black54,
+            child: Center(child: AppLoading(ground: Colors.white)),
+          ),
+          Brightness.light,
         ),
-        Brightness.light,
-      ));
-      expect(_ringColor(tester), _kLightGround,
-          reason: '调用方显式声明了浅底，就不该再按祖先那块黑遮罩判');
+      );
+      expect(
+        _ringColor(tester),
+        _kLightGround,
+        reason: '调用方显式声明了浅底，就不该再按祖先那块黑遮罩判',
+      );
     });
 
-    testWidgets('透明色块**不算**底色（路由转场那层 ColoredBox(transparent) 不是底）',
-        (tester) async {
+    testWidgets('透明色块**不算**底色（路由转场那层 ColoredBox(transparent) 不是底）', (
+      tester,
+    ) async {
       // theme_bridge.dart:85-104 把路由转场设成透明，那层 ColoredBox 挂在整条路由外面
       // ⇒ 页面里每个 AppLoading 都是它的子孙。它什么都不遮，不能当底。
       final light = AppTheme.themeFor(Brightness.light);
-      await tester.pumpWidget(_host(
-        const ColoredBox(
-          color: Colors.transparent,
-          child: Center(child: AppLoading()),
+      await tester.pumpWidget(
+        _host(
+          const ColoredBox(
+            color: Colors.transparent,
+            child: Center(child: AppLoading()),
+          ),
+          Brightness.light,
         ),
-        Brightness.light,
-      ));
-      expect(_ringColor(tester), _kLightGround,
-          reason: '透明祖先不是底 ⇒ 必须回落主题明暗（浅色主题 ⇒ 深色一档）');
+      );
+      expect(
+        _ringColor(tester),
+        _kLightGround,
+        reason: '透明祖先不是底 ⇒ 必须回落主题明暗（浅色主题 ⇒ 深色一档）',
+      );
 
       // 显式传 transparent 同样不算声明
-      await tester.pumpWidget(_host(
-        const AppLoading(ground: Colors.transparent),
-        Brightness.light,
-      ));
+      await tester.pumpWidget(
+        _host(const AppLoading(ground: Colors.transparent), Brightness.light),
+      );
       expect(_ringColor(tester), _kLightGround);
     });
 
@@ -209,19 +231,24 @@ void main() {
       expect(_ringColor(tester), _kLightGround);
 
       await tester.pumpWidget(_host(const AppLoading(), Brightness.dark));
-      expect(_ringColor(tester).computeLuminance(), greaterThan(0.5),
-          reason: '深色主题 + 无底色声明 ⇒ 仍是深底档');
+      expect(
+        _ringColor(tester).computeLuminance(),
+        greaterThan(0.5),
+        reason: '深色主题 + 无底色声明 ⇒ 仍是深底档',
+      );
     });
   });
 
   group('T26-W6 · 源码门禁：播放页的底色声明', () {
     final player = _stripComments(
-        File('lib/ui/player_page.dart').readAsStringSync());
+      File('lib/ui/player_page.dart').readAsStringSync(),
+    );
 
-    test('_LoadingOverlay 仍是「黑54 ColoredBox + AppLoading」—— 它靠祖先探测修好，零改动',
-        () {
-      final m = RegExp(r'class _LoadingOverlay\b.*?\n\}', dotAll: true)
-          .firstMatch(player);
+    test('_LoadingOverlay 仍是「黑54 ColoredBox + AppLoading」—— 它靠祖先探测修好，零改动', () {
+      final m = RegExp(
+        r'class _LoadingOverlay\b.*?\n\}',
+        dotAll: true,
+      ).firstMatch(player);
       expect(m, isNotNull, reason: '播放页遮罩类不见了，这条门禁要重写');
       final body = m!.group(0)!;
       expect(body.contains('ColoredBox'), isTrue);
@@ -230,18 +257,19 @@ void main() {
     });
 
     test('缓冲指示底下那层黑是 `Video(fill: Colors.black)` 画的（所以探不到）', () {
-      expect(player.contains('fill: Colors.black'), isTrue,
-          reason: '视频层黑底是缓冲指示的底色来源；它没了，这条门禁要重写');
+      expect(
+        player.contains('fill: Colors.black'),
+        isTrue,
+        reason: '视频层黑底是缓冲指示的底色来源；它没了，这条门禁要重写',
+      );
     });
-    test('缓冲指示**显式声明**了黑底 —— 它没有 ColoredBox 祖先，探测不到',
-        () {
+    test('缓冲指示**显式声明**了黑底 —— 它没有 ColoredBox 祖先，探测不到', () {
       // 视频黑底是 `Video(fill: Colors.black)` 画的，**不是 widget**，
       // 祖先探测拿不到 ⇒ 这一处只能由调用方声明。
       final ok = RegExp(
         r'_buffering && !_loading\)[\s\S]{0,120}?AppLoading\(ground: Colors\.black\)',
       ).hasMatch(player);
-      expect(ok, isTrue,
-          reason: '缓冲指示没声明黑底 ⇒ 浅色主题下它会退回 #70727A 灰圈压黑底');
+      expect(ok, isTrue, reason: '缓冲指示没声明黑底 ⇒ 浅色主题下它会退回 #70727A 灰圈压黑底');
     });
   });
 }

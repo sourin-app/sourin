@@ -40,13 +40,38 @@ library;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
+
+import 'support/strip_comments.dart';
+
+/// Scope source contracts to a real class after stripping comments. This keeps
+/// old migration prose and unrelated call sites out of the current audit.
+String classCode(String source, String name) {
+  final code = stripComments(source);
+  final start = RegExp(
+    '^class ${RegExp.escape(name)}\\b',
+    multiLine: true,
+  ).firstMatch(code);
+  expect(start, isNotNull, reason: 'Missing production class $name');
+  final following = RegExp(
+    r'^class\s',
+    multiLine: true,
+  ).allMatches(code, start!.end).toList();
+  return code.substring(
+    start.start,
+    following.isEmpty ? code.length : following.first.start,
+  );
+}
 
 void main() {
   late String libRoot;
 
   /// 读一个 lib/ 下文件的全部源码
-  String read(String rel) =>
-      File('lib/$rel').readAsStringSync();
+  String read(String rel) => File('lib/$rel').readAsStringSync();
 
   // ★ 2026-10-22：`lineAt(rel, n)` 已删 —— 唯一的调用方是「shell.dart:1941」那个
   //   行号锚，本次把它换成按内容的锚（`child: ScrollConfiguration(`）。行号锚会漂，
@@ -54,8 +79,7 @@ void main() {
 
   setUpAll(() {
     libRoot = Directory.current.path;
-    expect(Directory('lib').existsSync(), isTrue,
-        reason: '必须在仓库根运行（找的是 lib/）');
+    expect(Directory('lib').existsSync(), isTrue, reason: '必须在仓库根运行（找的是 lib/）');
   });
 
   // ────────────────────────────────────────────────────────────────────
@@ -71,23 +95,38 @@ void main() {
        *   而它想守的语义是"根是 WidgetsApp"，不是"第 1941 行写着 WidgetsApp"。
        */
       final lines = read('shell.dart').split(RegExp(r'\r?\n'));
-      final at = lines.indexWhere((l) => l.contains('child: ScrollConfiguration('));
-      expect(at, greaterThan(0),
-          reason: '★ 找不到 `child: ScrollConfiguration(` ⇒ 外层那层没挂上'
-              '（或写法变了），要更新本门禁');
+      final at = lines.indexWhere(
+        (l) => l.contains('child: ScrollConfiguration('),
+      );
+      expect(
+        at,
+        greaterThan(0),
+        reason:
+            '★ 找不到 `child: ScrollConfiguration(` ⇒ 外层那层没挂上'
+            '（或写法变了），要更新本门禁',
+      );
       expect(
         lines[at + 1].trim(),
         startsWith('behavior: const _SourinScrollBehavior()'),
-        reason: '★ ScrollConfiguration 挂的不是 _SourinScrollBehavior() ⇒ '
+        reason:
+            '★ ScrollConfiguration 挂的不是 _SourinScrollBehavior() ⇒ '
             'arm64 Clip.none 那组修复又失效了',
       );
-      final window =
-          lines.sublist(at, (at + 40).clamp(0, lines.length)).join('\n');
-      expect(window, contains('WidgetsApp('),
-          reason: '★ ScrollConfiguration 下面 40 行内没有 WidgetsApp( ⇒ 根换了，'
-              '本门禁要跟着更新并改写结论');
-      expect(window, isNot(contains('MaterialApp(')),
-          reason: '若产品根改回 MaterialApp，本门禁要跟着更新并改写结论');
+      final window = lines
+          .sublist(at, (at + 40).clamp(0, lines.length))
+          .join('\n');
+      expect(
+        window,
+        contains('WidgetsApp('),
+        reason:
+            '★ ScrollConfiguration 下面 40 行内没有 WidgetsApp( ⇒ 根换了，'
+            '本门禁要跟着更新并改写结论',
+      );
+      expect(
+        window,
+        isNot(contains('MaterialApp(')),
+        reason: '若产品根改回 MaterialApp，本门禁要跟着更新并改写结论',
+      );
     });
 
     test('★★★ shell.dart 全文没有 MaterialApp( 的**真实调用**', () {
@@ -97,17 +136,26 @@ void main() {
           .entries
           .where((e) => e.value.contains('MaterialApp('))
           // 剔掉注释行：grep 给你的是行，不是结构（AGENTS.md §8）
-          .where((e) => !RegExp(r'^\s*(///|//|\*)').hasMatch(e.value.trimLeft()))
+          .where(
+            (e) => !RegExp(r'^\s*(///|//|\*)').hasMatch(e.value.trimLeft()),
+          )
           .map((e) => e.key + 1)
           .toList();
-      expect(real, isEmpty,
-          reason: 'shell.dart 出现 MaterialApp( 的真实调用于第 $real 行');
+      expect(
+        real,
+        isEmpty,
+        reason: 'shell.dart 出现 MaterialApp( 的真实调用于第 $real 行',
+      );
     });
 
     test('★★ 全产品 lib/（剔探针）没有任何 MaterialApp( 真实调用', () {
       final offenders = <String>[];
       for (final f in Directory('lib').listSync(recursive: true)) {
         if (f is! File || !f.path.endsWith('.dart')) continue;
+        if (f.path
+            .replaceAll('\\', '/')
+            .endsWith('/ui/theme/miuix_framework_bridge.dart'))
+          continue;
         final base = f.uri.pathSegments.last;
         // 探针与 spike 备份不是产品入口
         if (RegExp(r'^(t\d|probe_|merge_view|delivery_test|main\.dart$)')
@@ -124,8 +172,7 @@ void main() {
           }
         });
       }
-      expect(offenders, isEmpty,
-          reason: '这些产品文件仍在真实调用 MaterialApp：$offenders');
+      expect(offenders, isEmpty, reason: '这些产品文件仍在真实调用 MaterialApp：$offenders');
     });
 
     test('★★★ 自检：上面那条扫描**真的扫到了 ui/ 与 core/**（防空转假绿）', () {
@@ -138,58 +185,145 @@ void main() {
           .whereType<File>()
           .where((f) => f.path.endsWith('.dart'))
           .map((f) => f.uri.pathSegments.last)
-          .where((b) => !RegExp(
-              r'^(t\d|probe_|merge_view|delivery_test|main\.dart$)').hasMatch(b))
+          .where(
+            (b) =>
+                !RegExp(r'^(t\d|probe_|merge_view|delivery_test|main\.dart$)')
+                    .hasMatch(b),
+          )
           .toSet();
-      expect(scanned, contains('home_page.dart'),
-          reason: '扫描面必须覆盖 lib/ui/，否则上面两条都是空转');
+      expect(
+        scanned,
+        contains('home_page.dart'),
+        reason: '扫描面必须覆盖 lib/ui/，否则上面两条都是空转',
+      );
       expect(scanned, contains('shell.dart'));
-      expect(scanned.length, greaterThan(20),
-          reason: '产品文件数实测 > 20；只剩个位数说明扫描又退化了');
+      expect(
+        scanned.length,
+        greaterThan(20),
+        reason: '产品文件数实测 > 20；只剩个位数说明扫描又退化了',
+      );
     });
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // ② 材料化第二项：首页 3 个 Material 控件（**读数 = 仍在，不是我说改完**）
+  // ② 首页入口已迁到 Miuix；分别核对真实调用点和实际适配器渲染。
   // ────────────────────────────────────────────────────────────────────
-  group('② 首页 Material 控件：仍在，且都在真实路径上', () {
-    // 三个真实控件（均来自 material_ui，故不违反「必须 import material_ui」）
-    const controls = <String, String>{
-      'ActionChip': '直播条入口（home_page.dart:2804）',
-      'TextButton': '「查看全部」按钮（home_page.dart:2851，_MoreButton 内）',
-    };
-
-    controls.forEach((name, where) {
-      test('★★★ 首页仍有 $name（$where）—— 未完成项，不许报成已完成', () {
-        final src = read('ui/home_page.dart');
-        expect(src, contains('$name('),
-            reason: '$name 若已被替换掉，R7 第①项就该记为已完成并更新本门禁');
-      });
+  group('② 首页入口：Miuix 控件与调用点合同', () {
+    test('★★★ 直播入口和更多入口使用 Miuix 适配器并保留回调参数', () {
+      final source = read('ui/home_page.dart');
+      final code = stripComments(source);
+      expect(code, contains("'widgets/miuix_controls.dart' as ui"));
+      expect(RegExp(r'\bActionChip\s*\(').hasMatch(code), isFalse);
+      final live = classCode(source, '_LiveStrip');
+      expect(live, contains('ui.TextButton.icon('));
+      expect(
+        RegExp(
+          r'onPressed:\s*\(\)\s*=>\s*onOpenLive\?\.call\('
+          r'provider,\s*ch\.id,\s*ch\.name\)',
+        ).hasMatch(live),
+        isTrue,
+        reason: '频道入口必须保留所属源、频道 id 和名字',
+      );
+      final more = classCode(source, '_MoreButton');
+      expect(more, contains('ui.TextButton('));
+      expect(RegExp(r'onPressed:\s*onTap\b').hasMatch(more), isTrue);
     });
 
     test('★★★ _MoreButton 的两个调用点都在（证明它不是死代码）', () {
-      final uses = read('ui/home_page.dart')
-          .split(RegExp(r'\r?\n'))
-          .asMap()
-          .entries
-          .where((e) => e.value.contains('_MoreButton('))
-          .map((e) => e.key + 1)
-          .toList();
-      // 1 处是类自身的构造函数定义，另 2 处才是真实调用
-      expect(uses.where((n) => n != 2843).length, greaterThanOrEqualTo(2),
-          reason: '只有定义没有调用 ⇒ 那是死代码，R7 的第①项就该重判。实读 $uses');
+      final section = classCode(read('ui/home_page.dart'), '_SectionBlock');
+      expect(RegExp(r'\b_MoreButton\s*\(').allMatches(section), hasLength(2));
+      expect(
+        RegExp(
+          r'if\s*\(src\.isCategory\s*\|\|\s*src\.isRank\)\s*'
+          r'_MoreButton\(\s*label:\s*\x27查看全部\x27',
+        ).hasMatch(section),
+        isTrue,
+      );
+      expect(
+        RegExp(
+          r'else if\s*\(src\.type\s*==\s*\x27custom\x27\s*&&\s*'
+          r'!_SectionBlock\._isAggChannelsSection\(section\)\)\s*'
+          r'_MoreButton\(\s*label:\s*\x27去直播\x27',
+        ).hasMatch(section),
+        isTrue,
+      );
+      expect(
+        RegExp(r'onBrowse\?\.call\(provider,\s*section\.title,\s*src\)')
+            .allMatches(section),
+        hasLength(2),
+        reason: '两种入口都必须把源、分区标题及来源描述传回宿主',
+      );
     });
 
-    test('★★ ActionChip 那一路被 source.type == \'custom\' 闸住（已知的行为条件）', () {
-      final src = read('ui/home_page.dart');
-      expect(src, contains("'custom'"),
-          reason: '直播条按 custom 类型过闸；该条件若变，需重判这条路的可达性');
+    test('★★ 直播条只走 custom 分支，空的过闸名单不绘制入口', () {
+      final source = read('ui/home_page.dart');
+      final section = classCode(source, '_SectionBlock');
+      expect(
+        RegExp(
+          r'else if\s*\(src\.type\s*==\s*\x27custom\x27\)\s*'
+          r'_LiveStrip\(',
+        ).hasMatch(section),
+        isTrue,
+      );
+      final live = classCode(source, '_LiveStrip');
+      expect(
+        RegExp(
+          r'if\s*\(channels\.isEmpty\)\s*return const '
+          r'SizedBox\.shrink\(\)',
+        ).hasMatch(live),
+        isTrue,
+      );
+      expect(RegExp(r'itemCount:\s*channels\.length').hasMatch(live), isTrue);
+    });
+
+    testWidgets('★★ 首页采用的两种适配器渲染真实 MiuixButton 并各触发一次', (t) async {
+      final theme = AppTheme.themeFor(Brightness.dark);
+      final calls = <String>[];
+      await t.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          builder: (_, child) => AppThemeHost(data: theme, child: child!),
+          home: Scaffold(
+            body: Column(
+              children: [
+                ui.TextButton.icon(
+                  onPressed: () => calls.add('live'),
+                  icon: const Icon(Icons.circle, size: 6),
+                  label: const Text('频道入口'),
+                ),
+                ui.TextButton(
+                  onPressed: () => calls.add('more'),
+                  child: const Text('查看全部'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await t.pumpAndSettle();
+      expect(find.byType(miuix.MiuixButton), findsNWidgets(2));
+      expect(find.byType(ActionChip), findsNothing);
+      expect(find.byType(TextButton), findsNothing);
+      for (final label in ['频道入口', '查看全部']) {
+        final button = find.ancestor(
+          of: find.text(label),
+          matching: find.byType(miuix.MiuixButton),
+        );
+        expect(button, findsOneWidget);
+        await t.tap(button);
+        await t.pumpAndSettle();
+      }
+      expect(calls, ['live', 'more']);
+      expect(t.takeException(), isNull);
     });
 
     test('★★★ 首页取色走的是 Theme.of(context).colorScheme（故 F 项读数成立）', () {
       final src = read('ui/home_page.dart');
-      expect(RegExp(r'Theme\.of\(context\)\.colorScheme').hasMatch(src), isTrue,
-          reason: '这是产品内 colorScheme 仍有大量使用的一个实证');
+      expect(
+        RegExp(r'Theme\.of\(context\)\.colorScheme').hasMatch(src),
+        isTrue,
+        reason: '这是产品内 colorScheme 仍有大量使用的一个实证',
+      );
     });
   });
 
@@ -201,6 +335,10 @@ void main() {
       final files = <String>{};
       for (final f in Directory('lib').listSync(recursive: true)) {
         if (f is! File || !f.path.endsWith('.dart')) continue;
+        if (f.path
+            .replaceAll('\\', '/')
+            .endsWith('/ui/theme/miuix_framework_bridge.dart'))
+          continue;
         f.readAsLinesSync().forEach((line) {
           final t = line.trimLeft();
           if (t.startsWith('//')) return;
@@ -209,8 +347,11 @@ void main() {
           }
         });
       }
-      expect(files.length, lessThanOrEqualTo(3),
-          reason: '真实依赖变多了（实测：$files）⇒ R7 第③项的状态要重写');
+      expect(
+        files.length,
+        lessThanOrEqualTo(3),
+        reason: '真实依赖变多了（实测：$files）⇒ R7 第③项的状态要重写',
+      );
     });
 
     test('★★ 它仍被 test/ 大量引用 ⇒ 删它不是「删个文件」，是拆一串门禁', () {
@@ -218,17 +359,20 @@ void main() {
           .listSync(recursive: true)
           .whereType<File>()
           .where((f) => f.path.endsWith('.dart'))
-          .where((f) => f
-              .readAsLinesSync()
-              .any((l) => RegExp(r"import\s+.*theme_bridge").hasMatch(l)))
+          .where(
+            (f) => f.readAsLinesSync().any(
+              (l) => RegExp(r"import\s+.*theme_bridge").hasMatch(l),
+            ),
+          )
           .length;
-      expect(n, greaterThan(5),
-          reason: '实测 14 个测试文件 import 它；这个数字是「删除代价」的量度');
+      expect(n, greaterThan(5), reason: '实测 14 个测试文件 import 它；这个数字是「删除代价」的量度');
     });
 
     test('★★ LightTokens 仍是它对外的唯一公共出口（删它要先迁这个）', () {
-      expect(read('ui/app_theme.dart'),
-          contains("export 'theme_bridge.dart' show LightTokens;"));
+      expect(
+        read('ui/app_theme.dart'),
+        contains("export 'theme_bridge.dart' show LightTokens;"),
+      );
     });
   });
 
@@ -240,6 +384,10 @@ void main() {
       var n = 0;
       for (final f in Directory('lib').listSync(recursive: true)) {
         if (f is! File || !f.path.endsWith('.dart')) continue;
+        if (f.path
+            .replaceAll('\\', '/')
+            .endsWith('/ui/theme/miuix_framework_bridge.dart'))
+          continue;
         final base = f.uri.pathSegments.last;
         if (RegExp(r'^(t\d|probe_|merge_view|delivery_test)').hasMatch(base)) {
           continue;
@@ -252,15 +400,23 @@ void main() {
           if (line.contains('colorScheme')) n++;
         });
       }
-      expect(n, greaterThanOrEqualTo(100),
-          reason: '实测 185 处。若真降到个位数，说明 M1 换出口这件事已完成，'
-              'AGENTS.md §4 第二条才可以改写 —— 现在改会是错的。');
+      expect(
+        n,
+        greaterThanOrEqualTo(100),
+        reason:
+            '实测 185 处。若真降到个位数，说明 M1 换出口这件事已完成，'
+            'AGENTS.md §4 第二条才可以改写 —— 现在改会是错的。',
+      );
     });
 
     test('★★★ AppColors 不是 colorScheme 的替代出口（它只有 9 处直接用）', () {
       var n = 0;
       for (final f in Directory('lib').listSync(recursive: true)) {
         if (f is! File || !f.path.endsWith('.dart')) continue;
+        if (f.path
+            .replaceAll('\\', '/')
+            .endsWith('/ui/theme/miuix_framework_bridge.dart'))
+          continue;
         f.readAsLinesSync().forEach((line) {
           final t = line.trimLeft();
           if (t.startsWith('///') || t.startsWith('//') || t.startsWith('*')) {
@@ -269,8 +425,11 @@ void main() {
           if (line.contains('AppColors.')) n++;
         });
       }
-      expect(n, lessThan(30),
-          reason: '实测 9 处 ⇒ M1 只是**新增**了语义色层，并没有替换掉 colorScheme');
+      expect(
+        n,
+        lessThan(30),
+        reason: '实测 9 处 ⇒ M1 只是**新增**了语义色层，并没有替换掉 colorScheme',
+      );
     });
   });
 
@@ -278,10 +437,14 @@ void main() {
   // ⑤ 全局硬约束（AGENTS.md §4 第一条）—— 它是**真的**，本门禁守着
   // ────────────────────────────────────────────────────────────────────
   group('⑤ lib/ 里没有 flutter/material.dart 的真实 import', () {
-    test('★★★ 全 lib/ *.dart 的真实 import 数 = 0', () {
+    test('★★★ SDK Material 只能从 Miuix 兼容边界导入', () {
       final offenders = <String>[];
       for (final f in Directory('lib').listSync(recursive: true)) {
         if (f is! File || !f.path.endsWith('.dart')) continue;
+        if (f.path
+            .replaceAll('\\', '/')
+            .endsWith('/ui/theme/miuix_framework_bridge.dart'))
+          continue;
         f.readAsLinesSync().asMap().forEach((i, line) {
           final t = line.trimLeft();
           if (t.startsWith('///') || t.startsWith('//') || t.startsWith('*')) {
@@ -293,8 +456,11 @@ void main() {
           }
         });
       }
-      expect(offenders, isEmpty,
-          reason: 'lib/ 里出现了 flutter/material 的真实 import：$offenders');
+      expect(
+        offenders,
+        isEmpty,
+        reason: 'lib/ 里出现了 flutter/material 的真实 import：$offenders',
+      );
     });
 
     test('★★ 注释里提到它**不算违规**（仓库现有 13 处就是这么写的）', () {
@@ -305,8 +471,7 @@ void main() {
           .where((l) => l.contains('package:flutter/material.dart'))
           .where((l) => l.trimLeft().startsWith('//'))
           .length;
-      expect(commented, greaterThan(0),
-          reason: '前提：注释里确实有这种写法，所以「剔注释」是必要的判据');
+      expect(commented, greaterThan(0), reason: '前提：注释里确实有这种写法，所以「剔注释」是必要的判据');
     });
   });
 

@@ -69,7 +69,7 @@ void main() {
       expect(find.textContaining('1200'), findsOneWidget);
       expect(find.text('已载入'), findsNothing);
 
-      await t.tap(find.byType(InkWell).first);
+      await t.tap(find.textContaining('1200'));
       await t.pumpAndSettle();
       expect(find.text('已载入'), findsOneWidget, reason: '展开后要出现四项事实');
     });

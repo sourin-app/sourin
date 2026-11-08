@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../../core/ffi.dart' show userErrorText;
 import '../../core/source_discovery.dart';
+import '../app_scaffold.dart';
 import '../tokens.dart';
+import '../widgets/miuix_controls.dart' as ui;
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 
@@ -83,7 +86,7 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
             SettingsBlock(
               title: '发现设置',
               children: [
-                TextField(
+                ui.TextField(
                   controller: _proxy,
                   enabled: !_busy,
                   decoration: const InputDecoration(
@@ -93,9 +96,11 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
                 ),
                 const SizedBox(height: Sp.x3),
                 const Text('所有发现与校验请求必须经过此代理；代理不可用时停止。支持 HTTP、HTTPS、SOCKS5。'),
-                SettingsGestureToggle(
-                  label: '每天自动发现',
-                  hint: '应用运行时检查，发现结果先进入候选列表',
+                miuix.MiuixSwitchPreference(
+                  title: '每天自动发现',
+                  summary: '应用运行时检查，发现结果先进入候选列表',
+                  insideMargin: EdgeInsets.zero,
+                  enabled: !_busy,
                   value: _automatic,
                   onChanged: (v) {
                     if (!_busy) setState(() => _automatic = v);
@@ -105,7 +110,7 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
                   spacing: Sp.x3,
                   runSpacing: Sp.x2,
                   children: [
-                    OutlinedButton(
+                    ui.OutlinedButton(
                       onPressed: _busy
                           ? null
                           : () => _run(() async {
@@ -116,7 +121,7 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
                             }),
                       child: const Text('保存设置'),
                     ),
-                    FilledButton(
+                    ui.FilledButton(
                       onPressed: _busy || (data?.running ?? false)
                           ? null
                           : () => _run(() async {
@@ -135,7 +140,7 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
                 if (_busy || (data?.running ?? false))
                   const Padding(
                     padding: EdgeInsets.only(top: Sp.x3),
-                    child: LinearProgressIndicator(),
+                    child: miuix.MiuixLinearProgressIndicator(),
                   ),
                 if (_error != null || (data?.lastError.isNotEmpty ?? false))
                   Padding(
@@ -152,7 +157,7 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
             if (data != null && data.notices.isNotEmpty)
               SettingsBlock(
                 title: '消息 · ${data.unread} 条未读',
-                trailing: TextButton(
+                trailing: ui.TextButton(
                   onPressed: () => _run(() async {
                     await SourceDiscoveryService.markRead();
                   }),
@@ -160,15 +165,15 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
                 ),
                 children: [
                   for (final n in data.notices.take(8))
-                    ListTile(
-                      dense: true,
-                      leading: Icon(
+                    miuix.MiuixBasicComponent(
+                      insideMargin: const EdgeInsets.symmetric(vertical: Sp.x2),
+                      startAction: Icon(
                         n.unread
                             ? Icons.notifications_active_outlined
                             : Icons.notifications_none,
                       ),
-                      title: Text(n.text),
-                      subtitle: Text(_date(n.at)),
+                      title: n.text,
+                      summary: _date(n.at),
                     ),
                 ],
               ),
@@ -186,7 +191,7 @@ class _SourceDiscoveryPageState extends State<SourceDiscoveryPage> {
             for (final c in data?.candidates ?? <DiscoveredSource>[])
               SettingsBlock(
                 title: c.name,
-                trailing: FilledButton(
+                trailing: ui.FilledButton(
                   onPressed: !_busy && c.canEnable
                       ? () => _run(() async {
                           await SourceDiscoveryService.enable(c.id);
@@ -282,8 +287,8 @@ class _SourceDiscoveryEntryState extends State<SourceDiscoveryEntry> {
                 : '代理发现 / 校验 / 手动启用',
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) => Scaffold(
-                  body: SourceDiscoveryPage(
+                builder: (_) => AppScaffold(
+                  child: SourceDiscoveryPage(
                     onSourcesChanged: widget.onSourcesChanged,
                   ),
                 ),

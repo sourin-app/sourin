@@ -79,6 +79,8 @@
 // 两套 Material 的 `Theme` 是**不同的 InheritedWidget**，混用会静默拿到
 // 亮色兜底主题。本文件只 import `package:material_ui/material_ui.dart`。
 
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
@@ -128,7 +130,7 @@ class AppDialogSection extends StatelessWidget {
   ///    （弹幕面板的 `_sectionTitle('数据源', note: widget.state.sourceLine)`
   ///    注释会很长，靠的就是这条）。
   const AppDialogSection.title(this.title, {super.key, this.note})
-      : _kind = _SectionKind.title;
+    : _kind = _SectionKind.title;
 
   /// 分组留白 —— 纯留白，不画线。
   ///
@@ -152,9 +154,9 @@ class AppDialogSection extends StatelessWidget {
   ///   **一整条连续内容**（bili 导入、播放设置那种平铺表单）用 [divider]。
   ///   两者混用会让「分组」的语义自相矛盾。
   const AppDialogSection.gap({super.key})
-      : title = '',
-        note = null,
-        _kind = _SectionKind.gap;
+    : title = '',
+      note = null,
+      _kind = _SectionKind.gap;
 
   /// 分组分隔线 —— 一条横线 + 上下各 `Sp.x4` 间距。
   ///
@@ -171,9 +173,9 @@ class AppDialogSection extends StatelessWidget {
   /// ⚠️ 只传 `color`，**不**传 `thickness` —— 传了就绕过了全局
   ///    `dividerTheme`，以后调全局线宽会对这一处失效。
   const AppDialogSection.divider({super.key})
-      : title = '',
-        note = null,
-        _kind = _SectionKind.divider;
+    : title = '',
+      note = null,
+      _kind = _SectionKind.divider;
 
   /// 主标题文本。只有 [AppDialogSection.title] 会用到；
   /// 另外两个构造给它空串（那时它根本不参与渲染）。
@@ -231,7 +233,7 @@ class AppDialogSection extends StatelessWidget {
       case _SectionKind.divider:
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: Sp.x4),
-          child: Divider(height: 1, color: colors.outlineVariant),
+          child: ui.Divider(height: 1, color: colors.outlineVariant),
         );
     }
   }

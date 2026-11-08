@@ -44,6 +44,9 @@
 // ```
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'miuix_controls.dart' as ui;
 
 import '../../core/ffi.dart' show userErrorText;
 import '../../core/sourin_api.dart';
@@ -518,7 +521,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                   Row(
                     children: [
                       Expanded(
-                        child: TextField(
+                        child: ui.TextField(
                           controller: _urlCtl,
                           enabled: !busy,
                           decoration: const InputDecoration(
@@ -530,7 +533,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                         ),
                       ),
                       const SizedBox(width: Sp.x2),
-                      FilledButton.tonal(
+                      ui.FilledButton.tonal(
                         onPressed: busy ? null : _saveLink,
                         child: Text(
                           _savingLink ? '保存中…' : (_hasLink ? '保存' : '填入'),
@@ -538,7 +541,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                       ),
                       if (_hasLink) ...[
                         const SizedBox(width: Sp.x2),
-                        TextButton(
+                        ui.TextButton(
                           onPressed: busy
                               ? null
                               : () {
@@ -565,8 +568,10 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                   // ── 检测按钮 + 结果 ──
                   Row(
                     children: [
-                      FilledButton.tonalIcon(
-                        onPressed: (busy || !_hasLink) ? null : () => _checkNow(),
+                      ui.FilledButton.tonalIcon(
+                        onPressed: (busy || !_hasLink)
+                            ? null
+                            : () => _checkNow(),
                         icon: const Icon(AppIcons.refresh, size: 16),
                         label: Text(_checking ? '检测中…' : '检测更新'),
                       ),
@@ -719,7 +724,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
-    return SwitchListTile(
+    return ui.SwitchListTile(
       contentPadding: EdgeInsets.zero,
       dense: true,
       value: value,
@@ -779,7 +784,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
         onChanged: (v) => setState(() => _deleteMissing = v),
       ),
       const SizedBox(height: Sp.x3),
-      FilledButton.icon(
+      ui.FilledButton.icon(
         onPressed: _updating ? null : _applyUpdate,
         icon: const Icon(AppIcons.download_done, size: 16),
         label: Text(_updating ? '更新中…' : '应用更新'),
@@ -848,8 +853,16 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
       ),
       const SizedBox(height: Sp.x2),
       for (final repo in it.repos.take(20))
-        InkWell(
-          onTap: _updating
+        miuix.MiuixBasicComponent(
+          enabled: !_updating,
+          title: repo.label,
+          insideMargin: const EdgeInsets.symmetric(vertical: Sp.x1),
+          startAction: Icon(
+            AppIcons.folder_outlined,
+            size: 14,
+            color: colors.onSurfaceVariant,
+          ),
+          onClick: _updating
               ? null
               : () {
                   setState(() {
@@ -859,30 +872,6 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                     _applied = null;
                   });
                 },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: Sp.x1),
-            child: Row(
-              children: [
-                Icon(
-                  AppIcons.folder_outlined,
-                  size: 14,
-                  color: colors.onSurfaceVariant,
-                ),
-                const SizedBox(width: Sp.x2),
-                Expanded(
-                  child: Text(
-                    repo.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      color: colors.onSurface,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
         ),
       if (it.repos.length > 20)
         Text(
@@ -898,19 +887,18 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
 
 /// 结果区的统一外壳（`_box` 与公开面板共用同一份样式，防两处漂移）
 Widget _resultBox(ColorScheme colors, List<Widget> children) {
-  return Container(
+  return SizedBox(
     width: double.infinity,
-    padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x3),
-    decoration: BoxDecoration(
-      color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
-      borderRadius: Radii.rLg,
-      border: Border.all(color: colors.outlineVariant),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        /*
+    child: miuix.MiuixCard(
+      insideMargin: const EdgeInsets.symmetric(
+        horizontal: Sp.x4,
+        vertical: Sp.x3,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          /*
          * ★ 上次启动没能恢复的源（第19项第 4 处「不告知」的出口）
          *
          * 挂在结果盒子顶部而不是各视图里各写一遍：这个盒子是
@@ -918,9 +906,10 @@ Widget _resultBox(ColorScheme colors, List<Widget> children) {
          * 也不会因为将来新增第三个视图再漏一次。
          * 空清单时它渲染 `SizedBox.shrink()` ⇒ 不占位、不画（阴性对照见单测）。
          */
-        const TvboxRestoreFailuresView(),
-        ...children,
-      ],
+          const TvboxRestoreFailuresView(),
+          ...children,
+        ],
+      ),
     ),
   );
 }
@@ -1119,11 +1108,11 @@ class TvboxSourceManagePanel extends StatefulWidget {
     String id, {
     bool applyNew,
     bool deleteMissing,
-  })? updater;
+  })?
+  updater;
 
   @override
-  State<TvboxSourceManagePanel> createState() =>
-      _TvboxSourceManagePanelState();
+  State<TvboxSourceManagePanel> createState() => _TvboxSourceManagePanelState();
 }
 
 class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
@@ -1231,7 +1220,8 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
       if (!keepApplied) _applied = null;
     });
     try {
-      final probe = widget.probeRunner ??
+      final probe =
+          widget.probeRunner ??
           (String id) => SourinApi.checkTvboxUpdates(id: id);
       final check = await probe(widget.id);
       if (!mounted) return;
@@ -1269,7 +1259,8 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
       _error = null;
     });
     try {
-      final run = widget.updater ??
+      final run =
+          widget.updater ??
           (String id, {bool applyNew = true, bool deleteMissing = false}) =>
               SourinApi.updateTvboxSource(
                 id,
@@ -1300,8 +1291,10 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
     final probe = _probe;
     final noSource = _savedNeedsSource ?? tvboxLastUpdateNoSource(widget.info);
     final updateFailed = !noSource && tvboxLastUpdateFailed(widget.info);
-    final updateText =
-        tvboxLastUpdateText(widget.info, needsSource: _savedNeedsSource);
+    final updateText = tvboxLastUpdateText(
+      widget.info,
+      needsSource: _savedNeedsSource,
+    );
 
     return Column(
       key: const ValueKey<String>('tvbox-manage'),
@@ -1312,13 +1305,16 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
         Text(
           '订阅链接',
           key: const ValueKey<String>('tvbox-manage-link-label'),
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x1),
         Row(
           children: <Widget>[
             Expanded(
-              child: TextField(
+              child: ui.TextField(
                 key: const ValueKey<String>('tvbox-manage-link-input'),
                 controller: _urlCtl,
                 enabled: !busy,
@@ -1331,14 +1327,14 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
               ),
             ),
             const SizedBox(width: Sp.x2),
-            FilledButton.tonal(
+            ui.FilledButton.tonal(
               key: const ValueKey<String>('tvbox-manage-link-save'),
               onPressed: busy ? null : _saveLink,
               child: Text(_saving ? '保存中…' : (_hasLink ? '保存' : '填入')),
             ),
             if (_hasLink) ...<Widget>[
               const SizedBox(width: Sp.x2),
-              TextButton(
+              ui.TextButton(
                 key: const ValueKey<String>('tvbox-manage-link-clear'),
                 onPressed: busy
                     ? null
@@ -1356,32 +1352,33 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
           _hasLink
               ? '这个链接下的全部源共用同一条订阅，检测一次对比全部。'
               : '这个源是贴文本导入的，没有订阅链接 —— 查不了更新。填入当初的配置地址即可。',
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         // ── ★ T5：上次更新时间（失败红色；原因进 Tooltip，一个字节不丢）──
         if (updateText != null) ...<Widget>[
           const SizedBox(height: Sp.x1),
-          Tooltip(
+          ui.Tooltip(
             message: updateFailed
                 ? '失败原因：${widget.info!.lastUpdateError ?? '后端没有给出原因'}'
                 : (noSource
-                    /*
+                      /*
                      * ★ 没有链接时的**完整**解释（行内 60 字放不下，Tooltip 补）：
                      *   它是什么时候装的 / 为什么不能自动更新 / 去哪儿补。
                      *   行内那句只讲"为什么 + 去哪儿"，这里补"它从哪来"。
                      */
-                    ? '这条是粘贴配置文本导入的，没有记录订阅来源 ⇒ 无法定时核对。\n'
-                        '到「TVBox 聚合」页填入它当初的配置地址即可开始定时更新。'
-                    : ''),
+                      ? '这条是粘贴配置文本导入的，没有记录订阅来源 ⇒ 无法定时核对。\n'
+                            '到「TVBox 聚合」页填入它当初的配置地址即可开始定时更新。'
+                      : ''),
             child: Text(
               updateText,
               key: const ValueKey<String>('tvbox-manage-last-update'),
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 // ★ 三态三色：失败=红 / 缺链接=onSurfaceVariant（提示，不是故障）/ 正常
-                color: updateFailed
-                    ? colors.error
-                    : colors.onSurfaceVariant,
+                color: updateFailed ? colors.error : colors.onSurfaceVariant,
               ),
             ),
           ),
@@ -1391,7 +1388,7 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
         // ── ② 测试连通 + ③ 立即更新 ──
         Row(
           children: <Widget>[
-            FilledButton.tonalIcon(
+            ui.FilledButton.tonalIcon(
               key: const ValueKey<String>('tvbox-manage-probe'),
               onPressed: (busy || !_hasLink) ? null : () => _testNow(),
               icon: const Icon(AppIcons.refresh, size: 16),
@@ -1409,7 +1406,7 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
          * 再决定要不要改本地。没有变化时画一个"更新"按钮是假入口。
          */
         if (probe != null && probe.state == TvboxProbeState.ok) ...<Widget>[
-          FilledButton.icon(
+          ui.FilledButton.icon(
             key: const ValueKey<String>('tvbox-manage-update'),
             onPressed: _updating ? null : _applyUpdate,
             icon: const Icon(AppIcons.download_done, size: 16),
@@ -1441,14 +1438,20 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
     if (_probing) {
       return Text(
         '正在连订阅链接…',
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       );
     }
     if (probe == null) {
       return Text(
         _hasLink ? '还没测过 —— 点「测试连通」才会联网' : '没有订阅链接，测不了',
         key: const ValueKey<String>('tvbox-manage-probe-idle'),
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
       );
     }
     return Text(
@@ -1557,40 +1560,53 @@ class _TvboxRestoreFailuresViewState extends State<TvboxRestoreFailuresView> {
       key: const ValueKey<String>('tvbox-restore-failures'),
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: Sp.x2),
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
-      decoration: BoxDecoration(
-        color: colors.errorContainer.withValues(alpha: 0.35),
-        borderRadius: Radii.rLg,
-        border: Border.all(color: colors.error.withValues(alpha: 0.5)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            '上次启动没能恢复 ${_rows.length} 个源',
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              height: 1.4,
-              fontWeight: FontWeight.w600,
-              color: colors.onErrorContainer,
-            ),
-          ),
-          const SizedBox(height: 2),
-          for (final f in shown)
+      child: miuix.MiuixCard(
+        colors: miuix.MiuixCardColors(
+          color: colors.errorContainer,
+          contentColor: colors.onErrorContainer,
+        ),
+        insideMargin: const EdgeInsets.symmetric(
+          horizontal: Sp.x3,
+          vertical: Sp.x2,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
             Text(
-              '${f.displayName}：${f.reason}',
-              key: ValueKey<String>('tvbox-restore-failure-${f.displayName}'),
+              '上次启动没能恢复 ${_rows.length} 个源',
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 height: 1.4,
-                color: colors.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+                color: colors.onErrorContainer,
               ),
             ),
-          if (_rows.length > shown.length) ...[
             const SizedBox(height: 2),
+            for (final f in shown)
+              Text(
+                '${f.displayName}：${f.reason}',
+                key: ValueKey<String>('tvbox-restore-failure-${f.displayName}'),
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  height: 1.4,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            if (_rows.length > shown.length) ...[
+              const SizedBox(height: 2),
+              Text(
+                '还有 ${_rows.length - shown.length} 个没列出',
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  height: 1.4,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            ],
+            const SizedBox(height: Sp.x1),
             Text(
-              '还有 ${_rows.length - shown.length} 个没列出',
+              '重新导入一次即可；如果还是不行，把上面这句原因发给我们。',
               style: TextStyle(
                 fontSize: FontSizes.cap,
                 height: 1.4,
@@ -1598,16 +1614,7 @@ class _TvboxRestoreFailuresViewState extends State<TvboxRestoreFailuresView> {
               ),
             ),
           ],
-          const SizedBox(height: Sp.x1),
-          Text(
-            '重新导入一次即可；如果还是不行，把上面这句原因发给我们。',
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              height: 1.4,
-              color: colors.onSurfaceVariant,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

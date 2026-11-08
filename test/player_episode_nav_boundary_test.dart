@@ -73,6 +73,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'support/miuix_finders.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -338,7 +339,7 @@ void main() {
        *     而 `find.byIcon(AppIcons.skip_next)` 会绑死在图标常量上，
        *     产品换图标就假红。⇒ 用语义，不用实现细节。
        */
-      final f = find.byTooltip('下一集');
+      final f = miuixTooltip('下一集');
       expect(f, findsOneWidget,
           reason: '★ 中间某一集时「下一集」按钮必须可见（图标按钮 + tooltip）');
       /*
@@ -413,7 +414,7 @@ void main() {
        * ⇒ 所以这里断言的是"**点不动**"，不是"看不见"。
        */
       // ★ 2026-10-21：图标按钮 + tooltip ⇒ 用 byTooltip，不是 find.text（见上方长注释）
-      final f = find.byTooltip('下一集');
+      final f = miuixTooltip('下一集');
       expect(f, findsOneWidget,
           reason: '★ 最后一集时「下一集」按钮**仍然可见**（禁用而非隐藏）—— '
               '与旧测试 `player_capability_test.dart` 一致');
@@ -440,7 +441,7 @@ void main() {
       expect(before, isNotNull);
 
       // ★ 2026-10-21：图标按钮 + tooltip ⇒ 用 byTooltip（同上）
-      final f = find.byTooltip('上一集');
+      final f = miuixTooltip('上一集');
       expect(f, findsOneWidget,
           reason: '★ 第一集时「上一集」必须**可见**（禁用而非隐藏）');
 
@@ -465,9 +466,9 @@ void main() {
       final eps = fakeEpisodes(5);
       await mountPlayer(t, episodes: eps, episodeIndex: 4);
 
-      expect(find.byTooltip('上一集'), findsOneWidget,
+      expect(miuixTooltip('上一集'), findsOneWidget,
           reason: '★ 最后一集时「上一集」必须还在');
-      expect(find.byTooltip('下一集'), findsOneWidget,
+      expect(miuixTooltip('下一集'), findsOneWidget,
           reason: '★ 最后一集时「下一集」**仍然可见**（禁用）—— '
               '隐藏会让按钮位置跳动');
 

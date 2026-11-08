@@ -29,9 +29,9 @@
 // 不读取主题的 surface 槽位 —— 那是给"页面底"用的，不是给"画面浮层"用的。
 library;
 
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
-    show GlassContainer, LiquidRoundedRectangle;
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
+import 'miuix_controls.dart' as ui;
 
 import '../../design/widgets/app_ink_well.dart';
 import '../tokens.dart';
@@ -623,7 +623,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
   Widget _buildCollapsed(BuildContext context) {
     final d = widget.data;
     final bad = d.hasError;
-    return Tooltip(
+    return ui.Tooltip(
       message: bad ? '弹幕信息（有失败，点开看原因）' : '弹幕信息',
       child: _Surface(
         onTap: () => setState(() => _expanded = true),
@@ -958,7 +958,7 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
           SizedBox(
             width: 12,
             height: 12,
-            child: CircularProgressIndicator(strokeWidth: 1.6, color: _fgDim),
+            child: ui.CircularProgressIndicator(strokeWidth: 1.6, color: _fgDim),
           ),
           SizedBox(width: Sp.x2),
           Text(
@@ -1382,33 +1382,14 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
 //    （雪景）、红的（爆炸）、彩的（动画）。Material 的 surface 角色是给
 //    "页面底"设计的，放在画面上会糊掉。所以这里是一套**固定的暗浮层色**，
 //    与 player_popover / 播放器底栏同源（它们也不读 surface）。
-/// ★ 2026-10-18（任务 B-3）：**不再使用** —— 玻璃化后遮光由
-/// `GlassContainer` + 一层 40% 的淡染色承担（见 `_Surface`）。
-///
-/// 保留这个常量是为了记录**原来那个 90% 的值**：
-/// 将来若要回退玻璃、回到"实色浮层"，直接用它就是改前的观感。
-// ignore: unused_element
-const Color _scrim = Color(0xE6101216);
 const Color _fg = Color(0xFFF2F4F8);
 const Color _fgDim = Color(0xFF9BA2AE);
 const Color _accent = Color(0xFF7FB2FF);
 const Color _warn = Color(0xFFFFB454);
 const Color _danger = Color(0xFFFF6B6B);
 
-/// 面板的"外壳"：玻璃材质 + 1px 描边 + 圆角 + 极轻阴影
-///
-/// ★★ 2026-10-18（任务 B-3，Owner 要玻璃材质）
-/// ```text
-/// 改前：`color: _scrim` = Color(0xE6101216)，即 **90% 不透明**的深色。
-///   那个不透明度下"玻璃"和"实色"在视觉上几乎无法区分 ——
-///   透不出底下的画面，材质就没有意义。
-///
-/// 改后：外面套 `GlassContainer`（模糊 + 半透明 + 描边），
-///   `_scrim` 降为**很淡**的一层染色（不再承担遮光职责）。
-/// ```
-/// ⚠️ 为什么仍保留一层淡色：本面板浮在**视频画面**上，
-///    画面可能是雪景（亮）也可能是夜景（暗）。纯玻璃在亮画面上
-///    会让白字失去对比度 ⇒ 用一层淡染色兜底（`t27_w1` 的对比度口径）。
+/// 视频上的信息卡片用固定深色 Miuix 表面，避免亮画面改变文字对比度。
+/// 点击仍走共用 AppInkWell，保留收起卡片的键盘与鼠标操作。
 class _Surface extends StatelessWidget {
   const _Surface({required this.child, this.onTap});
 
@@ -1417,117 +1398,22 @@ class _Surface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final box = DecoratedBox(
-      decoration: BoxDecoration(
-        /*
-         * ⚠️ 这一层保持 **40%**（玻璃要透得出来 —— `zz_t66b_info_glass_test`
-         *    第③组钉着 alpha < 0xE6）。
-         *    遮光**不在这里**：由外层 [_SurfaceBackstop] 的实色衬底负责，
-         *    理由见 `_Surface` 的类文档。
-         */
-        color: const Color(0x66101216),
-        borderRadius: BorderRadius.circular(Radii.sm),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.28),
-            blurRadius: 18,
-            offset: const Offset(0, 4),
-          ),
-        ],
+    return miuix.MiuixCard(
+      colors: const miuix.MiuixCardColors(
+        color: Color(0xFF101216),
+        contentColor: _fg,
       ),
+      cornerRadius: Radii.sm,
+      insideMargin: EdgeInsets.zero,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(Radii.sm),
-        // ★ 去 Material（Owner 第 4/8/9 条，2026-10-17）
-        //   这里 Material 完全透明、只给水波提供绘制面 ⇒ 换 AppInkWell 自绘高亮。
-        //   ⚠️ 分类脚本把它归成 B 类（看到 color: 就判"真卡片"），
-        //      但那是 Colors.transparent —— 脚本判据不精确，人工判断为准。
         child: AppInkWell(
           onTap: onTap,
           child: child,
         ),
       ),
     );
-    /*
-     * ★★ 2026-10-18（任务 B-3）：玻璃材质。
-     *
-     * 放在最外层，里面仍是原来的 DecoratedBox + ClipRRect + AppInkWell
-     * ⇒ 布局与交互一字未改，只是多了一层材质。
-     *
-     * ★★★ 2026-10-19（第 66 轮 R3-① / R3-②）：**外面再垫一层实色衬底**
-     * ```text
-     * 见上面 `_Surface` 类文档「玻璃只负责质感，遮光由实色层负责」。
-     * 衬底放在 GlassContainer 的**外面（下面）**，因此不参与玻璃的
-     * 半透明计算，也不影响 `zz_t66b_info_glass_test` 对 alpha 的断言
-     * （那一组量的是里面那层 40% 的 DecoratedBox，仍是 0x66）。
-     * ```
-     */
-    return _SurfaceBackstop(
-      radius: Radii.sm,
-      child: GlassContainer(
-        shape: LiquidRoundedRectangle(borderRadius: Radii.sm),
-        padding: EdgeInsets.zero,
-        child: box,
-      ),
-    );
   }
-}
-
-/// ★★★ 2026-10-19（第 66 轮 R3-① / R3-②）：**实色衬底**
-///
-/// # 它修的是什么（真渲染像素取证，不是拍脑袋）
-/// ```text
-/// 用 RepaintBoundary.toImage 在**最坏底图**（纯白 + 高饱和动画色块）上
-/// 真渲染本面板，对每个 Text 的矩形做颜色直方图（众数 = 真实背景、
-/// 前景族众数 = 字形笔画），实测**改前**：
-///
-///   面板真实背景   rgb(20,106,118)   ← 青绿色，是底下 #00E5FF 透上来的
-///   说明档 #9BA2AE 对它               **2.44:1**   （WCAG 正文线 4.5）
-///   正文档 #F2F4F8 对它               5.69:1
-///
-/// 而"常量对 #14161B"是 5.86~14.5:1（t27_w1 早就钉过）——
-/// 两组数字对不上，唯一解释是：**真实背景根本不是 #14161B**。
-/// ```
-/// # 根因
-/// ```text
-/// 上一版把遮光职责整个交给了 `GlassContainer`，而它是**半透明材质**：
-///   底图白 → 遮罩 rgb(71,71,71) → 面板内 rgb(20,106,118)
-/// 面板内比遮罩还**彩**，等于把动画画面直接铺在文字底下。
-/// 玻璃在这里不是"质感"，是"透光"。
-/// ```
-/// # 修法：把职责拆开
-/// ```text
-/// 衬底（这个类）  ⇒ 负责**遮光**：高不透明度深色，文字永远压在自己这层上
-/// GlassContainer   ⇒ 只负责**质感**：描边 / 模糊 / 高光
-///
-/// ⇒ 玻璃没有被删掉（Owner 要玻璃），只是不再承担它做不好的那件事。
-/// ```
-/// ⚠️ 为什么衬底在玻璃**外面（下面）**而不是把里面那层调回 90%：
-/// ```text
-/// `zz_t66b_info_glass_test` 第③组钉着「里面那层 DecoratedBox 的 alpha
-/// 必须 < 0xE6」—— 那条的**用意**是对的（"玻璃不能是摆设"）。
-/// 把 90% 塞回里面会与那条门禁冲突；而衬底在外层，两者互不影响：
-/// 里面的 40% 半透明仍透得出玻璃的模糊，衬底负责把底下画面挡住。
-/// ```
-class _SurfaceBackstop extends StatelessWidget {
-  const _SurfaceBackstop({required this.child, required this.radius});
-
-  final Widget child;
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) => DecoratedBox(
-        /*
-         * 0xE6 = 90% —— **玻璃化之前**那个 `_scrim` 的不透明度。
-         * 剩下的 10% 让玻璃的模糊仍能透出一点点底色（材质感还在），
-         * 但不足以把文字对比度拉低（实测改后 6.2~15.2:1）。
-         */
-        decoration: BoxDecoration(
-          color: const Color(0xE6101216),
-          borderRadius: BorderRadius.circular(radius),
-        ),
-        child: child,
-      );
 }
 
 /// 小图标按钮（36 命中区，视觉 22）—— 展开态右上角那枚 ×
@@ -1544,9 +1430,9 @@ class _IconHit extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final t = Tooltip(
+    final t = ui.Tooltip(
       message: tooltip ?? '',
-      child: InkWell(
+      child: ui.InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(Radii.xs),
         child: SizedBox(
@@ -1576,9 +1462,9 @@ class _UnbindHit extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
+    return ui.Tooltip(
       message: '解除「${_labelOf(route)}」这一路的绑定',
-      child: InkWell(
+      child: ui.InkWell(
         key: ValueKey('dm-unbind-${route.name}'),
         onTap: onTap,
         borderRadius: BorderRadius.circular(Radii.xs),

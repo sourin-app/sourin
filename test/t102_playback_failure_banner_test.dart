@@ -40,6 +40,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:media_kit/media_kit.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -322,10 +323,10 @@ void main() {
      *   那是**同一颗按钮的同一个回调**（`FilledButton(onPressed: onRetry)`），
      *   既不是旁路、也不是复刻；"点得到"由 `hitTestable()` 证明。
      */
-    final button = find.widgetWithText(FilledButton, '重试');
+    final button = find.widgetWithText(ui.FilledButton, '重试');
     expect(button, findsOneWidget,
         reason: '★ 横幅的「重试」必须是一颗真实按钮（不是一段文字）');
-    final btn = t.widget<FilledButton>(button);
+    final btn = t.widget<ui.FilledButton>(button);
     expect(btn.onPressed, isNotNull,
         reason: '★★ 按钮必须 enabled（disabled 的按钮在真机上点不动）');
 

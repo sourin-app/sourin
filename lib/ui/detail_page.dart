@@ -39,6 +39,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'widgets/miuix_controls.dart' as ui;
 import 'package:flutter/foundation.dart' show ValueListenable;
 
 import '../core/app_log.dart';
@@ -46,6 +48,7 @@ import '../core/download_dir.dart';
 import '../core/download_queue.dart';
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
+import 'app_scaffold.dart';
 import 'widgets/overlay_motion.dart';
 // ★ task-58：`PlayRequestData` / `MediaSession` 现在住这里（中立契约文件）。
 //   ⚠️ 这条 `import` 是**本文件自己用**那些名字所必需的；
@@ -2704,9 +2707,9 @@ class _DetailPageState extends State<DetailPage> {
       return ColoredBox(color: colors.surface, child: content);
     }
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: colors.surface,
-      body: SafeArea(child: content),
+      child: SafeArea(child: content),
     );
   }
 
@@ -5137,7 +5140,7 @@ class _LocalEpisodeRow extends StatelessWidget {
                   const SizedBox(height: 4),
                   ClipRRect(
                     borderRadius: Radii.rSm,
-                    child: LinearProgressIndicator(
+                    child: ui.LinearProgressIndicator(
                       value: ref.watchRatio,
                       minHeight: 3,
                       backgroundColor: colors.surfaceContainerHighest,
@@ -5325,8 +5328,8 @@ class _EpisodeButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
+    return miuix.MiuixPressable(
+      onPressed: onTap,
       borderRadius: Radii.rSm,
       child: Container(
         constraints: const BoxConstraints(minWidth: 64),

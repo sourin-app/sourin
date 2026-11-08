@@ -221,7 +221,7 @@ Future<void> _pumpSettings(
   ));
   await t.pumpAndSettle();
   await t.tap(find.descendant(
-    of: find.byType(SegmentedButton<DanmakuPanelTab>),
+    of: find.byKey(const ValueKey('danmaku-settings-tabs')),
     matching: find.text(tab),
   ));
   await t.pumpAndSettle();

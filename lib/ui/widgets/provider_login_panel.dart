@@ -106,10 +106,13 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'miuix_controls.dart' as ui;
+
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import '../../core/ffi.dart';
 import 'overlay_motion.dart';
+import 'app_dialog_shell.dart';
 import 'app_loading.dart';
 import 'qr_view.dart';
 import '../../ui/app_palette.dart';
@@ -1064,7 +1067,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
            */
           if (expired || failed) ...[
             const SizedBox(height: Sp.x2),
-            TextButton(
+            ui.TextButton(
               onPressed: _qrBusy ? null : () => unawaited(_startQrLogin()),
               child: const Text('重新获取二维码'),
             ),
@@ -1080,9 +1083,9 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
     required bool on,
     required VoidCallback onTap,
   }) {
-    return TextButton(
+    return ui.TextButton(
       onPressed: onTap,
-      style: TextButton.styleFrom(
+      style: ui.TextButton.styleFrom(
         backgroundColor: on ? colors.primary : Colors.transparent,
         foregroundColor: on ? colors.primaryForeground : colors.foreground,
         minimumSize: const Size(0, 34),
@@ -1170,12 +1173,12 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
             ],
             const Spacer(),
             if (loggedIn)
-              TextButton(
+              ui.TextButton(
                 onPressed: _busy ? null : () => _logout(forget: false),
                 child: const Text('登出'),
               )
             else
-              TextButton(
+              ui.TextButton(
                 onPressed: _busy ? null : () => setState(() => _open = !_open),
                 child: Text(_open ? '收起' : '登录'),
               ),
@@ -1301,7 +1304,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
             const SizedBox(height: Sp.x2),
             Row(
               children: [
-                FilledButton(
+                ui.FilledButton(
                   onPressed: _busy ? null : _login,
                   child: Text(_busy ? '登录中…' : '登录'),
                 ),
@@ -1312,7 +1315,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
                * （`expired` 说明曾经登录过但现在失效了）
                */
                 if (_state == SessionState.expired)
-                  TextButton(
+                  ui.TextButton(
                     onPressed: _busy ? null : () => _logout(forget: true),
                     child: const Text('清除本机凭据'),
                   ),
@@ -1352,7 +1355,7 @@ class _ProviderLoginPanelState extends State<ProviderLoginPanel> {
     bool obscure = false,
     int maxLines = 1,
   }) {
-    return TextField(
+    return ui.TextField(
       controller: controller,
       obscureText: obscure,
       maxLines: maxLines,
@@ -1424,60 +1427,27 @@ Future<bool> showProviderLoginDialog(
   var ok = false;
   await showAppDialog<void>(
     context: context,
-    builder: (ctx) {
-      final colors = Theme.of(ctx).colorScheme;
-      // R4-EXCEPTION: 自建外壳（裸 Dialog）那一类 —— 标题是按 providerName
-      // 拼的 `Text(...)`，而 AppGlassDialog.title 只收 String，本处已用
-      // ConstrainedBox(maxWidth: 460) 自行定宽。见 _siteExemptions 同名键。
-      return Dialog(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460),
-          child: SingleChildScrollView(
-            clipBehavior: Clip.antiAlias,
-            padding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x5, Sp.x5, Sp.x4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '登录 $providerName',
-                  style: TextStyle(
-                    fontSize: FontSizes.lg,
-                    fontWeight: FontWeights.semibold,
-                    color: colors.onSurface,
-                  ),
-                ),
-                const SizedBox(height: Sp.x2),
-                Text(
-                  '该源需要登录后才能播放。登录成功后会自动重试播放。',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    height: 1.5,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: Sp.x4),
-                ProviderLoginPanel(
-                  providerId: providerId,
-                  providerName: providerName,
-                  // 失败页点进来就是要登录，直接展开表单，省掉一次点击
-                  defaultOpen: true,
-                  onLoggedIn: () => ok = true,
-                ),
-                const SizedBox(height: Sp.x3),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(),
-                    child: Text(ok ? '完成' : '关闭'),
-                  ),
-                ),
-              ],
-            ),
-          ),
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AppDialogShell(
+        title: '登录 $providerName',
+        subtitle: '该源需要登录后才能播放。登录成功后会自动重试播放。',
+        width: 460,
+        headerPadding: const EdgeInsets.fromLTRB(Sp.x5, Sp.x5, Sp.x5, Sp.x4),
+        contentPadding: const EdgeInsets.fromLTRB(Sp.x5, 0, Sp.x5, Sp.x4),
+        onClose: () => Navigator.of(ctx).pop(),
+        child: ProviderLoginPanel(
+          providerId: providerId,
+          providerName: providerName,
+          // 失败页点进来就是要登录，直接展开表单，省掉一次点击。
+          defaultOpen: true,
+          onLoggedIn: () => setDialogState(() => ok = true),
         ),
-      );
-    },
+        actions: ui.TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: Text(ok ? '完成' : '关闭'),
+        ),
+      ),
+    ),
   );
   return ok;
 }

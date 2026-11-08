@@ -29,6 +29,8 @@
 //   内边距+内容宽决定（实测比 460 宽）。现在由外壳的 `width` 管卡片，
 //   460 是 §3.5 的「窄弹窗」档。
 
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/app_update/app_update_controller.dart';
@@ -116,12 +118,12 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           actions: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextButton(
+              ui.TextButton(
                 onPressed: () => Navigator.pop(context, false),
                 child: const Text('稍后'),
               ),
               const SizedBox(width: Sp.x2),
-              TextButton(
+              ui.TextButton(
                 // ★ 必须先 await 落盘再关窗（CR-1015）：
                 //   用户点「忽略」往往就是不想再看到它了，随后可能立刻退出 ——
                 //   而这一按的全部意义就是「下次别再弹」。写盘是异步的，
@@ -135,13 +137,14 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 child: const Text('忽略此版本'),
               ),
               const SizedBox(width: Sp.x2),
-              FilledButton(
+              ui.FilledButton(
                 onPressed: d.active || widget.asset == null
                     ? null
                     : () async {
                         if (!InstallLaunch.canInstallDirectly) {
                           final msg = await InstallLaunch.openInBrowser(
-                              widget.asset!.browserUrl);
+                            widget.asset!.browserUrl,
+                          );
                           if (!context.mounted) return;
                           showAppToast(context, msg ?? '请在浏览器里完成更新。');
                           Navigator.pop(context, false);
@@ -160,16 +163,24 @@ class _UpdateDialogState extends State<_UpdateDialog> {
               if (widget.asset == null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: Sp.x3),
-                  child: Text('这个版本没有提供当前设备的安装包，可以到下载页手动获取。',
-                      style: TextStyle(
-                          fontSize: FontSizes.sm, color: colors.onSurfaceVariant)),
+                  child: Text(
+                    '这个版本没有提供当前设备的安装包，可以到下载页手动获取。',
+                    style: TextStyle(
+                      fontSize: FontSizes.sm,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
                 )
               else if (widget.asset!.prettySize.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(bottom: Sp.x3),
-                  child: Text('${widget.asset!.name} · ${widget.asset!.prettySize}',
-                      style: TextStyle(
-                          fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+                  child: Text(
+                    '${widget.asset!.name} · ${widget.asset!.prettySize}',
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
                 ),
               ...buildReleaseNotes(
                 widget.release.notes,
@@ -203,31 +214,42 @@ class _Progress extends StatelessWidget {
     //   下一个人别再重新踩一次那个坑。
     final danger = colors.error;
     if (d.error != null) {
-      return Row(children: [
-        Icon(AppIcons.error_outline, size: 18, color: danger),
-        const SizedBox(width: Sp.x2),
-        Expanded(
-          child: Text(d.error!,
-              style: TextStyle(fontSize: FontSizes.sm, color: danger)),
-        ),
-      ]);
+      return Row(
+        children: [
+          Icon(AppIcons.error_outline, size: 18, color: danger),
+          const SizedBox(width: Sp.x2),
+          Expanded(
+            child: Text(
+              d.error!,
+              style: TextStyle(fontSize: FontSizes.sm, color: danger),
+            ),
+          ),
+        ],
+      );
     }
     final pct = d.total > 0 ? '${(d.fraction * 100).toStringAsFixed(0)}%' : '…';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        LinearProgressIndicator(value: d.total > 0 ? d.fraction : null),
+        ui.LinearProgressIndicator(value: d.total > 0 ? d.fraction : null),
         const SizedBox(height: Sp.x1),
         Row(
           children: [
             Expanded(
-              child: Text('正在下载 $pct',
-                  style: TextStyle(
-                      fontSize: FontSizes.cap, color: colors.onSurfaceVariant)),
+              child: Text(
+                '正在下载 $pct',
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
             ),
-            TextButton(
+            ui.TextButton(
               onPressed: AppUpdateController.instance.cancelDownload,
-              child: const Text('取消', style: TextStyle(fontSize: FontSizes.cap)),
+              child: const Text(
+                '取消',
+                style: TextStyle(fontSize: FontSizes.cap),
+              ),
             ),
           ],
         ),

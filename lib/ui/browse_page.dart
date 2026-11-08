@@ -21,6 +21,9 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import 'widgets/miuix_controls.dart' as ui;
+import 'app_scaffold.dart';
+
 import '../core/models.dart' as models;
 import '../core/sourin_api.dart';
 import 'tokens.dart';
@@ -215,8 +218,10 @@ class BrowsePageState extends State<BrowsePage> {
        * 正常情况**永远走不到这里** —— 真的走到就是上游行为异常，
        * 必须留下痕迹而不是静默停住（否则看起来就是"加载卡住了"）。
        */
-      debugPrint('[BROWSE] 视口补取已达上限（$_viewportFillBudgetMax 轮）'
-          '，停止自动补取；_page=$_page _hasMore=$_hasMore');
+      debugPrint(
+        '[BROWSE] 视口补取已达上限（$_viewportFillBudgetMax 轮）'
+        '，停止自动补取；_page=$_page _hasMore=$_hasMore',
+      );
       return;
     }
     _viewportFillBudget--;
@@ -313,8 +318,8 @@ class BrowsePageState extends State<BrowsePage> {
       final page = _pageLoaderOverride != null
           ? await _pageLoaderOverride!(p)
           : _isRankMode
-              ? await SourinApi.getRank(widget.provider, widget.rankId, page: p)
-              : await SourinApi.getList(widget.provider, _categoryId, page: p);
+          ? await SourinApi.getRank(widget.provider, widget.rankId, page: p)
+          : await SourinApi.getList(widget.provider, _categoryId, page: p);
 
       if (!mounted) return;
       /*
@@ -475,9 +480,9 @@ class BrowsePageState extends State<BrowsePage> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
-    return Scaffold(
+    return AppScaffold(
       backgroundColor: colors.surface,
-      body: SafeArea(
+      child: SafeArea(
         /*
          * ★★ 原版是「内容带 1440px 上限 + 居中」，对齐 `base.css:549-558`：
          *    `.container { width:100%; max-width:var(--content-max-w);
@@ -500,8 +505,8 @@ class BrowsePageState extends State<BrowsePage> {
             // ★ 触底自动加载的落点（见 [`_onScroll`]）——
             //   必须是**唯一**挂这个 controller 的滚动体。
             controller: _scrollController,
-          slivers: [
-            /*
+            slivers: [
+              /*
              * ── 顶部：返回 + 标题（★ 吸顶，不随内容滚走）──
              *
              * ★ task-75 需求②（Owner 原话）：
@@ -533,31 +538,31 @@ class BrowsePageState extends State<BrowsePage> {
              *    `spatial_nav` 的 `ensureVisible` 与滚轮互相干扰的前例）
              * ```
              */
-            SliverPersistentHeader(
-              pinned: true,
-              delegate: _StickyHeaderBar(
-                minExtent: _headerMinExtent,
-                maxExtent: _headerMaxExtent,
-                background: colors.surface,
-                child: _header(context),
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _StickyHeaderBar(
+                  minExtent: _headerMinExtent,
+                  maxExtent: _headerMaxExtent,
+                  background: colors.surface,
+                  child: _header(context),
+                ),
               ),
-            ),
 
-            // ── 分类切换 ──
-            if (_categories.isNotEmpty && !_isRankMode)
-              SliverToBoxAdapter(
-                child: SizedBox(
-                  height: 40,
-                  child: ListView.separated(
-                    clipBehavior: Clip.antiAlias,
-                    scrollDirection: Axis.horizontal,
-                    padding: Layout.contentInsetOf(context),
-                    itemCount: _categories.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
-                    itemBuilder: (context, i) {
-                      final c = _categories[i];
-                      final active = c.id == _categoryId;
-                      /*
+              // ── 分类切换 ──
+              if (_categories.isNotEmpty && !_isRankMode)
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: 40,
+                    child: ListView.separated(
+                      clipBehavior: Clip.antiAlias,
+                      scrollDirection: Axis.horizontal,
+                      padding: Layout.contentInsetOf(context),
+                      itemCount: _categories.length,
+                      separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
+                      itemBuilder: (context, i) {
+                        final c = _categories[i];
+                        final active = c.id == _categoryId;
+                        /*
                        * ★ 2026-10-15（Owner：「…换成 ui 框架提供的…不手写组件」）
                        *
                        * 改前是 InkWell + Container(decoration:) 手写胶囊。
@@ -570,142 +575,142 @@ class BrowsePageState extends State<BrowsePage> {
                        * ⚠️ `showCheckmark: false`：默认选中时左侧加对勾，会把
                        *    胶囊撑宽、文字右移；这边「选中＝染色」已经表达清楚。
                        */
-                      return Center(
-                        child: FilterChip(
-                          label: Text(
-                            c.name,
-                            style: TextStyle(
-                              fontSize: FontSizes.sm,
-                              fontWeight:
-                                  active ? FontWeight.w600 : FontWeight.w400,
+                        return Center(
+                          child: ui.FilterChip(
+                            label: Text(
+                              c.name,
+                              style: TextStyle(
+                                fontSize: FontSizes.sm,
+                                fontWeight: active
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                                color: active
+                                    ? colors.primary
+                                    : colors.onSurfaceVariant,
+                              ),
+                            ),
+                            selected: active,
+                            onSelected: (_) => _switchCategory(c),
+                            showCheckmark: false,
+                            backgroundColor: Colors.transparent,
+                            selectedColor: colors.primary.withValues(
+                              alpha: 0.16,
+                            ),
+                            side: BorderSide(
                               color: active
                                   ? colors.primary
-                                  : colors.onSurfaceVariant,
+                                  : colors.outlineVariant,
                             ),
+                            shape: const RoundedRectangleBorder(
+                              borderRadius: Radii.rFull,
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: Sp.x4,
+                              vertical: 6,
+                            ),
+                            labelPadding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                           ),
-                          selected: active,
-                          onSelected: (_) => _switchCategory(c),
-                          showCheckmark: false,
-                          backgroundColor: Colors.transparent,
-                          selectedColor: colors.primary.withValues(
-                            alpha: 0.16,
-                          ),
-                          side: BorderSide(
-                            color: active
-                                ? colors.primary
-                                : colors.outlineVariant,
-                          ),
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: Radii.rFull,
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: Sp.x4,
-                            vertical: 6,
-                          ),
-                          labelPadding: EdgeInsets.zero,
-                          visualDensity: VisualDensity.compact,
-                          materialTapTargetSize:
-                              MaterialTapTargetSize.shrinkWrap,
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-
-            const SliverToBoxAdapter(child: SizedBox(height: Sp.x5)),
-
-            // ── 骨架 ──
-            if (_loading)
-              SliverPadding(
-                // ⚠️ 不能是 `const`：内边距要按当前内容带宽度算
-                //    （★ 2026-10-04 起不再封顶 ⇒ 居中偏移恒 0，只有断点内边距）
-                padding: Layout.contentInsetOf(context),
-                sliver: const _SkeletonGrid(),
-              )
-
-            // ── 空态 ──
-            //
-            // ★ task-80：骨架 → 内容 的淡入（完整理由见 `search_page.dart`
-            //   结果分支上方那段同款注释）
-            else if (_items.isEmpty)
-              const FadeInSliver(
-                sliver: SliverFillRemaining(
-                  hasScrollBody: false,
-                  child: _EmptyBlock(
-                    icon: AppIcons.movie_outlined,
-                    title: '这个分类暂无内容',
-                  ),
-                ),
-              )
-
-            // ── 网格 ──
-            else ...[
-              FadeInSliver(
-                sliver: SliverPadding(
-                  padding: Layout.contentInsetOf(context),
-                  sliver: SliverGrid(
-                    gridDelegate: _gridDelegate(context),
-                    delegate: SliverChildBuilderDelegate(
-                      (context, i) => PosterCard(
-                        title: _items[i].title,
-                        cover: _items[i].cover,
-                        subtitle: _items[i].note,
-                        titleLines: 2,
-                        onTap: () => _open(_items[i]),
-                      ),
-                      childCount: _items.length,
+                        );
+                      },
                     ),
                   ),
                 ),
-              ),
 
-              // ── 底部：自动加载指示 / 到底了 ──
+              const SliverToBoxAdapter(child: SizedBox(height: Sp.x5)),
+
+              // ── 骨架 ──
+              if (_loading)
+                SliverPadding(
+                  // ⚠️ 不能是 `const`：内边距要按当前内容带宽度算
+                  //    （★ 2026-10-04 起不再封顶 ⇒ 居中偏移恒 0，只有断点内边距）
+                  padding: Layout.contentInsetOf(context),
+                  sliver: const _SkeletonGrid(),
+                )
+              // ── 空态 ──
               //
-              // ★ task-75 需求①（Owner 原话）：
-              // > 触底加载更多,不要 加载更多  按钮
-              //
-              // 触发的**唯一**入口是 [`_maybeLoadMore`]（滚动回调 + 填满视口
-              // 补取 + 换分类后补取都汇到那里）。这里只负责**画状态**：
-              // ```text
-              // _loadingMore  → 转圈（"正在取下一页"）
-              // !_hasMore     → 「已经到底了」
-              // 其余           → 什么都不画（等滚动把它带进视野）
-              // ```
-              // ⚠️ 这里**不能**再挂一个"进入视野就取下一页"的探针 ——
-              //    它会与 [`_maybeLoadMore`] 各发一次请求，同一页取两遍
-              //    （`_loadingMore` 闸门挡不住：两次调用可能在同一帧内
-              //    都还没走到 `setState`）。
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: Sp.x10),
-                  child: Center(
-                    child: _loadingMore
-                        ? SizedBox(
-                            width: 20,
-                            height: 20,
-                            // ★ T27-07（lead 集成补漏）：裸 CPI 落 progressIndicatorTheme
-                            //   的 primary，浮层上观感发灰 ⇒ 显式 onSurface（对深底 ≥4.5:1）。
-                            child: CircularProgressIndicator(
-                              color: colors.onSurface,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : _hasMore
-                            ? const SizedBox.shrink()
-                            : Text(
-                                '已经到底了',
-                                style: TextStyle(
-                                  fontSize: FontSizes.sm,
-                                  color: colors.onSurfaceVariant
-                                      .withValues(alpha: 0.7),
-                                ),
-                              ),
+              // ★ task-80：骨架 → 内容 的淡入（完整理由见 `search_page.dart`
+              //   结果分支上方那段同款注释）
+              else if (_items.isEmpty)
+                const FadeInSliver(
+                  sliver: SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: _EmptyBlock(
+                      icon: AppIcons.movie_outlined,
+                      title: '这个分类暂无内容',
+                    ),
+                  ),
+                )
+              // ── 网格 ──
+              else ...[
+                FadeInSliver(
+                  sliver: SliverPadding(
+                    padding: Layout.contentInsetOf(context),
+                    sliver: SliverGrid(
+                      gridDelegate: _gridDelegate(context),
+                      delegate: SliverChildBuilderDelegate(
+                        (context, i) => PosterCard(
+                          title: _items[i].title,
+                          cover: _items[i].cover,
+                          subtitle: _items[i].note,
+                          titleLines: 2,
+                          onTap: () => _open(_items[i]),
+                        ),
+                        childCount: _items.length,
+                      ),
+                    ),
                   ),
                 ),
-              ),
+
+                // ── 底部：自动加载指示 / 到底了 ──
+                //
+                // ★ task-75 需求①（Owner 原话）：
+                // > 触底加载更多,不要 加载更多  按钮
+                //
+                // 触发的**唯一**入口是 [`_maybeLoadMore`]（滚动回调 + 填满视口
+                // 补取 + 换分类后补取都汇到那里）。这里只负责**画状态**：
+                // ```text
+                // _loadingMore  → 转圈（"正在取下一页"）
+                // !_hasMore     → 「已经到底了」
+                // 其余           → 什么都不画（等滚动把它带进视野）
+                // ```
+                // ⚠️ 这里**不能**再挂一个"进入视野就取下一页"的探针 ——
+                //    它会与 [`_maybeLoadMore`] 各发一次请求，同一页取两遍
+                //    （`_loadingMore` 闸门挡不住：两次调用可能在同一帧内
+                //    都还没走到 `setState`）。
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: Sp.x10),
+                    child: Center(
+                      child: _loadingMore
+                          ? SizedBox(
+                              width: 20,
+                              height: 20,
+                              // ★ T27-07（lead 集成补漏）：裸 CPI 落 progressIndicatorTheme
+                              //   的 primary，浮层上观感发灰 ⇒ 显式 onSurface（对深底 ≥4.5:1）。
+                              child: ui.CircularProgressIndicator(
+                                color: colors.onSurface,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : _hasMore
+                          ? const SizedBox.shrink()
+                          : Text(
+                              '已经到底了',
+                              style: TextStyle(
+                                fontSize: FontSizes.sm,
+                                color: colors.onSurfaceVariant.withValues(
+                                  alpha: 0.7,
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ],
           ),
         ),
       ),
@@ -733,9 +738,9 @@ class BrowsePageState extends State<BrowsePage> {
       crossAxisSpacing: Layout.gapFor(band),
       mainAxisSpacing: Sp.x5,
       // 高度 = 海报高 + 标题两行（原版 base.css:844-854 固定两行）
-      childAspectRatio: AppMetrics.posterWidth /
-          (AppMetrics.posterWidth /
-              AppMetrics.posterAspect +
+      childAspectRatio:
+          AppMetrics.posterWidth /
+          (AppMetrics.posterWidth / AppMetrics.posterAspect +
               AppMetrics.posterMetaHeight(titleLines: 2)),
     );
   }
@@ -751,7 +756,7 @@ class BrowsePageState extends State<BrowsePage> {
       padding: Layout.contentInsetOf(context),
       child: Row(
         children: [
-          IconButton(
+          ui.IconButton(
             onPressed: () => Navigator.of(context).maybePop(),
             icon: const Icon(AppIcons.chevron_left),
             tooltip: '返回',
@@ -847,8 +852,10 @@ class _StickyHeaderBar extends SliverPersistentHeaderDelegate {
      * 也不会算出负高度（负高度直接抛异常，比视觉错更糟）。
      */
     final h = (maxExtent - shrinkOffset).clamp(minExtent, maxExtent);
-    final padTop = ((maxExtent - shrinkOffset) - minExtent)
-        .clamp(0.0, maxExtent - minExtent);
+    final padTop = ((maxExtent - shrinkOffset) - minExtent).clamp(
+      0.0,
+      maxExtent - minExtent,
+    );
     return Container(
       height: h,
       color: background,
@@ -884,9 +891,9 @@ class _SkeletonGrid extends StatelessWidget {
         crossAxisSpacing: Layout.gapFor(band),
         mainAxisSpacing: Sp.x5,
         // ★ 必须与 _gridDelegate 逐值相同，否则骨架→内容卡片跳位
-        childAspectRatio: AppMetrics.posterWidth /
-            (AppMetrics.posterWidth /
-                AppMetrics.posterAspect +
+        childAspectRatio:
+            AppMetrics.posterWidth /
+            (AppMetrics.posterWidth / AppMetrics.posterAspect +
                 AppMetrics.posterMetaHeight(titleLines: 2)),
       ),
       delegate: SliverChildBuilderDelegate(
@@ -954,5 +961,3 @@ class _EmptyBlock extends StatelessWidget {
     );
   }
 }
-
-

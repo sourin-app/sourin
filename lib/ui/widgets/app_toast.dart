@@ -21,11 +21,13 @@
 // ```text
 // 旧  黑底胶囊 @82%，2.4s 后消失，只有最后一条
 // 新  跟随主题的浮层卡片；多条同时堆叠（新的在下面），
-//     hover 时露出关闭按钮，键盘也能关（Esc / Tab 到关闭键回车）
+//     常驻关闭按钮，键盘也能关（Esc / Tab 到提示卡片回车）
 // ```
 //
 // ⚠️ **刻意不做「进度条」**：计时条每帧重绘，在低端 Android TV 上是纯开销，
 //    而 toast 本来就是几秒的信息。
+
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import 'dart:async';
 
@@ -45,8 +47,7 @@ class ToastHost extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) =>
-      AppToaster(child: ToastDismissShortcut(child: child));
+  Widget build(BuildContext context) => AppToaster(child: child);
 }
 
 /// 一条 toast 的外观参数
@@ -103,31 +104,59 @@ class AppToaster extends StatefulWidget {
 }
 
 class _ToastEntry {
-  _ToastEntry(this.message, this.style, this.expiresAt) : id = Object();
+  _ToastEntry(this.message, this.style, this.remainingTicks) : id = Object();
 
   final Object id;
   final String message;
   final AppToastStyle? style;
 
-  /// 用单调递增的计数代替绝对时间 —— 挂在 widget 测试里时
-  /// `pump(Duration)` 会推进 fake clock，绝对时间在那种环境里不可靠。
-  int elapsed = 0;
-  int expiresAt;
+  /// Shared ticks only update fading. Expiry starts at this entry's enqueue
+  /// time, so arriving between ticks cannot shorten the requested lifetime.
+  int remainingTicks;
+  Timer? expiration;
 }
 
 class _AppToasterState extends State<AppToaster> {
   final _entries = <_ToastEntry>[];
+  FocusScopeNode? _notificationFocusParent;
 
-  /// 每 100ms 推进一次「已显示时长」，用来看哪条该消失了
+  @override
+  void initState() {
+    super.initState();
+    FocusManager.instance.addListener(_followPageFocus);
+  }
+
+  FocusScopeNode? _activePageScope() {
+    final focus = FocusManager.instance.primaryFocus;
+    final focusedContext = focus?.context;
+    if (focusedContext == null ||
+        !focusedContext.mounted ||
+        AppToaster.maybeOf(focusedContext) != this) {
+      return null;
+    }
+    return focus?.nearestScope;
+  }
+
+  void _followPageFocus() {
+    if (!mounted || _entries.isEmpty) return;
+    final scope = _activePageScope();
+    if (scope != null && scope != _notificationFocusParent) {
+      setState(() => _notificationFocusParent = scope);
+    }
+  }
+
+  /// 每 100ms 更新淡出外观；每条提示自己的定时器负责到期移除。
   ///
   /// ⚠️ 用 `Timer.periodic` 而**不是** `AnimationController.repeat()`：
   ///    后者只要在跑就永远有下一帧 —— ① 空闲时白烧 CPU；
   ///    ② widget 测试里 `pumpAndSettle` 会**永远等不到静止**而超时。
   Timer? _clock;
-  int _elapsed = 0;
 
   void _startClock() {
-    _clock ??= Timer.periodic(const Duration(milliseconds: 100), (_) => _tick());
+    _clock ??= Timer.periodic(
+      const Duration(milliseconds: 100),
+      (_) => _tick(),
+    );
   }
 
   void _stopClock() {
@@ -140,11 +169,11 @@ class _AppToasterState extends State<AppToaster> {
       _stopClock();
       return;
     }
-    _elapsed++;
-    final gone = _entries.where((e) => _elapsed >= e.expiresAt).toList();
-    setState(() => _entries.removeWhere((e) => _elapsed >= e.expiresAt));
-    // 全部消失就停表 —— 没有 toast 的时间必须是**零开销**的。
-    if (gone.isNotEmpty && _entries.isEmpty) _stopClock();
+    setState(() {
+      for (final entry in _entries) {
+        entry.remainingTicks--;
+      }
+    });
   }
 
   void show(
@@ -167,11 +196,13 @@ class _AppToasterState extends State<AppToaster> {
       style,
       (duration.inMilliseconds / 100).ceil(),
     );
+    e.expiration = Timer(duration, () => _dismiss(e.id));
     setState(() {
+      _notificationFocusParent = _activePageScope();
       _entries.add(e);
       // 新的排在**下面**（视觉上更近底栏，视线不用往上找）
       while (_entries.length > _maxVisible) {
-        _entries.removeAt(0);
+        _entries.removeAt(0).expiration?.cancel();
       }
     });
     _startClock();
@@ -188,54 +219,74 @@ class _AppToasterState extends State<AppToaster> {
 
   void _dismiss(Object id) {
     if (!mounted) return;
-    setState(() => _entries.removeWhere((e) => e.id == id));
+    setState(() {
+      _entries.removeWhere((e) {
+        if (e.id != id) return false;
+        e.expiration?.cancel();
+        return true;
+      });
+    });
     if (_entries.isEmpty) _stopClock();
   }
 
   @override
   void dispose() {
+    FocusManager.instance.removeListener(_followPageFocus);
     _stopClock();
+    for (final entry in _entries) {
+      entry.expiration?.cancel();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_entries.isEmpty) return widget.child;
-    final cs = Theme.of(context).colorScheme;
-    return Stack(
-      children: [
-        widget.child,
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: Sp.x10,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final e in _entries)
-                _ToastCard(
-                  key: ValueKey(e.id),
-                  message: e.message,
-                  style: e.style,
-                  // 剩余寿命：只剩最后一秒时才开始变淡（先别急着消失）
-                  fade: _fadeFor(e),
-                  onClose: () => _dismiss(e.id),
+    // Keep the page at the same element path as notifications come and go.
+    // The shortcut also surrounds the notification actions, not just the page.
+    return ToastDismissShortcut(
+      child: Stack(
+        fit: StackFit.passthrough,
+        children: [
+          widget.child,
+          if (_entries.isNotEmpty)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: Sp.x10,
+              // WidgetsApp's Navigator Scope is a closed traversal loop. The
+              // global visual overlay joins the active page's focus scope so
+              // Tab can reach it without moving focus when a toast appears.
+              child: FocusTraversalGroup(
+                parentNode: _notificationFocusParent,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final e in _entries)
+                      _ToastCard(
+                        key: ValueKey(e.id),
+                        message: e.message,
+                        style: e.style,
+                        // 剩余寿命：只剩最后一秒时才开始变淡（先别急着消失）
+                        fade: _fadeFor(e),
+                        onClose: () => _dismiss(e.id),
+                      ),
+                  ],
                 ),
-            ],
-          ),
-        ),
-      ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 
   double _fadeFor(_ToastEntry e) {
-    final left = (e.expiresAt - _elapsed) * 100;
+    final left = e.remainingTicks * 100;
     if (left > 1200) return 1;
     return (left / 1200).clamp(0.25, 1.0);
   }
 }
 
-class _ToastCard extends StatelessWidget {
+class _ToastCard extends StatefulWidget {
   const _ToastCard({
     required this.message,
     required this.style,
@@ -250,81 +301,74 @@ class _ToastCard extends StatelessWidget {
   final VoidCallback onClose;
 
   @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final accent = style?.accent ?? cs.primary;
+  State<_ToastCard> createState() => _ToastCardState();
+}
 
+class _ToastCardState extends State<_ToastCard> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = miuix.MiuixSnackbarDefaults.snackbarColors(context);
     return Opacity(
-      opacity: fade,
+      opacity: widget.fade,
       child: Padding(
-        padding: const EdgeInsets.only(top: Sp.x2),
+        padding: const EdgeInsets.only(top: Sp.x2, left: Sp.x3, right: Sp.x3),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 520),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                // 浮层底：比页面底亮一档 ⇒ 在深色页面上也能浮起来
-                color: cs.surfaceContainerHigh,
-                borderRadius: Radii.rMd,
-                border: Border.all(color: cs.outlineVariant),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.32),
-                    blurRadius: 18,
-                    offset: const Offset(0, 6),
+            child: FocusableActionDetector(
+              onShowFocusHighlight: (focused) {
+                if (_focused != focused) setState(() => _focused = focused);
+              },
+              shortcuts: const {
+                SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+                SingleActivator(LogicalKeyboardKey.numpadEnter):
+                    ActivateIntent(),
+                SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+                SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+              },
+              actions: {
+                ActivateIntent: CallbackAction<ActivateIntent>(
+                  onInvoke: (_) {
+                    widget.onClose();
+                    return null;
+                  },
+                ),
+              },
+              child: DecoratedBox(
+                position: DecorationPosition.foreground,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(
+                    miuix.MiuixSnackbarDefaults.cornerRadius,
                   ),
-                ],
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(Sp.x4, Sp.x3, Sp.x2, Sp.x3),
-                // ⚠️ 这里**必须**是「撑满」的 Row，不能是 `MainAxisSize.min` ——
-                //    min + `Flexible` 在宽度无界时会让 `Flexible` 拿到无穷大，
-                //    Row 直接溢出几万像素。而宽度为什么无界：`Positioned(left:0,right:0)`
-                //    只约束了 **Positioned 自己**，里面的 Column 再给 Row 时
-                //    已经过了那层约束。
-                //    卡片居中由外层的 `Center` 负责，Row 自己只需要不溢出。
-                child: Row(
-                  children: [
-                    if (style?.icon != null) ...[
-                      Icon(style!.icon, size: 18, color: accent),
-                      const SizedBox(width: Sp.x3),
-                    ],
-                    Flexible(
-                      child: Text(
-                        message,
-                        style: TextStyle(
-                          fontSize: FontSizes.sm,
-                          color: cs.onSurface,
-                        ),
-                      ),
+                  border: _focused
+                      ? Border.all(
+                          color: miuix.MiuixTheme.of(context).colors.primary,
+                          width: 2,
+                        )
+                      : null,
+                ),
+                child: Semantics(
+                  liveRegion: true,
+                  button: true,
+                  label: '关闭提示：${widget.message}',
+                  onTap: widget.onClose,
+                  child: miuix.MiuixSnackbar(
+                    data: _ToastData(
+                      widget.message,
+                      widget.style,
+                      widget.onClose,
                     ),
-                    if (style?.actionLabel != null) ...[
-                      const SizedBox(width: Sp.x3),
-                      TextButton(
-                        onPressed: style!.onAction,
-                        child: Text(style!.actionLabel!),
-                      ),
-                    ],
-                    // 关闭键：常驻但视觉很轻（半透明），需要时一定够得着
-                    // （鼠标 / 遥控器都算；Esc 也能关，见 ToastDismissShortcut）。
-                    //
-                    // ⚠️ 这里**刻意不加 tooltip**：`Tooltip` 要求祖先有
-                    //    `Overlay`，而 ToastHost 挂在 `MaterialApp.builder` 里
-                    //    = 在 Navigator 的 Overlay **之上** ⇒ 一点就抛
-                    //    "No Overlay widget found"。`IconButton.tooltip` 内部
-                    //    同样会建 Tooltip，所以也不行。
-                    //    一个 16px 的 ✕ 不需要文字解释；可发现性靠"常驻可见"，
-                    //    不靠 hover 提示。
-                    IconButton(
-                      onPressed: onClose,
-                      visualDensity: VisualDensity.compact,
-                      icon: Icon(
-                        AppIcons.close,
-                        size: 16,
-                        color: cs.onSurfaceVariant.withValues(alpha: 0.7),
-                      ),
+                    colors: miuix.MiuixSnackbarColors(
+                      containerColor: colors.containerColor,
+                      contentColor: colors.contentColor,
+                      actionContentColor: colors.actionContentColor,
+                      dismissActionContentColor: colors.contentColor,
+                      actionContainerColor:
+                          widget.style?.accent ?? colors.actionContainerColor,
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -335,8 +379,25 @@ class _ToastCard extends StatelessWidget {
   }
 }
 
-/// 便捷动作样式（成功 / 失败）
-AppToastStyle okToastStyle() => AppToastStyle(icon: AppIcons.check_circle_outline);
+class _ToastData implements miuix.MiuixSnackbarData {
+  _ToastData(String message, this.style, this.close)
+    : visuals = miuix.MiuixSnackbarVisuals(
+        message: message,
+        actionLabel: style?.onAction == null ? null : style?.actionLabel,
+        withDismissAction: true,
+      );
+  final AppToastStyle? style;
+  final VoidCallback close;
+  @override
+  final miuix.MiuixSnackbarVisuals visuals;
+  @override
+  Future<void> dismiss() async => close();
+  @override
+  Future<void> performAction() async => style?.onAction?.call();
+}
+
+AppToastStyle okToastStyle() =>
+    AppToastStyle(icon: AppIcons.check_circle_outline);
 
 AppToastStyle errToastStyle() =>
     AppToastStyle(icon: AppIcons.error_outline, accent: Colors.redAccent);

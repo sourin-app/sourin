@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Related current implementation: [actual Miuix shared menus and dialogs](./2026-11-08-miuix-shared-menus-and-dialogs.md). It preserves the shell's 620 height, width clamping, scrolling and dismissal contract while replacing the shared surfaces and dialog registration. This note's subscription/hover decisions remain independent.
+
 Independent: 与本轮其它笔记都不同 —— 那几篇分别讲
 [更新说明生成](../process/2026-10-19-release-notes-generated-from-git.md)、
 [判据纪律](../testing/2026-10-19-criteria-must-distinguish-cause-and-ciphertext.md)、

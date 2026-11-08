@@ -8,6 +8,7 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
@@ -80,7 +81,7 @@ void main() {
     await setShotViewport(t, const Size(760, 320));
     await t.pumpWidget(_host(_send()));
     await t.pumpAndSettle();
-    await t.tap(find.byType(TextField));
+    await t.tap(find.byType(ui.TextField));
     await t.pumpAndSettle();
     await saveViewShot(t, 't66b_send_focused');
     print('[SHOT] t66b_send_focused');

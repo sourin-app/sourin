@@ -1,4 +1,6 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:flutter/services.dart';
 
 import '../tokens.dart';
 import 'poster_card.dart';
@@ -26,88 +28,97 @@ class CompactShelfCard extends StatelessWidget {
   static double heightOf(BuildContext context) =>
       Sp.x16 / AppMetrics.posterAspect +
       Sp.x6 +
-      (MediaQuery.textScalerOf(context).scale(FontSizes.base) -
-              FontSizes.base)
-          .clamp(0.0, double.infinity) *
+      (MediaQuery.textScalerOf(context).scale(FontSizes.base) - FontSizes.base)
+              .clamp(0.0, double.infinity) *
           4;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: colors.surfaceContainer,
-      borderRadius: Radii.rLg,
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(Sp.x3),
-          child: Row(
-            children: [
-              ExcludeSemantics(
-                child: IgnorePointer(
-                  child: PosterCard(
-                    title: title,
-                    cover: cover,
-                    width: Sp.x16,
-                    showCaption: false,
+    return Shortcuts(
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+      },
+      child: miuix.MiuixCard(
+        colors: miuix.MiuixCardColors(
+          color: colors.surfaceContainer,
+          contentColor: colors.onSurface,
+        ),
+        cornerRadius: Radii.lg,
+        onPressed: onTap,
+        child: ClipRRect(
+          borderRadius: Radii.rLg,
+          child: Padding(
+            padding: const EdgeInsets.all(Sp.x3),
+            child: Row(
+              children: [
+                ExcludeSemantics(
+                  child: IgnorePointer(
+                    child: PosterCard(
+                      title: title,
+                      cover: cover,
+                      width: Sp.x16,
+                      showCaption: false,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: Sp.x3),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: FontSizes.base,
-                        fontWeight: FontWeight.w600,
-                        color: colors.onSurface,
-                      ),
-                    ),
-                    if (subtitle?.isNotEmpty ?? false) ...[
-                      const SizedBox(height: Sp.x1),
+                const SizedBox(width: Sp.x3),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Text(
-                        subtitle!,
-                        maxLines: 1,
+                        title,
+                        maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          color: colors.onSurfaceVariant,
+                          fontSize: FontSizes.base,
+                          fontWeight: FontWeight.w600,
+                          color: colors.onSurface,
                         ),
                       ),
-                    ],
-                    if (unread > 0) ...[
-                      const SizedBox(height: Sp.x1),
-                      Text(
-                        '$unread 集待看',
-                        style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          color: colors.primary,
+                      if (subtitle?.isNotEmpty ?? false) ...[
+                        const SizedBox(height: Sp.x1),
+                        Text(
+                          subtitle!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: FontSizes.cap,
+                            color: colors.onSurfaceVariant,
+                          ),
                         ),
-                      ),
-                    ],
-                    if (percent != null && percent! > 0) ...[
-                      const SizedBox(height: Sp.x2),
-                      ClipRRect(
-                        borderRadius: Radii.rSm,
-                        child: LinearProgressIndicator(
-                          value: (percent! / 100).clamp(0.0, 1.0),
-                          minHeight: Sp.x1,
-                          semanticsLabel: '观看进度',
-                          semanticsValue: '${percent!.round()}%',
+                      ],
+                      if (unread > 0) ...[
+                        const SizedBox(height: Sp.x1),
+                        Text(
+                          '$unread 集待看',
+                          style: TextStyle(
+                            fontSize: FontSizes.cap,
+                            color: colors.primary,
+                          ),
                         ),
-                      ),
+                      ],
+                      if (percent != null && percent! > 0) ...[
+                        const SizedBox(height: Sp.x2),
+                        ClipRRect(
+                          borderRadius: Radii.rSm,
+                          child: Semantics(
+                            label: '观看进度',
+                            value: '${percent!.round()}%',
+                            child: miuix.MiuixLinearProgressIndicator(
+                              progress: (percent! / 100).clamp(0.0, 1.0),
+                              height: Sp.x1,
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

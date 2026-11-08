@@ -14,10 +14,11 @@ import 'package:sourin_spike/ui/player/episode_panel.dart';
 import 'package:sourin_spike/ui/player/player_bottom_bar.dart'
     show PlayerBottomBar, PlayerPopoverIds;
 import 'package:sourin_spike/ui/player/player_popover.dart'
-    show PlayerPopoverSurface;
+    show PlayerPopoverSurface, PopoverRow;
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
 import 'package:sourin_spike/ui/widgets/episode_strip.dart' show LineChip;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as controls;
 
 const _episodes = [
   Episode(id: 'A1', title: '第1集', index: 0, flag: '线路A'),
@@ -82,8 +83,39 @@ Future<void> _mount(WidgetTester t, {bool showBottomBar = true}) async {
   );
 }
 
+FocusNode _controlNode(WidgetTester t, Finder target) {
+  // Miuix buttons have an internal focus node excluded by the shared keyboard
+  // adapter. Select the nearest eligible node within the actual control, never
+  // an excluded package node or the page-level video shortcut handler.
+  final boundary = find.ancestor(
+    of: target,
+    matching: find.byWidgetPredicate(
+      (w) =>
+          w is controls.TextButton ||
+          w is controls.OutlinedButton ||
+          w is controls.ChoiceChip ||
+          w is PopoverRow,
+    ),
+  );
+  expect(boundary, findsOneWidget);
+  final control = t.element(boundary);
+  final inner = Focus.of(t.element(target));
+  final node = [inner, ...inner.ancestors].firstWhere((n) => n.canRequestFocus);
+  var withinControl = identical(node.context, control);
+  node.context?.visitAncestorElements((element) {
+    if (identical(element, control)) withinControl = true;
+    return !withinControl;
+  });
+  expect(
+    withinControl,
+    isTrue,
+    reason: 'The control must own an eligible focus node.',
+  );
+  return node;
+}
+
 Future<void> _focus(WidgetTester t, Finder target) async {
-  final node = Focus.of(t.element(target));
+  final node = _controlNode(t, target);
   node.requestFocus();
   await t.pump();
   expect(node.hasPrimaryFocus, isTrue);
@@ -98,7 +130,7 @@ Future<void> _openMenu(WidgetTester t) async {
 }
 
 bool _focusIsWithin(WidgetTester t, Finder target) {
-  final node = Focus.of(t.element(target));
+  final node = _controlNode(t, target);
   final current = FocusManager.instance.primaryFocus;
   return current == node || (current?.ancestors.contains(node) ?? false);
 }

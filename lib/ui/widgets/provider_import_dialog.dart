@@ -34,6 +34,8 @@
 // widget（只依赖 `SourinApi`，不碰页面私有状态），页面那边只留
 // 「打开它 + 拿返回值」两行，冲突面最小。
 
+import 'miuix_controls.dart' as ui;
+
 import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
@@ -557,13 +559,13 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
            *    走编排会丢掉原有未覆盖字段（编排器只认识模板里那几个键）。
            */
           if (!_isEditing && _mode == ImportMode.declarative) ...[
-            TextButton(
+            ui.TextButton(
               onPressed: _busy
                   ? null
                   : () => setState(() => _jsonCtl.text = kDeclarativeTemplate),
               child: const Text('填入模板'),
             ),
-            TextButton.icon(
+            ui.TextButton.icon(
               onPressed: _busy ? null : _openComposer,
               icon: const Icon(AppIcons.auto_fix_high_outlined, size: 16),
               label: const Text('可视化编排'),
@@ -577,7 +579,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
            * 那是最坏的一种误导。所以出结果后这个按钮改名「完成」，
            * 且**照样把结果带回去**（设置页据此刷新列表 + 弹 toast）。
            */
-          TextButton(
+          ui.TextButton(
             onPressed: _busy
                 ? null
                 : () => Navigator.pop(context, _closeResult()),
@@ -586,7 +588,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
               _tvboxResult == null || _tvboxResult!.multiRepo ? '取消' : '完成',
             ),
           ),
-          FilledButton(
+          ui.FilledButton(
             onPressed: _busy || !_canSubmit ? null : _submit,
             child: _busy
                 ? SizedBox(
@@ -594,7 +596,10 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
                     height: 16,
                     // T27-07：FilledButton 内的指示器用 onPrimary（按钮自身前景），
                     // 禁用态下 Material 自动降透明仍 ≥ 灰弧。
-                    child: CircularProgressIndicator(color: colors.onPrimary, strokeWidth: 2),
+                    child: ui.CircularProgressIndicator(
+                      color: colors.onPrimary,
+                      strokeWidth: 2,
+                    ),
                   )
                 : Text(_submitLabel),
           ),
@@ -672,9 +677,8 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
   Future<void> _openComposer() async {
     final json = await showAppDialog<Map<String, Object?>>(
       context: context,
-      builder: (_) => SourceComposerDialog(
-        onSubmit: (j) => Navigator.of(context).pop(j),
-      ),
+      builder: (_) =>
+          SourceComposerDialog(onSubmit: (j) => Navigator.of(context).pop(j)),
     );
     if (json == null || !mounted) return;
     const enc = JsonEncoder.withIndent('  ');
@@ -741,7 +745,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
   ) {
     final active = _mode == mode;
     return Expanded(
-      child: InkWell(
+      child: ui.InkWell(
         onTap: _busy ? null : () => setState(() => _mode = mode),
         borderRadius: Radii.rMd,
         child: Container(
@@ -792,7 +796,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
       style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
     ),
     const SizedBox(height: Sp.x3),
-    TextField(
+    ui.TextField(
       controller: _jsonCtl,
       maxLines: 14,
       minLines: 8,
@@ -830,7 +834,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
       style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
     ),
     const SizedBox(height: Sp.x3),
-    TextField(
+    ui.TextField(
       controller: _baseCtl,
       enabled: !_busy,
       onChanged: (_) => setState(() {}),
@@ -846,7 +850,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
       style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
     ),
     const SizedBox(height: Sp.x1),
-    TextField(
+    ui.TextField(
       controller: _headersCtl,
       maxLines: 3,
       minLines: 2,
@@ -874,7 +878,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
       style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
     ),
     const SizedBox(height: Sp.x3),
-    TextField(
+    ui.TextField(
       controller: _tvboxCtl,
       maxLines: 14,
       minLines: 8,
@@ -951,7 +955,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
           ),
           const SizedBox(height: Sp.x2),
           for (final repo in r.repos.take(20))
-            InkWell(
+            ui.InkWell(
               onTap: _busy
                   ? null
                   : () => setState(() {

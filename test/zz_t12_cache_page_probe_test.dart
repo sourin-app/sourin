@@ -22,6 +22,7 @@ import 'package:flutter/gestures.dart'
     show PointerDeviceKind, PointerHoverEvent;
 import 'package:flutter/widgets.dart' show Widget;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart' as mui;
 import 'package:sourin_spike/core/download_dir.dart';
 import 'package:sourin_spike/core/models.dart' show StreamCandidate;
@@ -35,12 +36,15 @@ import 'package:sourin_spike/design/widgets/app_glass_dialog.dart';
 import 'package:sourin_spike/design/widgets/app_text_button.dart';
 
 /// ★ 探针沙盒根 —— 必须是绝对路径，且落在系统临时目录下
+Directory? _suiteSandbox;
+
 Directory _sandboxRoot() {
-  final base = Directory.systemTemp.absolute.path;
-  final p = '$base${Platform.pathSeparator}t3_12';
-  final d = Directory(p);
-  if (!d.isAbsolute) fail('★ 探针沙盒必须是绝对路径，实际 = $p');
-  if (!d.existsSync()) d.createSync(recursive: true);
+  final d = _suiteSandbox ??=
+      Directory.systemTemp.createTempSync('sourin_t12_').absolute;
+  if (!d.isAbsolute ||
+      d.parent.path != Directory.systemTemp.absolute.path) {
+    fail('★ 探针沙盒必须是系统临时目录下的独立绝对路径，实际 = ${d.path}');
+  }
   return d;
 }
 
@@ -96,7 +100,7 @@ Widget _appWith({required Widget home}) {
 }
 
 void _claim(WidgetTester t) {
-  while (t.takeException() != null) {}
+  expect(t.takeException(), isNull);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -130,7 +134,7 @@ void main() {
   late Directory root;
 
   setUp(() {
-    UiPrefs.remove(DownloadDir.kDirKey);
+    UiPrefs.debugResetForTest();
     DownloadDir.debugReset();
     DownloadQueue.debugReset();
     root = Directory(
@@ -152,9 +156,16 @@ void main() {
     DownloadDir.setConfiguredDir(root.path);
   });
 
+  tearDown(() {
+    CachePage.debugScanRootOverride = null;
+    CachePage.debugResetHoverCapability();
+    DownloadQueue.debugReset();
+    DownloadDir.debugReset();
+    UiPrefs.debugResetForTest();
+  });
+
   tearDownAll(() {
-    final d = Directory('${Directory.systemTemp.absolute.path}${Platform.pathSeparator}t3_12');
-    if (!d.isAbsolute) fail('★ 清理路径必须是绝对路径，实际 = ${d.path}');
+    final d = _sandboxRoot();
     if (d.existsSync()) d.deleteSync(recursive: true);
     debugPrint('CLEANUP 已删除探针沙盒 ${d.path} 存在=${d.existsSync()}');
   });
@@ -182,7 +193,7 @@ void main() {
       for (var i = 0; i < 8; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         await t.pump(const Duration(milliseconds: 50));
-        while (t.takeException() != null) {}
+        _claim(t);
       }
     });
     _claim(t);
@@ -405,18 +416,29 @@ void main() {
     // 悬停态不可点（IgnorePointer）⇒ 必须先把它显形出来才 tap 得到
     await t.tap(moreBtn);
     await t.pumpAndSettle();
+    expect(find.byType(miuix.MiuixWindowListPopup), findsOneWidget,
+        reason: '★ 缓存卡片入口必须打开实际 Miuix 菜单');
     expect(find.text('删除整部'), findsOneWidget,
         reason: '★★★ 菜单里必须有「删除整部」');
     // → 选它，之后才是二次确认弹窗（旧测试假设点就是删除按钮）
-    await t.tap(find.text('删除整部').last);
-    await t.pump(const Duration(milliseconds: 50));
+    final deleteItem = find.widgetWithText(
+      miuix.MiuixBasicComponent,
+      '删除整部',
+    );
+    expect(deleteItem, findsOneWidget);
+    await t.tap(deleteItem);
+    // showAppMenu returns only after the package's dismissal animation.
+    // Advancing 50 ms then pumping zero-duration frames leaves it open.
+    await t.pumpAndSettle();
+    expect(find.byType(miuix.MiuixWindowListPopup), findsNothing);
     // 弹窗里的预览是一次**真读盘** ⇒ 必须在 runAsync 里等它回来
     await t.runAsync(() async {
       for (var i = 0; i < 12; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 40));
-        await t.pump();
+        await t.pump(const Duration(milliseconds: 40));
       }
     });
+    await t.pumpAndSettle();
     _claim(t);
 
     final dialogTexts = t
@@ -435,6 +457,9 @@ void main() {
         reason: '★★ 确认正文必须写清「将删 N 集 / 共 X MB」');
     expect(find.textContaining('不可恢复'), findsOneWidget,
         reason: '★★ 必须告知不可逆');
+    expect(dir.existsSync(), isTrue,
+        reason: '★ 选择菜单项只打开确认框，确认之前不得删除');
+    expect(st.debugWorkCount, before);
 
     // ── 点弹窗里的「删除」──
     // ⚠️ 必须锚在**对话框**里取「删除」按钮：
@@ -459,6 +484,14 @@ void main() {
     debugPrint('DEL 弹窗「删除」按钮个数=${confirmBtn.evaluate().length} '
         '位置=${confirmBtn.evaluate().isEmpty ? null : t.getCenter(confirmBtn.first)}');
     expect(confirmBtn, findsOneWidget);
+    expect(
+      find.descendant(
+        of: confirmBtn,
+        matching: find.byType(miuix.MiuixButton),
+      ),
+      findsOneWidget,
+      reason: '★ 二次确认保留实际 Miuix 按钮',
+    );
     // ⚠️ 这里用 `t.tap`（不是 tapAt）：确认按钮在**对话框自己的 overlay** 里，
     //    而 showAppDialog 用的是 `useRootNavigator: true`（overlay_motion.dart:318）
     //    ⇒ 它挂在 root overlay 上；`tapAt` 走的命中测试与 getCenter 的坐标系
@@ -514,6 +547,11 @@ void main() {
         '目标目录存在=${dir.existsSync()} 邻居存在=${keep.existsSync()}');
     expect(dir.existsSync(), isFalse, reason: '★★ 真删了：目录必须没了');
     expect(keep.existsSync(), isTrue, reason: '★★ 只删目标，不许连坐邻居');
+    final keptFile = File('${keep.path}${Platform.pathSeparator}keep.mp4');
+    expect(keptFile.existsSync(), isTrue);
+    expect(keptFile.lengthSync(), 4096);
+    expect(keptFile.readAsBytesSync(), everyElement(0x41),
+        reason: '★ 邻居的真实媒体文件必须完整保留');
     expect(st.debugWorkCount, before - 1, reason: '★★ 页面必须真的刷新（works 少 1）');
     expect(find.text('别删我'), findsWidgets, reason: '★ 邻居还在屏幕上');
     expect(find.text('要删的剧'), findsNothing, reason: '★ 被删的那部不许还挂在屏幕上');

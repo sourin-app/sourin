@@ -64,6 +64,7 @@ import 'dart:io' show File, Platform;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
+import 'app_scaffold.dart';
 /*
  * ★★★ CR-13 勘误：这里**不需要**额外 import foundation。
  *
@@ -1984,7 +1985,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       ),
     );
 
-    return Scaffold(
+    return AppScaffold(
       // ★ 全屏 = 整页都是视频 ⇒ 黑底正确；窗口态 ⇒ 跟随主题
       backgroundColor: fullscreen ? Colors.black : surface,
       /*
@@ -2002,7 +2003,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
        *    ⇒ `test/t59_media_layout_test.dart` 有一条测试专门证明
        *      「Row↔Column 切换后播放器 State 是**同一个实例**」。
        */
-      body: (fullscreen || wide)
+      child: (fullscreen || wide)
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [

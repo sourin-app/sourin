@@ -33,6 +33,9 @@
 //   而读缓存文件失败只会返回 null（DiskCache 全程 try/catch）⇒ 页面照常。
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import '../widgets/miuix_controls.dart' as ui;
 
 import '../../core/disk_cache.dart';
 import '../../core/models.dart';
@@ -400,16 +403,19 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
             Text(
               chans == null
                   ? '分好组之后，直播页工具栏可以一键只看某一组。'
-                      '（还没读到频道清单 —— 先去直播页看一眼，本页就能逐频道勾选了）'
+                        '（还没读到频道清单 —— 先去直播页看一眼，本页就能逐频道勾选了）'
                   : '分好组之后，直播页工具栏可以一键只看某一组。'
-                      '下面是本机直播源返回的全部频道，勾选你要的即可。',
-              style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+                        '下面是本机直播源返回的全部频道，勾选你要的即可。',
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                color: colors.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: Sp.x4),
             Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: ui.TextField(
                     controller: _nameCtrl,
                     decoration: const InputDecoration(
                       labelText: '分组名（如「常看」）',
@@ -419,7 +425,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
                   ),
                 ),
                 const SizedBox(width: Sp.x3),
-                FilledButton(onPressed: _addGroup, child: const Text('新建')),
+                ui.FilledButton(onPressed: _addGroup, child: const Text('新建')),
               ],
             ),
           ],
@@ -431,7 +437,10 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
             if (_groups.isEmpty)
               Text(
                 '还没有分组。上面新建一个，再勾选要放进来的频道。',
-                style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurfaceVariant,
+                ),
               )
             else
               for (final name in _groups.keys.toList()) ...[
@@ -450,7 +459,10 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
                 '这里手输而不用勾选，是因为还没读到频道清单'
                 '（读它要核心接口，核心不可用时会让整页打不开）。'
                 '先去直播页看一眼，回来这里就会变成逐频道勾选。',
-                style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurfaceVariant,
+                ),
               ),
             ],
           ),
@@ -460,12 +472,18 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
           Text(
             '频道清单来自 ${_ageText(_cacheAt!)}的快照；'
             '在直播页刷新一次会更新它。',
-            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           ),
         ],
         if (_toast != null) ...[
           const SizedBox(height: Sp.x4),
-          Text(_toast!, style: TextStyle(fontSize: FontSizes.sm, color: colors.primary)),
+          Text(
+            _toast!,
+            style: TextStyle(fontSize: FontSizes.sm, color: colors.primary),
+          ),
         ],
       ],
     );
@@ -494,7 +512,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
             // ★ 改名时就地换成输入框（见 `_renaming` 的说明）
             if (renaming)
               Expanded(
-                child: TextField(
+                child: ui.TextField(
                   key: ValueKey('live-group-rename-$name'),
                   controller: _renameCtrl,
                   autofocus: true,
@@ -526,24 +544,24 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
               ),
             const SizedBox(width: Sp.x2),
             if (renaming) ...[
-              TextButton(
+              ui.TextButton(
                 key: ValueKey('live-group-rename-ok-$name'),
                 onPressed: () => _commitRename(name),
                 child: const Text('保存名字'),
               ),
-              TextButton(
+              ui.TextButton(
                 key: ValueKey('live-group-rename-cancel-$name'),
                 onPressed: () => setState(() => _renaming = null),
                 child: const Text('取消'),
               ),
             ] else
-              TextButton.icon(
+              ui.TextButton.icon(
                 key: ValueKey('live-group-rename-$name-btn'),
                 onPressed: () => _startRename(name),
                 icon: const Icon(AppIcons.edit_outlined, size: 18),
                 label: const Text('改名'),
               ),
-            TextButton.icon(
+            ui.TextButton.icon(
               key: ValueKey('live-group-del-$name'),
               onPressed: () => _removeGroup(name),
               icon: const Icon(AppIcons.delete_outline, size: 18),
@@ -595,30 +613,12 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
             runSpacing: Sp.x2,
             children: [
               for (final r in members)
-                InputChip(
-                  key: ValueKey('live-group-picked-$name-${r.provider}-${r.channelId}'),
-                  label: Text(
-                    _nameOf(chans, r),
-                    style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      color: colors.primary,
-                    ),
+                _SelectedGroupItem(
+                  key: ValueKey(
+                    'live-group-picked-$name-${r.provider}-${r.channelId}',
                   ),
-                  onDeleted: () => _toggleChannel(name, r),
-                  deleteIcon: const Icon(AppIcons.close, size: 14),
-                  deleteButtonTooltipMessage: '从这个分组里移除',
-                  backgroundColor: colors.primary.withValues(alpha: 0.12),
-                  side: BorderSide(color: colors.primary.withValues(alpha: 0.5)),
-                  shape: const RoundedRectangleBorder(
-                    borderRadius: Radii.rFull,
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 5,
-                  ),
-                  labelPadding: EdgeInsets.zero,
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  label: _nameOf(chans, r),
+                  onRemove: () => _toggleChannel(name, r),
                 ),
             ],
           ),
@@ -627,9 +627,12 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
         if (members.isEmpty)
           Text(
             '（空组 —— 切到它会显示"这一组还没有频道"，不会把全部频道放进来）',
-            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           ),
-        TextField(
+        ui.TextField(
           key: ValueKey('live-group-filter-$name'),
           controller: ctrl,
           decoration: const InputDecoration(
@@ -667,7 +670,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
                         ),
                       ),
                       const Spacer(),
-                      TextButton(
+                      ui.TextButton(
                         key: ValueKey('live-group-all-$name-${e.key}'),
                         onPressed: () => _toggleProviderAll(name, e.key),
                         child: const Text('全选 / 全不选'),
@@ -684,8 +687,9 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
                             'live-group-ch-$name-${c.provider}-${c.channel.id}',
                           ),
                           label: c.channel.name,
-                          selected: members
-                              .contains(LiveChannelRef(c.provider, c.channel.id)),
+                          selected: members.contains(
+                            LiveChannelRef(c.provider, c.channel.id),
+                          ),
                           onTap: () => _toggleChannel(
                             name,
                             LiveChannelRef(c.provider, c.channel.id),
@@ -704,23 +708,23 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
     List<LiveFlatEntry> chans,
     String provider,
     String q,
-  ) =>
-      [
-        for (final c in chans)
-          if (c.provider == provider)
-            if (liveChannelMatchesQuery(q, c.channel.name, c.tag)) c,
-      ];
+  ) => [
+    for (final c in chans)
+      if (c.provider == provider)
+        if (liveChannelMatchesQuery(q, c.channel.name, c.tag)) c,
+  ];
 
   static int _countSelected(
     List<LiveFlatEntry> chans,
     String provider,
     List<LiveChannelRef> members,
-  ) =>
-      chans
-          .where((c) =>
-              c.provider == provider &&
-              members.contains(LiveChannelRef(c.provider, c.channel.id)))
-          .length;
+  ) => chans
+      .where(
+        (c) =>
+            c.provider == provider &&
+            members.contains(LiveChannelRef(c.provider, c.channel.id)),
+      )
+      .length;
 
   /// 已选频道的**显示名**（现取，不存进偏好 —— 见 `LiveChannelRef` 的注释）
   ///
@@ -761,17 +765,20 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
         if (srcs.isEmpty)
           Text(
             '（空组 —— 切到它会显示全部源，不会筛成空）',
-            style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           ),
         Wrap(
           spacing: Sp.x2,
           runSpacing: Sp.x2,
           children: [
             for (final id in srcs)
-              Chip(
+              _SelectedGroupItem(
                 key: ValueKey('live-group-src-$name-$id'),
-                label: Text(id),
-                onDeleted: () => _removeSource(name, id),
+                label: id,
+                onRemove: () => _removeSource(name, id),
               ),
           ],
         ),
@@ -779,7 +786,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
         Row(
           children: [
             Expanded(
-              child: TextField(
+              child: ui.TextField(
                 key: ValueKey('live-group-addsrc-$name'),
                 controller: ctrl,
                 decoration: const InputDecoration(
@@ -790,7 +797,7 @@ class _LiveGroupsPageState extends State<LiveGroupsPage> {
               ),
             ),
             const SizedBox(width: Sp.x3),
-            OutlinedButton(
+            ui.OutlinedButton(
               key: ValueKey('live-group-addbtn-$name'),
               onPressed: () => _addSource(name),
               child: const Text('加入'),
@@ -822,7 +829,7 @@ class _ChannelChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return FilterChip(
+    return ui.FilterChip(
       label: Text(
         label,
         style: TextStyle(
@@ -857,4 +864,33 @@ void debugLog(String msg) {
 /// `unawaited` 的本地别名 —— 本文件只用一个 Future，不值得为它 import dart:async
 void unawaited(Future<void> f) {
   f.catchError((Object _) {});
+}
+
+/// A removable selection keeps the explicit delete action separate from its label.
+class _SelectedGroupItem extends StatelessWidget {
+  const _SelectedGroupItem({
+    super.key,
+    required this.label,
+    required this.onRemove,
+  });
+  final String label;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) => miuix.MiuixCard(
+    cornerRadius: Radii.sm,
+    insideMargin: const EdgeInsets.only(left: Sp.x3, right: Sp.x1),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label, style: const TextStyle(fontSize: FontSizes.cap)),
+        const SizedBox(width: Sp.x1),
+        ui.IconButton(
+          tooltip: '从这个分组里移除',
+          onPressed: onRemove,
+          icon: const Icon(AppIcons.close, size: Sp.x4),
+        ),
+      ],
+    ),
+  );
 }

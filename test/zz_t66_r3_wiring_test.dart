@@ -126,16 +126,34 @@ String danmakuInfoGetterBody() {
 /// `DanmakuSettingsDialog(` 构造点那一段
 String dialogConstructionBody() {
   final s = playerSrc();
-  final start = s.indexOf('child: DanmakuSettingsDialog(');
-  expect(start, greaterThanOrEqualTo(0),
-      reason: '找不到 `DanmakuSettingsDialog(` 构造点 —— 判据失效');
-  final open = s.indexOf('(', start);
+  // 宿主可以通过 builder 返回面板；接线约束不依赖 child: 或换行方式。
+  final calls = RegExp(r'\bDanmakuSettingsDialog\s*\(').allMatches(s).toList();
+  expect(calls, hasLength(1),
+      reason: '必须定位唯一真实 `DanmakuSettingsDialog` 构造点 —— 判据失效');
+  final open = calls.single.end - 1;
   var depth = 0;
+  String? quote;
+  final code = StringBuffer();
   for (var i = open; i < s.length; i++) {
+    // 字符串里的括号不参与配平，字面量也不能冒充实际命名参数。
+    if (quote != null) {
+      if (s[i] == '\\') {
+        i++;
+      } else if (s[i] == quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (s[i] == "'" || s[i] == '"') {
+      quote = s[i];
+      code.write(' ');
+      continue;
+    }
+    code.write(s[i]);
     if (s[i] == '(') depth++;
     if (s[i] == ')') {
       depth--;
-      if (depth == 0) return s.substring(open, i + 1);
+      if (depth == 0) return code.toString();
     }
   }
   fail('构造点括号不配平');
@@ -148,6 +166,11 @@ Widget _host(Widget child) => MaterialApp(
         backgroundColor: const Color(0xFF0A0B0D),
         body: Align(alignment: Alignment.topRight, child: child),
       ),
+    );
+
+Finder _activeFeedSummary() => find.descendant(
+      of: find.byKey(const ValueKey('danmaku-active-feed-summary')),
+      matching: find.textContaining('当前生效：'),
     );
 
 void main() {
@@ -263,8 +286,8 @@ void main() {
       )));
       await t.pumpAndSettle();
       await t.tap(find.descendant(
-        of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('高级'),
+        of: find.byKey(const ValueKey('danmaku-settings-tabs')),
+        matching: find.text('弹幕来源'),
       ));
       await t.pumpAndSettle();
 
@@ -272,7 +295,7 @@ void main() {
       await t.tap(find.text('dan-api'));
       await t.pumpAndSettle();
 
-      final line = find.textContaining(RegExp(r'^当前生效：(单源|[0-9]+ 路|还没有任何来源)'));
+      final line = _activeFeedSummary();
       expect(line, findsOneWidget);
       final txt = (t.widget<Text>(line).data)!;
       expect(txt, contains('2 路'),
@@ -307,15 +330,15 @@ void main() {
       )));
       await t.pumpAndSettle();
       await t.tap(find.descendant(
-        of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('高级'),
+        of: find.byKey(const ValueKey('danmaku-settings-tabs')),
+        matching: find.text('弹幕来源'),
       ));
       await t.pumpAndSettle();
       await t.ensureVisible(find.text('dan-api'));
       await t.tap(find.text('dan-api'));
       await t.pumpAndSettle();
 
-      final txt = (t.widget<Text>(find.textContaining(RegExp(r'^当前生效：(单源|[0-9]+ 路|还没有任何来源)'))).data)!;
+      final txt = (t.widget<Text>(_activeFeedSummary()).data)!;
       /*
        * 降级路径**分两种情形**，两种都必须如实：
        *
@@ -371,15 +394,15 @@ void main() {
       )));
       await t.pumpAndSettle();
       await t.tap(find.descendant(
-        of: find.byType(SegmentedButton<DanmakuPanelTab>),
-        matching: find.text('高级'),
+        of: find.byKey(const ValueKey('danmaku-settings-tabs')),
+        matching: find.text('弹幕来源'),
       ));
       await t.pumpAndSettle();
       await t.ensureVisible(find.text('dan-api'));
       await t.tap(find.text('dan-api'));
       await t.pumpAndSettle();
 
-      final txt = (t.widget<Text>(find.textContaining(RegExp(r'^当前生效：(单源|[0-9]+ 路|还没有任何来源)'))).data)!;
+      final txt = (t.widget<Text>(_activeFeedSummary()).data)!;
       expect(txt, isNot(contains('合并后')),
           reason: '★★★ 本片源没有逐条内容 ⇒ 去重做不了，说"合并后"就是撒谎');
       expect(txt, contains('合计'),
@@ -414,7 +437,9 @@ void main() {
 
     test('★★★ ② 构造点把 feedSamples 递了进去', () {
       final body = dialogConstructionBody();
-      expect(body, contains('feedSamples: _danmakuFeedSamples'),
+      expect(body, matches(RegExp(
+        r'\bfeedSamples\s*:\s*_danmakuFeedSamples\s*[,)]',
+      )),
           reason: '★★★ 删掉它就退回"勾了但没合并"的假功能');
     });
 

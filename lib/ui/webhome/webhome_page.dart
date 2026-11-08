@@ -1,3 +1,4 @@
+import '../app_scaffold.dart';
 // ═══════════════════════════════════════════════════════════════════════
 //  T6 webHome：HTML 首页 —— 内嵌 WebView + fm 桥接线 + 自动回退
 // ═══════════════════════════════════════════════════════════════════════
@@ -12,6 +13,8 @@
 // - net.request：字面量判据 + 解析段判据 + **按已解析 IP 直连**
 //   （fm_net_request.dart：解析与连接同源，TOCTOU 已闭合，N3b）；
 // - 凭据零打印：日志只有 method + host + path（query 都不给），headers/body 不落日志。
+import '../widgets/miuix_controls.dart' as ui;
+
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
@@ -43,8 +46,9 @@ class WebHomePage extends StatefulWidget {
   /// 与 HomePage 同名回调同语义（shell 注入，本页原样转发）
   final void Function(String provider, String id)? onOpenDetail;
   final void Function(String provider, String channelId, String name)?
-      onOpenLive;
+  onOpenLive;
   final VoidCallback onBackToNative;
+
   /// Legacy constructor argument; configuration is now settings-only.
   final VoidCallback? onOpenSettings;
 
@@ -70,7 +74,9 @@ class _WebHomePageState extends State<WebHomePage> {
       },
       onOpenLive: (provider, channelId, name) {
         AppLog.write(
-            'WEBHOME', 'app.openLive provider=$provider channel=$channelId');
+          'WEBHOME',
+          'app.openLive provider=$provider channel=$channelId',
+        );
         widget.onOpenLive?.call(provider, channelId, name);
       },
       onNetRequest: fmNetRequest,
@@ -120,11 +126,13 @@ class _WebHomePageState extends State<WebHomePage> {
       try {
         final c = _controller;
         if (c == null) return;
-        final r = await c.evaluateJavascript(source: '''
+        final r = await c.evaluateJavascript(
+          source: '''
 JSON.stringify({
   text: (document.body && document.body.innerText || '').trim().length,
   media: document.querySelectorAll('img,canvas,video,svg').length
-})''');
+})''',
+        );
         dynamic m = r;
         if (m is String) m = jsonDecode(m);
         final text = m is Map ? m['text'] : null;
@@ -133,8 +141,9 @@ JSON.stringify({
             (text is num && text == 0) && (media is num && media == 0);
         if (blank) {
           _fallbackReported = true;
-          WebHomeController.instance
-              .reportLoadFailure('blank-page after ${webhomeBlankWatchdog.inSeconds}s');
+          WebHomeController.instance.reportLoadFailure(
+            'blank-page after ${webhomeBlankWatchdog.inSeconds}s',
+          );
           widget.onBackToNative();
         }
       } catch (_) {
@@ -146,8 +155,8 @@ JSON.stringify({
   @override
   Widget build(BuildContext context) {
     final html = WebHomeController.instance.html;
-    return Scaffold(
-      body: Stack(
+    return AppScaffold(
+      child: Stack(
         children: [
           Positioned.fill(
             child: InAppWebView(
@@ -181,8 +190,9 @@ JSON.stringify({
               onWebViewCreated: (c) async {
                 _controller = c;
                 c.addJavaScriptHandler(
-                    handlerName: 'fm',
-                    callback: (args) async => _handleFm(args));
+                  handlerName: 'fm',
+                  callback: (args) async => _handleFm(args),
+                );
               },
               onLoadStop: (_, __) => _startBlankWatchdog(),
               onReceivedError: (c, request, error) async {
@@ -194,13 +204,16 @@ JSON.stringify({
                 if (!isMain) return;
                 _fallbackReported = true;
                 WebHomeController.instance.reportLoadFailure(
-                    'load-error ${error.type} ${error.description}');
+                  'load-error ${error.type} ${error.description}',
+                );
                 widget.onBackToNative();
               },
               onConsoleMessage: (_, msg) {
                 // 兜底：SDK 劫持之外的原生 console 也落日志。
-                AppLog.write('WEBHOME/console',
-                    '[${msg.messageLevel}] ${AppLog.redact(msg.message)}');
+                AppLog.write(
+                  'WEBHOME/console',
+                  '[${msg.messageLevel}] ${AppLog.redact(msg.message)}',
+                );
               },
             ),
           ),
@@ -226,7 +239,11 @@ JSON.stringify({
 }
 
 class _PillButton extends StatelessWidget {
-  const _PillButton({required this.icon, required this.label, required this.onTap});
+  const _PillButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
 
   final IconData icon;
   final String label;
@@ -235,23 +252,14 @@ class _PillButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: colors.surface.withValues(alpha: 0.85),
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 16, color: colors.onSurface),
-              const SizedBox(width: 4),
-              Text(label, style: TextStyle(fontSize: 12, color: colors.onSurface)),
-            ],
-          ),
-        ),
+    return ui.TextButton.icon(
+      onPressed: onTap,
+      icon: Icon(icon, size: 16),
+      label: Text(label),
+      style: ui.TextButton.styleFrom(
+        backgroundColor: colors.surface,
+        foregroundColor: colors.onSurface,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       ),
     );
   }

@@ -53,6 +53,7 @@ import 'dart:io';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart' as mui;
 
 import 'package:sourin_spike/core/models.dart' show StreamCandidate;
@@ -281,7 +282,15 @@ void main() {
 
     // 底栏 ⏭ 在（tooltip 就是「下一集」）
     expect(find.byIcon(mui.Icons.skip_next), findsOneWidget);
-    expect(find.byTooltip('下一集'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byIcon(mui.Icons.skip_next),
+        matching: find.byWidgetPredicate(
+          (widget) => widget is ui.Tooltip && widget.message == '下一集',
+        ),
+      ),
+      findsOneWidget,
+    );
 
     // 真去点它
     await tester.tap(find.byIcon(mui.Icons.skip_next));
@@ -308,11 +317,11 @@ void main() {
     );
 
     // `find.byIcon` 命中的是 `Icon`，禁用态挂在它**外面**那枚 IconButton 上
-    final btn = tester.widget<mui.IconButton>(
+    final btn = tester.widget<ui.IconButton>(
       find
           .ancestor(
             of: find.byIcon(mui.Icons.skip_next),
-            matching: find.byType(mui.IconButton),
+            matching: find.byType(ui.IconButton),
           )
           .first,
     );

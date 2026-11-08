@@ -22,13 +22,14 @@
 // 源可能有 20+ 个，下拉要多两次点击；横向条一次点击直达，
 // 而且当前选中项**始终可见**（滚动位置自动跟随）。
 
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'miuix_controls.dart' as ui;
+
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
 import '../../core/sourin_api.dart';
-import '../../ui/app_palette.dart';
 import '../../design/icons/app_icons.dart';
 
 /// ★★★ 源条的**可见性判据** —— 照抄原版 `stores/app.ts` 的 `enabledProviders`
@@ -225,9 +226,8 @@ class _SourceBarState extends State<SourceBar> {
      * ★ 教训（连续踩两次）：**"看起来不像"时先怀疑结构，不要先调参数**。
      */
     return Center(
-      child: GlassContainer(
-        shape: const LiquidRoundedSuperellipse(borderRadius: 999),
-        quality: GlassQuality.standard,
+      child: miuix.MiuixCard(
+        cornerRadius: Radii.lg,
         child: ConstrainedBox(
           // `max-width: 100%` —— 源很多时不要把屏幕撑破
           constraints: BoxConstraints(
@@ -296,8 +296,9 @@ class _SourceBarState extends State<SourceBar> {
                             active: active,
                             focused: focused,
                             // 源探测失败 ⇒ 药丸上画感叹号（tooltip 给原因）
-                            errorTooltip:
-                                working ? null : (s.brokenReason ?? '该源当前不可用'),
+                            errorTooltip: working
+                                ? null
+                                : (s.brokenReason ?? '该源当前不可用'),
                             onTap: () => widget.onSelect(s.id),
                           ),
                         );
@@ -331,10 +332,7 @@ class _SourceBarState extends State<SourceBar> {
                   const SizedBox(width: Sp.x2),
                   Container(height: 18, width: 1, color: colors.outlineVariant),
                   Padding(
-                    padding: const EdgeInsets.only(
-                      left: Sp.x3,
-                      right: Sp.x4,
-                    ),
+                    padding: const EdgeInsets.only(left: Sp.x3, right: Sp.x4),
                     child: Text.rich(
                       TextSpan(
                         children: [
@@ -351,8 +349,9 @@ class _SourceBarState extends State<SourceBar> {
                             text: ' 个源',
                             style: TextStyle(
                               fontSize: FontSizes.cap,
-                              color: colors.onSurfaceVariant
-                                  .withValues(alpha: 0.7),
+                              color: colors.onSurfaceVariant.withValues(
+                                alpha: 0.7,
+                              ),
                             ),
                           ),
                         ],
@@ -429,261 +428,35 @@ class SourcePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final colors = miuix.MiuixTheme.of(context).colors;
     final iconText = _shortIconText;
-
-    /*
-     * ★ 主题判据（`--srcbar-pill-bg` 的两套值）
-     *
-     * 用 **forui** 的 `colors.brightness`（`AppPalette` 自带 `brightness`，
-     * forui `src/theme/colors.dart:32`），与 `_SourceBarState.build` 里
-     * `Theme.of(context).colorScheme` 的 `colors` 参数**不是同一个来源** ——
-     * 刻意如此：`FTheme` 那层才是本文件渲染真正依赖的主题，
-     * 而 Material 侧在本项目里出过一次"两套 Theme 串台"的兜底事故。
-     */
-    final isLight = AppPalette.of(context).brightness == Brightness.light;
-
-    /// 原版 `--srcbar-pill-bg: var(--surface-4)`
-    ///
-    /// ```text
-    /// 深色 tokens.css:249      --surface-4: rgb(255 255 255 / 0.17)
-    /// 浅色 theme-light.css:89  --surface-4: rgb(255 255 255 / 1)
-    /// ```
-    /// ⚠️ **不是**底栏的 0.19/0.10，也**不是** 0.96/0.80 ——
-    ///    源条用的是另一套令牌，见上面 `gradient` 那段的长注释。
-    final pillAlpha = isLight ? 1.0 : 0.17;
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: Radii.rFull,
-      child: AnimatedContainer(
-        duration: Motion.fast,
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x4,
-          vertical: Sp.x2,
-        ),
-        decoration: BoxDecoration(
-          /*
-           * ══════════════════════════════════════════════════════════
-           * ★★★ 选中药丸 —— 按主题取 `--srcbar-pill-bg`，**不是**底栏那一套
-           *     （2026-09-24 第二次修正：修掉"照抄正在出错的参照物"）
-           * ══════════════════════════════════════════════════════════
-           *
-           * # 用户原话
-           * > 左上角和这个源切换,还是跟底部的不太一样
-           *
-           * # 第一轮：我"猜颜色"，两张都翻车
-           *
-           * ```text
-           * 第一版  colors.primary.withValues(alpha: 0.16)   ← 染成品牌色
-           * 第二版  colors.onSurface.withValues(alpha: 0.14) ← 灰底
-           * ```
-           * 实测像素差得很远（浅色主题下）：
-           * ```text
-           * 底栏药丸   (249,249,249)  ← 近白
-           * 源条药丸   ( 30, 32, 40)  ← 近黑  ✗ 完全相反
-           * ```
-           * 原因：`onSurface` 在**浅色**主题下是近黑（那是给文字用的），
-           * 拿它当"提亮层"当然变成暗块。
-           *
-           * # 第二轮：我"照抄底栏那两行" —— 观察对，结论错
-           *
-           * 我当时的推理是：
-           * ```text
-           * 白色渐变在深浅两个主题下都成立：
-           *   深色主题  白 96%→80% 叠在暗玻璃上 = 提亮 → 药丸 ✓
-           *   浅色主题  白 96%→80% 叠在亮玻璃上 = 更白 → 药丸 ✓
-           * ```
-           * **这个推理本身没错，但它默认了"底栏那两行是对的"。**
-           * 而当时底栏**自己就是坏的** —— 同样的硬编码、同样没有主题分支
-           * （那是 bug ③，用户报的"黑色模式下有问题"）。于是我把一个 bug
-           * 从底栏**复制**到了源条：
-           * ```text
-           * 深色主题  白 96% 叠在暗玻璃上 = 接近纯白 ✗ 不是"提亮"，是"糊白"
-           * ```
-           *
-           * ★ 教训（原版 `tokens.css:325-330` 记的是同一件事）：
-           * ```text
-           * 「这个项目里已经有好几个"选中药丸"了（底部 tab 栏、
-           *   「我的」分段控件）。做新的之前应该先找**已有的同类控件**
-           *   对齐，而不是自己发明一套材质。」
-           * ```
-           * 而"找同类控件对齐"的**前提**是那个控件本身是对的 ——
-           * 先确认它有主题分支吗？值有出处吗？**修 A 的时候不要把 A
-           * 当成"正确样板"去抄 B**。
-           *
-           * # 第三轮（现在）：源条用的是**另一个令牌**，所以值本来就不同
-           *
-           * ```css
-           * tokens.css:338（深色，默认主题）
-           *   --srcbar-pill-bg: var(--surface-4);
-           * tokens.css:249
-           *   --surface-4: rgb(255 255 255 / 0.17);      ← 单一值，不是渐变
-           *
-           * theme-light.css:81（浅色）
-           *   --srcbar-pill-bg: var(--surface-4);
-           * theme-light.css:89
-           *   --surface-4: rgb(255 255 255 / 1);         ← 纯白实底
-           * ```
-           *
-           * ## ⚠️ 为什么源条与底栏"值不同但**都对**"
-           *
-           * ```text
-           * 底栏 / 「我的」分段控件   --tab-pill-bg   深 0.19→0.10（渐变）浅 0.96→0.80
-           * 首页源条                 --srcbar-pill-bg 深 0.17（单值）    浅 1.0
-           * ```
-           * 两个令牌**各自**在两套主题里都调好过，只是**调的目标不同**：
-           * ```text
-           * --tab-pill-bg      = "在玻璃上浮起一层"→ 要透明的渐变（有高光方向感）
-           * --srcbar-pill-bg   = var(--surface-4)  = 一套通用的"表面层级"
-           *                      第 4 档 = "实心感最强的那个表面"→ 要**实**
-           * ```
-           * 源条在深色下 0.17 比底栏上端 0.19 略**暗**一点点、且**上下同色**；
-           * 浅色下它直接是**纯白**（1.0），比底栏的 0.96 透白更实
-           * —— 原版 `theme-light.css:74` 解释了为什么浅色要更实：
-           * > 浅色下 `--surface-4` 是纯白，叠在 `--surface-1`（白 62%）的
-           * > 切换条底上正好"浮"出来一层 —— 不需要额外描边。
-           *
-           * ⚠️ 原版 `tokens.css:336` 那句「但现在两边的**值是一样的**」
-           *    **不是**说源条 = 底栏：它说的是 `--srcbar-pill-bg` 与
-           *    **`--surface-4`** 相同（因为就是 `var(--surface-4)`）。
-           *    原版措辞歧义，已核实。
-           *
-           * ## ⚠️ 为什么两者在深色下"看起来还是很像"
-           *
-           * 因为源条的 pill 是**压在源条自己的玻璃上**的，不是压在底栏上；
-           * 0.17 与 0.19 的差在 8 位色深下只有 2 级，肉眼分不出 ——
-           * 但**语义必须分开写**：谁合并成一个常量，谁就把"将来单独微调
-           * 其中一个"的路堵死了（这正是原版保留独立令牌名的理由：
-           * `tokens.css:333-335`「万一将来切换条需要微调……只改令牌即可」）。
-           *
-           * ★ 形态也**不复用**：原版源条药丸是**单一值**（`--surface-4` 是
-           *   一个色，不是 gradient）。这里保留 `LinearGradient` 两段同色，
-           *   只是为了让 `AnimatedContainer` 的隐式动画与"有药丸/无药丸"
-           *   两种状态间的过渡保持一致 —— 渲染结果与纯色**完全等价**。
-           */
-          gradient: active
-              ? LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    // `--surface-4`：深 0.17（单一值）/ 浅 1.0（纯白实底）
-                    Colors.white.withValues(alpha: pillAlpha),
-                    Colors.white.withValues(alpha: pillAlpha),
-                  ],
-                )
-              : null,
-          borderRadius: Radii.rFull,
-          /*
-           * 原版 `--srcbar-pill-shadow: var(--shadow-sm)`（**不再是**底栏的
-           * `--tab-pill-shadow`）：
-           * ```css
-           * tokens.css:156（深色）    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
-           * theme-light.css:54（浅色） --shadow-sm: 0 1px 2px rgb(16 18 26 / 0.06);
-           * ```
-           * 与底栏的 `inset 高光 + 8px 投影` 不同 —— 源条的阴影**更小更闷**
-           * （浅色下只有 0.06，几乎看不见）。这与"药丸更实"是同一套意图：
-           * 实底不需要靠阴影撑层次。
-           * ⚠️ 之前这里写死 `0.16` 并且注释说"与底栏同一个值" —— 那既不是
-           *    `--shadow-sm`（深色 0.3），也不是主题分支的值。
-           */
-          boxShadow: active
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: isLight ? 0.06 : 0.30),
-                    // `0 1px 2px`
-                    blurRadius: 2,
-                    offset: const Offset(0, 1),
-                  ),
-                ]
-              : null,
-          // TV 遥控器的焦点环（触摸端不显示）
-          border: focused && !active
-              ? Border.all(color: colors.primary, width: 2)
-              : null,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            /*
-             * ★ 源图标：原版用 manifest.icon（emoji 或 URL）。
-             *
-             * 这里只处理**短文本**（emoji/单字）——
-             * 如果是 URL 就跳过（那是网络图，单独加载会闪）。
-             * 原版也是这么做的（`icon.length <= 2` 才算 emoji）。
-             *
-             * ⚠️ 短文本判定收进 [_shortIconText]：实例字段（this.icon）Dart
-             *    不做空安全提升，判空链必须先落**局部**变量才编译得过。
-             */
-            if (iconText != null)
-              Padding(
-                padding: const EdgeInsets.only(right: Sp.x1),
-                child: Text(
-                  iconText,
-                  style: const TextStyle(fontSize: FontSizes.sm),
-                ),
-              ),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: FontSizes.sm,
-                fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                /*
-                 * ⚠️ 选中态文字：**药丸暗就用亮字，药丸亮就用暗字**
-                 *    （2026-09-24 第二次修正）
-                 *
-                 * # 上一版为什么错
-                 *
-                 * 上一版写的是"药丸**恒为白色**（深浅主题都是），
-                 * 所以字也恒为深色（`#1E2028`），与主题无关"。
-                 * **两个前提都已不成立**：
-                 * ```text
-                 * ① 药丸不再恒为白 —— 深色下是白 17%（暗药丸）
-                 * ② 即使药丸是白的，"恒为深色"也不对 ——
-                 *    浅色主题下深字可用，深色主题下它压在 17% 的药丸上
-                 *    会变成"暗底暗字"（同一类 bug 的反向版本）
-                 * ```
-                 *
-                 * # 现在怎么取
-                 *
-                 * 直接用 `--text-primary`（`theme-light.css:39` /
-                 * `tokens.css:50`）对应的主题角色 —— 也就是 `AppPalette`
-                 * 在这套主题下给"背景上的文字"的那一个：
-                 * ```text
-                 * 浅色  #0A0A0A 近黑  ← 压在纯白药丸（1.0）上 ✓
-                 * 深色  #FAFAFA 近白  ← 压在 0.17 暗药丸上 ✓
-                 * ```
-                 * 这与原版 `.srcbar__btn.is-on { color: var(--text-primary) }`
-                 * （`SourceBar.vue:592`）逐字对应。
-                 *
-                 * ★ 关键：`AppPalette` **自带 `brightness`**，所以取到的角色
-                 *   天然跟随主题 —— 这里不需要自己写 `isLight ? 黑 : 白`，
-                 *   写了反而会与 forui 的主题解析链路产生第二个真值来源。
-                 *   **真正需要显式分支的只有药丸本身**（那是"白色叠多少"
-                 *   这个与主题无关的原始 alpha，forui 没有对应角色）。
-                 */
-                color: active
-                    ? AppPalette.of(context).foreground
-                    : colors.onSurfaceVariant,
-              ),
-            ),
-            // 失效标记：源探测失败时明确标出来，
-            // 而不是让用户点了没反应还不知道为什么
-            if (errorTooltip != null)
-              Padding(
-                padding: const EdgeInsets.only(left: Sp.x1),
-                child: Tooltip(
-                  message: errorTooltip!,
-                  child: Icon(
+    final button = ui.ChoiceChip(
+      selected: active,
+      onSelected: (_) => onTap(),
+      avatar: iconText == null ? null : Text(iconText),
+      label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: Radii.rMd,
+        border: focused ? Border.all(color: colors.primary, width: 2) : null,
+      ),
+      child: errorTooltip == null
+          ? button
+          : ui.Tooltip(
+              message: errorTooltip!,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  button,
+                  Icon(
                     AppIcons.error_outline,
                     size: FontSizes.sm,
                     color: colors.error,
                   ),
-                ),
+                ],
               ),
-          ],
-        ),
-      ),
+            ),
     );
   }
 }

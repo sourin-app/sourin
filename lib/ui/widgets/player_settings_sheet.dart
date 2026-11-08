@@ -65,6 +65,9 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'miuix_controls.dart' as ui;
 
 import '../../core/app_log.dart';
 import '../../core/clip_download.dart';
@@ -84,11 +87,7 @@ import '../../design/icons/app_icons.dart';
 /// ```
 /// 所以宿主做一次转换（`PlayerTrackOption.fromMediaKit` 那种活由宿主干）。
 class PlayerTrackOption {
-  const PlayerTrackOption({
-    required this.id,
-    required this.label,
-    this.hint,
-  });
+  const PlayerTrackOption({required this.id, required this.label, this.hint});
 
   /// mpv 的轨 id（`"auto"` / `"no"` / `"1"` / `"2"` …）
   final String id;
@@ -209,10 +208,11 @@ enum HwdecMode {
   /// 与 `PlayEndAction` 的读法同构：`UiPrefs` 里的值可能被旧版本写坏，
   /// 非法值一律回落到 [auto]（**不抛异常** —— 一个坏偏好不该让播放页起不来）。
   static HwdecMode fromWire(String? wire) => HwdecMode.values.firstWhere(
-        (m) => m.wire == wire,
-        orElse: () => HwdecMode.auto,
-      );
+    (m) => m.wire == wire,
+    orElse: () => HwdecMode.auto,
+  );
 }
+
 /// 面板里的倍速档位
 ///
 /// ★ 与底栏那个 `PopupMenuButton<double>`（`player_page.dart:10142-10148`）的 7 档
@@ -226,7 +226,8 @@ const _rateOptions = <double>[0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
 ///
 /// 与底栏 `Text('${rate}x')`（`player_page.dart:10155`）同一套写法：
 /// 整数档不带小数点，非整数档保留原始小数。
-String _rateLabel(double v) => v == v.roundToDouble() ? '${v.toInt()}x' : '${v}x';
+String _rateLabel(double v) =>
+    v == v.roundToDouble() ? '${v.toInt()}x' : '${v}x';
 
 /// 字幕样式覆盖模式 —— **直接映射 mpv `--sub-ass-override`**
 ///
@@ -298,11 +299,11 @@ class SubtitleColorPreset {
 
   /// 面板上的色块
   Color get swatch => Color.fromARGB(
-        255,
-        (r * 255).round(),
-        (g * 255).round(),
-        (b * 255).round(),
-      );
+    255,
+    (r * 255).round(),
+    (g * 255).round(),
+    (b * 255).round(),
+  );
 
   static String _f(double v) => v.toStringAsFixed(2);
 
@@ -638,6 +639,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
   /// `Colors.black.withValues(alpha: 0.72)`（遮罩，压在**视频画面**上 ⇒ 与主题解耦）、
   /// `Colors.lightBlueAccent`（选中/已连接信号色，跨主题语义色，不是主题色）。
   ColorScheme get _colors => Theme.of(context).colorScheme;
+
   /// 外挂字幕的加载状态（'' = 空闲）
   String _subLoading = '';
 
@@ -691,7 +693,14 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
         XTypeGroup(
           label: '字幕',
           extensions: <String>[
-            'ass', 'ssa', 'srt', 'vtt', 'sub', 'smi', 'txt', 'idx',
+            'ass',
+            'ssa',
+            'srt',
+            'vtt',
+            'sub',
+            'smi',
+            'txt',
+            'idx',
           ],
         ),
         XTypeGroup(label: '全部文件'),
@@ -758,64 +767,37 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                   width: 560,
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 620),
-                    /*
-                     * ★★ task-14 第 ① 步：卡片底**跟主题走**（Lead 授权），
-                     *    并且由 `DecoratedBox` 改成 `Material`。
-                     *
-                     * # 为什么必须是 Material（不是 Container+BoxDecoration）
-                     * 改前的 `Container(decoration:)` 只画背景，**不是** Material 面。
-                     * 而框架的 `SwitchListTile`（第 ④ 步换上的）把涟漪画在
-                     * **最近的 Material 祖先**上 —— 盒子里没有 Material ⇒ 框架
-                     * 直接抛断言：
-                     * ```text
-                     * ListTile background color or ink splashes may be invisible.
-                     * The ListTile is wrapped in a DecoratedBox that has a
-                     * background color. …
-                     * ```
-                     * 断言是对的：涟漪**真的会看不见**（实测 t62 红 20 条）。
-                     * 这与 `bili_import_dialog.dart` 撞过的是**同一个坑**，
-                     * 那里的结论同样是「改用 Material」——本处照抄那个解法。
-                     * 尺寸改挂在外层 `SizedBox` / `ConstrainedBox` 上
-                     * （Material 不接 width/constraints 这两个参数）⇒ 几何与改前一致。
-                     *
-                     * # 底色的来源（为什么用 surfaceContainerHighest）
-                     * 改前是写死的 `Color(0xFF14161C)@0.98` —— 于是这个面板
-                     * 与 bili / danmaku 两个弹窗不是同一类：那两处的外壳
-                     * （AppDialogShell）用的是 `surfaceContainerHighest`。
-                     * 底写死还有个后果：**前景也必须写死**（Lead 的通则），
-                     * 否则浅色主题下 onSurface(#1E2028) 压在深底上只有
-                     * 1.11:1 —— 标题直接隐形（实测，见 _colors 的文档）。
-                     * 深色下 #171717 vs 旧 #14161C 只差 3/255，观感几乎不变。
-                     */
-                    child: Material(
-                      color: _colors.surfaceContainerHighest,
-                      type: MaterialType.card,
-                      clipBehavior: Clip.antiAlias,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: Radii.rLg,
-                        side: BorderSide(color: _colors.outlineVariant),
-                      ),
-                      child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _header(),
-                      Flexible(
-                        child: SingleChildScrollView(
-                          clipBehavior: Clip.antiAlias,
-                          padding: const EdgeInsets.fromLTRB(
-                            Sp.x6,
-                            0,
-                            Sp.x6,
-                            Sp.x4,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _subtitleSection(),
-                              const AppDialogSection.divider(),
-                              _audioSection(),
-                              const AppDialogSection.divider(),
-                              /*
+                    // Keep the embedded overlay geometry; Miuix owns the
+                    // visible surface and its inherited content color.
+                    child: ClipRRect(
+                      borderRadius: Radii.rLg,
+                      child: miuix.MiuixCard(
+                        cornerRadius: Radii.lg,
+                        colors: miuix.MiuixCardColors(
+                          color: _colors.surfaceContainerHighest,
+                          contentColor: _colors.onSurface,
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _header(),
+                            Flexible(
+                              child: SingleChildScrollView(
+                                clipBehavior: Clip.antiAlias,
+                                padding: const EdgeInsets.fromLTRB(
+                                  Sp.x6,
+                                  0,
+                                  Sp.x6,
+                                  Sp.x4,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    _subtitleSection(),
+                                    const AppDialogSection.divider(),
+                                    _audioSection(),
+                                    const AppDialogSection.divider(),
+                                    /*
                                * ★★★ task-21 P1-8 播放速度
                                *
                                * 位置 = **音轨之后、连播之前**。两个理由：
@@ -825,14 +807,14 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                                *      「关闭」那条字幕轨 —— 新段落必须排在 `_audioSection()`
                                *      之后，否则会把那一行挤出折叠线。
                                */
-                              _rateSection(),
-                              if (!widget.isLive) ...[
-                                const AppDialogSection.divider(),
-                                _playbackSection(),
-                                const AppDialogSection.divider(),
-                                _clipSection(),
-                              ],
-                              /*
+                                    _rateSection(),
+                                    if (!widget.isLive) ...[
+                                      const AppDialogSection.divider(),
+                                      _playbackSection(),
+                                      const AppDialogSection.divider(),
+                                      _clipSection(),
+                                    ],
+                                    /*
                                * ★★★ task-22：画面（缩放 + 解码模式）。
                                *
                                * 位置 = **整段末尾**（连播/下载之后）。理由：
@@ -845,13 +827,14 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                                *      直接点「关闭」那条字幕轨 —— 新段落放末尾才不会
                                *      把它挤出折叠线。
                                */
-                              const AppDialogSection.divider(),
-                              _videoSection(),
-                            ],
-                          ),
+                                    const AppDialogSection.divider(),
+                                    _videoSection(),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                    ],
                       ),
                     ),
                   ),
@@ -878,7 +861,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             ),
           ),
           const Spacer(),
-          IconButton(
+          ui.IconButton(
             onPressed: widget.onClose,
             icon: Icon(AppIcons.close, color: _colors.onSurface),
             tooltip: '关闭',
@@ -989,7 +972,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     required bool active,
     required VoidCallback? onTap,
   }) {
-    return ChoiceChip(
+    return ui.ChoiceChip(
       label: Text(
         label,
         style: TextStyle(
@@ -1010,10 +993,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
         color: active ? Colors.lightBlueAccent : _colors.outlineVariant,
       ),
       shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
-      padding: const EdgeInsets.symmetric(
-        horizontal: Sp.x3,
-        vertical: Sp.x2,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
       labelPadding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -1034,9 +1014,9 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
         runSpacing: Sp.x2,
         children: [
           for (final p in presets)
-            Tooltip(
+            ui.Tooltip(
               message: p.wire,
-              child: InkWell(
+              child: ui.InkWell(
                 onTap: () => widget.onSetMpvProperty(property, p.wire),
                 borderRadius: Radii.rFull,
                 child: Container(
@@ -1084,7 +1064,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           widget.subtitleTracks.isEmpty
               ? Text(
                   '这条流没有字幕轨',
-                  style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
+                  style: TextStyle(
+                    color: _colors.onSurfaceVariant,
+                    fontSize: FontSizes.sm,
+                  ),
                 )
               : _trackChips(
                   tracks: widget.subtitleTracks,
@@ -1098,14 +1081,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           '外挂字幕',
           Row(
             children: [
-              OutlinedButton.icon(
+              ui.OutlinedButton.icon(
                 onPressed: _subLoading.isEmpty ? _pickSubtitleFile : null,
                 icon: const Icon(AppIcons.subtitles_outlined, size: 18),
-                label: Text(
-                  _subLoading.isEmpty
-                      ? '加载字幕文件…'
-                      : _subLoading,
-                ),
+                label: Text(_subLoading.isEmpty ? '加载字幕文件…' : _subLoading),
               ),
               if (widget.externalSubtitleName != null) ...[
                 const SizedBox(width: Sp.x2),
@@ -1119,7 +1098,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                     ),
                   ),
                 ),
-                IconButton(
+                ui.IconButton(
                   onPressed: widget.onRemoveExternalSubtitle,
                   icon: const Icon(AppIcons.delete_outline, size: 18),
                   tooltip: '移除这条外挂字幕',
@@ -1134,7 +1113,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             padding: const EdgeInsets.only(bottom: Sp.x3),
             child: Text(
               _subError!,
-              style: const TextStyle(color: Colors.redAccent, fontSize: FontSizes.cap),
+              style: const TextStyle(
+                color: Colors.redAccent,
+                fontSize: FontSizes.cap,
+              ),
             ),
           ),
 
@@ -1159,7 +1141,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
              */
             Align(
               alignment: Alignment.centerLeft,
-              child: OutlinedButton.icon(
+              child: ui.OutlinedButton.icon(
                 onPressed: widget.onOpenSubtitleSearch,
                 icon: const Icon(AppIcons.travel_explore, size: 18),
                 label: const Text('在线搜索字幕…'),
@@ -1186,10 +1168,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                 _chip(
                   label: m.label,
                   active: m == override,
-                  onTap: () => widget.onSetMpvProperty(
-                    'sub-ass-override',
-                    m.wire,
-                  ),
+                  onTap: () =>
+                      widget.onSetMpvProperty('sub-ass-override', m.wire),
                 ),
             ],
           ),
@@ -1198,7 +1178,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             override.hint,
-            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
+            style: TextStyle(
+              color: _colors.onSurfaceVariant,
+              fontSize: FontSizes.cap,
+            ),
           ),
         ),
 
@@ -1208,7 +1191,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           Row(
             children: [
               Expanded(
-                child: Slider(
+                child: ui.Slider(
                   value: (fontSize ?? 55).toDouble().clamp(20, 120),
                   min: 20,
                   max: 120,
@@ -1216,9 +1199,9 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                   onChanged: fontSize == null
                       ? null
                       : (v) => widget.onSetMpvProperty(
-                            'sub-font-size',
-                            v.round().toString(),
-                          ),
+                          'sub-font-size',
+                          v.round().toString(),
+                        ),
                 ),
               ),
               SizedBox(
@@ -1239,37 +1222,19 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
         // 字体
         _row(
           '字体',
-          DropdownButton<String>(
-            value: kSubtitleFontChoices.contains(font) ? font : null,
-            hint: Text(
-              font ?? '读不到',
-              style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
-            ),
-            /*
-             * ⚠️ 2026-10-17（CodeRabbit CR）：这里原来**写死深色** `0xFF14161C`。
-             *
-             * 而选项文字同批次已改成 `_colors.onSurface` —— 浅色主题下它是 `#1E2028`，
-             * 压在 `#14161C` 上对比度只有 **1.11:1**（本文件 `_colors` 文档里实测过）
-             * ⇒ **选项完全看不见**。
-             *
-             * 这违反了本文件自己写的通则：「**底写死 ⇒ 前景也写死**」——
-             * 这里方向反了（底写死、前景跟着主题走）。
-             */
-            dropdownColor: _colors.surfaceContainerHighest,
-            isExpanded: true,
-            onChanged: (v) {
-              if (v != null) widget.onSetMpvProperty('sub-font', v);
-            },
-            items: [
-              for (final f in kSubtitleFontChoices)
-                DropdownMenuItem(
-                  value: f,
-                  child: Text(
-                    f,
-                    style: TextStyle(color: _colors.onSurface, fontSize: FontSizes.sm),
+          miuix.MiuixWindowDropdownMenu(
+            title: font ?? '读不到',
+            insideMargin: const EdgeInsets.symmetric(horizontal: Sp.x2),
+            entry: miuix.MiuixDropdownEntry(
+              items: [
+                for (final choice in kSubtitleFontChoices)
+                  miuix.MiuixDropdownItem(
+                    text: choice,
+                    selected: choice == font,
+                    onClick: () => widget.onSetMpvProperty('sub-font', choice),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
 
@@ -1292,7 +1257,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           Row(
             children: [
               Expanded(
-                child: Slider(
+                child: ui.Slider(
                   value: (borderSize ?? 1.65).clamp(0, 8),
                   min: 0,
                   max: 8,
@@ -1300,9 +1265,9 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                   onChanged: borderSize == null
                       ? null
                       : (v) => widget.onSetMpvProperty(
-                            'sub-border-size',
-                            v.toStringAsFixed(2),
-                          ),
+                          'sub-border-size',
+                          v.toStringAsFixed(2),
+                        ),
                 ),
               ),
               SizedBox(
@@ -1325,7 +1290,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           Row(
             children: [
               Expanded(
-                child: Slider(
+                child: ui.Slider(
                   value: (marginY ?? 0).toDouble().clamp(0, 200),
                   min: 0,
                   max: 200,
@@ -1333,9 +1298,9 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
                   onChanged: marginY == null
                       ? null
                       : (v) => widget.onSetMpvProperty(
-                            'sub-margin-y',
-                            v.round().toString(),
-                          ),
+                          'sub-margin-y',
+                          v.round().toString(),
+                        ),
                 ),
               ),
               SizedBox(
@@ -1369,7 +1334,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           widget.audioTracks.isEmpty
               ? Text(
                   '这条流没有音轨',
-                  style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.sm),
+                  style: TextStyle(
+                    color: _colors.onSurfaceVariant,
+                    fontSize: FontSizes.sm,
+                  ),
                 )
               : _trackChips(
                   tracks: widget.audioTracks,
@@ -1540,7 +1508,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             widget.endAction.hint,
-            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
+            style: TextStyle(
+              color: _colors.onSurfaceVariant,
+              fontSize: FontSizes.cap,
+            ),
           ),
         ),
 
@@ -1573,7 +1544,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             widget.episodeStartAction.hint,
-            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
+            style: TextStyle(
+              color: _colors.onSurfaceVariant,
+              fontSize: FontSizes.cap,
+            ),
           ),
         ),
 
@@ -1662,7 +1636,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           Row(
             children: [
               Expanded(
-                child: Slider(
+                child: ui.Slider(
                   value: concurrency.toDouble().clamp(0, 8),
                   min: 0,
                   max: 8,
@@ -1690,7 +1664,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
           padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
           child: Text(
             '0 = 不限制。上限对所有下载同时生效：改小之后排队中的任务会立刻按新上限收敛，不用重开面板。',
-            style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
+            style: TextStyle(
+              color: _colors.onSurfaceVariant,
+              fontSize: FontSizes.cap,
+            ),
           ),
         ),
 
@@ -1737,7 +1714,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
             child: Text(
               '下载中…（没有进度条：下载走独立连接，不占用播放器的缓冲）',
-              style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
+              style: TextStyle(
+                color: _colors.onSurfaceVariant,
+                fontSize: FontSizes.cap,
+              ),
             ),
           )
         else if (err != null)
@@ -1756,7 +1736,10 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             padding: const EdgeInsets.only(left: 92, bottom: Sp.x3),
             child: Text(
               '已下载本集到缓存目录（受缓存上限约束，超了自动删最旧的）',
-              style: TextStyle(color: _colors.onSurfaceVariant, fontSize: FontSizes.cap),
+              style: TextStyle(
+                color: _colors.onSurfaceVariant,
+                fontSize: FontSizes.cap,
+              ),
             ),
           ),
 
@@ -1815,7 +1798,8 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     try {
       final stamp = DateTime.now();
       String p2(int n) => n.toString().padLeft(2, '0');
-      final suggested = 'sourin-log-${stamp.year}${p2(stamp.month)}${p2(stamp.day)}'
+      final suggested =
+          'sourin-log-${stamp.year}${p2(stamp.month)}${p2(stamp.day)}'
           '-${p2(stamp.hour)}${p2(stamp.minute)}${p2(stamp.second)}.log';
       String? path;
       try {
@@ -1865,6 +1849,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
       setState(() => _logTip = '复制失败：$e');
     }
   }
+
   /// 统一开关行 —— 本面板的三个开关都走这里。
   ///
   /// ★ 2026-10-16（Lead 新加的门禁 `zz_ui1_no_handrolled_controls`）：
@@ -1887,7 +1872,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
     ValueChanged<bool> onChanged, {
     String? hint,
   }) {
-    return SwitchListTile(
+    return ui.SwitchListTile(
       contentPadding: EdgeInsets.zero,
       dense: true,
       visualDensity: VisualDensity.compact,

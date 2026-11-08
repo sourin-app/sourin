@@ -2,6 +2,12 @@
 
 Status: implemented
 
+Partially superseded by: [Miuix controls and framework bridge](../feature/2026-11-08-miuix-controls-and-framework-bridge.md). The 2026-11-08 user request replaces the old visual component selection across the product with actual Miuix controls. Existing callback, input, focus and disabled-state requirements continue to apply.
+
+Partially superseded by: [actual Miuix shared menus and dialogs](../feature/2026-11-08-miuix-shared-menus-and-dialogs.md). The 2026-11-08 component mandate replaces the glass surface choice for shared menus/dialogs; input, focus, disabled-state and behavior-preservation requirements remain applicable. Historical glass validation below is not evidence for the Miuix implementation.
+
+The [Miuix Detail action tests](../testing/2026-11-08-miuix-detail-action-contracts.md) replace the outlined-button Material density/comment checks with real Windows/Android page geometry, rendered surfaces, disabled input, accessibility and download interactions.
+
 > 同域：[2026-10-18-glassify-where-it-is-visible.md](./2026-10-18-glassify-where-it-is-visible.md)
 > 那篇讲**哪里该玻璃、哪里不该**（判据）；本篇讲**用什么组件去实现**。
 > 先后关系：先按那篇判「该不该玻璃」，再按本篇换组件。

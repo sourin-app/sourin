@@ -4,6 +4,7 @@ library;
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'support/miuix_finders.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:sourin_spike/core/ffi.dart';
@@ -133,7 +134,7 @@ void main() {
     await _mount(tester);
     await _openSearch(tester);
     expect(find.byType(DanmakuSearchPage), findsOneWidget);
-    await tester.tap(find.byTooltip('返回弹幕设置'));
+    await tester.tap(miuixTooltip('返回弹幕设置'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(DanmakuSearchPage), findsNothing);
     expect(find.byType(DanmakuSettingsDialog), findsOneWidget);

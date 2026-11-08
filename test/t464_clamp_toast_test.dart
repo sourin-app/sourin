@@ -39,6 +39,7 @@
 // ```
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
@@ -121,22 +122,24 @@ Future<void> _openDialog(WidgetTester tester) async {
   SourinApi.debugSkipMarkerFetcher = (_, __) async => null;
   addTearDown(() => SourinApi.debugSkipMarkerFetcher = null);
 
-  await tester.pumpWidget(_host(
-    body: (ctx) => ElevatedButton(
-      onPressed: () => showDialog<void>(
-        context: ctx,
-        barrierDismissible: false,
-        builder: (_) => const SkipMarkerDialog(
-          provider: 'probe',
-          id: 't464',
-          title: 't464 夹边界提示',
-          streamUrl: '',
-          duration: Duration(seconds: 60),
+  await tester.pumpWidget(
+    _host(
+      body: (ctx) => ElevatedButton(
+        onPressed: () => showDialog<void>(
+          context: ctx,
+          barrierDismissible: false,
+          builder: (_) => const SkipMarkerDialog(
+            provider: 'probe',
+            id: 't464',
+            title: 't464 夹边界提示',
+            streamUrl: '',
+            duration: Duration(seconds: 60),
+          ),
         ),
+        child: const Text('open'),
       ),
-      child: const Text('open'),
     ),
-  ));
+  );
   await tester.tap(find.text('open'));
   for (var i = 0; i < 14; i++) {
     await tester.pump(const Duration(milliseconds: 250));
@@ -209,8 +212,7 @@ List<String> _toastTexts(WidgetTester tester) {
 
 void main() {
   group('t464 夹边界的提示必须真的送到用户眼前', () {
-    testWidgets('★★★ 阳性对照：宿主里提示通道是通的（直接调 showAppToast）',
-        (tester) async {
+    testWidgets('★★★ 阳性对照：宿主里提示通道是通的（直接调 showAppToast）', (tester) async {
       /*
        * ⚠️ 这条是**仪器自检**，不是被测对象。
        *   没有它，「撞边界后必须有提示」那条可能因为**宿主根本弹不出提示**
@@ -238,14 +240,16 @@ void main() {
        *   沿 context 向上找 `AppToaster`）。
        * ```
        */
-      await tester.pumpWidget(_host(
-        body: (ctx) => Builder(
-          builder: (inner) => ElevatedButton(
-            onPressed: () => showAppToast(inner, '宿主自检提示'),
-            child: const Text('fire'),
+      await tester.pumpWidget(
+        _host(
+          body: (ctx) => Builder(
+            builder: (inner) => ElevatedButton(
+              onPressed: () => showAppToast(inner, '宿主自检提示'),
+              child: const Text('fire'),
+            ),
           ),
         ),
-      ));
+      );
       await tester.pump();
 
       expect(find.text('宿主自检提示'), findsNothing, reason: '前提：还没点');
@@ -255,14 +259,17 @@ void main() {
         _claim(tester);
       }
 
-      expect(find.text('宿主自检提示'), findsOneWidget,
-          reason: '★★★ 宿主里连 showAppToast 都出不来 ⇒ 本宿主测不了提示可见性。'
-              '★ 检查 `_host` 里有没有挂 `ToastHost`：'
-              '`showAppToast` 找不到宿主会**静默 no-op**（app_toast.dart:77）');
+      expect(
+        find.text('宿主自检提示'),
+        findsOneWidget,
+        reason:
+            '★★★ 宿主里连 showAppToast 都出不来 ⇒ 本宿主测不了提示可见性。'
+            '★ 检查 `_host` 里有没有挂 `ToastHost`：'
+            '`showAppToast` 找不到宿主会**静默 no-op**（app_toast.dart:77）',
+      );
     });
 
-    testWidgets('★★★ 撞下界：提示出现、方向说「不能小于」、文案不是 Closure',
-        (tester) async {
+    testWidgets('★★★ 撞下界：提示出现、方向说「不能小于」、文案不是 Closure', (tester) async {
       await _openDialog(tester);
       /*
        * ★★★ 2026-10-18 修正判据（用 `SkipMarkerDialog`，**不是** `SkipTimeline`）
@@ -275,8 +282,11 @@ void main() {
        * ★ 这正是 §B-4：判据测的不是它声称要测的东西。
        * ```
        */
-      expect(find.byType(SkipMarkerDialog), findsOneWidget,
-          reason: '★ 弹窗没打开 ⇒ 后面全是恒真（假绿）');
+      expect(
+        find.byType(SkipMarkerDialog),
+        findsOneWidget,
+        reason: '★ 弹窗没打开 ⇒ 后面全是恒真（假绿）',
+      );
 
       // ── 造一次**必然被夹**的操作 ──
       // 片头开始 0 → 3（下界 0，不夹）；再点片头结束 1 次：
@@ -288,9 +298,13 @@ void main() {
       // ★ 前置闸：**必须真的被夹过**。没夹住 ⇒ SnackBar 本来就不该出现，
       //   下面的断言测的就变成了别的东西（假红）
       expect(tl.introStart, 3, reason: '★ 片头开始应为 3');
-      expect(tl.introEnd, 4,
-          reason: '★ 片头结束被夹到 4（= 片头开始 + 1）—— '
-              '这里不对说明这次点击没触发 clamp，后面的断言就没有意义');
+      expect(
+        tl.introEnd,
+        4,
+        reason:
+            '★ 片头结束被夹到 4（= 片头开始 + 1）—— '
+            '这里不对说明这次点击没触发 clamp，后面的断言就没有意义',
+      );
 
       for (var i = 0; i < 6; i++) {
         await tester.pump(const Duration(milliseconds: 100));
@@ -298,31 +312,44 @@ void main() {
       }
 
       final texts = _toastTexts(tester);
-      expect(texts, isNotEmpty,
-          reason: '★★★ 撞边界后必须弹出提示 —— Owner 的要求是「**不能静默**」。'
-              '找不到 ⇒ 提示没送到用户眼前');
+      expect(
+        texts,
+        isNotEmpty,
+        reason:
+            '★★★ 撞边界后必须弹出提示 —— Owner 的要求是「**不能静默**」。'
+            '找不到 ⇒ 提示没送到用户眼前',
+      );
 
       final msg = texts.join(' ');
-      expect(msg.contains('Closure'), isFalse,
-          reason: '★★★ 文案里不许出现 `Closure:` —— '
-              // ★ 这里必须写成 `r'...'`：普通字符串里的 `$_peerName`
-              //   会被**我自己**插值成函数对象，正好复现被测的那个 bug
-              r'那是插值漏花括号（`$_peerName(e)` 应为 `${_peerName(e)}`）'
-              '把**函数对象**打进字符串的痕迹');
-      expect(msg.contains('片头结束'), isTrue,
-          reason: '★ 文案要说清是**哪个点**被夹住了');
-      expect(msg.contains('不能小于'), isTrue,
-          reason: '★★★ 撞的是**下界**，方向词必须是「不能小于」—— '
-              '说「不能超过」用户会去改**右边**那个点（改错了地方）');
-      expect(msg.contains('不能超过'), isFalse,
-          reason: '★★★ 撞下界还说「不能超过」就是方向说反了');
-      expect(msg.contains('片头开始'), isTrue,
-          reason: '★★ 挡住它的是**片头开始**（下界来自 `片头开始 + 1`）—— '
-              '文案里的人名必须是**反查**出来的，不是猜的');
+      expect(
+        msg.contains('Closure'),
+        isFalse,
+        reason:
+            '★★★ 文案里不许出现 `Closure:` —— '
+            // ★ 这里必须写成 `r'...'`：普通字符串里的 `$_peerName`
+            //   会被**我自己**插值成函数对象，正好复现被测的那个 bug
+            r'那是插值漏花括号（`$_peerName(e)` 应为 `${_peerName(e)}`）'
+            '把**函数对象**打进字符串的痕迹',
+      );
+      expect(msg.contains('片头结束'), isTrue, reason: '★ 文案要说清是**哪个点**被夹住了');
+      expect(
+        msg.contains('不能小于'),
+        isTrue,
+        reason:
+            '★★★ 撞的是**下界**，方向词必须是「不能小于」—— '
+            '说「不能超过」用户会去改**右边**那个点（改错了地方）',
+      );
+      expect(msg.contains('不能超过'), isFalse, reason: '★★★ 撞下界还说「不能超过」就是方向说反了');
+      expect(
+        msg.contains('片头开始'),
+        isTrue,
+        reason:
+            '★★ 挡住它的是**片头开始**（下界来自 `片头开始 + 1`）—— '
+            '文案里的人名必须是**反查**出来的，不是猜的',
+      );
     });
 
-    testWidgets('★★★ 撞上界：`+` 会**先灰掉** ⇒ 走不到提示（上界分支是防御性的）',
-        (tester) async {
+    testWidgets('★★★ 撞上界：`+` 会**先灰掉** ⇒ 走不到提示（上界分支是防御性的）', (tester) async {
       /*
        * ══════════════════════════════════════════════════════════════════
        * ★ 这条本来是"测另一个方向"，实测发现**那个方向走不到** —— 于是改成
@@ -371,8 +398,11 @@ void main() {
        * ★ 这正是 §B-4：判据测的不是它声称要测的东西。
        * ```
        */
-      expect(find.byType(SkipMarkerDialog), findsOneWidget,
-          reason: '★ 弹窗没打开 ⇒ 后面全是恒真（假绿）');
+      expect(
+        find.byType(SkipMarkerDialog),
+        findsOneWidget,
+        reason: '★ 弹窗没打开 ⇒ 后面全是恒真（假绿）',
+      );
 
       // 片头结束 = 5 ⇒ 片头开始的上界 = 5 - 1 = 4
       await _tapPlusIn(tester, '片头结束', 5);
@@ -380,15 +410,19 @@ void main() {
 
       final tl = tester.widget<SkipTimeline>(find.byType(SkipTimeline));
       expect(tl.introEnd, 5, reason: '★ 片头结束应为 5');
-      expect(tl.introStart, 4,
-          reason: '★ 片头开始停在 4（= 片头结束 - 1）—— '
-              '若它 > 4 说明夹取失效（四条互斥破了）');
+      expect(
+        tl.introStart,
+        4,
+        reason:
+            '★ 片头开始停在 4（= 片头结束 - 1）—— '
+            '若它 > 4 说明夹取失效（四条互斥破了）',
+      );
 
       // ★ 关键读数：那一行的 `+` **必须是禁用的**
       final rowY = tester.getRect(find.text('片头开始')).center.dy;
       bool? plusEnabled;
-      for (final e in find.byType(IconButton).evaluate()) {
-        final w = e.widget as IconButton;
+      for (final e in find.byType(ui.IconButton).evaluate()) {
+        final w = e.widget as ui.IconButton;
         final ro = e.renderObject as RenderBox;
         if (ro is! RenderBox) continue;
         final c = ro.localToGlobal(ro.size.center(Offset.zero));
@@ -398,20 +432,26 @@ void main() {
           break;
         }
       }
-      expect(plusEnabled, isNotNull,
-          reason: '★ 没找到「片头开始」那一行的 `+` ⇒ 下面恒真（假绿）');
-      expect(plusEnabled, isFalse,
-          reason: '★★★ 到上限时 `+` 必须**灰掉**（「开始不能超过结束」的就地体现）。'
-              '★ 若这里红了 ⇒ 上界方向的提示文案变成**活代码**，'
-              '必须补一条"撞上界说不能超过"的断言');
+      expect(plusEnabled, isNotNull, reason: '★ 没找到「片头开始」那一行的 `+` ⇒ 下面恒真（假绿）');
+      expect(
+        plusEnabled,
+        isFalse,
+        reason:
+            '★★★ 到上限时 `+` 必须**灰掉**（「开始不能超过结束」的就地体现）。'
+            '★ 若这里红了 ⇒ 上界方向的提示文案变成**活代码**，'
+            '必须补一条"撞上界说不能超过"的断言',
+      );
 
       // 灰掉时不该有提示（没改动就不打扰）
       for (var i = 0; i < 6; i++) {
         await tester.pump(const Duration(milliseconds: 100));
         _claim(tester);
       }
-      expect(_toastTexts(tester), isEmpty,
-          reason: '★ 按钮灰掉 = 没改动 ⇒ 不该弹提示（弹了就是噪音）');
+      expect(
+        _toastTexts(tester),
+        isEmpty,
+        reason: '★ 按钮灰掉 = 没改动 ⇒ 不该弹提示（弹了就是噪音）',
+      );
     });
   });
 }

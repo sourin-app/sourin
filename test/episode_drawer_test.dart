@@ -45,6 +45,7 @@
 // ```
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -164,11 +165,11 @@ void main() {
     testWidgets('★ 集数够多时出现搜索框，输入后过滤', (tester) async {
       await mount(tester, count: 120, currentIndex: 0, isDesktop: true);
 
-      expect(find.byType(TextField), findsOneWidget,
+      expect(find.byType(ui.TextField), findsOneWidget,
           reason: '★ 120 集必须显示搜索框（阈值 $kEpisodeSearchAfter）');
 
       // 搜「第 37 集」
-      await tester.enterText(find.byType(TextField), '37');
+      await tester.enterText(find.byType(ui.TextField), '37');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -189,7 +190,7 @@ void main() {
        */
       await mount(tester, count: 120, currentIndex: 0, isDesktop: true);
 
-      await tester.enterText(find.byType(TextField), '115');
+      await tester.enterText(find.byType(ui.TextField), '115');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -205,7 +206,7 @@ void main() {
       await mount(tester, count: 120, currentIndex: 0, isDesktop: true);
 
       // eps() 里 i%7==0 的标题是「特别篇 i」
-      await tester.enterText(find.byType(TextField), '特别篇');
+      await tester.enterText(find.byType(ui.TextField), '特别篇');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -218,11 +219,11 @@ void main() {
     testWidgets('★ 清空搜索后恢复显示', (tester) async {
       await mount(tester, count: 120, currentIndex: 0, isDesktop: true);
 
-      await tester.enterText(find.byType(TextField), '37');
+      await tester.enterText(find.byType(ui.TextField), '37');
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('第 12 集'), findsNothing);
 
-      await tester.enterText(find.byType(TextField), '');
+      await tester.enterText(find.byType(ui.TextField), '');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('第 12 集'), findsWidgets,
@@ -231,7 +232,7 @@ void main() {
 
     testWidgets('★ 集数少时**不**显示搜索框（别加噪音）', (tester) async {
       await mount(tester, count: 12, currentIndex: 0, isDesktop: true);
-      expect(find.byType(TextField), findsNothing,
+      expect(find.byType(ui.TextField), findsNothing,
           reason: '12 集的剧摆个搜索框是噪音（阈值 $kEpisodeSearchAfter）');
     });
   });

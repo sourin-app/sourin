@@ -33,6 +33,8 @@
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/danmaku.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
@@ -62,10 +64,10 @@ void main() {
   /// field is last; with many, the search box comes BEFORE it (see the
   /// _blockWordsHeader / _blockWordsAddField call order), so last still hits
   /// the add field.
-  Finder addField() => find.byType(TextField).last;
+  Finder addField() => find.byType(ui.TextField).last;
 
   String boxText(WidgetTester t) =>
-      t.widget<TextField>(addField()).controller?.text ?? '';
+      t.widget<ui.TextField>(addField()).controller?.text ?? '';
 
   /// UiPrefs.set() schedules a 300ms debounced flush; without draining it,
   /// flutter_test reports pending timers at teardown.
@@ -194,8 +196,8 @@ void main() {
     await pumpDialog(t);
 
     final del = find.descendant(
-      of: find.byType(InputChip),
-      matching: find.byIcon(Icons.close),
+      of: find.byKey(const ValueKey('danmaku-block-words')),
+      matching: find.byType(miuix.MiuixIconButton),
     );
     expect(del, findsNWidgets(3), reason: 'three words => three delete buttons');
 
@@ -236,11 +238,15 @@ void main() {
         reason: 'with enough words the search box must appear (what the Owner asked for)');
 
     // Filter down to word1
-    final search = find.byType(TextField).first;
+    final search = find.byType(ui.TextField).first;
     await t.enterText(search, 'word1');
     await settle(t);
-    expect(find.byType(InputChip), findsOneWidget,
+    expect(find.byKey(const ValueKey<String>('danmaku-block-word:word1')), findsOneWidget,
         reason: 'search must actually filter out non-matching words');
+    expect(find.descendant(
+      of: find.byKey(const ValueKey('danmaku-block-words')),
+      matching: find.byType(miuix.MiuixCard),
+    ), findsOneWidget, reason: 'non-matching word cards must be absent');
   });
 
   testWidgets('search with no results says so (not a blank area)', (t) async {
@@ -248,10 +254,11 @@ void main() {
       List<String>.generate(9, (i) => 'word$i').join('\n'),
     );
     await pumpDialog(t);
-    final search = find.byType(TextField).first;
+    final search = find.byType(ui.TextField).first;
     await t.enterText(search, 'zzz-no-such-word');
     await settle(t);
-    expect(find.byType(InputChip), findsNothing, reason: 'no matches');
+    expect(find.byKey(const ValueKey('danmaku-block-words')), findsNothing,
+        reason: 'no matches');
     expect(find.textContaining('没有匹配'), findsOneWidget,
         reason: 'must say "no match", otherwise users think their words were lost');
   });

@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'support/miuix_finders.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
@@ -254,7 +255,7 @@ void main() {
     await t.tap(find.text('线路'));
     await t.pump(const Duration(milliseconds: 400));
     await _pickLine(t, '线路B');
-    await t.tap(find.byTooltip('关闭'));
+    await t.tap(miuixTooltip('关闭'));
     await t.pump(const Duration(milliseconds: 400));
     final before = requests.length;
     await t.tap(find.text('重试'));

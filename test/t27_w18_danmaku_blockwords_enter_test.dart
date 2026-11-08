@@ -55,6 +55,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:media_kit/media_kit.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -302,7 +303,7 @@ void main() {
        *    直调生产的 `onSubmitted`（不是手抄副本）：
        *    从真树上取那个 TextField 的回调来调。
        */
-      final tf = t.widget<TextField>(
+      final tf = t.widget<ui.TextField>(
         find.descendant(
           of: find.byType(DanmakuSettingsDialog),
           matching: find.byKey(blockWordsAddFieldKey),

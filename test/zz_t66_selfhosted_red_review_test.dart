@@ -49,6 +49,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/danmaku.dart';
@@ -99,7 +100,7 @@ Future<void> _pumpOnAdvancedTab(
   await t.pumpWidget(_host(state: _state(), probe: probe));
   await t.pump();
   final tab = find.descendant(
-    of: find.byType(SegmentedButton<DanmakuPanelTab>),
+    of: find.byKey(const ValueKey('danmaku-settings-tabs')),
     matching: find.text('高级'),
   );
   await t.tap(tab);
@@ -107,7 +108,7 @@ Future<void> _pumpOnAdvancedTab(
 }
 
 Finder get _urlField =>
-    find.ancestor(of: find.text('服务地址'), matching: find.byType(TextField));
+    find.ancestor(of: find.text('服务地址'), matching: find.byType(ui.TextField));
 
 List<String> _allTexts(WidgetTester t) {
   final out = <String>[];

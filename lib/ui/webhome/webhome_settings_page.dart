@@ -1,3 +1,5 @@
+import '../widgets/miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../design/widgets/app_glass_dialog.dart';
@@ -66,11 +68,11 @@ class _WebHomeSettingsPageState extends State<WebHomeSettingsPage> {
         actions: Wrap(
           spacing: 8,
           children: [
-            TextButton(
+            ui.TextButton(
               onPressed: () => Navigator.of(context).pop(false),
               child: const Text('取消'),
             ),
-            TextButton(
+            ui.TextButton(
               onPressed: () => Navigator.of(context).pop(true),
               child: const Text('删除'),
             ),
@@ -101,12 +103,12 @@ class _WebHomeSettingsPageState extends State<WebHomeSettingsPage> {
     subtitle: '${_controller.templates.length} 个配置',
     children: [
       if (_loading)
-        const Center(child: CircularProgressIndicator())
+        const Center(child: ui.CircularProgressIndicator())
       else ...[
         Wrap(
           spacing: 8,
           children: [
-            FilledButton.icon(
+            ui.FilledButton.icon(
               key: const ValueKey<String>('webhome-add-template'),
               onPressed: _busy
                   ? null
@@ -114,7 +116,7 @@ class _WebHomeSettingsPageState extends State<WebHomeSettingsPage> {
               icon: const Icon(Icons.add),
               label: const Text('添加首页'),
             ),
-            IconButton(
+            ui.IconButton(
               tooltip: '重新读取配置',
               onPressed: _busy ? null : () => _controller.reload(),
               icon: const Icon(Icons.refresh),
@@ -124,7 +126,7 @@ class _WebHomeSettingsPageState extends State<WebHomeSettingsPage> {
         const SizedBox(height: 12),
         Material(
           type: MaterialType.transparency,
-          child: ListTile(
+          child: ui.ListTile(
             key: const ValueKey<String>('webhome-native'),
             leading: Icon(
               !_controller.enabled
@@ -138,7 +140,7 @@ class _WebHomeSettingsPageState extends State<WebHomeSettingsPage> {
         for (final template in _controller.templates)
           Material(
             type: MaterialType.transparency,
-            child: ListTile(
+            child: ui.ListTile(
               key: ValueKey<String>('webhome-template-${template.id}'),
               leading: Icon(
                 _controller.enabled && _controller.activeId == template.id
@@ -154,7 +156,7 @@ class _WebHomeSettingsPageState extends State<WebHomeSettingsPage> {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
+                  ui.IconButton(
                     tooltip: '编辑首页',
                     onPressed: _busy
                         ? null
@@ -164,7 +166,7 @@ class _WebHomeSettingsPageState extends State<WebHomeSettingsPage> {
                           ),
                     icon: const Icon(Icons.edit_outlined),
                   ),
-                  IconButton(
+                  ui.IconButton(
                     tooltip: '删除首页',
                     onPressed: _busy ? null : () => _delete(template),
                     icon: const Icon(Icons.delete_outline),

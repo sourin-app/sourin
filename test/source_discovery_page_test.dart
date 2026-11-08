@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/source_discovery.dart';
@@ -70,6 +71,10 @@ void main() {
       );
       await t.pumpAndSettle();
       expect(calls, ['source_discovery_status']);
+      expect(find.byType(miuix.MiuixTextField), findsOneWidget);
+      expect(find.byType(miuix.MiuixSwitchPreference), findsOneWidget);
+      expect(find.byType(miuix.MiuixButton), findsWidgets);
+      expect(find.byType(miuix.MiuixCard), findsWidgets);
       expect(find.text('发现 1 个可启用的候选'), findsOneWidget);
       await t.tap(find.text('发现并校验'));
       await t.pumpAndSettle();

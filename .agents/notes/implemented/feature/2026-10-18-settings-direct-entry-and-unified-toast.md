@@ -32,6 +32,8 @@ maybeOf 只保证 messenger 存在，不保证能显示
 
 ## Decision
 
+The [Miuix feedback contract](2026-11-08-miuix-feedback-controls.md) defines the current Snackbar component, per-entry lifetime, stable host and keyboard dismissal. This note's public entry point and missing-host behavior remain applicable.
+
 ### ① 配置入口直达
 
 `1ed9ec3`（9 个文件）：从设置页直接进到可视化编排，不再逐级点。

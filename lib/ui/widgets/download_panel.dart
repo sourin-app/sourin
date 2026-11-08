@@ -49,6 +49,8 @@ library;
  * ⚠️ `test/theme_regression_test.dart` 会**全 lib 扫那个字面量**，
  *    注释里出现也算违规 ⇒ 上面刻意没把整行写出来。
  */
+import 'miuix_controls.dart' as ui;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/app_log.dart';
@@ -256,13 +258,13 @@ class DownloadPanel extends StatelessWidget {
             children: [
               Text('「$title」'),
               const SizedBox(height: Sp.x2),
-              Text('将删除 ${p.fileCount} 个文件（${p.sizeText}）',
-                  style: const TextStyle(fontWeight: FontWeight.w600)),
-              if (p.episodeCount > 0)
-                Text('并从下载队列移除 ${p.episodeCount} 个任务'),
+              Text(
+                '将删除 ${p.fileCount} 个文件（${p.sizeText}）',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              if (p.episodeCount > 0) Text('并从下载队列移除 ${p.episodeCount} 个任务'),
               const SizedBox(height: Sp.x2),
-              const Text('此操作不可恢复。',
-                  style: TextStyle(color: Colors.red)),
+              const Text('此操作不可恢复。', style: TextStyle(color: Colors.red)),
               if (p.fileNames.isNotEmpty) ...[
                 const SizedBox(height: Sp.x2),
                 Text(
@@ -331,13 +333,13 @@ class _Header extends StatelessWidget {
             ),
           ),
           if (onRemoveWork != null)
-            IconButton(
+            ui.IconButton(
               onPressed: onRemoveWork,
               icon: const Icon(AppIcons.delete_sweep_outlined, size: 20),
               tooltip: '删除整部剧的下载',
             ),
           if (onClose != null)
-            IconButton(
+            ui.IconButton(
               onPressed: onClose,
               icon: const Icon(AppIcons.close, size: 20),
               tooltip: '返回详情',
@@ -364,11 +366,7 @@ class _Header extends StatelessWidget {
 /// ★ 这两个状态在「已缓存」页里已经做过（task-12 ①②③），复用的是**同一套语义**：
 ///   「播放」= 交给宿主（宿主决定本地播），「删除」= 交给宿主的整剧删除流程。
 class _DownloadedRow extends StatelessWidget {
-  const _DownloadedRow({
-    super.key,
-    required this.item,
-    required this.onPlay,
-  });
+  const _DownloadedRow({super.key, required this.item, required this.onPlay});
 
   final DownloadedItem item;
 
@@ -424,7 +422,7 @@ class _DownloadedRow extends StatelessWidget {
             ),
           ),
           if (onPlay != null)
-            IconButton(
+            ui.IconButton(
               icon: const Icon(AppIcons.play_arrow_rounded),
               tooltip: '播放',
               onPressed: onPlay,
@@ -449,11 +447,7 @@ class _DownloadedRow extends StatelessWidget {
 }
 
 class _DownloadRow extends StatelessWidget {
-  const _DownloadRow({
-    super.key,
-    required this.task,
-    required this.onPlay,
-  });
+  const _DownloadRow({super.key, required this.task, required this.onPlay});
 
   final DownloadTask task;
   final VoidCallback onPlay;
@@ -493,9 +487,10 @@ class _DownloadRow extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    Text(_statusText(t),
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.grey)),
+                    Text(
+                      _statusText(t),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
                   ],
                 ),
               ),
@@ -506,7 +501,7 @@ class _DownloadRow extends StatelessWidget {
               t.state == DownloadState.paused)
             Padding(
               padding: const EdgeInsets.only(top: Sp.x1, left: 40),
-              child: LinearProgressIndicator(
+              child: ui.LinearProgressIndicator(
                 value: t.progress,
                 minHeight: 3,
               ),
@@ -525,12 +520,12 @@ class _DownloadRow extends StatelessWidget {
         return t.total <= 0
             ? '下载中…'
             : '下载中 ${t.done}/${t.total} 片 · '
-                '${(t.progress * 100).toStringAsFixed(0)}%';
+                  '${(t.progress * 100).toStringAsFixed(0)}%';
       case DownloadState.paused:
         return t.total <= 0
             ? '已暂停'
             : '已暂停 ${t.done}/${t.total} 片 · '
-                '${(t.progress * 100).toStringAsFixed(0)}%';
+                  '${(t.progress * 100).toStringAsFixed(0)}%';
       case DownloadState.done:
         return '已下载';
       case DownloadState.failed:
@@ -551,48 +546,45 @@ class _DownloadRow extends StatelessWidget {
     switch (t.state) {
       case DownloadState.queued:
         return [
-          TextButton(
+          ui.TextButton(
             onPressed: () => DownloadQueue.cancel(t.id),
             child: const Text('取消'),
           ),
         ];
       case DownloadState.running:
         return [
-          TextButton(
+          ui.TextButton(
             onPressed: () => DownloadQueue.pause(t.id),
             child: const Text('暂停'),
           ),
-          TextButton(
+          ui.TextButton(
             onPressed: () => _confirmRemoveOne(context, t),
             child: const Text('删除'),
           ),
         ];
       case DownloadState.paused:
         return [
-          TextButton(
+          ui.TextButton(
             onPressed: () => DownloadQueue.resume(t.id),
             child: const Text('继续'),
           ),
-          TextButton(
+          ui.TextButton(
             onPressed: () => _confirmRemoveOne(context, t),
             child: const Text('删除'),
           ),
         ];
       case DownloadState.done:
         return [
-          TextButton(onPressed: onPlay, child: const Text('播放')),
-          TextButton(
+          ui.TextButton(onPressed: onPlay, child: const Text('播放')),
+          ui.TextButton(
             onPressed: () => _confirmRemoveOne(context, t),
             child: const Text('删除'),
           ),
         ];
       case DownloadState.failed:
         return [
-          TextButton(
-            onPressed: () => _retry(t),
-            child: const Text('重试'),
-          ),
-          TextButton(
+          ui.TextButton(onPressed: () => _retry(t), child: const Text('重试')),
+          ui.TextButton(
             onPressed: () => _confirmRemoveOne(context, t),
             child: const Text('删除'),
           ),

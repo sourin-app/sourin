@@ -1,3 +1,5 @@
+import '../widgets/miuix_controls.dart' as ui;
+
 import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
@@ -153,7 +155,7 @@ class _WebHomeTemplateEditorState extends State<WebHomeTemplateEditor> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
+            ui.TextField(
               key: const ValueKey<String>('webhome-template-name'),
               controller: _name,
               enabled: !_busy,
@@ -163,14 +165,14 @@ class _WebHomeTemplateEditorState extends State<WebHomeTemplateEditor> {
             Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: ui.TextField(
                     key: const ValueKey<String>('webhome-template-path'),
                     controller: _path,
                     enabled: !_busy,
                     decoration: const InputDecoration(labelText: 'HTML 文件路径'),
                   ),
                 ),
-                IconButton(
+                ui.IconButton(
                   tooltip: '载入 HTML 文件',
                   onPressed: _busy ? null : _import,
                   icon: const Icon(Icons.file_open_outlined),
@@ -179,22 +181,24 @@ class _WebHomeTemplateEditorState extends State<WebHomeTemplateEditor> {
             ),
             const SizedBox(height: 12),
             Expanded(
-              child: TextField(
-                key: const ValueKey<String>('webhome-template-html'),
-                controller: _html,
-                enabled: !_busy,
-                maxLines: null,
-                expands: true,
-                decoration: const InputDecoration(
-                  labelText: 'HTML 内容',
-                  alignLabelWithHint: true,
+              child: SingleChildScrollView(
+                child: ui.TextField(
+                  key: const ValueKey<String>('webhome-template-html'),
+                  controller: _html,
+                  enabled: !_busy,
+                  maxLines: null,
+                  minLines: 12,
+                  decoration: const InputDecoration(
+                    labelText: 'HTML 内容',
+                    alignLabelWithHint: true,
+                  ),
+                  style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
                 ),
-                style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
               ),
             ),
             Material(
               type: MaterialType.transparency,
-              child: CheckboxListTile(
+              child: ui.CheckboxListTile(
                 value: _activate,
                 onChanged: _busy
                     ? null
@@ -215,11 +219,11 @@ class _WebHomeTemplateEditorState extends State<WebHomeTemplateEditor> {
       actions: Wrap(
         spacing: 8,
         children: [
-          TextButton(
+          ui.TextButton(
             onPressed: _busy ? null : () => Navigator.of(context).pop(),
             child: const Text('取消'),
           ),
-          FilledButton.icon(
+          ui.FilledButton.icon(
             key: const ValueKey<String>('webhome-template-save'),
             onPressed: _busy ? null : _save,
             icon: const Icon(Icons.save_outlined),

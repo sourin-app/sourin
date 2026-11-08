@@ -55,11 +55,15 @@
 
 import 'compact_shelf_card.dart';
 import '../../core/library_cover_recovery.dart';
+
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
+import 'settings_tabs.dart';
+
 import 'package:material_ui/material_ui.dart';
+
+import 'miuix_controls.dart' as ui;
 
 import '../../core/disk_cache.dart';
 import '../../core/json_utils.dart' show jmapOrNull;
@@ -119,7 +123,7 @@ void abLegacyShelfDidChangeDependencies(BuildContext context) {
 /// 返回 `(收藏, 追更, 历史)`；任何一项为 `null` = 那一路"失败"（保留旧值）。
 @visibleForTesting
 Future<(List<Favorite>?, List<Favorite>?, List<Progress>?)> Function()?
-    debugShelfLoadOverride;
+debugShelfLoadOverride;
 
 /// ★★★ Owner 2026-10-11 第 2 条：「从播放页返回还是非常卡顿」
 ///
@@ -149,10 +153,7 @@ Future<(List<Favorite>?, List<Favorite>?, List<Progress>?)> Function()?
 ///    ⇒ 短路成立。父 State 一旦 `setState`（数据变了）会传**新**实例
 ///    ⇒ 子树正常重建（那正是我们想要的刷新）。
 class _RouteGate extends StatefulWidget {
-  const _RouteGate({
-    required this.child,
-    required this.onReturn,
-  });
+  const _RouteGate({required this.child, required this.onReturn});
 
   final Widget child;
 
@@ -216,7 +217,8 @@ class MyShelf extends StatefulWidget {
     String title,
     String? cover,
     String? episodeId,
-  )? onPlay;
+  )?
+  onPlay;
 
   final void Function(String provider, String id)? onOpenDetail;
 
@@ -255,10 +257,10 @@ class MyShelf extends StatefulWidget {
 /// ★ 与 `follow_page.dart::_FollowTab.key` 必须一致。提成函数是为了
 ///   让"映射"只有一处 —— 本仓反复踩过"两处同构必然漂"。
 String shelfTabToFollowKey(ShelfTab t) => switch (t) {
-      ShelfTab.following => 'following',
-      ShelfTab.favorites => 'all',
-      ShelfTab.history => 'continue',
-    };
+  ShelfTab.following => 'following',
+  ShelfTab.favorites => 'all',
+  ShelfTab.history => 'continue',
+};
 
 class MyShelfState extends State<MyShelf> {
   ShelfTab _tab = ShelfTab.following;
@@ -396,8 +398,10 @@ class MyShelfState extends State<MyShelf> {
         _loadedOnce = true;
         _loading = false;
       });
-      debugPrint('[SHELF-DISK] 预热：收藏=${fav.length} 追更=${fol.length} '
-          '历史=${his.length}（存了 ${e!.ageFrom(DateTime.now()).inMinutes} 分钟）');
+      debugPrint(
+        '[SHELF-DISK] 预热：收藏=${fav.length} 追更=${fol.length} '
+        '历史=${his.length}（存了 ${e!.ageFrom(DateTime.now()).inMinutes} 分钟）',
+      );
     } catch (e) {
       debugPrint('[SHELF-DISK] 预热失败（当作无缓存）: $e');
     }
@@ -664,21 +668,21 @@ class MyShelfState extends State<MyShelf> {
           SourinApi.listFavorites(followingOnly: false)
               .then<Object?>((v) => v)
               .catchError((e) {
-            debugPrint('[SHELF] 取收藏失败（保留旧数据）: $e');
-            return null;
-          }),
+                debugPrint('[SHELF] 取收藏失败（保留旧数据）: $e');
+                return null;
+              }),
           SourinApi.listFavorites(followingOnly: true)
               .then<Object?>((v) => v)
               .catchError((e) {
-            debugPrint('[SHELF] 取追更失败（保留旧数据）: $e');
-            return null;
-          }),
+                debugPrint('[SHELF] 取追更失败（保留旧数据）: $e');
+                return null;
+              }),
           SourinApi.continueWatching(limit: 12)
               .then<Object?>((v) => v)
               .catchError((e) {
-            debugPrint('[SHELF] 取历史失败（保留旧数据）: $e');
-            return null;
-          }),
+                debugPrint('[SHELF] 取历史失败（保留旧数据）: $e');
+                return null;
+              }),
         ]);
       }
 
@@ -738,10 +742,18 @@ class MyShelfState extends State<MyShelf> {
       final nextFol = fol ?? _following;
       final nextHis = his ?? _history;
       final sigBefore = _shelfSignature(
-        _favorites, _following, _history, _remainingByKey, _tab,
+        _favorites,
+        _following,
+        _history,
+        _remainingByKey,
+        _tab,
       );
       final sigAfter = _shelfSignature(
-        nextFav, nextFol, nextHis, _remainingByKey, _tab,
+        nextFav,
+        nextFol,
+        nextHis,
+        _remainingByKey,
+        _tab,
       );
       final dataChanged = sigBefore != sigAfter;
       final loadedOnceWillSet =
@@ -793,9 +805,11 @@ class MyShelfState extends State<MyShelf> {
        *      仪器的除数，不能动。
        */
       await _refreshRemaining();
-      unawaited(LibraryCoverRecovery.repair().then((changed) async {
-        if (changed > 0 && mounted) await load();
-      }));
+      unawaited(
+        LibraryCoverRecovery.repair().then((changed) async {
+          if (changed > 0 && mounted) await load();
+        }),
+      );
     } catch (e) {
       debugPrint('[SHELF] 加载失败: $e');
     } finally {
@@ -880,13 +894,8 @@ class MyShelfState extends State<MyShelf> {
   /// ⚠️ 指纹现在**按当前 tab 分栏**（fix/return-jank-signature ②）⇒ 这里
   ///    也传 `_tab` —— 否则测试读的是"三份合起来的旧指纹"，与实际判据不符。
   @visibleForTesting
-  String debugSignatureForTest() => _shelfSignature(
-        _favorites,
-        _following,
-        _history,
-        _remainingByKey,
-        _tab,
-      );
+  String debugSignatureForTest() =>
+      _shelfSignature(_favorites, _following, _history, _remainingByKey, _tab);
 
   /// 「我的」**当前 tab** 那份列表 + "还剩几集"的**渲染指纹**
   /// （详见 `load()` 里的长注释）。
@@ -1042,8 +1051,11 @@ class MyShelfState extends State<MyShelf> {
   /// ⚠️ [withKind] 必须按 tab 区分 —— 收藏卡的副标题读 `f.kind`（剧集/影片），
   ///    而追更卡**不读** `kind`。两条字段清单**不可合并**，
   ///    否则要么漏刷新（收藏改类型不重建），要么白重建（追更被无关字段触发）。
-  static void _writeFavs(StringBuffer b, List<Favorite> favs,
-      {required bool withKind}) {
+  static void _writeFavs(
+    StringBuffer b,
+    List<Favorite> favs, {
+    required bool withKind,
+  }) {
     for (final f in favs) {
       b
         ..write(f.key)
@@ -1053,12 +1065,14 @@ class MyShelfState extends State<MyShelf> {
         ..write(f.cover ?? '')
         ..write('\u0001');
       // ★ 只有**收藏** tab 需要 `kind`（副标题「剧集/影片」）——
-        //   漏了它：同一 key 的 `kind` 从 movie 变 series（如详情回填后
-        //   更正类型），其余字段全同 ⇒ 指纹不变 ⇒ `load()` 跳过 setState
-        //   ⇒ 卡片**继续显示「影片」**直到别的字段变。
-        //   ★ 追更 tab 不读 `kind` ⇒ 有意不写（写了就是无谓重建）。
+      //   漏了它：同一 key 的 `kind` 从 movie 变 series（如详情回填后
+      //   更正类型），其余字段全同 ⇒ 指纹不变 ⇒ `load()` 跳过 setState
+      //   ⇒ 卡片**继续显示「影片」**直到别的字段变。
+      //   ★ 追更 tab 不读 `kind` ⇒ 有意不写（写了就是无谓重建）。
       if (withKind) {
-        b..write(f.kind)..write('\u0001');
+        b
+          ..write(f.kind)
+          ..write('\u0001');
       }
       b
         ..write(f.lastEpisodeTitle ?? '')
@@ -1143,10 +1157,11 @@ class MyShelfState extends State<MyShelf> {
     switch (_tab) {
       case ShelfTab.following:
         return _following
-            .map((f) => _Card(
-                  title: f.title,
-                  cover: f.cover,
-                  /*
+            .map(
+              (f) => _Card(
+                title: f.title,
+                cover: f.cover,
+                /*
                    * ★★★ 副标题 = 「最近一集的标题」，**没有就不画**（task-40）
                    *
                    * # 用户原话（2026-09-25 追加要求，逐字）
@@ -1177,33 +1192,37 @@ class MyShelfState extends State<MyShelf> {
                    *    裸的 `f.lastEpisodeTitle`（没有 fallback）——
                    *    两处同构，本项目已踩过"一个页面对、一个页面不对"的坑。
                    */
-                  subtitle: (f.lastEpisodeTitle?.isNotEmpty ?? false)
-                      ? f.lastEpisodeTitle
-                      : null,
-                  // ★ 徽标 = 还剩几集没看（task-40，用户要求；
-                  //   原来是 f.unreadCount = "巡检新增了几集"，语义不同）
-                  unread: _remainingOf(f),
-                  provider: f.provider,
-                  id: f.nativeId,
-                ))
+                subtitle: (f.lastEpisodeTitle?.isNotEmpty ?? false)
+                    ? f.lastEpisodeTitle
+                    : null,
+                // ★ 徽标 = 还剩几集没看（task-40，用户要求；
+                //   原来是 f.unreadCount = "巡检新增了几集"，语义不同）
+                unread: _remainingOf(f),
+                provider: f.provider,
+                id: f.nativeId,
+              ),
+            )
             .toList();
 
       case ShelfTab.favorites:
         return _favorites
-            .map((f) => _Card(
-                  title: f.title,
-                  cover: f.cover,
-                  // 收藏的副标题是类型
-                  subtitle: f.kind == 'series' ? '剧集' : '影片',
-                  provider: f.provider,
-                  id: f.nativeId,
-                ))
+            .map(
+              (f) => _Card(
+                title: f.title,
+                cover: f.cover,
+                // 收藏的副标题是类型
+                subtitle: f.kind == 'series' ? '剧集' : '影片',
+                provider: f.provider,
+                id: f.nativeId,
+              ),
+            )
             .toList();
 
       case ShelfTab.history:
         return _history
-            .map((p) => _Card(
-                  /*
+            .map(
+              (p) => _Card(
+                /*
                    * ══════════════════════════════════════════════════
                    * ★★★ task-63：标题为空时**逐级兜底**，绝不把空串传下去
                    * ══════════════════════════════════════════════════
@@ -1232,21 +1251,22 @@ class MyShelfState extends State<MyShelf> {
                    *      `360:86969` / `srca:3862` / `srca:3841` 三条全为 None）
                    *    ⇒ 只做 ② 的话那三条**仍然是空**，等于没修。
                    */
-                  title: _historyTitle(p),
-                  cover: p.cover,
-                  /*
+                title: _historyTitle(p),
+                cover: p.cover,
+                /*
                    * ⚠️ 副标题**不能与标题重复** ——
                    *    当标题为空、用 `episodeTitle` 兜底时，
                    *    下面这行原本也会输出同一个 `episodeTitle`
                    *    ⇒ 卡片上会出现**两遍同样的字**（"第01集" / "第01集"）。
                    *    ★ 这是我加兜底时**新引入**的边角情况，必须一起处理。
                    */
-                  subtitle: _historySubtitle(p),
-                  pct: p.percent,
-                  provider: p.provider,
-                  id: p.nativeId,
-                  episodeId: p.episodeId,
-                ))
+                subtitle: _historySubtitle(p),
+                pct: p.percent,
+                provider: p.provider,
+                id: p.nativeId,
+                episodeId: p.episodeId,
+              ),
+            )
             .toList();
     }
   }
@@ -1371,10 +1391,7 @@ class MyShelfState extends State<MyShelf> {
     if (abLegacyShelfRouteDependency) {
       abLegacyShelfDidChangeDependencies(context);
     }
-    return _RouteGate(
-      onReturn: refreshOnReturn,
-      child: _buildBody(context),
-    );
+    return _RouteGate(onReturn: refreshOnReturn, child: _buildBody(context));
   }
 
   Widget _buildBody(BuildContext context) {
@@ -1402,10 +1419,12 @@ class MyShelfState extends State<MyShelf> {
      *   窄屏=第二行右对齐）—— 见下面 `narrow` 的两处注释。
      */
     final clearHistoryButton = (_tab == ShelfTab.history && _history.isNotEmpty)
-        ? TextButton.icon(
+        ? ui.TextButton.icon(
             onPressed: _clearHistory,
             icon: Icon(
-              _clearingConfirm ? AppIcons.warning_amber : AppIcons.delete_outline,
+              _clearingConfirm
+                  ? AppIcons.warning_amber
+                  : AppIcons.delete_outline,
               size: 15,
               color: _clearingConfirm ? colors.error : null,
             ),
@@ -1498,7 +1517,7 @@ class MyShelfState extends State<MyShelf> {
     final seeAllButton = widget.onSeeAll == null
         ? null
         : PressFeedback(
-            child: IconButton(
+            child: ui.IconButton(
               onPressed: () => widget.onSeeAll!(shelfTabToFollowKey(_tab)),
               /*
                * ★★★ 2026-10-06（Owner 第二次复审）：**去掉胶囊容器**。
@@ -1541,17 +1560,12 @@ class MyShelfState extends State<MyShelf> {
               tooltip: '查看更多',
               icon: Icon(AppIcons.chevron_right, size: 20, color: seeAllFg),
               iconSize: 20,
-              constraints: const BoxConstraints.tightFor(
-                width: 44,
-                height: 44,
-              ),
+              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
               padding: EdgeInsets.zero,
               // 底色只出现在**按压**时（原版 hover 态的触屏等价物）
-              style: IconButton.styleFrom(
+              style: ui.IconButton.styleFrom(
                 highlightColor: seeAllBg,
-                shape: const RoundedRectangleBorder(
-                  borderRadius: Radii.rFull,
-                ),
+                shape: const RoundedRectangleBorder(borderRadius: Radii.rFull),
               ),
             ),
           );
@@ -1695,17 +1709,10 @@ class MyShelfState extends State<MyShelf> {
                    */
                   builder: (context, constraints) {
                     final tabWidth = _shelfTabWidthFor(constraints.maxWidth);
-                    return SingleChildScrollView(
-                      clipBehavior: Clip.antiAlias,
-                      scrollDirection: Axis.horizontal,
-                      child: GlassContainer(
-                        // 外层：一个胶囊玻璃容器（全圆角）
-                        shape: const LiquidRoundedSuperellipse(borderRadius: 999),
-                        quality: GlassQuality.standard,
-                        /*
-                         * ⚠️ `padding: 4px` 是原版的值（`.mine__tabs { padding: 4px }`）
-                         *    —— 让内部 tab 的选中底与容器边缘留出呼吸空间。
-                         */
+                    return Align(
+                      alignment: Alignment.centerLeft,
+                      child: SizedBox(
+                        width: tabWidth * ShelfTab.values.length + Sp.x2,
                         child: _ShelfTabs(
                           tabWidth: tabWidth,
                           current: _tab,
@@ -1724,8 +1731,7 @@ class MyShelfState extends State<MyShelf> {
                * 二次确认的按钮文案会变 —— 这是原版的设计
                *（不用弹窗，少一次打断）。
                */
-              if (!narrow && clearHistoryButton != null)
-                clearHistoryButton,
+              if (!narrow && clearHistoryButton != null) clearHistoryButton,
 
               /*
                * ★★★ 「查看更多」放在**标题行最右侧**
@@ -1742,8 +1748,7 @@ class MyShelfState extends State<MyShelf> {
                *    `Expanded` 自己就会把后面的按钮**推到最右**，
                *    所以直接放按钮即可。
                */
-              if (!narrow && seeAllButton != null)
-                seeAllButton,
+              if (!narrow && seeAllButton != null) seeAllButton,
             ],
           ),
         ),
@@ -1815,8 +1820,10 @@ class MyShelfState extends State<MyShelf> {
         // ── 内容 ──
         if (_loading)
           if (widget.compact)
-            SizedBox(height: CompactShelfCard.heightOf(context),
-              child: const Center(child: CircularProgressIndicator()))
+            SizedBox(
+              height: CompactShelfCard.heightOf(context),
+              child: const Center(child: ui.CircularProgressIndicator()),
+            )
           else
             const _ShelfSkeleton()
         else if (cards.isEmpty)
@@ -1855,31 +1862,41 @@ class MyShelfState extends State<MyShelf> {
         else if (widget.compact)
           SizedBox(
             height: CompactShelfCard.heightOf(context),
-            child: SourinHorizontalRail(child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: EdgeInsets.zero,
-              itemCount: cards.length,
-              separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
-              itemBuilder: (context, i) {
-                final c = cards[i];
-                return SizedBox(
-                  width: (MediaQuery.sizeOf(context).width - Sp.x12)
-                      .clamp(Sp.x16 * 3, Sp.x16 * 5),
-                  child: CompactShelfCard(title: c.title, cover: c.cover,
-                    subtitle: c.subtitle, percent: c.pct,
-                    unread: c.unread ?? 0,
-                    onTap: () {
-                      if (c.provider.isNotEmpty && c.id.isNotEmpty) {
-                        widget.onOpenDetail?.call(c.provider, c.id);
-                      }
-                    }),
-                );
-              },
-            )),
+            child: SourinHorizontalRail(
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: EdgeInsets.zero,
+                itemCount: cards.length,
+                separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
+                itemBuilder: (context, i) {
+                  final c = cards[i];
+                  return SizedBox(
+                    width: (MediaQuery.sizeOf(context).width - Sp.x12).clamp(
+                      Sp.x16 * 3,
+                      Sp.x16 * 5,
+                    ),
+                    child: CompactShelfCard(
+                      title: c.title,
+                      cover: c.cover,
+                      subtitle: c.subtitle,
+                      percent: c.pct,
+                      unread: c.unread ?? 0,
+                      onTap: () {
+                        if (c.provider.isNotEmpty && c.id.isNotEmpty) {
+                          widget.onOpenDetail?.call(c.provider, c.id);
+                        }
+                      },
+                    ),
+                  );
+                },
+              ),
+            ),
           )
         else
           SizedBox(
-            height: AppMetrics.posterWidth / AppMetrics.posterAspect + _shelfCardHeight,
+            height:
+                AppMetrics.posterWidth / AppMetrics.posterAspect +
+                _shelfCardHeight,
             /*
              * N3（2026-10-27）：三条横向轨道（最近追更 / 最近收藏 / 播放历史）
              * 补鼠标拖拽 —— 与 `home_page._Rail` 同款：包一层
@@ -1891,26 +1908,26 @@ class MyShelfState extends State<MyShelf> {
              */
             child: SourinHorizontalRail(
               child: ListView.separated(
-              clipBehavior: Clip.antiAlias,
-              scrollDirection: Axis.horizontal,
-              // ★ 内容带：「我的」轨道 ×1（原版 `.mine__rail` 无横向 padding）
-              //   ⇒ 横向由页根的 `Layout.horizontalInsetOf` 给，这里归零。
-              padding: EdgeInsets.zero,
-              itemCount: cards.length,
-              separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
-              itemBuilder: (_, i) {
-                final c = cards[i];
-                return SizedBox(
-                  width: AppMetrics.posterWidth,
-                  child: Stack(
-                    children: [
-                      PosterCard(
-                        title: c.title,
-                        cover: c.cover,
-                        subtitle: c.subtitle,
-                        unread: c.unread ?? 0,
-                        onTap: () {
-                          /*
+                clipBehavior: Clip.antiAlias,
+                scrollDirection: Axis.horizontal,
+                // ★ 内容带：「我的」轨道 ×1（原版 `.mine__rail` 无横向 padding）
+                //   ⇒ 横向由页根的 `Layout.horizontalInsetOf` 给，这里归零。
+                padding: EdgeInsets.zero,
+                itemCount: cards.length,
+                separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
+                itemBuilder: (_, i) {
+                  final c = cards[i];
+                  return SizedBox(
+                    width: AppMetrics.posterWidth,
+                    child: Stack(
+                      children: [
+                        PosterCard(
+                          title: c.title,
+                          cover: c.cover,
+                          subtitle: c.subtitle,
+                          unread: c.unread ?? 0,
+                          onTap: () {
+                            /*
                            * ══════════════════════════════════════════════
                            * ★★★ 点卡片进**详情页**（不是播放页）
                            *     —— 修用户报的「首页三个 tab 点进去变成播放页」
@@ -1953,17 +1970,17 @@ class MyShelfState extends State<MyShelf> {
                            * 老数据可能缺字段。静默无反应是最难查的表现 ——
                            * 与 `follow_page._openDetailFor` 同样的处理。
                            */
-                          if (c.provider.isEmpty || c.id.isEmpty) {
-                            debugPrint(
-                              '[SHELF] 无法打开详情：provider="${c.provider}" '
-                              'id="${c.id}"（数据不完整）',
-                            );
-                            return;
-                          }
-                          widget.onOpenDetail?.call(c.provider, c.id);
-                        },
-                      ),
-                      /*
+                            if (c.provider.isEmpty || c.id.isEmpty) {
+                              debugPrint(
+                                '[SHELF] 无法打开详情：provider="${c.provider}" '
+                                'id="${c.id}"（数据不完整）',
+                              );
+                              return;
+                            }
+                            widget.onOpenDetail?.call(c.provider, c.id);
+                          },
+                        ),
+                        /*
                        * 历史的进度条（贴在封面底部）
                        *
                        * ══════════════════════════════════════════════════
@@ -2005,29 +2022,30 @@ class MyShelfState extends State<MyShelf> {
                        *    不另取一个值。
                        * ```
                        */
-                      if (c.pct != null && c.pct! > 0)
-                        Positioned(
-                          left: 0,
-                          right: 0,
-                          top: 0,
-                          height:
-                              AppMetrics.posterWidth / AppMetrics.posterAspect,
-                          child: ClipRRect(
-                            borderRadius: Radii.rMd,
-                            child: Align(
-                              alignment: Alignment.bottomCenter,
-                              child: LinearProgressIndicator(
-                                value: c.pct! / 100.0,
-                                minHeight: 3,
-                                backgroundColor: Colors.black38,
+                        if (c.pct != null && c.pct! > 0)
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            top: 0,
+                            height:
+                                AppMetrics.posterWidth /
+                                AppMetrics.posterAspect,
+                            child: ClipRRect(
+                              borderRadius: Radii.rMd,
+                              child: Align(
+                                alignment: Alignment.bottomCenter,
+                                child: ui.LinearProgressIndicator(
+                                  value: c.pct! / 100.0,
+                                  minHeight: 3,
+                                  backgroundColor: Colors.black38,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                    ],
-                  ),
-                );
-              },
+                      ],
+                    ),
+                  );
+                },
               ),
             ),
           ),
@@ -2146,57 +2164,7 @@ double _shelfTabWidthFor(double avail) =>
 ///    但轨道高度必须按**最高**的那种卡片给 —— 否则混排时矮的撑不住高的。
 const double _shelfCardHeight = 50;
 
-/// 「我的」分段控件的**滑动选中药丸**层（与底栏同构）
-///
-/// ══════════════════════════════════════════════════════════════════════
-/// ★★★ 用户验收标准（2026-09-24）
-/// ══════════════════════════════════════════════════════════════════════
-///
-/// > 左上角和这个源切换,还是跟底部的不太一样
-///
-/// 「左上角」就是这个控件。**唯一的确认方法**是把底栏和它裁到同一张图里
-/// 对比 —— 所以这里刻意**逐项对齐**底栏 `_BottomBar` 的参数：
-/// ```text
-/// 项目          底栏（shell.dart）              这里
-/// ────────────────────────────────────────────────────────────────
-/// 外层          GlassContainer                 GlassContainer（同一个）
-/// 形状          LiquidRoundedSuperellipse(999)   同
-/// 质量          GlassQuality.standard          同
-/// 药丸          AnimatedPositioned             同
-/// 药丸时长      420ms                          同
-/// 药丸曲线      Curves.easeOutBack             同
-/// 药丸填充      白渐变 0.96→0.80（浅色）        同
-/// ```
-///
-/// # ★ 关键认知：药丸是**白**的，所以药丸上的字必须**是深色**
-///
-/// 原版 `tokens.css`（深色）与 `theme-light.css`（浅色）给了**两套**值：
-/// ```css
-/// /* 深色主题 */
-/// --tab-pill-bg: linear-gradient(180deg,
-///                  rgb(255 255 255 / 0.19), rgb(255 255 255 / 0.10));
-/// --tab-fg-strong: #ffffff;              /* 药丸很透 → 底还是暗的 → 白字 */
-///
-/// /* 浅色主题 */
-/// --tab-pill-bg: linear-gradient(180deg,
-///                  rgb(255 255 255 / 0.96), rgb(255 255 255 / 0.80));
-/// --tab-fg-strong: rgb(16 18 26 / 0.94); /* 药丸几乎纯白 → 深字 */
-/// ```
-/// ⚠️ 也就是说**药丸的实心程度与文字明暗必须成对**。
-///    只抄一边（比如"永远白药丸 + 永远用 `foreground` 当文字色"）
-///    会在深色主题下变成「白药丸 + 白字」= **完全看不见**。
-///
-///    实测确认本机 `AppsUseLightTheme = 1`（浅色），所以**现在**
-///    浅色那套生效；但两套都要写对，否则用户切到深色就废了。
-///
-/// # 滑动动画
-///
-/// 用 `AnimatedPositioned`（与底栏同一个做法），420ms `easeOutBack`
-/// —— `easeOutBack` 会**轻微过冲**再回弹，那就是"液态"手感。
-/// 因为三个 tab 等宽（同一个 `tabWidth` 喂给药丸和三个 tab），
-/// `left = index * tabWidth` 是纯算术，**不需要量真实布局**：
-/// 宽度由**外面**那一层 `LayoutBuilder`（横向 SCV 之外）算好传进来，
-/// 一帧内就有值，不必等 `GlobalKey` 的布局回读（那要等一帧，首帧药丸会闪）。
+/// The bounded shelf rail hosts the shared Miuix tab row and count labels.
 class _ShelfTabs extends StatelessWidget {
   const _ShelfTabs({
     required this.tabWidth,
@@ -2205,322 +2173,24 @@ class _ShelfTabs extends StatelessWidget {
     required this.onSelect,
   });
 
-  /// 每个 tab 的宽度（由**外面**按可用宽算好的，见 `_shelfTabWidthFor`）
-  ///
-  /// ⚠️ 为什么是参数而不是自己量：本组件在横向 `SingleChildScrollView`
-  ///    的子树里，宽约束是 **unbounded**，`LayoutBuilder` 会拿到 ∞。
   final double tabWidth;
-
   final ShelfTab current;
   final int Function(ShelfTab) countOf;
   final ValueChanged<ShelfTab> onSelect;
 
   @override
-  Widget build(BuildContext context) {
-    final isLight =
-        Theme.of(context).colorScheme.brightness == Brightness.light;
-    final cols = _ShelfPalette.of(isLight);
-
-    /*
-     * ★ 2026-10-05：宽度由**外面**算好传进来（上限 `_shelfTabWidth`）。
-     *
-     * ⚠️ 这里**不能**自己放 `LayoutBuilder`：本组件在横向
-     *    `SingleChildScrollView` 的子树里，宽约束是 **unbounded**
-     *   ⇒ `maxWidth` 是 ∞ ⇒ 钳制永远算成 96。
-     *    必须在 SCV 外面（`Expanded` 下那一层）算好再传进来 ——
-     *    见 `MyShelfState` 里调用点的长注释。
-     */
-    final tabWidth = this.tabWidth;
-    return Padding(
-          // 原版 `.mine__tabs { padding: 4px }` —— 药丸与容器边缘留呼吸空间
-          padding: const EdgeInsets.all(4),
-          child: Stack(
-            children: [
-              // ── 滑动选中药丸 ──
-              AnimatedPositioned(
-                duration: Motion.slow, // 420ms，与底栏同一个时长
-                curve: Curves.easeOutBack,
-                left: current.index * tabWidth,
-                top: 0,
-                bottom: 0,
-                width: tabWidth,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: cols.pillGradient,
-                    ),
-                    borderRadius: Radii.rFull,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: cols.pillShadow),
-                        blurRadius: 8,
-                        spreadRadius: -2,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              // ── 三个 tab（文字层，压在药丸上面）──
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final t in ShelfTab.values)
-                    SizedBox(
-                      width: tabWidth,
-                      child: _ShelfTabChip(
-                        label: switch (t) {
-                          ShelfTab.following => '最近追更',
-                          ShelfTab.favorites => '最近收藏',
-                          ShelfTab.history => '播放历史',
-                        },
-                        count: countOf(t),
-                        active: t == current,
-                        cols: cols,
-                        onTap: () => onSelect(t),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        );
-  }
-}
-
-/// 分段控件的配色（浅色/深色两套，照抄原版令牌）
-///
-/// 把"两套值"集中在这里，避免散落在各处写 `isLight ? ... : ...`
-/// —— 漏改一处的表现是"某个元素在深色下看不见"，极难发现。
-class _ShelfPalette {
-  const _ShelfPalette({
-    required this.pillGradient,
-    required this.pillShadow,
-    required this.activeText,
-    required this.idleText,
-    required this.badgeBg,
-  });
-
-  /// 药丸填充（浅色=近纯白；深色=很透的白叠加）
-  final List<Color> pillGradient;
-
-  /// 药丸投影的不透明度（浅色明显、深色更重，因为深色下靠阴影分层）
-  final double pillShadow;
-
-  /// 选中态文字（**必须与药丸明暗相反**，见 `_ShelfTabs` 的说明）
-  final Color activeText;
-
-  /// 未选中文字
-  final Color idleText;
-
-  /// 角标底色（原版 `.mtab__count { background: var(--surface-track) }`）
-  final Color badgeBg;
-
-  static _ShelfPalette of(bool isLight) => isLight
-      ? _ShelfPalette(
-          pillGradient: [
-            Colors.white.withValues(alpha: 0.96),
-            Colors.white.withValues(alpha: 0.80),
-          ],
-          pillShadow: 0.16,
-          // `--tab-fg-strong: rgb(16 18 26 / 0.94)`
-          activeText: const Color(0xFF10121A).withValues(alpha: 0.94),
-          // `--tab-fg: rgb(16 18 26 / 0.62)`
-          idleText: const Color(0xFF10121A).withValues(alpha: 0.62),
-          badgeBg: const Color(0xFF10121A).withValues(alpha: 0.10),
-        )
-      : _ShelfPalette(
-          pillGradient: [
-            Colors.white.withValues(alpha: 0.19),
-            Colors.white.withValues(alpha: 0.10),
-          ],
-          pillShadow: 0.34,
-          // `--tab-fg-strong: #ffffff`
-          activeText: Colors.white,
-          // `--tab-fg: rgb(255 255 255 / 0.76)`
-          idleText: Colors.white.withValues(alpha: 0.76),
-          badgeBg: Colors.white.withValues(alpha: 0.16),
-        );
-}
-
-/// 单个 tab
-///
-/// ⚠️ **本身是透明的** —— 玻璃在外层容器、选中药丸在 `_ShelfTabs` 里。
-///    原版 `.mtab { background: transparent }`。
-///
-///    （我第一版给**每个 tab** 各套了一块 `GlassContainer`，
-///     于是屏幕上出现三个独立小玻璃胶囊，与底栏那条大玻璃完全不像。
-///     ★ 教训：**"看起来不像"时先怀疑结构，不要先调参数**。）
-class _ShelfTabChip extends StatefulWidget {
-  const _ShelfTabChip({
-    required this.label,
-    required this.count,
-    required this.active,
-    required this.cols,
-    required this.onTap,
-  });
-
-  final String label;
-  final int count;
-  final bool active;
-  final _ShelfPalette cols;
-  final VoidCallback onTap;
-
-  @override
-  State<_ShelfTabChip> createState() => _ShelfTabChipState();
-}
-
-/// ★ 2026-10-03 补上的**焦点指示**（task-2 §10 实测缺陷）
-///
-/// # 之前为什么没有
-///
-/// 这个 chip 里只有一个**裸 `InkWell`**，而 `_ShelfTabs` 里**没有
-/// `Material` 祖先**（本文件 `Material(` 命中 0 次）—— Material 的
-/// 焦点高亮画在 `Material` 上，没有它就没有任何指示。
-///
-/// # 实测证据（release 包 + `--dart-define=TV_NAV_TRACE=true`）
-///
-/// ```text
-/// UP×2 确实落到 InkWell<_ShelfTabChip<_ShelfTabs<InheritedLiquidGlass<…
-/// 帧后确认: 实际矩形=(96,-74,192,-38) 一致=true      ← 拿到了焦点
-/// 但 P3_up3.png 与 P0_boot.png **逐字节相同**
-///   len=549755  filesha=243B0CF9E8F2  ⇒ 焦点**零像素**绘制
-/// ```
-/// 阳性对照：直播页频道行拿到焦点时**会**画环 ⇒ 缺的正是本 widget 的环。
-///
-/// # 为什么是 `foregroundDecoration`
-///
-/// `Container(decoration:)` 会把 border 宽度算进 padding
-/// （`_paddingIncludingDecoration`）→ 尺寸 +4px → 焦点一移动整行就跳。
-/// `foregroundDecoration` 走 `DecoratedBox(position: foreground)` ——
-/// `RenderProxyBox`，**只画不改约束**，尺寸恒定。
-/// 与 `episode_strip.dart:2250-2262`、`reorderable_card_grid.dart:744-753`
-/// 是同一套写法（后者注释里记着这个 +4px 的旧 bug）。
-///
-/// # 颜色
-///
-/// 取 `Theme.of(context).colorScheme.primary` —— 与
-/// `reorderable_card_grid.dart:749` 的焦点环**同一来源**，
-/// 而 `material_ui` 本文件已 import，**不需要新增 import**。
-class _ShelfTabChipState extends State<_ShelfTabChip> {
-  bool _focused = false;
-
-  @override
-  Widget build(BuildContext context) {
-    /*
-     * ⚠️ 文字色**不能**用 `Theme.of(context).colorScheme.onSurface` ——
-     *    那在深色下是近白，而药丸（深色下）是"很透的白叠加"，
-     *    叠在深色背景上仍然是**深**色，白字勉强能看；
-     *    但浅色下 `onSurface` 是近黑，药丸是近纯白 → 也能看。
-     *
-     *    真正的问题是"两套值要成对"，所以统一走 `_ShelfPalette`，
-     *    它把药丸和文字色**绑在一起**给。
-     */
-    final textColor = widget.active ? widget.cols.activeText : widget.cols.idleText;
-
-    /*
-     * ★ 角标：原版 `.mtab__count` 是**药丸形小底 + 文字**，不是裸数字。
-     *
-     * ⚠️ 角标底色的对比度：选中时它压在**白药丸**上，
-     *    用 `badgeBg`（浅色下是 10% 黑）能形成一层淡灰底；
-     *    文字用 `activeText`（深色）保证在白药丸上读得清。
-     */
-    final body = InkWell(
-      onTap: widget.onTap,
-      borderRadius: Radii.rFull,
-      onFocusChange: (f) {
-        if (mounted && f != _focused) setState(() => _focused = f);
-      },
-      child: Padding(
-        /*
-         * ★★ 纵向内边距必须 ≥ Sp.x3(12)，**不是** Sp.x2(8)
-         *
-         * # 为什么（实测 + 原版注释，双证据）
-         *
-         * 原版 `MyShelf.vue` 的 `.mtab` 逐字记着（CSS 注释，此处转述）：
-         * > 触控目标 ≥34px（见 DEVELOPMENT.md 坑 35）。
-         * > 8px 上下内边距 + 14px 行高只到 31px，差一点不达标，故加到 10px。
-         * 而它的实际取值是 `padding: 10px 14px`。
-         *
-         * 项目规范（`srcl_to_client/DEVELOPMENT.md` 坑 35）：
-         * > ★ 触控目标不得小于 ~34px —— 实测巡检发现 52 处偏小
-         *
-         * # 我们的实测（task-36，仪器有阳性对照）
-         *
-         * ```text
-         * 修之前：InkWell = 96 x 33   → under34 = true   ✗ 违反项目自己的规范
-         * 阳性对照：200x20 的东西被判 under34 = true     ✓ 仪器有效
-         * ```
-         * 算式：`Sp.x2*2 (16) + 17 (文字行高)` = 33 —— 与原版注释里
-         * "8px + 14px 只到 31px" 是**同一个坑**。
-         *
-         * ★ 用 Sp.x3(12) 而不是原版的 10：12*2 + 17 = 41，比 34 的底线
-         *   留出余量（字体度量随平台/字体变化，贴着 34 写会在某些设备
-         *   上掉下去）。
-         */
-        padding: const EdgeInsets.symmetric(
-          // ★ 横向 12 → 8：窄屏（360dp）要把这 6dp 让给 tab 宽度
-          horizontal: Sp.x2,
-          // ⚠️ 纵向**不许动** —— 见上面的 ≥34dp 触控目标论证
-          vertical: Sp.x3,
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text(
-                widget.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  fontWeight: widget.active ? FontWeight.w600 : FontWeight.w400,
-                  color: textColor,
-                ),
-              ),
-            ),
-            if (widget.count > 0) ...[
-              const SizedBox(width: 4),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                decoration: BoxDecoration(
-                  color: widget.cols.badgeBg,
-                  borderRadius: Radii.rFull,
-                ),
-                child: Text(
-                  '${widget.count}',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    height: 1.5,
-                    fontWeight: widget.active ? FontWeight.w600 : FontWeight.w400,
-                    color: textColor,
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-
-    return AnimatedContainer(
-      duration: Motion.fast,
-      foregroundDecoration: BoxDecoration(
-        borderRadius: Radii.rFull,
-        border: Border.all(
-          color: _focused
-              ? Theme.of(context).colorScheme.primary
-              : Colors.transparent,
-          width: 2,
-        ),
-      ),
-      child: body,
-    );
-  }
+  Widget build(BuildContext context) => SettingsTabs(
+    labels: [
+      for (final tab in ShelfTab.values)
+        '${switch (tab) {
+          ShelfTab.following => '最近追更',
+          ShelfTab.favorites => '最近收藏',
+          ShelfTab.history => '播放历史',
+        }}${countOf(tab) > 0 ? ' ${countOf(tab)}' : ''}',
+    ],
+    selected: current.index,
+    onSelected: (index) => onSelect(ShelfTab.values[index]),
+  );
 }
 
 class _ShelfSkeleton extends StatelessWidget {
@@ -2530,7 +2200,8 @@ class _ShelfSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return SizedBox(
-      height: AppMetrics.posterWidth / AppMetrics.posterAspect + _shelfCardHeight,
+      height:
+          AppMetrics.posterWidth / AppMetrics.posterAspect + _shelfCardHeight,
       child: ListView.separated(
         clipBehavior: Clip.antiAlias,
         scrollDirection: Axis.horizontal,

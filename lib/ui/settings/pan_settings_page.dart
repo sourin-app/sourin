@@ -51,6 +51,9 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import '../widgets/miuix_controls.dart' as ui;
+import '../widgets/settings_dropdown.dart';
+
 import '../../core/ffi.dart'
     show SourinCore, SourinCoreException, userErrorText;
 import '../../core/sourin_api.dart';
@@ -939,10 +942,9 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
           // ★ 含 TextField ⇒ 就地补透明 Material 宿主（外壳规矩，同扫码/分享两区）
           Material(
             type: MaterialType.transparency,
-            child: TextField(
+            child: ui.TextField(
               key: const ValueKey<String>('pan-password-123-account'),
               controller: _pwdAccount,
-              textAlign: TextAlign.left,
               enabled: !_pwdBusy,
               decoration: const InputDecoration(
                 labelText: '123 账号（手机号或邮箱）',
@@ -953,10 +955,9 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
           const SizedBox(height: Sp.x1),
           Material(
             type: MaterialType.transparency,
-            child: TextField(
+            child: ui.TextField(
               key: const ValueKey<String>('pan-password-123-password'),
               controller: _pwdPassword,
-              textAlign: TextAlign.left,
               enabled: !_pwdBusy,
               // ★ 密码框必须遮蔽（不许明文回显在屏幕上/截图里）
               obscureText: true,
@@ -1047,41 +1048,25 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        // ★ 含 DropdownButton ⇒ 就地补透明 Material 宿主（外壳规矩）
-        Material(
-          type: MaterialType.transparency,
-          child: DropdownButtonFormField<String>(
-            key: const ValueKey<String>('pan-qr-kind'),
-            initialValue: _qrKind,
-            isDense: true,
-            decoration: const InputDecoration(labelText: '选择网盘', isDense: true),
-            items: <DropdownMenuItem<String>>[
-              /*
-               * ★ 2026-10-29：这份下拉只列**真能出码**的盘。
-               * ```text
-               * 摘掉 123：它没有扫码端点（官方只有账号密码 sign_in 与 open-api 令牌），
-               *   留在下拉里只会让用户点了看到一句"没有扫码"——那正是"点了才撞墙"的形态；
-               *   它的登录入口是上面那张账号/密码表单。
-               * 补上 光鸭/迅雷：设备码族，码内容是服务端给的 verification_uri_complete（真链接）。
-               * 天翼保留：虽然当前只到"做不完整"的如实报错，但它是可做的一家，
-               *   摘掉会让用户以为"天翼不支持"——报错文案里已写清缺哪一步。
-               * ```
-               */
-              for (final e in const <String, String>{
-                'quark': '夸克网盘',
-                'uc': 'UC 网盘',
-                'baidu': '百度网盘',
-                'aliyun': '阿里云盘',
-                '115': '115 网盘',
-                'guangya': '光鸭网盘',
-                'xunlei': '迅雷云盘',
-              }.entries)
-                DropdownMenuItem<String>(value: e.key, child: Text(e.value)),
-            ],
-            onChanged: !_loginBusy
-                ? (v) => setState(() => _qrKind = v ?? _qrKind)
-                : null, // 扫码进行中不许换盘（换了二维码就作废）
-          ),
+        SettingsDropdown<String>(
+          key: const ValueKey<String>('pan-qr-kind'),
+          value: _qrKind,
+          hint: '选择网盘',
+          options: [
+            for (final entry in const <String, String>{
+              'quark': '夸克网盘',
+              'uc': 'UC 网盘',
+              'baidu': '百度网盘',
+              'aliyun': '阿里云盘',
+              '115': '115 网盘',
+              'guangya': '光鸭网盘',
+              'xunlei': '迅雷云盘',
+            }.entries)
+              SettingsDropdownOption(entry.key, entry.value),
+          ],
+          onChanged: _loginBusy
+              ? null
+              : (value) => setState(() => _qrKind = value),
         ),
         const SizedBox(height: Sp.x2),
         Wrap(
@@ -1121,10 +1106,9 @@ class _PanSettingsBodyState extends State<PanSettingsBody> {
         // ★ 含 TextField ⇒ 就地补透明 Material 宿主（外壳规矩）
         Material(
           type: MaterialType.transparency,
-          child: TextField(
+          child: ui.TextField(
             key: const ValueKey<String>('pan-share-input'),
             controller: _shareText,
-            textAlign: TextAlign.left,
             maxLines: 3,
             minLines: 2,
             decoration: const InputDecoration(

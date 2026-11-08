@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Partially superseded by: [actual Miuix shared menus and dialogs](../feature/2026-11-08-miuix-shared-menus-and-dialogs.md). The shared confirmation dialog now registers with actual Miuix dialog infrastructure and supplies a transparent compatibility host. The historical missing-host decision and exception results below are superseded; per-call-site return values and side effects remain required.
+
 Partially superseded by: [Miuix appearance](../feature/2026-11-08-miuix-appearance.md). 适用范围：除主题页导入与大预览外的现行弹窗契约；主题页只提供明暗模式与内联控件预览，旧主题弹窗的历史验收读数不代表现行入口。
 
 本篇与既有弹窗笔记的关系：接在 [弹窗外壳统一与 hover 粘滞位](../feature/2026-10-19-dialog-shell-unification-and-hover-sticky-bit.md) 之后，是其「统一外壳已建立、残留待收拢」的**续作**；宽度夹取的实现细节见 [外壳宽度夹取不是高度](../bug-fix/2026-10-21-dialog-shell-width-clamp-not-height.md)；实机像素验收方法沿用 [R4 弹窗设备像素验收](../testing/2026-10-20-r4-dialog-device-pixel-acceptance.md)。三篇均为**部分重叠**：本篇只新增"13 处残留调用点如何逐处等价迁移"，未推翻其中任何决定，故三篇全部保留、不归档。

@@ -89,11 +89,18 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'support/miuix_finders.dart';
+
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/app_update/app_update_controller.dart';
 import 'package:sourin_spike/core/app_update/release.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/tokens.dart';
 import 'package:sourin_spike/ui/widgets/app_dialog_shell.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart';
@@ -166,24 +173,25 @@ class _Geo {
   }
 
   Map<String, Object> get json => {
-        'name': name,
-        'vp': vp,
-        'cardW': cardW,
-        'cardH': cardH,
-        'r': radius,
-        'headerH': headerH,
-        'actionsGapR': actionsGapR,
-        'actionsH': actionsH,
-        'nClose': nClose,
-        'scrollable': scrollable,
-        'maxScrollExtent': maxScrollExtent,
-        'overflowsViewport': overflowsViewport,
-        'padL': padL,
-        'padR': padR,
-      };
+    'name': name,
+    'vp': vp,
+    'cardW': cardW,
+    'cardH': cardH,
+    'r': radius,
+    'headerH': headerH,
+    'actionsGapR': actionsGapR,
+    'actionsH': actionsH,
+    'nClose': nClose,
+    'scrollable': scrollable,
+    'maxScrollExtent': maxScrollExtent,
+    'overflowsViewport': overflowsViewport,
+    'padL': padL,
+    'padR': padR,
+  };
 
   @override
-  String toString() => 'card=${cardW.toStringAsFixed(1)}x'
+  String toString() =>
+      'card=${cardW.toStringAsFixed(1)}x'
       '${cardH.toStringAsFixed(1)} r=${radius.toStringAsFixed(2)} '
       'headerH=${headerH.toStringAsFixed(1)} '
       'actGapR=${actionsGapR.toStringAsFixed(1)} '
@@ -192,26 +200,26 @@ class _Geo {
       'overflow=$overflowsViewport';
 }
 
-Widget _host(Widget child) => MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        fontFamily: 'Microsoft YaHei UI',
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF7C4DFF),
-          brightness: Brightness.dark,
-        ),
-      ),
-      // ★ 纯白底（见文件头）
-      home: Scaffold(backgroundColor: Colors.white, body: child),
-    );
+Widget _host(Widget child) {
+  final theme = AppTheme.themeFor(Brightness.dark);
+  return MaterialApp(
+    debugShowCheckedModeBanner: false,
+    theme: theme,
+    builder: (_, child) => AppThemeHost(data: theme, child: child!),
+    // ★ 纯白底（见文件头）
+    home: Scaffold(backgroundColor: Colors.white, body: child),
+  );
+}
 
 Rect _cardRect(WidgetTester t) {
   final titleEl = find
       .descendant(of: find.byType(AppDialogShell), matching: find.byType(Text))
       .first;
-  final mat = find.ancestor(of: titleEl, matching: find.byType(Material)).first;
-  return t.getRect(mat);
+  final card = find
+      .ancestor(of: titleEl, matching: find.byType(miuix.MiuixCard))
+      .first;
+  expect(card, findsOneWidget);
+  return t.getRect(card);
 }
 
 class _Pix {
@@ -234,18 +242,23 @@ class _Pix {
   }
 }
 
-/// 卡片底亮度 = 卡片矩形内出现最多的亮度（众数）
+/// 卡片底亮度 = 标题上方空白带的真实像素众数。
 ///
 /// ★ 为什么用众数而不是"对角线 60px 处那一点"（我第一版就是这么错的）：
 /// ```text
 /// 60px 处可能正好压在**标题文字**上 —— 实测 composer 那个点 lum=81，
 /// 比遮罩(71)还亮 ⇒ `outside - inside < 8` 阳性对照直接失败，四角全 -2。
-/// 众数对文字/图标/分隔线都免疫（它们面积远小于底色）。
+/// 不扫整张卡：窄窗下正文里的嵌套卡片可能占多数，那是另一层底色。
+/// 标题 padding 上方 3..9 px、横向中间三分之一只属于外壳背景。
 /// ```
 int _cardLum(_Pix p, Rect card) {
   final counts = <int, int>{};
-  for (var y = card.top.round() + 2; y < card.bottom.round() - 2; y += 3) {
-    for (var x = card.left.round() + 2; x < card.right.round() - 2; x += 3) {
+  for (var y = card.top.round() + 3; y < card.top.round() + 9; y++) {
+    for (
+      var x = (card.left + card.width / 3).round();
+      x < (card.right - card.width / 3).round();
+      x++
+    ) {
       final l = p.lum(x, y);
       if (l < 0) continue;
       counts[l.round()] = (counts[l.round()] ?? 0) + 1;
@@ -267,8 +280,13 @@ int _cardLum(_Pix p, Rect card) {
 /// ★ **不假设极性**：`update` 的卡片(54)比遮罩(33)**亮**，
 ///   `composer` 的卡片(54)比遮罩(71)**暗** —— 取决于主题与是否双层遮罩。
 ///   第一版写死"外侧更亮" ⇒ update 四角全 -2。现在按两者大小自动选方向。
-double _radiusAtCorner(_Pix p, Rect card, int cardLum,
-    {required int sx, required int sy}) {
+double _radiusAtCorner(
+  _Pix p,
+  Rect card,
+  int cardLum, {
+  required int sx,
+  required int sy,
+}) {
   final cx = sx > 0 ? card.left.round() : card.right.round() - 1;
   final cy = sy > 0 ? card.top.round() : card.bottom.round() - 1;
 
@@ -294,8 +312,10 @@ double _radiusAtCorner(_Pix p, Rect card, int cardLum,
 
   for (var i = 0; i <= 400; i++) {
     final t = i * 0.25;
-    final l = p.lum(cx + (sx * t / math.sqrt2).round(),
-        cy + (sy * t / math.sqrt2).round());
+    final l = p.lum(
+      cx + (sx * t / math.sqrt2).round(),
+      cy + (sy * t / math.sqrt2).round(),
+    );
     if (l < 0) break;
     if (goingDown ? l <= mid : l >= mid) return t / (math.sqrt2 - 1);
   }
@@ -344,21 +364,30 @@ Future<_Geo> measure(WidgetTester t, String name, String vpName) async {
   g.rTR = _radiusAtCorner(pix, card, cardLum, sx: -1, sy: 1);
   g.rBL = _radiusAtCorner(pix, card, cardLum, sx: 1, sy: -1);
   g.rBR = _radiusAtCorner(pix, card, cardLum, sx: -1, sy: -1);
+  img.dispose();
+  expect(
+    [g.rTL, g.rTR, g.rBL, g.rBR],
+    everyElement(greaterThan(0)),
+    reason: '$name@$vpName 必须在四个角都采到真实的遮罩/卡片边界',
+  );
 
   // ── 标题栏高度（外壳 _Header 的 Padding）──
   final header = find.descendant(
     of: find.byType(AppDialogShell),
-    matching: find.byWidgetPredicate((w) =>
-        w is Padding &&
-        w.padding == const EdgeInsets.fromLTRB(Sp.x6, Sp.x3, Sp.x3, Sp.x2)),
+    matching: find.byWidgetPredicate(
+      (w) =>
+          w is Padding &&
+          w.padding == const EdgeInsets.fromLTRB(Sp.x6, Sp.x3, Sp.x3, Sp.x2),
+    ),
   );
   expect(header, findsOneWidget, reason: '找不到 _Header 的 Padding —— 结构变了');
   g.headerH = t.getRect(header).height;
 
   // ── 内容区左右 padding ──
   final sv = find.descendant(
-      of: find.byType(AppDialogShell),
-      matching: find.byType(SingleChildScrollView));
+    of: find.byType(AppDialogShell),
+    matching: find.byType(SingleChildScrollView),
+  );
   if (sv.evaluate().isNotEmpty) {
     final s = t.widget<SingleChildScrollView>(sv.first);
     final p = s.padding as EdgeInsets?;
@@ -384,7 +413,9 @@ Future<_Geo> measure(WidgetTester t, String name, String vpName) async {
   // ── 滚动：弹窗里任一 Scrollable 的 maxScrollExtent ──
   // ★ 用**真实 ScrollPosition**，不是"内容高 - 视口高"的推算
   final scrollables = find.descendant(
-      of: find.byType(AppDialogShell), matching: find.byType(Scrollable));
+    of: find.byType(AppDialogShell),
+    matching: find.byType(Scrollable),
+  );
   for (var i = 0; i < scrollables.evaluate().length; i++) {
     final st = t.state<ScrollableState>(scrollables.at(i));
     final ext = st.position.maxScrollExtent;
@@ -394,14 +425,16 @@ Future<_Geo> measure(WidgetTester t, String name, String vpName) async {
 
   // ── 底部按钮区 ──
   final div = find.descendant(
-      of: find.byType(AppDialogShell), matching: find.byType(Divider));
+    of: find.byType(AppDialogShell),
+    matching: find.byType(ui.Divider),
+  );
   g.hasDivider = div.evaluate().isNotEmpty;
   if (g.hasDivider) {
     final dr = t.getRect(div.first);
     g.actionsH = card.bottom - dr.top;
     final btns = find.descendant(
       of: find.byType(AppDialogShell),
-      matching: find.byWidgetPredicate((w) => w is FilledButton),
+      matching: find.byWidgetPredicate((w) => w is ui.FilledButton),
     );
     var rightMost = double.negativeInfinity;
     for (var i = 0; i < btns.evaluate().length; i++) {
@@ -411,15 +444,17 @@ Future<_Geo> measure(WidgetTester t, String name, String vpName) async {
     if (rightMost.isFinite) g.actionsGapR = card.right - rightMost;
   }
 
-  g.nClose = find.byTooltip('关闭').evaluate().length;
+  g.nClose = miuixTooltip('关闭').evaluate().length;
 
   // ignore: avoid_print
   print('[R4PIX] ${name.padRight(8)} @${vpName.padRight(8)} $g');
   // ignore: avoid_print
-  print('[R4PIX]RECT $name @$vpName '
-      'card=[${card.left.toStringAsFixed(0)},${card.top.toStringAsFixed(0)} .. '
-      '${card.right.toStringAsFixed(0)},${card.bottom.toStringAsFixed(0)}] '
-      'vp=${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)}');
+  print(
+    '[R4PIX]RECT $name @$vpName '
+    'card=[${card.left.toStringAsFixed(0)},${card.top.toStringAsFixed(0)} .. '
+    '${card.right.toStringAsFixed(0)},${card.bottom.toStringAsFixed(0)}] '
+    'vp=${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)}',
+  );
   // ignore: avoid_print
   print('[R4PIX]JSON ${jsonEncode(g.json)}');
   return g;
@@ -436,39 +471,50 @@ Future<_Geo> renderAndMeasure(
 
   switch (dialog) {
     case 'update':
-      await t.pumpWidget(_host(Builder(
-        builder: (ctx) => TextButton(
-          onPressed: () => showUpdateDialog(
-            ctx,
-            parseReleaseJson(jsonDecode(
+      await t.pumpWidget(
+        _host(
+          Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () => showUpdateDialog(
+                ctx,
+                parseReleaseJson(
+                  jsonDecode(
                     File('test/fixtures/github_release_v1_1_0.json')
-                        .readAsStringSync()) as Map<String, dynamic>),
-            platform: UpdatePlatform.windows,
+                        .readAsStringSync(),
+                  ) as Map<String, dynamic>,
+                ),
+                platform: UpdatePlatform.windows,
+              ),
+              child: const Text('open'),
+            ),
           ),
-          child: const Text('open'),
         ),
-      )));
+      );
       await t.tap(find.text('open'));
       await t.pumpAndSettle();
     case 'skip':
       SourinApi.debugSkipMarkerFetcher = (p, i) async => null;
       addTearDown(() => SourinApi.debugSkipMarkerFetcher = null);
-      await t.pumpWidget(_host(Builder(
-        builder: (ctx) => TextButton(
-          onPressed: () => showAppDialog<SkipMarkerResult>(
-            context: ctx,
-            barrierDismissible: false,
-            builder: (_) => const SkipMarkerDialog(
-              provider: 'tyyszy',
-              id: '70260',
-              title: '怒鲨狂潮',
-              streamUrl: 'file:///nonexistent.mp4',
-              duration: Duration(seconds: 600),
+      await t.pumpWidget(
+        _host(
+          Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () => showAppDialog<SkipMarkerResult>(
+                context: ctx,
+                barrierDismissible: false,
+                builder: (_) => const SkipMarkerDialog(
+                  provider: 'tyyszy',
+                  id: '70260',
+                  title: '怒鲨狂潮',
+                  streamUrl: 'file:///nonexistent.mp4',
+                  duration: Duration(seconds: 600),
+                ),
+              ),
+              child: const Text('open'),
             ),
           ),
-          child: const Text('open'),
         ),
-      )));
+      );
       await t.tap(find.text('open'));
       await t.pump();
       await t.pump(const Duration(milliseconds: 100));
@@ -490,7 +536,8 @@ void main() {
     AppUpdateController.instance.loadPrefs();
     AppUpdateController.instance.debugResetAvailable();
     AppUpdateController.instance.debugSetDownloadState(
-        UpdateDownloadState.idle);
+      UpdateDownloadState.idle,
+    );
   });
 
   /// 9 格读数：key = "<dialog>@<viewport>"
@@ -500,8 +547,12 @@ void main() {
   for (final vpEntry in _viewports.entries) {
     for (final d in _dialogNames) {
       testWidgets('$d @ ${vpEntry.key}', (t) async {
-        results['$d@${vpEntry.key}'] =
-            await renderAndMeasure(t, d, vpEntry.key, vpEntry.value);
+        results['$d@${vpEntry.key}'] = await renderAndMeasure(
+          t,
+          d,
+          vpEntry.key,
+          vpEntry.value,
+        );
       });
     }
   }
@@ -514,53 +565,74 @@ void main() {
       final gs = [
         for (final v in _viewports.keys)
           results['$d@$v'] ??
-              (throw StateError('★ $d@$v 的读数缺失 —— '
-                  '少一个视口，"跨视口恒定"这个结论就不成立')),
+              (throw StateError(
+                '★ $d@$v 的读数缺失 —— '
+                '少一个视口，"跨视口恒定"这个结论就不成立',
+              )),
       ];
 
       // ── 圆角 ──
       final radii = gs.map((g) => g.radius).toList();
-      expect(radii.reduce((a, b) => a < b ? a : b),
-          closeTo(radii.reduce((a, b) => a > b ? a : b), 3.0),
-          reason: '★★ $d 的圆角随视口变了：$radii\n'
-              '  Radii.rLg 是常量（22），渲染出来不该随视口变。\n'
-              '  ⚠️ 容差 3px：采样步长 0.25px、换算系数 √2−1≈0.414，'
-              '单像素抖动会放大成 ~2.4px。');
+      expect(
+        radii.reduce((a, b) => a < b ? a : b),
+        closeTo(radii.reduce((a, b) => a > b ? a : b), 3.0),
+        reason:
+            '★★ $d 的圆角随视口变了：$radii\n'
+            '  Radii.rLg 是常量（22），渲染出来不该随视口变。\n'
+            '  ⚠️ 容差 3px：采样步长 0.25px、换算系数 √2−1≈0.414，'
+            '单像素抖动会放大成 ~2.4px。',
+      );
 
       // ── 标题栏高度 ──
       final hs = gs.map((g) => g.headerH).toList();
-      expect(hs.reduce((a, b) => a < b ? a : b),
-          closeTo(hs.reduce((a, b) => a > b ? a : b), 1.0),
-          reason: '★★ $d 的标题栏高度随视口变了：$hs\n'
-              '  外壳 _Header 的 padding 是常量 fromLTRB(x6,x3,x3,x2)，'
-              '高度只由文字行高决定 ⇒ 不该随视口变。');
+      expect(
+        hs.reduce((a, b) => a < b ? a : b),
+        closeTo(hs.reduce((a, b) => a > b ? a : b), 1.0),
+        reason:
+            '★★ $d 的标题栏高度随视口变了：$hs\n'
+            '  外壳 _Header 的 padding 是常量 fromLTRB(x6,x3,x3,x2)，'
+            '高度只由文字行高决定 ⇒ 不该随视口变。',
+      );
 
       // ── 按钮右缘 ──
       final gaps = gs.map((g) => g.actionsGapR).toList();
-      expect(gaps.reduce((a, b) => a < b ? a : b),
-          closeTo(gaps.reduce((a, b) => a > b ? a : b), 1.0),
-          reason: '★★ $d 的按钮右缘到卡片边缘的距离随视口变了：$gaps\n'
-              '  外壳 _ActionBar 的 padding 是常量 fromLTRB(x6,x2,x6,x3)，'
-              '它是**绝对 padding** 不是百分比 ⇒ 不该变。');
+      expect(
+        gaps.reduce((a, b) => a < b ? a : b),
+        closeTo(gaps.reduce((a, b) => a > b ? a : b), 1.0),
+        reason:
+            '★★ $d 的按钮右缘到卡片边缘的距离随视口变了：$gaps\n'
+            '  外壳 _ActionBar 的 padding 是常量 fromLTRB(x6,x2,x6,x3)，'
+            '它是**绝对 padding** 不是百分比 ⇒ 不该变。',
+      );
 
       // ── 按钮区高度 ──
       final ahs = gs.map((g) => g.actionsH).toList();
-      expect(ahs.reduce((a, b) => a < b ? a : b),
-          closeTo(ahs.reduce((a, b) => a > b ? a : b), 1.0),
-          reason: '★★ $d 的按钮区高度随视口变了：$ahs');
+      expect(
+        ahs.reduce((a, b) => a < b ? a : b),
+        closeTo(ahs.reduce((a, b) => a > b ? a : b), 1.0),
+        reason: '★★ $d 的按钮区高度随视口变了：$ahs',
+      );
 
       // ── 关闭钮个数 ──
       for (final g in gs) {
-        expect(g.nClose, 1,
-            reason: '★★ ${g.name}@${g.vp} 的关闭钮数量 = ${g.nClose}（应为 1）。'
-                '多于 1 = 外壳的 + 调用方自己又画了一个；少于 1 = onClose 没传');
+        expect(
+          g.nClose,
+          1,
+          reason:
+              '★★ ${g.name}@${g.vp} 的关闭钮数量 = ${g.nClose}（应为 1）。'
+              '多于 1 = 外壳的 + 调用方自己又画了一个；少于 1 = onClose 没传',
+        );
       }
 
       // ── 分隔线 ──
       for (final g in gs) {
-        expect(g.hasDivider, isTrue,
-            reason: '★★ ${g.name}@${g.vp} 的按钮区没有分隔线 —— '
-                '说明它没走外壳的 actions，而是自己在内容区画了一排按钮');
+        expect(
+          g.hasDivider,
+          isTrue,
+          reason:
+              '★★ ${g.name}@${g.vp} 的按钮区没有分隔线 —— '
+              '说明它没走外壳的 actions，而是自己在内容区画了一排按钮',
+        );
       }
     }
   });
@@ -572,18 +644,24 @@ void main() {
     final bad = <String>[];
     results.forEach((k, g) {
       if (g.overflowsViewport) {
-        bad.add('$k: card=[${g.cardLeft.toStringAsFixed(0)},'
-            '${g.cardTop.toStringAsFixed(0)} .. '
-            '${g.cardRight.toStringAsFixed(0)},'
-            '${g.cardBottom.toStringAsFixed(0)}] vs viewport '
-            '${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)}');
+        bad.add(
+          '$k: card=[${g.cardLeft.toStringAsFixed(0)},'
+          '${g.cardTop.toStringAsFixed(0)} .. '
+          '${g.cardRight.toStringAsFixed(0)},'
+          '${g.cardBottom.toStringAsFixed(0)}] vs viewport '
+          '${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)}',
+        );
       }
     });
-    expect(bad, isEmpty,
-        reason: '★★ 这些格子里的卡片**超出了视口** —— 用户会看不到底部按钮：\n'
-            '${bad.join('\n')}\n'
-            '§3.5 写的是「最大高度 620，再按视口夹取」⇒ 小视口下必须变矮，'
-            '而不是溢出屏幕。');
+    expect(
+      bad,
+      isEmpty,
+      reason:
+          '★★ 这些格子里的卡片**超出了视口** —— 用户会看不到底部按钮：\n'
+          '${bad.join('\n')}\n'
+          '§3.5 写的是「最大高度 620，再按视口夹取」⇒ 小视口下必须变矮，'
+          '而不是溢出屏幕。',
+    );
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -603,14 +681,20 @@ void main() {
        */
       final clamped = g!.cardH >= g.vpH - 2;
       if (clamped) {
-        expect(g.scrollable, isTrue,
-            reason: '★★ ${g.name}@800x600 的卡片高 ${g.cardH} 已经顶到视口高 '
-                '${g.vpH}（被夹取），但**不可滚** ⇒ 内容被裁掉了，用户看不到。');
+        expect(
+          g.scrollable,
+          isTrue,
+          reason:
+              '★★ ${g.name}@800x600 的卡片高 ${g.cardH} 已经顶到视口高 '
+              '${g.vpH}（被夹取），但**不可滚** ⇒ 内容被裁掉了，用户看不到。',
+        );
       }
       // ignore: avoid_print
-      print('[R4PIX] 判据C ${g.name}@800x600 clamped=$clamped '
-          'cardH=${g.cardH.toStringAsFixed(0)} vpH=${g.vpH.toStringAsFixed(0)} '
-          'maxScrollExtent=${g.maxScrollExtent.toStringAsFixed(0)}');
+      print(
+        '[R4PIX] 判据C ${g.name}@800x600 clamped=$clamped '
+        'cardH=${g.cardH.toStringAsFixed(0)} vpH=${g.vpH.toStringAsFixed(0)} '
+        'maxScrollExtent=${g.maxScrollExtent.toStringAsFixed(0)}',
+      );
     }
   });
 
@@ -655,18 +739,24 @@ void main() {
       final marginR = g.vpW - g.cardRight;
       final minMargin = marginL < marginR ? marginL : marginR;
       if (minMargin < 0.5) {
-        bad.add('$k: 左右边距 L=${marginL.toStringAsFixed(0)} '
-            'R=${marginR.toStringAsFixed(0)} '
-            '(card ${g.cardW.toStringAsFixed(0)}x${g.cardH.toStringAsFixed(0)} '
-            'vs vp ${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)})');
+        bad.add(
+          '$k: 左右边距 L=${marginL.toStringAsFixed(0)} '
+          'R=${marginR.toStringAsFixed(0)} '
+          '(card ${g.cardW.toStringAsFixed(0)}x${g.cardH.toStringAsFixed(0)} '
+          'vs vp ${g.vpW.toStringAsFixed(0)}x${g.vpH.toStringAsFixed(0)})',
+        );
       }
     });
-    expect(bad, isEmpty,
-        reason: '★★ 这些格子里卡片**贴满了视口**（四边没有留白）：\n'
-            '${bad.join('\n')}\n'
-            '⇒ 遮罩看不见、圆角被切、标题栏顶到屏幕边。\n'
-            '根因（已修 2026-10-21）：外壳原来直接 `SizedBox(width: width)`，'
-            '没有任何视口夹取，且 `margin` 默认 zero。');
+    expect(
+      bad,
+      isEmpty,
+      reason:
+          '★★ 这些格子里卡片**贴满了视口**（四边没有留白）：\n'
+          '${bad.join('\n')}\n'
+          '⇒ 遮罩看不见、圆角被切、标题栏顶到屏幕边。\n'
+          '根因（已修 2026-10-21）：外壳原来直接 `SizedBox(width: width)`，'
+          '没有任何视口夹取，且 `margin` 默认 zero。',
+    );
   });
 
   /*
@@ -717,11 +807,9 @@ void main() {
     for (final vp in viewports) {
       for (final w in widths) {
         await setShotViewport(t, vp);
-        await t.pumpWidget(MaterialApp(
-          theme: ThemeData(brightness: Brightness.dark),
-          home: Scaffold(
-            backgroundColor: Colors.white,
-            body: AppDialogShell(
+        await t.pumpWidget(
+          _host(
+            AppDialogShell(
               title: 'T',
               subtitle: 'S',
               onClose: () {},
@@ -729,7 +817,7 @@ void main() {
               child: const Text('body'),
             ),
           ),
-        ));
+        );
         await t.pumpAndSettle();
         final card = _cardRect(t);
         final mL = card.left;
@@ -766,20 +854,28 @@ void main() {
         );
 
         if (minM < 0.5) {
-          bad.add('width=$w @${vp.width.toInt()}x${vp.height.toInt()}: '
-              '边距 L=${mL.toStringAsFixed(0)} R=${mR.toStringAsFixed(0)}');
+          bad.add(
+            'width=$w @${vp.width.toInt()}x${vp.height.toInt()}: '
+            '边距 L=${mL.toStringAsFixed(0)} R=${mR.toStringAsFixed(0)}',
+          );
         }
         if ((card.width - expectW).abs() > 1.0) {
-          bad.add('width=$w @${vp.width.toInt()}: '
-              '卡片宽 ${card.width.toStringAsFixed(0)} != 期望 '
-              '${expectW.toStringAsFixed(0)}');
+          bad.add(
+            'width=$w @${vp.width.toInt()}: '
+            '卡片宽 ${card.width.toStringAsFixed(0)} != 期望 '
+            '${expectW.toStringAsFixed(0)}',
+          );
         }
       }
     }
-    expect(bad, isEmpty,
-        reason: '★★ 外壳的夹取规则不成立：\n${bad.join('\n')}\n'
-            '公式应为 `min(传入 width, 视口宽 − 2*Sp.x4)`，下限 260。\n'
-            '⇒ 这条一旦红，**8 个弹窗全部**受影响（它们都只是传 width 进来）。');
+    expect(
+      bad,
+      isEmpty,
+      reason:
+          '★★ 外壳的夹取规则不成立：\n${bad.join('\n')}\n'
+          '公式应为 `min(传入 width, 视口宽 − 2*Sp.x4)`，下限 260。\n'
+          '⇒ 这条一旦红，**8 个弹窗全部**受影响（它们都只是传 width 进来）。',
+    );
   });
 
   // ═══════════════════════════════════════════════════════════════════
@@ -789,8 +885,10 @@ void main() {
     // ignore: avoid_print
     print('\n[R4PIX] ================= 三视口 × 三弹窗 =================');
     // ignore: avoid_print
-    print('[R4PIX] 指标            ' +
-        _viewports.keys.map((v) => v.padLeft(11)).join(''));
+    print(
+      '[R4PIX] 指标            ' +
+          _viewports.keys.map((v) => v.padLeft(11)).join(''),
+    );
     for (final d in _dialogNames) {
       // ignore: avoid_print
       print('[R4PIX] --- $d ---');
@@ -803,7 +901,7 @@ void main() {
         'actionsH',
         'nClose',
         'scroll',
-        'overflow'
+        'overflow',
       ]) {
         final cells = <String>[];
         for (final v in _viewports.keys) {

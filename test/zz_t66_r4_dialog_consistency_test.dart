@@ -31,6 +31,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/app_update/app_update_controller.dart';
 import 'package:sourin_spike/core/app_update/release.dart';
@@ -111,16 +112,6 @@ const _bareShellWhitelist = <String, String>{
 /// ✗ 不用 'AlertDialog('（同一文件里可能有多处）
 /// ```
 const _siteExemptions = <String, String>{
-  // ═══ 2026-10-28（N4-1 的第三点：网盘登录要出二维码）═══
-  'lib/ui/widgets/pan_qr_login_dialog.dart#constraints: const BoxConstraints(maxWidth: 380)':
-      '★ 2026-10-28 新增：网盘扫码登录弹窗。**不属于可以换成 AppGlassDialog 的那类**——'
-          '它要承载 `QrView`（定尺 180 画布，靠 SVG 解析，标题/说明/状态三行要围着它排版），'
-          '而 AppGlassDialog 只接 String 标题、不能承载这个定尺画布。'
-          '按括号块量过：控件只有 Text/Column/Padding/ConstrainedBox/Dialog/QrView/'
-          'CircularProgressIndicator/TextButton —— TextField / TextFormField / '
-          'EditableText / InputDecoration 各 0 个（所以也不属于机制②）。'
-          '它替代的是「网盘源点登录后一片空白」的那个空面板（见笔记 '
-          '2026-10-28-pan-login-shows-qr-not-blank-panel.md）。',
   // ═══ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）═══
   // 基线里 13 处生产 `AlertDialog(` 已全部迁到统一外壳，逐处登记随之失去意义，
   // 故删除其豁免（属正当减法：登记的是"这一处不能换"，既然换了就不该再登记）。
@@ -129,23 +120,11 @@ const _siteExemptions = <String, String>{
   //   · 机制⑤ 内容区写死 `textAlign:center` ⇒ 显式传 `TextAlign.left`；
   //   · 机制③ 内联 TextStyle 定色 ⇒ 显式样式优先于 DefaultTextStyle。
   // 逐处等价性与仪器自检见 test/zz_dialog18_unified_shell_test.dart。
-  // 仍保留下面 2 条**真豁免**（这两处按设计不走统一外壳）。
+  // 下列诊断入口仍独立验证框架路由。
   'lib/t104_overlay_exit_probe.dart#真机探针，验证统一入口本身':
       '真机探针，**故意验证统一入口本身**：它已经在走 showAppDialog（:300），'
-          '这里的 AlertDialog 只是 builder 里的内容。换成 AppGlassDialog 会让'
-          '探针测不到它真正要测的那条路径。',
-  'lib/ui/widgets/provider_login_panel.dart#constraints: const BoxConstraints(maxWidth: 460)':
-      '★ 2026-10-19 复核**改判**（此前写的是「机制②」，实测**不成立**）。'
-          '**不属于机制②**：按括号块逐字量过，`Dialog(` 的 1706 字符块内 '
-          '`TextField` / `TextFormField` / `EditableText` / `InputDecoration` '
-          '各 **0** 个，控件只有 Align/Column/ConstrainedBox/'
-          'SingleChildScrollView/SizedBox/Text/TextButton —— '
-          '正文是**确认问句**（"…源需要登录才能使用，是否已登录？"），'
-          '**没有任何输入框** ⇒ 换过去**不会**抛 Material 祖先异常。'
-          '★ 归类：属**裸 `Dialog(`（自建外壳）**那一类 ⇒ 归「R4 收尾换壳」。'
-          '真实障碍：标题是**自绘** `Text("登录 ' r'$providerName' '")`，'
-          '而 `AppGlassDialog.title` 只收 `String`，没有可对位的参数 ⇒ '
-          '**属调用点改动**（把自绘标题改成 title 参数），**不需改组件**。',
+      '这里的 AlertDialog 只是 builder 里的内容。换成 AppGlassDialog 会让'
+      '探针测不到它真正要测的那条路径。',
 };
 
 /// 把「剥注释后的行号」还原成**原文**那一处的上下文，供特征串匹配
@@ -201,9 +180,11 @@ bool _isExempt(String file, int strippedLine, String anchorText) {
 
   // 方向一：从这条 AlertDialog 往上/往下找特征串（窗口放宽到 ±20，
   //         真正的「关联」由下面的方向二兜底）
-  for (var k = strippedLine - 20;
-      k <= strippedLine + 20 && k >= 1 && k <= n;
-      k++) {
+  for (
+    var k = strippedLine - 20;
+    k <= strippedLine + 20 && k >= 1 && k <= n;
+    k++
+  ) {
     if (!featAt(k)) continue;
     // 方向二：确认这条特征串**归属于**本条 AlertDialog ——
     //         从特征串往上，最近的那个 AlertDialog 必须就是 strippedLine
@@ -420,7 +401,8 @@ class _Meas {
   final double? maxHeight;
 
   @override
-  String toString() => '$name(w=${rect.width.toStringAsFixed(1)}'
+  String toString() =>
+      '$name(w=${rect.width.toStringAsFixed(1)}'
       ',h=${rect.height.toStringAsFixed(1)}'
       ',r=$radius,c=${color?.toARGB32().toRadixString(16)}'
       ',maxH=$maxHeight)';
@@ -450,17 +432,25 @@ void main() {
        *    ⇒ 判据改成**读真实值**：`_bareShellWhitelist.isNotEmpty`
        *       + 每个条目的文件名真的在扫描范围内（防"写了不存在的文件"凑数）。
        */
-      expect(_bareShellWhitelist, isNotEmpty,
-          reason: '★★ 白名单**不许为空** —— 空 Map 会让 ① 把所有文件判违规'
-              '（"红得莫名其妙"），而 ② 本身也就失去了被验证的意义。'
-              '本仓有过"空条款假绿"的先例。');
+      expect(
+        _bareShellWhitelist,
+        isNotEmpty,
+        reason:
+            '★★ 白名单**不许为空** —— 空 Map 会让 ① 把所有文件判违规'
+            '（"红得莫名其妙"），而 ② 本身也就失去了被验证的意义。'
+            '本仓有过"空条款假绿"的先例。',
+      );
 
       // 白名单里提到的文件必须**真实存在**（防用不存在的文件名凑数）
       for (final name in _bareShellWhitelist.keys) {
         final path = 'lib/ui/widgets/$name';
-        expect(File(path).existsSync(), isTrue,
-            reason: '★ 白名单里的「$name」在 lib/ui/widgets/ 下**不存在** —— '
-                '这种条目什么都没豁免，只是让白名单看起来非空');
+        expect(
+          File(path).existsSync(),
+          isTrue,
+          reason:
+              '★ 白名单里的「$name」在 lib/ui/widgets/ 下**不存在** —— '
+              '这种条目什么都没豁免，只是让白名单看起来非空',
+        );
       }
 
       // 阴性对照：白名单里的文件**必须真的**是"不需要外壳"的那两个
@@ -468,23 +458,26 @@ void main() {
       expect(
         _bareShellWhitelist.keys.toSet(),
         {'app_dialog_shell.dart', 'app_dialog_section.dart'},
-        reason: '★★ 白名单只允许这两个**非弹窗**文件。\n'
+        reason:
+            '★★ 白名单只允许这两个**非弹窗**文件。\n'
             '新增条目 = 允许某个弹窗绕过统一外壳 ⇒ 必须先在本注释里'
             '写清原因，并同步改本断言的期望集合。',
       );
 
       // 每条理由都要够具体（"占位"式理由等于没写）
       for (final e in _bareShellWhitelist.entries) {
-        expect(e.value.trim().length, greaterThan(8),
-            reason: '★ 白名单条目「${e.key}」的理由太短 —— 等于没写');
+        expect(
+          e.value.trim().length,
+          greaterThan(8),
+          reason: '★ 白名单条目「${e.key}」的理由太短 —— 等于没写',
+        );
       }
     });
 
     // ═══════════════════════════════════════════════════════════════
     //  ④-c/d ★ 收拢后的**尺寸**与三键不溢出（Lead 第二步要求新增）
     // ═══════════════════════════════════════════════════════════════
-    testWidgets('④-c ★★ 收拢后的卡片尺寸读数（钉住「换了之后长什么样」）',
-        (t) async {
+    testWidgets('④-c ★★ 收拢后的卡片尺寸读数（钉住「换了之后长什么样」）', (t) async {
       /*
        * ★ Lead 要求的**新增**判据，理由：
        * ```text
@@ -508,12 +501,19 @@ void main() {
         content: SizedBox(),
         actions: SizedBox(),
       );
-      expect(const [460.0, 560.0, 820.0], contains(probe.maxWidth),
-          reason: '★ docs/AGENTS.md §3.5：弹窗宽度只允许 460 / 560 / 820；'
-              '实测 ${probe.maxWidth}（改前是 380，不在白名单里）');
+      expect(
+        const [460.0, 560.0, 820.0],
+        contains(probe.maxWidth),
+        reason:
+            '★ docs/AGENTS.md §3.5：弹窗宽度只允许 460 / 560 / 820；'
+            '实测 ${probe.maxWidth}（改前是 380，不在白名单里）',
+      );
       expect(probe.maxWidth, 460, reason: '★ 确认框 = §3.5「窄弹窗」档 460');
-      expect(probe.maxHeight, 620,
-          reason: '★ §3.5：最大高度 = 绝对值 620（改前 420 也是拍出来的数）');
+      expect(
+        probe.maxHeight,
+        620,
+        reason: '★ §3.5：最大高度 = 绝对值 620（改前 420 也是拍出来的数）',
+      );
 
       const view = Size(1280, 800);
       t.view.physicalSize = view;
@@ -556,14 +556,22 @@ void main() {
       expect(card, isNotNull, reason: '★ 没量到卡片矩形');
       final w = card?.width ?? -1;
       final h = card?.height ?? -1;
-      expect(w, inInclusiveRange(404, 420),
-          reason: '★★ 收拢后卡片宽度 = $w，不在 [404, 420]。'
-              '§3.5 窄弹窗 460 − 左右 padding 48 ⇒ 期望 412；'
-              '改前（maxWidth 380）是 332。'
-              '⚠️ 别改成「跟 maxWidth 联动算」—— 那样把默认改回 380 也绿。');
-      expect(h, inInclusiveRange(100, 260),
-          reason: '★★ 收拢后卡片高度 = $h，不在 [100, 260]。'
-              '改前实测基准 2026-10-19 = 143.0。');
+      expect(
+        w,
+        inInclusiveRange(404, 420),
+        reason:
+            '★★ 收拢后卡片宽度 = $w，不在 [404, 420]。'
+            '§3.5 窄弹窗 460 − 左右 padding 48 ⇒ 期望 412；'
+            '改前（maxWidth 380）是 332。'
+            '⚠️ 别改成「跟 maxWidth 联动算」—— 那样把默认改回 380 也绿。',
+      );
+      expect(
+        h,
+        inInclusiveRange(100, 260),
+        reason:
+            '★★ 收拢后卡片高度 = $h，不在 [100, 260]。'
+            '改前实测基准 2026-10-19 = 143.0。',
+      );
     });
 
     testWidgets('④-d ★★ 三键确认框（app_tray 形态）不许换行或溢出', (t) async {
@@ -587,10 +595,11 @@ void main() {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     AppTextButton(
-                        onPressed: () {}, child: const Text('最小化到托盘')),
+                      onPressed: () {},
+                      child: const Text('最小化到托盘'),
+                    ),
                     const SizedBox(width: 4),
-                    AppTextButton(
-                        onPressed: () {}, child: const Text('彻底退出')),
+                    AppTextButton(onPressed: () {}, child: const Text('彻底退出')),
                     const SizedBox(width: 4),
                     AppTextButton(onPressed: () {}, child: const Text('取消')),
                   ],
@@ -605,9 +614,13 @@ void main() {
       expect(find.text('最小化到托盘'), findsOneWidget);
       expect(find.text('彻底退出'), findsOneWidget);
       expect(find.text('取消'), findsOneWidget);
-      expect(t.takeException(), isNull,
-          reason: '★★ 三键确认框抛了异常 ⇒ 在窄宽度下换行/溢出了。'
-              '若确实需要更宽，给 `AppGlassDialog(maxWidth: …)` 传值并更新本判据。');
+      expect(
+        t.takeException(),
+        isNull,
+        reason:
+            '★★ 三键确认框抛了异常 ⇒ 在窄宽度下换行/溢出了。'
+            '若确实需要更宽，给 `AppGlassDialog(maxWidth: …)` 传值并更新本判据。',
+      );
     });
 
     // ═══════════════════════════════════════════════════════════════
@@ -617,25 +630,25 @@ void main() {
       // ★★ 本条是**第二道**防空转：第一道（②）是「表不许空」，
       //    这道是「表里的每条**不许没内容**」——
       //    一张全填「暂时不处理」的表同样等于没登记。
-      const vacuous = [
-        '暂时不处理',
-        '以后再说',
-        '先放着',
-        'TODO',
-        '待定',
-        '暂不处理',
-        '保持现状',
-      ];
+      const vacuous = ['暂时不处理', '以后再说', '先放着', 'TODO', '待定', '暂不处理', '保持现状'];
       for (final e in _siteExemptions.entries) {
         final reason = e.value.trim();
-        expect(reason.length, greaterThan(24),
-            reason: '★ 豁免「${e.key}」的理由只有 ${reason.length} 字 —— '
-                '太短，多半等于没写。'
-                '要具体到「为什么它**不需要** AppDialogShell」。');
+        expect(
+          reason.length,
+          greaterThan(24),
+          reason:
+              '★ 豁免「${e.key}」的理由只有 ${reason.length} 字 —— '
+              '太短，多半等于没写。'
+              '要具体到「为什么它**不需要** AppDialogShell」。',
+        );
         for (final v in vacuous) {
-          expect(reason.contains(v), isFalse,
-              reason: '★★ 豁免「${e.key}」的理由是占位话「$v」—— '
-                  '这种理由等于没登记（本轮明确不许）。');
+          expect(
+            reason.contains(v),
+            isFalse,
+            reason:
+                '★★ 豁免「${e.key}」的理由是占位话「$v」—— '
+                '这种理由等于没登记（本轮明确不许）。',
+          );
         }
       }
     });
@@ -646,23 +659,29 @@ void main() {
         //   理由见 [_siteExemptions] 的文档 —— 行号会因"在原地写注释"而漂，
         //   造成「④-b 要求有注释」与「我被禁止改那个文件」互斥的死结。
         final i = key.indexOf('#');
-        expect(i > 0, isTrue,
-            reason: '★ 豁免键「$key」格式不对（应为 路径#特征串）');
+        expect(i > 0, isTrue, reason: '★ 豁免键「$key」格式不对（应为 路径#特征串）');
         final path = key.substring(0, i);
         final feat = key.substring(i + 1);
-        expect(feat.trim().isNotEmpty, isTrue,
-            reason: '★ 豁免键「$key」的特征串是空的');
+        expect(feat.trim().isNotEmpty, isTrue, reason: '★ 豁免键「$key」的特征串是空的');
 
-        expect(File(path).existsSync(), isTrue,
-            reason: '★★ 豁免键「$key」指向的文件**不存在** —— '
-                '这种条目什么都没豁免，只是让表看起来非空');
+        expect(
+          File(path).existsSync(),
+          isTrue,
+          reason:
+              '★★ 豁免键「$key」指向的文件**不存在** —— '
+              '这种条目什么都没豁免，只是让表看起来非空',
+        );
 
         // 特征串必须**真的出现在该文件里**（否则是凭空登记）
         final src = File(path).readAsStringSync();
-        expect(src.contains(feat), isTrue,
-            reason: '★★ 豁免「$key」的特征串「$feat」在 $path 里**找不到**。\n'
-                '⇒ 这条登记指向一个不存在的位置（多半是那处被改名/删除了）。\n'
-                '请把特征串更新成该处现在真实存在的字面量。');
+        expect(
+          src.contains(feat),
+          isTrue,
+          reason:
+              '★★ 豁免「$key」的特征串「$feat」在 $path 里**找不到**。\n'
+              '⇒ 这条登记指向一个不存在的位置（多半是那处被改名/删除了）。\n'
+              '请把特征串更新成该处现在真实存在的字面量。',
+        );
 
         // ★★★ 特征串必须**唯一**（Lead 第三条指令，2026-10-19）
         //
@@ -679,12 +698,16 @@ void main() {
         for (final line in src.split('\n')) {
           if (line.contains(feat)) occurrences++;
         }
-        expect(occurrences, 1,
-            reason: '★★ 豁免「$key」的特征串「$feat」在 $path 里出现 '
-                '**$occurrences 次**，必须**恰好 1 次**。\n'
-                '非唯一 ⇒ 它定位不到「这一处」，将来别处出现同名字面量时会被误判豁免。\n'
-                '请换成该处**邻近且唯一**的字面量'
-                '（例如紧跟 R4-EXCEPTION 注释的那行参数）。');
+        expect(
+          occurrences,
+          1,
+          reason:
+              '★★ 豁免「$key」的特征串「$feat」在 $path 里出现 '
+              '**$occurrences 次**，必须**恰好 1 次**。\n'
+              '非唯一 ⇒ 它定位不到「这一处」，将来别处出现同名字面量时会被误判豁免。\n'
+              '请换成该处**邻近且唯一**的字面量'
+              '（例如紧跟 R4-EXCEPTION 注释的那行参数）。',
+        );
 
         // ★ 该特征串附近必须有豁免注释（证明"有人在那儿写下了理由"）
         final lines = src.split('\n');
@@ -695,19 +718,21 @@ void main() {
             break;
           }
         }
-        expect(foundAt, isNot(equals(-1)),
-            reason: '★ 内部矛盾：上一条说特征串存在，这里说找不到');
+        expect(foundAt, isNot(equals(-1)), reason: '★ 内部矛盾：上一条说特征串存在，这里说找不到');
         final lo = (foundAt - 14).clamp(0, lines.length);
         final hi = (foundAt + 14).clamp(0, lines.length);
         final near = lines.sublist(lo, hi).join('\n');
-        expect(near.contains('R4-EXCEPTION') ||
-            near.contains('刻意保留') ||
-            near.contains('为什么不换') ||
-            near.contains('不能换'),
-            isTrue,
-            reason: '★★ 豁免「$key」的特征串附近**找不到**豁免注释。\n'
-                '⇒ 这条登记是"凭空登记"，门禁就等于在放行一个不存在的问题。\n'
-                '请在该处附近补一行 `// R4-EXCEPTION: <理由>`。');
+        expect(
+          near.contains('R4-EXCEPTION') ||
+              near.contains('刻意保留') ||
+              near.contains('为什么不换') ||
+              near.contains('不能换'),
+          isTrue,
+          reason:
+              '★★ 豁免「$key」的特征串附近**找不到**豁免注释。\n'
+              '⇒ 这条登记是"凭空登记"，门禁就等于在放行一个不存在的问题。\n'
+              '请在该处附近补一行 `// R4-EXCEPTION: <理由>`。',
+        );
       }
     });
 
@@ -735,20 +760,23 @@ void main() {
           bad.add(key);
         }
       }
-      expect(bad, isEmpty,
-          reason: '★★ 这几处**绕过**了 `AppDialogShell`，且没有在\n'
-              '    `_siteExemptions` 里逐处登记理由：\n'
-              '${bad.map((e) => '      · $e').join('\n')}\n'
-              '规矩（AGENTS §3.5）：弹窗必须走 `AppDialogShell`。\n'
-              '确实需要保留的，**在该处附近**写一行：\n'
-              '    // R4-EXCEPTION: <为什么它不需要外壳，要具体>\n'
-              '并把 `路径:行号` 登记进本文件的 `_siteExemptions`。\n'
-              '⚠️ 不接受「暂时不处理」这种没有信息量的理由（见测试 ④）。\n'
-              '本次扫描了 $scanned 处构造调用。');
+      expect(
+        bad,
+        isEmpty,
+        reason:
+            '★★ 这几处**绕过**了 `AppDialogShell`，且没有在\n'
+            '    `_siteExemptions` 里逐处登记理由：\n'
+            '${bad.map((e) => '      · $e').join('\n')}\n'
+            '规矩（AGENTS §3.5）：弹窗必须走 `AppDialogShell`。\n'
+            '确实需要保留的，**在该处附近**写一行：\n'
+            '    // R4-EXCEPTION: <为什么它不需要外壳，要具体>\n'
+            '并把 `路径:行号` 登记进本文件的 `_siteExemptions`。\n'
+            '⚠️ 不接受「暂时不处理」这种没有信息量的理由（见测试 ④）。\n'
+            '本次扫描了 $scanned 处构造调用。',
+      );
     });
 
-    test('①-b2 ★ 裸 `showDialog(` 必须为零（AGENTS §4：统一走 showAppDialog）',
-        () {
+    test('①-b2 ★ 裸 `showDialog(` 必须为零（AGENTS §4：统一走 showAppDialog）', () {
       final bad = <String>[];
       for (final f in files) {
         final name = f.split('/').last;
@@ -762,11 +790,15 @@ void main() {
           }
         }
       }
-      expect(bad, isEmpty,
-          reason: '★★ 这些地方直接调了裸 `showDialog(`：$bad\n'
-              '弹窗入场动效由 `showAppDialog`（overlay_motion.dart）统一提供，'
-              '裸调用会绕过它 ⇒ 动效不一致。\n'
-              '改法：`showDialog` → `showAppDialog`。');
+      expect(
+        bad,
+        isEmpty,
+        reason:
+            '★★ 这些地方直接调了裸 `showDialog(`：$bad\n'
+            '弹窗入场动效由 `showAppDialog`（overlay_motion.dart）统一提供，'
+            '裸调用会绕过它 ⇒ 动效不一致。\n'
+            '改法：`showDialog` → `showAppDialog`。',
+      );
     });
 
     test('①-b3 ★ 裸 `Dialog(`（自建外壳）也必须逐处登记', () {
@@ -793,10 +825,14 @@ void main() {
           bad.add(key);
         }
       }
-      expect(bad, isEmpty,
-          reason: '★★ 这些地方自建了 `Dialog(` 外壳：$bad\n'
-              '自建外壳是"宽度四种、高度三种"的来源（见 app_dialog_shell.dart 文件头）。\n'
-              '改法：换成 `AppDialogShell`，尺寸用它的 width / maxHeight 参数。');
+      expect(
+        bad,
+        isEmpty,
+        reason:
+            '★★ 这些地方自建了 `Dialog(` 外壳：$bad\n'
+            '自建外壳是"宽度四种、高度三种"的来源（见 app_dialog_shell.dart 文件头）。\n'
+            '改法：换成 `AppDialogShell`，尺寸用它的 width / maxHeight 参数。',
+      );
     });
 
     test('①-c width / maxHeight 必须落在白名单，或带 R4-EXCEPTION 注释', () {
@@ -826,20 +862,25 @@ void main() {
           }
         }
       }
-      expect(violations, isEmpty,
-          reason: '★★ 这些弹窗的尺寸不在 §3.5 白名单里：$violations\n'
-              '允许：width ∈ ${_allowedWidths.toList()}、'
-              'maxHeight ∈ ${_allowedMaxHeights.toList()}。\n'
-              '确实需要破例的，在**同一个文件**里写一行：\n'
-              '    // R4-EXCEPTION: <为什么这个数不能改，以及实测依据>\n'
-              '（只写"因为看起来更好"不算理由 —— 要能被下一个人验证。）');
+      expect(
+        violations,
+        isEmpty,
+        reason:
+            '★★ 这些弹窗的尺寸不在 §3.5 白名单里：$violations\n'
+            '允许：width ∈ ${_allowedWidths.toList()}、'
+            'maxHeight ∈ ${_allowedMaxHeights.toList()}。\n'
+            '确实需要破例的，在**同一个文件**里写一行：\n'
+            '    // R4-EXCEPTION: <为什么这个数不能改，以及实测依据>\n'
+            '（只写"因为看起来更好"不算理由 —— 要能被下一个人验证。）',
+      );
     });
 
     // ═══════════════════════════════════════════════════════════════
     //  ③ 外壳的高度上限必须是绝对值 620
     // ═══════════════════════════════════════════════════════════════
     test('③ `AppDialogShell._kMaxHeight` 必须是绝对值 620', () {
-      final src = File('lib/ui/widgets/app_dialog_shell.dart').readAsStringSync();
+      final src = File('lib/ui/widgets/app_dialog_shell.dart')
+          .readAsStringSync();
       final code = _stripComments(src);
 
       /*
@@ -850,18 +891,25 @@ void main() {
        */
       final m = RegExp(r'_kMaxHeight\s*=\s*([0-9]+(?:\.[0-9]+)?)')
           .firstMatch(code);
-      expect(m, isNotNull,
-          reason: '★ 找不到 `_kMaxHeight = <数值>` —— 常量被改名/删掉了？');
-      expect(double.parse(m!.group(1)!), 620,
-          reason: '★★ `_kMaxHeight` 必须是 **620（绝对值）**，实际是 ${m.group(1)}。\n'
-              '2026-10-17 的更正：改前文档写的是"视口 × 0.8"，那是**被证伪**的数：\n'
-              '  800x600 测试视口下 0.8*600 = 480 < 620 ⇒ 内容被挤，t70 三条 tap 红。\n'
-              '⇒ 不许改回比例式，除非同时改 AGENTS.md §3.5 并重跑 t70。');
+      expect(m, isNotNull, reason: '★ 找不到 `_kMaxHeight = <数值>` —— 常量被改名/删掉了？');
+      expect(
+        double.parse(m!.group(1)!),
+        620,
+        reason:
+            '★★ `_kMaxHeight` 必须是 **620（绝对值）**，实际是 ${m.group(1)}。\n'
+            '2026-10-17 的更正：改前文档写的是"视口 × 0.8"，那是**被证伪**的数：\n'
+            '  800x600 测试视口下 0.8*600 = 480 < 620 ⇒ 内容被挤，t70 三条 tap 红。\n'
+            '⇒ 不许改回比例式，除非同时改 AGENTS.md §3.5 并重跑 t70。',
+      );
 
       // 阳性对照：这个常量**真的被用**（不是定义了没人读）
-      expect(RegExp(r'maxHeight\s*\?\?\s*_kMaxHeight').hasMatch(code), isTrue,
-          reason: '★★ `_kMaxHeight` 必须在 `maxHeight ?? _kMaxHeight` 里被**读**——'
-              '定义了却不使用 = 改了半天没生效（本仓有过这个坑）');
+      expect(
+        RegExp(r'maxHeight\s*\?\?\s*_kMaxHeight').hasMatch(code),
+        isTrue,
+        reason:
+            '★★ `_kMaxHeight` 必须在 `maxHeight ?? _kMaxHeight` 里被**读**——'
+            '定义了却不使用 = 改了半天没生效（本仓有过这个坑）',
+      );
     });
 
     // ═══════════════════════════════════════════════════════════════
@@ -874,9 +922,13 @@ void main() {
         'source_composer_dialog.dart',
       ]) {
         final code = _stripComments(
-            File('lib/ui/widgets/$n').readAsStringSync());
-        expect(code.contains('AppDialogShell('), isTrue,
-            reason: '★★ $n 必须走统一外壳 —— 这是 R4 的核心成果');
+          File('lib/ui/widgets/$n').readAsStringSync(),
+        );
+        expect(
+          code.contains('AppDialogShell('),
+          isTrue,
+          reason: '★★ $n 必须走统一外壳 —— 这是 R4 的核心成果',
+        );
       }
     });
   });
@@ -903,42 +955,51 @@ void main() {
   // ```text
   // ④ 三个弹窗各自真渲染一遍（真挂载、真 pump），读：
   //      · 卡片 Rect（tester.getRect）
-  //      · 圆角（Material.shape 的 borderRadius）
-  //      · 底色（Material.color）
+  //      · 圆角（MiuixCard 实际 ShapeDecoration 的 squircle 半径）
+  //      · 底色（同一 ShapeDecoration.color）
   //    断言三者**逐项相等**（圆角/底色）且宽度落在 §3.5 白名单。
   // ⑤ 只有 skip_marker 允许传 maxHeight（实测反证），另两个必须吃默认。
   // ```
   //
-  // ⚠️ 判据全部取自 `Material` 的**渲染实例**，不是源码常量 ——
+  // ⚠️ 判据全部取自 `MiuixCard` 的**渲染实例**，不是源码常量 ——
   //    源码字符串当判据是本仓明确记过的假绿形态。
   group('R4 弹窗一致性（渲染判据）', () {
-    /// 卡片 = 外壳里那层 `Material(type: card)`。
-    ///
-    /// ★ 为什么取「标题 Text 的最近 Material 祖先」而不是"第一个 Material"：
-    ///   `AppDialogShell` 的子树里可能先出现别的 Material（如 Chip/SnackBar），
-    ///   "第一个"不一定是卡片。标题栏一定在卡片里，且卡片是它的**最近** Material 祖先。
-    Finder _cardFinder() {
+    /// Anchor the real Miuix card to this shell's title, avoiding nested cards.
+    Finder _cardFinder(WidgetTester t) {
       final shell = find.byType(AppDialogShell);
-      final title = find.descendant(of: shell, matching: find.byType(Text)).first;
-      final mat = find.ancestor(of: title, matching: find.byType(Material));
-      return mat.first;
+      final title = find.descendant(
+        of: shell,
+        matching: find.text(t.widget<AppDialogShell>(shell).title),
+      );
+      final card = find.ancestor(
+        of: title,
+        matching: find.byType(miuix.MiuixCard),
+      );
+      expect(card, findsOneWidget);
+      return card;
     }
 
     _Meas _measure(WidgetTester t, String name) {
-      final card = _cardFinder();
+      final card = _cardFinder(t);
       final r = t.getRect(card);
-      final m = t.widget<Material>(card);
-      final shape = m.shape;
-      double? radius;
-      if (shape is RoundedRectangleBorder) {
-        // ⚠️ `material_ui` 遮蔽了 `BorderRadius` 这个名字 ⇒ 只能按 `is` 判断
-        final br = shape.borderRadius;
-        if (br is BorderRadius && br.topLeft == br.bottomRight) {
-          radius = br.topLeft.x;
-        }
-      }
+      final surface = find
+          .descendant(
+            of: card,
+            matching: find.byWidgetPredicate(
+              (widget) =>
+                  widget is DecoratedBox &&
+                  widget.decoration is ShapeDecoration &&
+                  (widget.decoration as ShapeDecoration).shape
+                      is miuix.MiuixSquircleBorder,
+            ),
+          )
+          .first;
+      final decoration =
+          t.widget<DecoratedBox>(surface).decoration as ShapeDecoration;
+      final radius =
+          (decoration.shape as miuix.MiuixSquircleBorder).cornerRadius;
       final shellW = t.widget<AppDialogShell>(find.byType(AppDialogShell));
-      return _Meas(name, r, radius, m.color, shellW.maxHeight);
+      return _Meas(name, r, radius, decoration.color, shellW.maxHeight);
     }
 
     /// ★ `key` 是**必须**的（2026-10-19 实测踩到）：
@@ -949,35 +1010,37 @@ void main() {
     ///   `Bad state: Too many elements`（WidgetController.widget 抛的）。
     ///   给每次挂载一个**不同的 key** ⇒ 旧子树整个 dispose，Navigator 一并销毁。
     Widget _host(String keyName, Widget child) => MaterialApp(
-          key: ValueKey(keyName),
-          debugShowCheckedModeBanner: false,
-          theme: ThemeData(
-            brightness: Brightness.dark,
-            fontFamily: 'Microsoft YaHei UI',
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: const Color(0xFF7C4DFF),
-              brightness: Brightness.dark,
-            ),
-          ),
-          home: Scaffold(body: Center(child: child)),
-        );
+      key: ValueKey(keyName),
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        fontFamily: 'Microsoft YaHei UI',
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF7C4DFF),
+          brightness: Brightness.dark,
+        ),
+      ),
+      home: Scaffold(body: Center(child: child)),
+    );
 
-    ReleaseInfo _rel() => parseReleaseJson({
-          'tag_name': 'v1.1.0',
-          'name': 'v1.1.0',
-          'body': '## 本次更新\n\n- 修了些东西',
-          'draft': false,
-          'prerelease': false,
-          'html_url': '',
-          'published_at': null,
-          'assets': [
-            {
-              'name': 'Sourin-Setup-1.1.0.exe',
-              'size': 12345678,
-              'browser_download_url': 'https://example.invalid/a.exe',
-            }
-          ],
-        } as Map<String, dynamic>);
+    ReleaseInfo _rel() => parseReleaseJson(
+      {
+        'tag_name': 'v1.1.0',
+        'name': 'v1.1.0',
+        'body': '## 本次更新\n\n- 修了些东西',
+        'draft': false,
+        'prerelease': false,
+        'html_url': '',
+        'published_at': null,
+        'assets': [
+          {
+            'name': 'Sourin-Setup-1.1.0.exe',
+            'size': 12345678,
+            'browser_download_url': 'https://example.invalid/a.exe',
+          },
+        ],
+      } as Map<String, dynamic>,
+    );
 
     setUpAll(loadRealFonts);
 
@@ -986,8 +1049,9 @@ void main() {
       await UiPrefs.load(tmp.path);
       AppUpdateController.instance.loadPrefs();
       AppUpdateController.instance.debugResetAvailable();
-      AppUpdateController.instance
-          .debugSetDownloadState(UpdateDownloadState.idle);
+      AppUpdateController.instance.debugSetDownloadState(
+        UpdateDownloadState.idle,
+      );
     });
 
     /// 三个弹窗各真渲染一遍，返回实测值（按名字索引）
@@ -996,11 +1060,21 @@ void main() {
 
       // update：走真实 showUpdateDialog 入口（与 app_update_ui_test 同路子）
       await setShotViewport(t, const Size(1440, 900));
-      await t.pumpWidget(_host('update', Builder(builder: (ctx) => TextButton(
-            onPressed: () =>
-                showUpdateDialog(ctx, _rel(), platform: UpdatePlatform.windows),
-            child: const Text('打开'),
-          ))));
+      await t.pumpWidget(
+        _host(
+          'update',
+          Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () => showUpdateDialog(
+                ctx,
+                _rel(),
+                platform: UpdatePlatform.windows,
+              ),
+              child: const Text('打开'),
+            ),
+          ),
+        ),
+      );
       await t.tap(find.text('打开'));
       await t.pumpAndSettle();
       out['update'] = _measure(t, 'update');
@@ -1015,13 +1089,18 @@ void main() {
       SourinApi.debugSkipMarkerFetcher = (p, i) async => null;
       addTearDown(() => SourinApi.debugSkipMarkerFetcher = null);
       await setShotViewport(t, const Size(1280, 800));
-      await t.pumpWidget(_host('skip', const SkipMarkerDialog(
-        provider: 'tyyszy',
-        id: '70260',
-        title: '怒鲨狂潮',
-        streamUrl: 'file:///nonexistent.mp4',
-        duration: Duration(seconds: 600),
-      )));
+      await t.pumpWidget(
+        _host(
+          'skip',
+          const SkipMarkerDialog(
+            provider: 'tyyszy',
+            id: '70260',
+            title: '怒鲨狂潮',
+            streamUrl: 'file:///nonexistent.mp4',
+            duration: Duration(seconds: 600),
+          ),
+        ),
+      );
       await t.pump(const Duration(milliseconds: 50));
       await t.pump(const Duration(milliseconds: 50));
       await t.pump(const Duration(milliseconds: 50));
@@ -1030,78 +1109,121 @@ void main() {
       return out;
     }
 
-    testWidgets('④ 三弹窗卡片：圆角/底色一致 + 宽度落在白名单（渲染实测）',
-        (t) async {
+    testWidgets('④ 三弹窗卡片：圆角/底色一致 + 宽度落在白名单（渲染实测）', (t) async {
       final m = await _measureAll(t);
 
       // —— 宽度：必须落在 §3.5 白名单（460 窄 / 560 默认 / 820 宽）——
       for (final e in m.entries) {
-        expect(_allowedWidths.contains(e.value.rect.width.round()),
-            isTrue,
-            reason: '★★ ${e.key} 的**卡片实测宽** = ${e.value.rect.width}，'
-                '不在 §3.5 白名单 ${_allowedWidths.toList()}。\n'
-                '这是 `tester.getRect` 读出来的真实渲染宽度，不是源码里的 `width:` '
-                '—— 源码可能写对了而渲染被别的约束改掉。');
+        expect(
+          _allowedWidths.contains(e.value.rect.width.round()),
+          isTrue,
+          reason:
+              '★★ ${e.key} 的**卡片实测宽** = ${e.value.rect.width}，'
+              '不在 §3.5 白名单 ${_allowedWidths.toList()}。\n'
+              '这是 `tester.getRect` 读出来的真实渲染宽度，不是源码里的 `width:` '
+              '—— 源码可能写对了而渲染被别的约束改掉。',
+        );
       }
 
       // —— 圆角：三者必须完全相同（实测）——
       final radii = m.values.map((x) => x.radius).toSet();
-      expect(radii.length, 1,
-          reason: '★★ 圆角不一致：${m.values.join(" / ")}\n'
-              '三个弹窗并排看圆角不一样，正是 Owner 说的「样式不统一」。'
-              '统一走 AppDialogShell 的 `Radii.rLg`。');
-      expect(radii.single, isNotNull,
-          reason: '★ 圆角读不到 —— `Material.shape` 不是 RoundedRectangleBorder，'
-              '或 `borderRadius` 不是等角圆。外壳必须写死 Radii.rLg。');
+      expect(
+        radii.length,
+        1,
+        reason:
+            '★★ 圆角不一致：${m.values.join(" / ")}\n'
+            '三个弹窗并排看圆角不一样，正是 Owner 说的「样式不统一」。'
+            '统一走 AppDialogShell 的 `Radii.rLg`。',
+      );
+      expect(
+        radii.single,
+        isNotNull,
+        reason: '★ 圆角必须来自真实 MiuixCard 的 MiuixSquircleBorder。',
+      );
       // 等角圆时把三档具体数值也钉住（§3.5：Radii.rLg = 22）
-      expect(radii.single, 22,
-          reason: '★★ 卡片圆角实测 = ${radii.single}，§3.5 规定 Radii.rLg = 22。');
+      expect(
+        radii.single,
+        22,
+        reason: '★★ 卡片圆角实测 = ${radii.single}，§3.5 规定 Radii.rLg = 22。',
+      );
 
       // —— 底色：三者必须完全相同（实测）——
       final colors = m.values.map((x) => x.color).toSet();
-      expect(colors.length, 1,
-          reason: '★★ 底色不一致：${m.values.join(" / ")}\n'
-              '卡片底色必须由外壳一处决定（`surfaceContainerHighest`，'
-              '玻璃档/深色档走各自的实色），不许各弹窗自己写。');
-      expect(colors.single, isNotNull,
-          reason: '★ 底色读不到 —— `Material.color` 是 null。'
-              '不允许"透明卡片"（R3-①② 的教训：transparent 让底下色块透上来，'
-              '把文字对比度打穿）。');
+      expect(
+        colors.length,
+        1,
+        reason:
+            '★★ 底色不一致：${m.values.join(" / ")}\n'
+            '卡片底色必须由同一 MiuixCard 主题决定，不许各弹窗自己写。',
+      );
+      expect(
+        colors.single,
+        isNotNull,
+        reason:
+            '★ 底色读不到 —— MiuixCard 的 ShapeDecoration.color 是 null。'
+            '不允许"透明卡片"（R3-①② 的教训：transparent 让底下色块透上来，'
+            '把文字对比度打穿）。',
+      );
       // 不许透明（alpha 必须足够高，R3-①② 的实测教训）
-      expect(colors.single!.a, greaterThanOrEqualTo(0.98),
-          reason: '★★ 卡片底色实测 alpha = ${colors.single!.a}，'
-              '必须 ≥ 0.98。R3-①② 实测：玻璃档曾用 Colors.transparent，'
-              '底下高饱和色块透上来，把 #8E939B 的对比度打到 2.09:1（正文线 4.5）。');
+      expect(
+        colors.single!.a,
+        greaterThanOrEqualTo(0.98),
+        reason:
+            '★★ 卡片底色实测 alpha = ${colors.single!.a}，'
+            '必须 ≥ 0.98。R3-①② 实测：玻璃档曾用 Colors.transparent，'
+            '底下高饱和色块透上来，把 #8E939B 的对比度打到 2.09:1（正文线 4.5）。',
+      );
     });
 
-    testWidgets('⑤ 只有 skip_marker 传 maxHeight，另两个吃默认值（渲染实测）',
-        (t) async {
+    testWidgets('⑤ 只有 skip_marker 传 maxHeight，另两个吃默认值（渲染实测）', (t) async {
       final m = await _measureAll(t);
 
       // update / composer 必须吃默认（maxHeight 字段为 null ⇒ 外壳用 _kMaxHeight）
-      expect(m['update']!.maxHeight, isNull,
-          reason: '★★ update_dialog 不许传 `maxHeight` —— 必须吃外壳默认的 '
-              '`_kMaxHeight`（620）。实测 = ${m['update']!.maxHeight}。\n'
-              '§3.5 只有在有**实测反证**时才允许覆盖，且必须在同文件写清理由。');
-      expect(m['composer']!.maxHeight, isNull,
-          reason: '★★ source_composer_dialog 不许传 `maxHeight` —— 必须吃默认。'
-              '实测 = ${m['composer']!.maxHeight}。');
+      expect(
+        m['update']!.maxHeight,
+        isNull,
+        reason:
+            '★★ update_dialog 不许传 `maxHeight` —— 必须吃外壳默认的 '
+            '`_kMaxHeight`（620）。实测 = ${m['update']!.maxHeight}。\n'
+            '§3.5 只有在有**实测反证**时才允许覆盖，且必须在同文件写清理由。',
+      );
+      expect(
+        m['composer']!.maxHeight,
+        isNull,
+        reason:
+            '★★ source_composer_dialog 不许传 `maxHeight` —— 必须吃默认。'
+            '实测 = ${m['composer']!.maxHeight}。',
+      );
 
       // skip 是本轮唯一有实测反证的破例，必须传且必须是 740
-      expect(m['skip']!.maxHeight, isNotNull,
-          reason: '★ skip_marker_dialog 应当显式传 `maxHeight`（740）——'
-              '620 会把第四行挤出视口、预览只剩 116px。'
-              '若这里变 null，说明有人把破例删了。');
-      expect(m['skip']!.maxHeight, 740,
-          reason: '★★ skip 的 `maxHeight` 实测 = ${m['skip']!.maxHeight}，应为 740'
-              '（= `kDialogMaxH`）。改这个数前先跑 '
-              '`skip_history_dialog_test.dart` 与 orchestrator 系列。');
+      expect(
+        m['skip']!.maxHeight,
+        isNotNull,
+        reason:
+            '★ skip_marker_dialog 应当显式传 `maxHeight`（740）——'
+            '620 会把第四行挤出视口、预览只剩 116px。'
+            '若这里变 null，说明有人把破例删了。',
+      );
+      expect(
+        m['skip']!.maxHeight,
+        740,
+        reason:
+            '★★ skip 的 `maxHeight` 实测 = ${m['skip']!.maxHeight}，应为 740'
+            '（= `kDialogMaxH`）。改这个数前先跑 '
+            '`skip_history_dialog_test.dart` 与 orchestrator 系列。',
+      );
 
       // 高度上限的**实际生效值**也钉一下：另两个的高度必须 <= 620（默认值）
-      expect(m['update']!.rect.height, lessThanOrEqualTo(620),
-          reason: '★★ update 卡片高 ${m['update']!.rect.height} 超过默认上限 620');
-      expect(m['composer']!.rect.height, lessThanOrEqualTo(620),
-          reason: '★★ composer 卡片高 ${m['composer']!.rect.height} 超过默认上限 620');
+      expect(
+        m['update']!.rect.height,
+        lessThanOrEqualTo(620),
+        reason: '★★ update 卡片高 ${m['update']!.rect.height} 超过默认上限 620',
+      );
+      expect(
+        m['composer']!.rect.height,
+        lessThanOrEqualTo(620),
+        reason: '★★ composer 卡片高 ${m['composer']!.rect.height} 超过默认上限 620',
+      );
     });
   });
 }

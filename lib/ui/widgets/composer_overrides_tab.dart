@@ -53,6 +53,9 @@
 // 不能只写在文档里 —— 用户对"能不能偷偷联网"是敏感的。
 // ```
 
+import 'miuix_controls.dart' as ui;
+import 'settings_dropdown.dart';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/ffi.dart' show userErrorText;
@@ -603,7 +606,8 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _status = '已保存到 overrides/${widget.targetId}.json'
+        _status =
+            '已保存到 overrides/${widget.targetId}.json'
             '（只写覆盖层，原插件/原声明式源未改动）';
         _statusIsError = false;
       });
@@ -633,9 +637,7 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
         _busy = false;
         _applyLayer(null);
         _statusIsError = false;
-        _status = existed
-            ? '已恢复默认：覆盖层文件已删除，原插件行为完全恢复'
-            : '本来就没有覆盖层，当前就是原插件行为';
+        _status = existed ? '已恢复默认：覆盖层文件已删除，原插件行为完全恢复' : '本来就没有覆盖层，当前就是原插件行为';
       });
     } catch (e) {
       if (!mounted) return;
@@ -702,10 +704,7 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
         Text(
           '绑定 id：${widget.targetId}',
           textAlign: TextAlign.left,
-          style: TextStyle(
-            fontSize: FontSizes.cap,
-            color: cs.onSurfaceVariant,
-          ),
+          style: TextStyle(fontSize: FontSizes.cap, color: cs.onSurfaceVariant),
         ),
         const SizedBox(height: Sp.x3),
         _safetyCard(cs),
@@ -749,7 +748,7 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
             cs,
             'L1 · 字段映射',
             '按顺序逐条改字段：改名 / 覆盖成常量 / 从别的路径取值。'
-            '作用在列表里的每一条，也作用在详情页那一个对象上。',
+                '作用在列表里的每一条，也作用在详情页那一个对象上。',
           ),
           for (var i = 0; i < _maps.length; i++) _mapCard(cs, i, _maps[i]),
           Align(
@@ -765,7 +764,7 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
             cs,
             'L2 · 数据变换',
             '在 L1 之后对整个列表做过滤 / 排序 / 去重 / 截断 / 替换。'
-            '顺序就是执行顺序。',
+                '顺序就是执行顺序。',
           ),
           for (var i = 0; i < _txs.length; i++) _txCard(cs, i, _txs[i]),
           Align(
@@ -782,16 +781,15 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
             'L3 · JS 片段（可选）',
             // ★ 这句是需求里点名要的提示，逐字保留
             '只能操作 data 变量，没有网络权限：不能发请求、不能读文件、'
-            '不能访问 host.store。片段是语句体，return 的值就是最终数据；'
-            '不 return（或返回 undefined）视为不改。',
+                '不能访问 host.store。片段是语句体，return 的值就是最终数据；'
+                '不 return（或返回 undefined）视为不改。',
           ),
           const SizedBox(height: Sp.x2),
-          TextField(
+          ui.TextField(
             key: const ValueKey<String>('ov-js-hook'),
             controller: _jsCtrl,
             // ★ 机制⑤：玻璃外壳内容区 DefaultTextStyle 是 center，
             //   多行框必须显式左对齐，否则用户写 JS 时每行都在中间
-            textAlign: TextAlign.left,
             minLines: 3,
             maxLines: 8,
             style: TextStyle(
@@ -801,7 +799,8 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
             ),
             decoration: InputDecoration(
               isDense: true,
-              hintText: '例如：\n// return data.filter(x => x.title.includes("番剧"));',
+              hintText:
+                  '例如：\n// return data.filter(x => x.title.includes("番剧"));',
               hintStyle: TextStyle(
                 fontSize: FontSizes.cap,
                 color: cs.onSurfaceVariant,
@@ -906,8 +905,9 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
               alignment: Alignment.centerLeft,
               child: AppTextButton(
                 key: const ValueKey<String>('ov-restore'),
-                onPressed:
-                    _busy ? null : () => setState(() => _confirmRestore = true),
+                onPressed: _busy
+                    ? null
+                    : () => setState(() => _confirmRestore = true),
                 foregroundColor: cs.error,
                 child: const Text('恢复默认'),
               ),
@@ -920,7 +920,10 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
                   '确定删除这层覆盖层？删除后这个源立刻回到原插件行为。',
                   key: const ValueKey<String>('ov-restore-confirm-text'),
                   textAlign: TextAlign.left,
-                  style: TextStyle(fontSize: FontSizes.cap, color: cs.onSurface),
+                  style: TextStyle(
+                    fontSize: FontSizes.cap,
+                    color: cs.onSurface,
+                  ),
                 ),
                 Row(
                   mainAxisSize: MainAxisSize.min,
@@ -955,7 +958,10 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
           child: Text(
             '启用这层覆盖（关掉 = 完全不生效，但文件保留）',
             textAlign: TextAlign.left,
-            style: TextStyle(fontSize: FontSizes.cap, color: cs.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: cs.onSurfaceVariant,
+            ),
           ),
         ),
         const SizedBox(width: Sp.x2),
@@ -1025,13 +1031,15 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
           Text(
             label,
             textAlign: TextAlign.left,
-            style: TextStyle(fontSize: FontSizes.cap, color: cs.onSurfaceVariant),
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: cs.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 2),
-          TextField(
+          ui.TextField(
             key: ValueKey<String>(keyName),
             controller: c,
-            textAlign: TextAlign.left,
             style: TextStyle(fontSize: FontSizes.sm, color: cs.onSurface),
             decoration: InputDecoration(
               isDense: true,
@@ -1070,7 +1078,10 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
             child: Text(
               label,
               textAlign: TextAlign.left,
-              style: TextStyle(fontSize: FontSizes.cap, color: cs.onSurfaceVariant),
+              style: TextStyle(
+                fontSize: FontSizes.cap,
+                color: cs.onSurfaceVariant,
+              ),
             ),
           ),
           const SizedBox(width: Sp.x2),
@@ -1092,25 +1103,13 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
     Map<String, String> labels,
     ValueChanged<String> onChanged,
   ) {
-    return DropdownButton<String>(
+    return SettingsDropdown<String>(
       key: ValueKey<String>(keyName),
       value: value,
-      isExpanded: true,
-      isDense: true,
-      underline: const SizedBox.shrink(),
-      dropdownColor: cs.surfaceContainerHighest,
-      borderRadius: Radii.rSm,
-      icon: Icon(AppIcons.arrow_drop_down, size: 20, color: cs.onSurfaceVariant),
-      style: TextStyle(fontSize: FontSizes.sm, color: cs.onSurface),
-      items: <DropdownMenuItem<String>>[
-        for (final op in ops)
-          DropdownMenuItem<String>(value: op, child: Text(labels[op] ?? op)),
+      options: [
+        for (final op in ops) SettingsDropdownOption(op, labels[op] ?? op),
       ],
-      onChanged: _busy
-          ? null
-          : (v) {
-              if (v != null) onChanged(v);
-            },
+      onChanged: _busy ? null : onChanged,
     );
   }
 
@@ -1146,7 +1145,13 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
           hint: r.op == 'copy' ? 'pager.total' : 'title',
         ),
       if (r.op == 'set')
-        _field(cs, '目标字段 to（如 subtitle）', r.to, 'ov-map-$i-to', hint: 'subtitle'),
+        _field(
+          cs,
+          '目标字段 to（如 subtitle）',
+          r.to,
+          'ov-map-$i-to',
+          hint: 'subtitle',
+        ),
       if (r.op == 'rename' || r.op == 'copy')
         _field(cs, '目标字段 to', r.to, 'ov-map-$i-to', hint: 'name'),
       if (r.op == 'set')
@@ -1185,8 +1190,15 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
           ),
         ],
       ),
-      if (r.op == 'filter_contains' || r.op == 'filter_not_contains') ...<Widget>[
-        _field(cs, '字段名 field（如 title）', r.field, 'ov-tx-$i-field', hint: 'title'),
+      if (r.op == 'filter_contains' ||
+          r.op == 'filter_not_contains') ...<Widget>[
+        _field(
+          cs,
+          '字段名 field（如 title）',
+          r.field,
+          'ov-tx-$i-field',
+          hint: 'title',
+        ),
         _field(
           cs,
           '包含的文字 contains',
@@ -1197,7 +1209,13 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
       ],
       if (r.op == 'filter_regex') ...<Widget>[
         _field(cs, '字段名 field', r.field, 'ov-tx-$i-field', hint: 'title'),
-        _field(cs, '正则 pattern', r.pattern, 'ov-tx-$i-pattern', hint: r'^EP\d+$'),
+        _field(
+          cs,
+          '正则 pattern',
+          r.pattern,
+          'ov-tx-$i-pattern',
+          hint: r'^EP\d+$',
+        ),
       ],
       if (r.op == 'sort_by') ...<Widget>[
         _field(cs, '字段名 field（如 n）', r.field, 'ov-tx-$i-field', hint: 'n'),
@@ -1220,15 +1238,15 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
           hint: '20',
         ),
       if (r.op == 'replace_in_field') ...<Widget>[
-        _field(cs, '字段名 field（如 title）', r.field, 'ov-tx-$i-field', hint: 'title'),
-        _field(cs, '要替换的文字 from', r.from, 'ov-tx-$i-from', hint: '【官方】'),
         _field(
           cs,
-          '替换成 to（留空 = 直接删掉这段字）',
-          r.to,
-          'ov-tx-$i-to',
-          hint: '留空即可删除',
+          '字段名 field（如 title）',
+          r.field,
+          'ov-tx-$i-field',
+          hint: 'title',
         ),
+        _field(cs, '要替换的文字 from', r.from, 'ov-tx-$i-from', hint: '【官方】'),
+        _field(cs, '替换成 to（留空 = 直接删掉这段字）', r.to, 'ov-tx-$i-to', hint: '留空即可删除'),
       ],
     ]);
   }

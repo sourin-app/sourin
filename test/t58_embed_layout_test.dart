@@ -25,6 +25,7 @@
 //   "真实 PlayerPage 也能被这样包住"由**真机实测**回答（见 task-58 验收判据）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
 
 /// 与 `PlayerPage` 的**外层结构**同构（Scaffold → Stack → Positioned.fill → Video）
 ///
@@ -36,10 +37,10 @@ import 'package:flutter_test/flutter_test.dart';
 ///    不能挂在 `Center` 里面的 `ColoredBox` 上：`Center` 给子节点**松约束**，
 ///    无子节点的 `ColoredBox` 会缩成 **0x0**（我第一版就是这么写的，
 ///    量到 `Rect(640,180,640,180)` ⇒ 那是**仪器错**，不是布局错）。
-Widget playerLike({Key? key}) => Scaffold(
+Widget playerLike({Key? key}) => AppScaffold(
       key: key,
       backgroundColor: Colors.black,
-      body: Stack(
+      child: Stack(
         children: [
           Positioned.fill(
             child: Center(
@@ -73,8 +74,8 @@ void main() {
 
     const videoH = 360.0; // 16:9 在 640 宽下 ≈ 360
     await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: Column(
+      home: AppScaffold(
+        child: Column(
           children: [
             SizedBox(height: videoH, child: playerLike()),
             const Expanded(
@@ -88,7 +89,7 @@ void main() {
     ));
     await tester.pump();
 
-    final scaf = tester.getRect(find.byType(Scaffold).last);
+    final scaf = tester.getRect(find.byType(AppScaffold).last);
     final video = tester.getRect(find.byKey(const ValueKey('video')));
     final bar = tester.getRect(find.byKey(const ValueKey('bar')));
 
@@ -137,8 +138,8 @@ void main() {
     // 用 StatefulWidget 计数：视频区的 build 次数
     var videoBuilds = 0;
     await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: Column(
+      home: AppScaffold(
+        child: Column(
           children: [
             SizedBox(
               height: 360,
@@ -225,8 +226,8 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: Column(
+      home: AppScaffold(
+        child: Column(
           children: [
             Expanded(
               flex: 3,
@@ -253,8 +254,8 @@ void main() {
 
     // ── 切到"全屏"：只留视频（详情区移除，flex 变大）──
     await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: Column(
+      home: AppScaffold(
+        child: Column(
           children: [
             Expanded(
               flex: 1,
@@ -296,8 +297,8 @@ void main() {
 
     // 窗口态：视频在 Column → SizedBox 里
     await tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: Column(children: [
+      home: AppScaffold(
+        child: Column(children: [
           SizedBox(height: 360, child: _CountingPlayer(key: k1)),
           const Expanded(child: SizedBox()),
         ]),
@@ -308,7 +309,7 @@ void main() {
 
     // "全屏"：视频**直接**作为 body（父级从 SizedBox 变成 Scaffold）⇒ remount
     await tester.pumpWidget(MaterialApp(
-      home: Scaffold(body: _CountingPlayer(key: k2)),
+      home: AppScaffold(child: _CountingPlayer(key: k2)),
     ));
     await tester.pump();
     debugPrint('[STATE-反面] 换父级后 initState = ${k2.currentState?.initCount}');

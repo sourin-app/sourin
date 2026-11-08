@@ -39,6 +39,7 @@
 // ```
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -223,7 +224,7 @@ void main() {
               '用户**找不到地方登录**（那是比原 bug 更严重的问题）');
 
       // ★ 展开区里的输入框真的画出来了（行为级证据，不只是文案变了）
-      expect(find.byType(TextField), findsWidgets,
+      expect(find.byType(ui.TextField), findsWidgets,
           reason: '★ 展开后必须出现输入框（用户名/密码）—— '
               '这是"真的展开了"而不是"文案变成收起"');
     });

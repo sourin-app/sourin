@@ -29,42 +29,21 @@
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart';
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart'
-    show GlassContainer, LiquidRoundedRectangle;
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import '../widgets/miuix_controls.dart' as ui;
 
 import '../../core/danmaku.dart' show DanmakuConfig;
 import '../../core/models.dart' show StreamCandidate;
 import '../../core/ffi.dart';
 import '../tokens.dart';
+import '../theme/miuix_palette.dart';
 import 'player_more_menu.dart';
 import 'player_popover.dart';
 import '../../design/icons/app_icons.dart';
 
-/// 玻璃材质的输入框外框 —— **包住原生 `TextField`**，不替换它
-///
-/// # 为什么不用包里的 `GlassTextField`（Lead 裁决，2026-10-18）
-/// ```text
-/// `GlassTextField` 内部用的是 `CupertinoTextField`
-/// （glass_text_field.dart:642 `child: CupertinoTextField(...)`），
-/// 而 `test/task41_danmaku_send_gate_test.dart` 有 **9 处**
-/// `find.byType(TextField)` 断言守着 Owner 第 1 条
-/// 「不支持就不显示」这个**产品契约**。
-///
-/// 换成 GlassTextField ⇒ 那 9 处全红。
-/// 而**改断言**等于把"输入框存在"的判据从"真的是 TextField"
-/// 改成"某个玻璃组件" ⇒ 门禁失去鉴别力：
-/// 将来玻璃组件内部若根本没渲染输入框，断言仍然绿（只找得到那个壳）。
-/// ★ 这正是本轮反复出现的假绿形态。
-/// ```
-/// # 所以：玻璃容器 + 原生 TextField
-/// ```text
-/// · 视觉：玻璃材质（Owner 要的）
-/// · 判据：仍然是真 TextField（task41 的 9 条继续有效）
-/// · 功能：输入法 / 选择 / 粘贴 / 快捷键全部原生行为，零风险
-/// ```
-/// ⚠️ `GlassContainer` 是**纯材质表面**，不替换子组件
-///    （其文档明确说它是 foundational surface）。
+/// 弹幕输入区域的 Miuix 承载面。保留名称供既有测试与调用方定位。
+/// 输入、选区、焦点和提交由里面实际的 MiuixTextField 处理。
 class GlassFieldShell extends StatelessWidget {
   const GlassFieldShell({
     super.key,
@@ -82,29 +61,22 @@ class GlassFieldShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GlassContainer(
-      shape: LiquidRoundedRectangle(borderRadius: radius),
-      /*
-       * ⚠️ `useOwnLayer: false`（默认）：
-       *   底栏是**常驻**的一行，开 own layer 会多一张图层，
-       *   在低端机上是纯开销。材质效果不依赖它。
-       */
-      padding: EdgeInsets.zero,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(radius),
-          /*
-           * 聚焦态边框：outlineVariant → primary。
-           * 这是本仓既有的焦点语言（搜索页同款），不新造一套。
-           */
-          border: Border.all(
-            color: focused
-                ? Theme.of(context).colorScheme.primary
-                : Colors.white.withValues(alpha: 0.18),
-            width: focused ? 1.4 : 1,
+    return miuix.MiuixTheme(
+      data: miuixThemeData(Brightness.dark),
+      child: miuix.MiuixCard(
+        cornerRadius: radius,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(
+              color: focused
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.white.withValues(alpha: 0.18),
+              width: focused ? 1.4 : 1,
+            ),
           ),
+          child: child,
         ),
-        child: child,
       ),
     );
   }
@@ -574,7 +546,7 @@ class PlayerBottomBar extends StatelessWidget {
 
   /// ★ Owner 1011 反馈第 1 条：弹幕的**两枚直连入口**（开关 / 设置）
   ///
-  /// 与 `PlayerProgressSlider.thumbKey` 同款 —— 给门禁一个稳定的抓手，
+  /// 与 `PlayerProgressSlider.sliderKey` 同款 —— 给门禁一个稳定的抓手，
   /// 免得测试靠 tooltip（开关那枚是普通 `TextButton`，没有 `Tooltip` 祖先，
   /// `find.byTooltip` 找不到）。见 test/t27_w14_danmaku_bar_form_test.dart。
   static const Key danmakuToggleKey = ValueKey<String>('t27-danmaku-toggle');
@@ -801,7 +773,10 @@ class PlayerBottomBar extends StatelessWidget {
          *   这里用 `clipBehavior: Clip.none` + `Stack`，面板可以自由地
          *   长到条的上方去。
          */
-        child: _body(context),
+        child: miuix.MiuixTheme(
+          data: miuixThemeData(Brightness.dark),
+          child: _body(context),
+        ),
       ),
     );
   }
@@ -1107,9 +1082,9 @@ class PlayerBottomBar extends StatelessWidget {
   }) {
     const accent = Color(0xFF32C7FF);
     return Expanded(
-      child: InkWell(
+      child: miuix.MiuixPressable(
         key: key,
-        onTap: onTap,
+        onPressed: onTap,
         borderRadius: Radii.rSm,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: Sp.x1),
@@ -1183,7 +1158,7 @@ class PlayerBottomBar extends StatelessWidget {
                   : (_) => onGuideStart(),
               onPointerUp: onGuideEnd == null ? null : (_) => onGuideEnd(),
               onPointerCancel: onGuideEnd == null ? null : (_) => onGuideEnd(),
-              child: Slider(
+              child: ui.Slider(
                 key: key,
                 value: value.clamp(min, max),
                 min: min,
@@ -1866,7 +1841,7 @@ class _BarIconButton extends StatelessWidget {
   final bool big;
 
   @override
-  Widget build(BuildContext context) => IconButton(
+  Widget build(BuildContext context) => ui.IconButton(
     onPressed: enabled ? onTap : null,
     tooltip: tooltip,
     visualDensity: VisualDensity.compact,
@@ -1924,9 +1899,9 @@ class _PopoverButton extends StatelessWidget {
         ],
       ),
     );
-    final button = TextButton(
+    final button = ui.TextButton(
       onPressed: onTap ?? () => controller.toggle(id),
-      style: TextButton.styleFrom(
+      style: ui.TextButton.styleFrom(
         visualDensity: VisualDensity.compact,
         padding: const EdgeInsets.symmetric(horizontal: Sp.x1),
       ),
@@ -2153,7 +2128,7 @@ class _VolumeControl extends StatelessWidget {
       if (!compact)
         SizedBox(
           width: 72,
-          child: Slider(
+          child: ui.Slider(
             value: muted ? 0 : volume,
             max: 100,
             onChanged: onVolume,
@@ -2194,7 +2169,7 @@ class PlayerZoomSliderCard extends StatelessWidget {
           style: TextStyle(color: Colors.white, fontSize: FontSizes.cap),
         ),
         Expanded(
-          child: Slider(
+          child: ui.Slider(
             value: zoom.clamp(50.0, 200.0),
             min: 50,
             max: 200,
@@ -2206,7 +2181,7 @@ class PlayerZoomSliderCard extends StatelessWidget {
           '${zoom.round()}%',
           style: const TextStyle(color: Colors.white, fontSize: FontSizes.cap),
         ),
-        IconButton(
+        ui.IconButton(
           onPressed: onClose,
           visualDensity: VisualDensity.compact,
           icon: const Icon(AppIcons.close, size: 16, color: Colors.white),
@@ -2228,25 +2203,13 @@ class PlayerBufferedRange {
   final Duration end;
 }
 
-/// 进度条 —— 拖动 = seek
-///
-/// # ★ T27-02：白色定位点（thumb）
-///
-/// 业主原话：「2.进度条这里的白色那个定位的没了」（fig2 996x49 全带扫描
-/// 无 >200 亮块 ⇒ 不是被盖住，是从来没画）。thumb 与已播进度走**同一份**
-/// `pos/total` 比例、同一条 `ValueListenableBuilder<Duration>` 重建路径
-/// （`_progressRow`），position 一变 thumb 同步走到新位置；seek 时
-/// 播放器把真实位置写回 notifier，视觉上即「拖到哪、点停在哪」。
+/// Miuix 进度控件。拖动只更新本地预览，完成一次手势后提交一次 seek。
+/// 缓冲区间是独立的底层绘制，位置与 Miuix 滑杆的内缩轨道一致。
 class PlayerProgressSlider extends StatefulWidget {
-  /// thumb 直径：轨道高 2px，圆点上下各溢出 5px（Stack 高 18 够放）
-  static const double thumbDiameter = 12;
-
-  /// thumb 颜色：与已播进度同色系但更亮 —— 完全不透明白，fig2 场景下
-  /// 对近黑底是最高对比（业主找的就是这枚白点）
+  static const Key sliderKey = ValueKey<String>('player-progress-miuix-slider');
+  static const Key bufferKey = ValueKey<String>('player-progress-buffer');
+  static const double trackHeight = 18;
   static const Color thumbColor = Colors.white;
-
-  /// 门禁/测试用 key（test/t27_w2_progress_thumb_test.dart 按 id 对齐）
-  static const Key thumbKey = ValueKey<String>('t27-progress-thumb');
 
   const PlayerProgressSlider({
     super.key,
@@ -2268,181 +2231,69 @@ class PlayerProgressSlider extends StatefulWidget {
 }
 
 class _PlayerProgressSliderState extends State<PlayerProgressSlider> {
-  /// 拖动中的**预览位置**（null = 没在拖，显示真实 position）
-  ///
-  /// # ★★★ 为什么必须有这一层（Owner 第 17 条：进度条拖动很卡顿）
-  /// ```text
-  /// 改前：onHorizontalDragUpdate: (d) => onSeek(at(d.localPosition.dx))
-  /// ⇒ 拖动时**每一个 pointer move 事件**都直接 onSeek：
-  ///     · 一次拖动 60fps × 2 秒 = 120 次 seek 请求
-  ///     · 每次 seek 都要走 mpv `seek` 命令 + 重新解包/解码
-  ///     · 而 onSeek 还会 setState 整条底栏（含缓冲条重算）
-  ///   ⇒ 用户看到的「卡顿」本质是**自己把播放器打爆了**。
-  /// ```
-  ///
-  /// # 改法（滑杆的标准做法）
-  /// ```text
-  /// 拖动中：只更新这个 _dragMs，画面上的圆点/进度跟着走（纯本地，零 I/O）
-  /// 松手时：onSeek 一次，真正跳转
-  /// ⇒ seek 次数从「每次移动」降到「每次拖动 1 次」
-  /// ```
-  ///
-  /// ⚠️ 松手后要清空 `_dragMs`，否则真实 position 追上来之前
-  ///    圆点会「冻在松手位置」（播放器还没跳过去，看起来像卡住）。
-  ///    清空时机放在 `onHorizontalDragEnd` + `onHorizontalDragCancel`。
-  int? _dragMs;
+  double? _previewMs;
 
   @override
   Widget build(BuildContext context) {
     final totalMs = widget.duration.inMilliseconds;
     final total = totalMs <= 0 ? 1.0 : totalMs.toDouble();
-    // 拖动中优先显示预览值，否则显示真实播放位置
-    final shownMs = (_dragMs ?? widget.position.inMilliseconds).toDouble();
-    final pos = shownMs.clamp(0.0, total);
+    final shown = (_previewMs ?? widget.position.inMilliseconds.toDouble())
+        .clamp(0.0, total);
     return LayoutBuilder(
-      builder: (context, c) {
-        final w = c.maxWidth <= 0 ? 1.0 : c.maxWidth;
-        /*
-         * ══════════════════════════════════════════════════════════════════
-         * ★★★ Owner 1011 反馈②：thumb 在**两端被截掉半个**
-         * ══════════════════════════════════════════════════════════════════
-         *
-         * # Owner 原话（逐字）
-         * ```text
-         * > 进度条那个圆圈在初始阶段被截掉了半个
-         * ```
-         *
-         * # 根因：thumb 中心跑到了 Stack 边界上/外，而 Stack **默认裁剪**
-         * ```text
-         * 旧写法：left = (pos/total)*w - PlayerProgressSlider.thumbDiameter/2
-         *   pos = 0  ⇒ left = -6   ⇒ 圆的左半边在 Stack 左边界外
-         *   pos = 满 ⇒ left = w-6  ⇒ 圆的右半边在 Stack 右边界外
-         * 而 Stack 的 clipBehavior 默认 = Clip.hardEdge
-         * ⇒ 两端的圆都被**裁成半圆**（Owner 在初始位置看到的就是这个）。
-         * ```
-         *
-         * # 修法：把行进区间**内缩一个半径**（滑杆的标准几何）
-         * ```text
-         * 轨道与 thumb 都只在 [r, w-r] 这段里排布：
-         *   圆的**中心**最左只能到 r、最右只能到 w-r
-         *   ⇒ 圆的左端 = r - r = 0，右端 = (w-r) + r = w ⇒ **始终完整可见**。
-         * ```
-         * ★ 关键：`trackW` 与**坐标映射**必须一起用这段内缩区间，
-         *   否则「看得见的圆点位置」与「点下去跳到的位置」会差一个半径
-         *   （拖动时圆点会比手指偏 6px —— 那正是这类改动最常见的次生缺陷）。
-         */
-        const double r = PlayerProgressSlider.thumbDiameter / 2;
-        final trackW = (w - PlayerProgressSlider.thumbDiameter) <= 0 ? 1.0 : w - PlayerProgressSlider.thumbDiameter;
-        /// 比例 → **圆点中心**的 x（内缩区间内）
-        double centerX(double ratio) => r + ratio * trackW;
-        /// **圆点中心**的 x → 比例（与 centerX 严格互逆）
-        double ratioAt(double dx) => (dx - r) / trackW;
-        Duration at(double dx) =>
-            Duration(milliseconds: (ratioAt(dx).clamp(0.0, 1.0) * total).round());
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          // 单击：直接跳（一次 seek，本来就只触发一次）
-          onTapDown: (d) => widget.onSeek(at(d.localPosition.dx)),
-          // 拖动中：只更新预览，**不** seek（Owner 第 17 条）
-          onHorizontalDragStart: (d) {
-            setState(() => _dragMs = at(d.localPosition.dx).inMilliseconds);
-          },
-          onHorizontalDragUpdate: (d) {
-            setState(() => _dragMs = at(d.localPosition.dx).inMilliseconds);
-          },
-          // 松手：一次 seek，然后清空预览让圆点跟随真实位置
-          onHorizontalDragEnd: (_) {
-            final ms = _dragMs;
-            if (ms != null) widget.onSeek(Duration(milliseconds: ms));
-            setState(() => _dragMs = null);
-          },
-          onHorizontalDragCancel: () {
-            setState(() => _dragMs = null);
-          },
-          child: SizedBox(
-            height: 18,
-            child: Stack(
-              children: [
+      builder: (context, constraints) {
+        const height = PlayerProgressSlider.trackHeight;
+        const radius = height / 2;
+        final trackWidth = (constraints.maxWidth - height)
+            .clamp(0.0, double.infinity);
+        final start = (widget.buffered?.start.inMilliseconds ?? 0)
+            .toDouble().clamp(0.0, total);
+        final end = (widget.buffered?.end.inMilliseconds ?? 0)
+            .toDouble().clamp(start, total);
+        return SizedBox(
+          height: height,
+          child: Stack(
+            // MiuixSlider paints without a child; loose constraints would let
+            // its CustomPaint collapse to zero width inside this buffer stack.
+            fit: StackFit.expand,
+            children: [
+              if (widget.buffered != null)
                 Positioned(
-                  left: r,
-                  width: trackW,
-                  top: 8,
-                  bottom: 8,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white24,
-                      borderRadius: Radii.rSm,
-                    ),
-                  ),
-                ),
-                // 缓冲条：起点 → 终点，用像素而不是 FractionallySizedBox
-                // （后者在 start > 0 时算出的偏移会随宽度漂）
-                if (widget.buffered != null)
-                  Positioned(
-                    left: centerX(
-                      widget.buffered!.start.inMilliseconds.toDouble().clamp(
-                            0.0,
-                            total,
-                          ) /
-                          total,
-                    ),
-                    width:
-                        ((widget.buffered!.end.inMilliseconds.toDouble() -
-                                    widget.buffered!.start.inMilliseconds.toDouble())
-                                .clamp(0.0, total) /
-                            total) *
-                        trackW,
-                    top: 8,
-                    bottom: 8,
-                    child: Container(
-                      decoration: BoxDecoration(
+                  left: radius + start / total * trackWidth,
+                  width: (end - start) / total * trackWidth,
+                  top: 0,
+                  bottom: 0,
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      key: widget.barKey ?? PlayerProgressSlider.bufferKey,
+                      decoration: const BoxDecoration(
                         color: Colors.white38,
                         borderRadius: Radii.rSm,
                       ),
                     ),
                   ),
-                // 已播进度：从轨道左端画到 thumb 中心
-                Positioned(
-                  left: r,
-                  width: (pos / total) * trackW,
-                  top: 8,
-                  bottom: 8,
-                  child: Container(
-                    key: widget.barKey,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF32C7FF),
-                      borderRadius: Radii.rSm,
-                    ),
-                  ),
                 ),
-                // ★ T27-02 补画定位点：中心 = centerX(pos/total)（内缩区间内，
-                // 两端都留了一个半径 ⇒ 不再被 Stack 裁掉）。
-                Positioned(
-                  key: PlayerProgressSlider.thumbKey,
-                  left: centerX(pos / total) - r,
-                  top: (18 - PlayerProgressSlider.thumbDiameter) / 2,
-                  child: GestureDetector(
-                    // ★ 纯视觉件：裸 DecoratedBox（RenderProxyBox、
-                    //   hitTestSelf=false）不会进命中路径，门禁就没法在
-                    //   (thumbX, centerY) 定位到它。translucent 只保证
-                    //   hitTest 命中自身、返回 false 不挡下层，拖/点 seek
-                    //   仍由整条进度条的 GestureDetector 统一处理（坐标
-                    //   映射只有一份，拇指不重复注册手势）。
-                    behavior: HitTestBehavior.translucent,
-                    child: const DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: PlayerProgressSlider.thumbColor,
-                        shape: BoxShape.circle,
-                      ),
-                      child: SizedBox(
-                        width: PlayerProgressSlider.thumbDiameter,
-                        height: PlayerProgressSlider.thumbDiameter,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+              ui.Slider(
+                key: PlayerProgressSlider.sliderKey,
+                height: height,
+                value: shown,
+                max: total,
+                activeColor: const Color(0xFF32C7FF),
+                inactiveColor: Colors.white24,
+                thumbColor: PlayerProgressSlider.thumbColor,
+                semanticFormatterCallback: (value) =>
+                    PlayerBottomBar._fmt(Duration(milliseconds: value.round())),
+                onChanged: totalMs <= 0 ? null : (value) {
+                  setState(() => _previewMs = value);
+                },
+                onChangeEnd: totalMs <= 0 ? null : (value) {
+                  widget.onSeek(Duration(milliseconds: value.round()));
+                  if (mounted) setState(() => _previewMs = null);
+                },
+                onChangeCancel: () {
+                  if (mounted) setState(() => _previewMs = null);
+                },
+              ),
+            ],
           ),
         );
       },
@@ -2511,7 +2362,7 @@ class DanmakuSendInline extends StatefulWidget {
 class _DanmakuSendInlineState extends State<DanmakuSendInline> {
   final TextEditingController _ctl = TextEditingController();
 
-  /// 焦点态 —— 只用于让玻璃外框提亮（Lead 要求「焦点态要能看见」）
+  /// 焦点态同时驱动输入框与承载面的高亮。
   final FocusNode _focus = FocusNode();
   bool _focused = false;
 
@@ -2595,19 +2446,11 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
           children: [
             Icon(AppIcons.chat_bubble_outline, size: 16, color: Colors.white70),
             const SizedBox(width: Sp.x2),
-            /*
-             * ★ 输入框用 Expanded 撑满 —— 底栏是全宽的一行，
-             *   与浮层版固定 220px 不同：内嵌时就该跟着底栏宽度走。
-             *
-             * ★★ 2026-10-18（任务 B 玻璃化，Lead 裁决）：
-             *   外面包一层 `GlassFieldShell`（纯玻璃材质），
-             *   **里面仍然是原生 `TextField`** —— 不换成 `GlassTextField`。
-             *   理由见 `GlassFieldShell` 的类文档（task41 的 9 处断言守着它）。
-             */
+            // 控制器与 FocusNode 保持在此状态对象，Miuix 负责输入交互。
             Expanded(
               child: GlassFieldShell(
                 focused: _focused,
-                child: TextField(
+                child: ui.TextField(
                   controller: _ctl,
                   enabled: !_sending,
                   onChanged: (_) => setState(() {}),
@@ -2634,9 +2477,7 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
                       vertical: Sp.x2,
                     ),
                     /*
-                     * 边框交给外面的 `GlassFieldShell` 画 ⇒ 这里**去掉**
-                     * 原本那层 `filled + OutlineInputBorder`，否则
-                     * 玻璃材质上会再叠一层半透明填充（看着发灰）。
+                     * MiuixTextField 自己处理聚焦边框；外层提供统一的承载面。
                      */
                     filled: false,
                     border: InputBorder.none,
@@ -2648,7 +2489,7 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
               ),
             ),
             const SizedBox(width: Sp.x2),
-            TextButton(
+            ui.TextButton(
               onPressed: _canSend ? _send : null,
               child: Text(
                 _sending ? '发送中…' : '发送',
@@ -2691,7 +2532,7 @@ class _QuickDanmakuSearchState extends State<_QuickDanmakuSearch> {
     if (keyword.isNotEmpty) widget.onSearch(keyword);
   }
   @override
-  Widget build(BuildContext context) => TextFormField(
+  Widget build(BuildContext context) => ui.TextFormField(
     controller: _controller,
     textInputAction: TextInputAction.search,
     onFieldSubmitted: (_) => _submit(),
@@ -2699,7 +2540,7 @@ class _QuickDanmakuSearchState extends State<_QuickDanmakuSearch> {
     decoration: InputDecoration(
       hintText: '输入片名', hintStyle: const TextStyle(color: Colors.white60),
       isDense: true, contentPadding: const EdgeInsets.all(Sp.x3),
-      suffixIcon: IconButton(tooltip: '搜索弹幕', onPressed: _submit,
+      suffixIcon: ui.IconButton(tooltip: '搜索弹幕', onPressed: _submit,
         icon: const Icon(AppIcons.search, color: Colors.white)),
     ),
   );

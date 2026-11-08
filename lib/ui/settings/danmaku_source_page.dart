@@ -40,9 +40,14 @@
 //    但两者**读写同一对偏好键**，所以改哪边都立刻生效。
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:flutter/services.dart';
+
+import '../widgets/miuix_controls.dart' as ui;
 
 import 'dart:async';
 import 'dart:io' show SocketException;
+
 import '../../core/danmaku_network_diagnostics.dart';
 
 import '../../core/danmaku.dart';
@@ -81,7 +86,7 @@ class DanmakuSourcePage extends StatefulWidget {
   /// 与 [probeOverride] 同一条"零联网"纪律：注入后「拉取测试」不产生真实
   /// 网络请求。null = 生产路径（真打 [MopenDanmuClient]）。
   final Future<List<DanmakuComment>> Function(String vid, int mat)?
-      mopenFetchOverride;
+  mopenFetchOverride;
 
   @override
   State<DanmakuSourcePage> createState() => _DanmakuSourcePageState();
@@ -222,7 +227,8 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     }
 
     setState(() => _runningSeq = mySeq);
-    final probe = widget.probeOverride ??
+    final probe =
+        widget.probeOverride ??
         (DanmakuEndpoint? e) => DanmakuLocalService.describe(endpoint: e);
 
     DanmakuLocalStatus st;
@@ -257,10 +263,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
       _runningSeq = null;
       _result = st;
       _report = st.online
-          ? const DanmakuProbeReport(
-              failure: DanmakuProbeFailure.none,
-              url: '',
-            )
+          ? const DanmakuProbeReport(failure: DanmakuProbeFailure.none, url: '')
           : DanmakuProbeReport(
               failure: DanmakuProbeFailure.connectionTimeout,
               url: ep?.display ?? rawUrl,
@@ -327,11 +330,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
   }
 
   /// Diagnose the actual HTTP route; preserve stale-input guards.
-  Future<void> _diagnose(
-    DanmakuEndpoint? ep,
-    int mySeq,
-    String rawUrl,
-  ) async {
+  Future<void> _diagnose(DanmakuEndpoint? ep, int mySeq, String rawUrl) async {
     final url = ep?.display ?? "本机弹弹play";
     DanmakuProbeReport report;
     try {
@@ -426,7 +425,8 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     final mat = MopenDanmuConfig.mat;
     setState(() => _mopenRunningSeq = mySeq);
     try {
-      final fetch = widget.mopenFetchOverride ??
+      final fetch =
+          widget.mopenFetchOverride ??
           // ★ 用页面级 [_mopenClient]（不每次按压新建）——频控/缓存在 core
           //   是类级状态，跨实例本就生效；这里复用连接池只是少建少关。
           (String v, int m) => _mopenClient.fetch(vid: v, mat: m);
@@ -435,7 +435,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
       final t0 = comments.isEmpty
           ? ''
           : '，时间轴 ${comments.first.time.toStringAsFixed(1)}s'
-              ' ~ ${comments.last.time.toStringAsFixed(1)}s';
+                ' ~ ${comments.last.time.toStringAsFixed(1)}s';
       setState(() {
         _mopenRunningSeq = null;
         _mopenStatus = '拉到 ${comments.length} 条$t0';
@@ -527,13 +527,14 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
             const SizedBox(height: Sp.x5),
             _label(builtins.isEmpty ? '服务地址' : '你自己的地址（可选，填了就压过内置）'),
             const SizedBox(height: Sp.x2),
-            TextField(
+            ui.TextField(
               controller: _url,
               keyboardType: TextInputType.url,
               style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
               decoration: InputDecoration(
-                hintText:
-                    builtins.isEmpty ? 'http://127.0.0.1:9321' : builtins.first.baseUrl,
+                hintText: builtins.isEmpty
+                    ? 'http://127.0.0.1:9321'
+                    : builtins.first.baseUrl,
                 border: const OutlineInputBorder(),
                 isDense: true,
               ),
@@ -545,7 +546,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
             const SizedBox(height: Sp.x5),
             _label('Token（可选）'),
             const SizedBox(height: Sp.x2),
-            TextField(
+            ui.TextField(
               controller: _token,
               style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
               decoration: const InputDecoration(
@@ -563,13 +564,13 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               spacing: Sp.x3,
               runSpacing: Sp.x2,
               children: [
-                FilledButton.icon(
+                ui.FilledButton.icon(
                   onPressed: _running ? null : _probe,
                   icon: _running
                       ? SizedBox(
                           width: 16,
                           height: 16,
-                          child: CircularProgressIndicator(
+                          child: ui.CircularProgressIndicator(
                             /*
                              * ★ 2026-10-17：必须显式给色（被 t27_w7 门禁抓出）
                              *
@@ -586,7 +587,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
                       : const Icon(AppIcons.wifi_tethering, size: 18),
                   label: Text(_running ? '测试中…' : '测试连接'),
                 ),
-                TextButton.icon(
+                ui.TextButton.icon(
                   onPressed: _running ? null : _clear,
                   icon: const Icon(AppIcons.delete_outline, size: 18),
                   label: const Text('清除'),
@@ -607,12 +608,11 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
             ),
           ),
           children: [
-            SwitchListTile(
+            ui.SwitchListTile(
               value: _mopenEnabled,
               onChanged: _toggleMopen,
               title: const Text('启用站源弹幕来源'),
-              subtitle:
-                  const Text('直接向视频站自家的弹幕接口拉取（不经弹弹play 协议）'),
+              subtitle: const Text('直接向视频站自家的弹幕接口拉取（不经弹弹play 协议）'),
               dense: true,
               contentPadding: EdgeInsets.zero,
             ),
@@ -620,10 +620,12 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               const SizedBox(height: Sp.x2),
               _label('视频 vid（或粘贴含 id_XXXX 的播放链接）'),
               const SizedBox(height: Sp.x2),
-              TextField(
+              ui.TextField(
                 controller: _mopenVid,
-                style:
-                    TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
+                style: TextStyle(
+                  fontSize: FontSizes.sm,
+                  color: colors.onSurface,
+                ),
                 decoration: const InputDecoration(
                   hintText: 'X 开头的视频 id',
                   border: OutlineInputBorder(),
@@ -632,15 +634,17 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
                 onSubmitted: (_) => _fetchMopen(),
               ),
               const SizedBox(height: Sp.x2),
-              _hint('打开该站的播放页，地址里 id_ 后面那段就是 vid。'
-                  '拉取已可用；播放页自动聚合未接入（另批）。'
-                  '失败会显示网关原文，不静默。'),
+              _hint(
+                '打开该站的播放页，地址里 id_ 后面那段就是 vid。'
+                '拉取已可用；播放页自动聚合未接入（另批）。'
+                '失败会显示网关原文，不静默。',
+              ),
               const SizedBox(height: Sp.x3),
               if (_mopenStatus != null) ...[
                 _hint(_mopenStatus!),
                 const SizedBox(height: Sp.x2),
               ],
-              FilledButton.icon(
+              ui.FilledButton.icon(
                 onPressed: _mopenRunning ? null : _fetchMopen,
                 icon: _mopenRunning
                     ? // ★ 已迁走控件门禁（zz_t64）：用自建 AppInlineSpinner，
@@ -681,51 +685,36 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               '这里决定弹幕请求怎么走 —— 与视频源自己的代理是两回事。',
             ),
             const SizedBox(height: Sp.x3),
-            /*
-             * ★ 用 `RadioGroup` 包住，而不是每个 tile 传 groupValue/onChanged
-             *
-             * 那两个参数在 Flutter v3.32.0 后**已废弃**（`deprecated_member_use`），
-             * 新 API 要求由 `RadioGroup` 祖先统一持有 groupValue 与回调
-             * ⇒ 每个 tile 只留 `value` + 展示内容。
-             *
-             * ★ 键盘可达性不变：`RadioListTile` 内部仍是同一个
-             *   `InkWell` + `Focus`，方向键在组内移动焦点的行为由
-             *   `RadioGroup` 统一分发，与旧 API 一致。
-             */
-            RadioGroup<DanmakuProxyMode>(
-              groupValue: _proxyMode,
-              onChanged: _setProxy,
-              child: const Column(
-                children: [
-                  RadioListTile<DanmakuProxyMode>(
-                    value: DanmakuProxyMode.direct,
-                    title: Text('直连'),
-                    subtitle: Text('不经过代理，也不受系统代理设置影响'),
+            Column(
+              children: [
+                for (final (mode, title, description) in const [
+                  (DanmakuProxyMode.direct, '直连', '不经过代理，也不受系统代理设置影响'),
+                  (
+                    DanmakuProxyMode.system,
+                    '跟随系统代理',
+                    '读取环境变量里的 HTTP_PROXY / HTTPS_PROXY',
+                  ),
+                  (
+                    DanmakuProxyMode.custom,
+                    '自定义代理',
+                    '只让弹幕请求走这个地址（填 HTTP 代理，不支持 socks）',
+                  ),
+                ])
+                  ui.RadioListTile<DanmakuProxyMode>(
+                    value: mode,
+                    groupValue: _proxyMode,
+                    onChanged: _setProxy,
+                    title: Text(title),
+                    subtitle: Text(description),
                     dense: true,
                   ),
-                  RadioListTile<DanmakuProxyMode>(
-                    value: DanmakuProxyMode.system,
-                    title: Text('跟随系统代理'),
-                    subtitle: Text('读取环境变量里的 HTTP_PROXY / HTTPS_PROXY'),
-                    dense: true,
-                  ),
-                  RadioListTile<DanmakuProxyMode>(
-                    value: DanmakuProxyMode.custom,
-                    title: Text('自定义代理'),
-                    // ★ 提前说清不支持 socks —— 写在副标题里，
-                    //   而不是等用户填完再报"地址无效"（那时他会反复改 host/port）
-                    subtitle: Text(
-                        '只让弹幕请求走这个地址（填 HTTP 代理，不支持 socks）'),
-                    dense: true,
-                  ),
-                ],
-              ),
+              ],
             ),
             // ★ 地址框**只在自定义**时出现 ——
             //   其它模式留着它会让用户以为"填了就生效"，而实际没被用上
             if (_proxyMode == DanmakuProxyMode.custom) ...[
               const SizedBox(height: Sp.x2),
-              TextField(
+              ui.TextField(
                 controller: _proxyUrl,
                 decoration: const InputDecoration(
                   labelText: '代理地址',
@@ -744,7 +733,9 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
              * 若不显示，用户看到的是"我配了代理却没生效"，
              * 而这种失败和"代理本身不通"表现完全不同，没法排查。
              */
-            _hint('当前：${diagnoseDanmakuProxy(mode: _proxyMode, url: _proxyUrl.text)}'),
+            _hint(
+              '当前：${diagnoseDanmakuProxy(mode: _proxyMode, url: _proxyUrl.text)}',
+            ),
           ],
         ),
       ],
@@ -773,21 +764,21 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
   }
 
   Widget _label(String text) => Text(
-        text,
-        style: TextStyle(
-          fontSize: FontSizes.sm,
-          fontWeight: FontWeights.semibold,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      );
+    text,
+    style: TextStyle(
+      fontSize: FontSizes.sm,
+      fontWeight: FontWeights.semibold,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    ),
+  );
 
   Widget _hint(String text) => Text(
-        text,
-        style: TextStyle(
-          fontSize: FontSizes.cap,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      );
+    text,
+    style: TextStyle(
+      fontSize: FontSizes.cap,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    ),
+  );
 }
 
 /// ★★★ 2026-10-19（R3-③ / R3-⑦）：**为什么连不上** —— 分类 + 下一步 + 原文
@@ -811,14 +802,12 @@ class _ActiveProbeReport extends StatelessWidget {
     final ok = report.isOk;
     final color = ok
         ? colors.onSurfaceVariant
-        : (report.failure.isLocalNetworkProblem
-            ? colors.error
-            : colors.error);
+        : (report.failure.isLocalNetworkProblem ? colors.error : colors.error);
     final icon = ok
         ? AppIcons.info_outline
         : (report.failure.isLocalNetworkProblem
-            ? AppIcons.wifi_off
-            : AppIcons.error_outline);
+              ? AppIcons.wifi_off
+              : AppIcons.error_outline);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(Sp.x3),
@@ -890,58 +879,21 @@ class _BuiltinTile extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(Radii.sm),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x3),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(Radii.sm),
-          border: Border.all(
-            color: selected ? colors.primary : colors.outlineVariant,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              selected ? AppIcons.check_circle : AppIcons.radio_button_unchecked,
-              size: 18,
-              color: selected ? colors.primary : colors.onSurfaceVariant,
-            ),
-            const SizedBox(width: Sp.x3),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    instance.label,
-                    style: TextStyle(
-                      fontSize: FontSizes.sm,
-                      fontWeight:
-                          selected ? FontWeights.semibold : FontWeights.regular,
-                      color: colors.onSurface,
-                    ),
-                  ),
-                  const SizedBox(height: Sp.x1),
-                  Text(
-                    instance.baseUrl,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+  Widget build(BuildContext context) => Shortcuts(
+    shortcuts: const {
+      SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+    },
+    child: miuix.MiuixCard(
+      cornerRadius: Radii.sm,
+      child: miuix.MiuixRadioButtonPreference(
+        title: instance.label,
+        summary: instance.baseUrl,
+        selected: selected,
+        onClick: onTap,
+        insideMargin: const EdgeInsets.all(Sp.x3),
       ),
-    );
-  }
+    ),
+  );
 }
 
 /// 状态行：未配置 / 已保存 / 在线 / 离线 / 测试中
@@ -1002,7 +954,8 @@ class _StatusLine extends StatelessWidget {
        */
       icon = AppIcons.info_outline;
       color = colors.onSurfaceVariant;
-      text = '未配置 —— 现在用的是本机弹弹play / 官方接口。'
+      text =
+          '未配置 —— 现在用的是本机弹弹play / 官方接口。'
           '填上 dan-api 地址后点「测试连接」。';
     } else if (saved.isNotEmpty) {
       // 存过但这次还没测 ⇒ 明说「已保存」，别让用户以为没生效

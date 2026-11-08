@@ -61,6 +61,7 @@ import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import '../media_session.dart';
 import 'app_loading.dart';
+import 'app_menu.dart';
 import '../../design/widgets/app_icon_button.dart' show AppSurface;
 import '../../design/widgets/app_ink_well.dart';
 import '../../design/icons/app_icons.dart';
@@ -2950,11 +2951,9 @@ class _DanmakuUnavailableNote extends StatelessWidget {
   );
 }
 
-/// ★★★ R6：清晰度下拉按钮（`MenuAnchor`，与 `live_page._BarDropdown` 同款）
-///
-/// ⚠️ 为什么**不**用 `PopupMenuButton`：同 `_BarDropdown` 的理由 ——
-///   它会以点按处为中心、宽度不可控，在内嵌播放器的小宽度里会跑出边界。
-class _LiveQualityButton extends StatelessWidget {
+/// The live player shares the Miuix menu used by the page's filter buttons.
+/// Index values keep duplicate stream URLs independently selectable.
+class _LiveQualityButton extends StatefulWidget {
   const _LiveQualityButton({
     required this.options,
     required this.current,
@@ -2966,39 +2965,81 @@ class _LiveQualityButton extends StatelessWidget {
   final ValueChanged<LiveQualityOption> onPick;
 
   @override
-  Widget build(BuildContext context) => MenuAnchor(
-    menuChildren: [
-      // ★★ 2026-10-19（Lead 修自审 P1-4）：key 里**加序号**。
-      //
-      // 改前只用 `o.value` ⇒ 上游一旦返回**两条相同 url** 的档位
-      // （`get_live_stream` 在 Rust 侧不去重，`_streams` 原样落），
-      // 就会抛 `Duplicate keys found`，**整个下拉打不开**。
-      //
-      // ⇒ 这里用 `indexed` 而不是循环变量，是为了让 key 与**列表位置**绑定
-      //   而不是与内容绑定；即使 url 重复也能区分。
-      for (final (i, o) in options.indexed)
-        MenuItemButton(
-          key: ValueKey('live-quality-opt-$i-${o.value}'),
-          onPressed: () => onPick(o),
-          style: MenuItemButton.styleFrom(visualDensity: VisualDensity.compact),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 16,
-                child: o.value == current.value
-                    ? const Icon(AppIcons.check, size: 13)
-                    : null,
-              ),
-              const SizedBox(width: 4),
-              Text(o.label, style: const TextStyle(fontSize: FontSizes.cap)),
-            ],
-          ),
+  State<_LiveQualityButton> createState() => _LiveQualityButtonState();
+}
+
+class _LiveQualityButtonState extends State<_LiveQualityButton> {
+  final _focus = FocusNode(debugLabel: 'live-quality-menu');
+  bool _menuOpen = false;
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _showMenu(BuildContext anchor) async {
+    if (_menuOpen) return;
+    final box = anchor.findRenderObject() as RenderBox?;
+    final overlay =
+        Overlay.of(anchor, rootOverlay: true).context.findRenderObject()
+            as RenderBox?;
+    if (box == null || overlay == null) return;
+    final choices = List<LiveQualityOption>.of(widget.options);
+    final selectedIndex = choices.indexWhere(
+      (o) => o.value == widget.current.value,
+    );
+    _menuOpen = true;
+    _focus.requestFocus();
+    try {
+      final selected = await showAppMenu<int>(
+        context: anchor,
+        position: RelativeRect.fromRect(
+          box.localToGlobal(Offset.zero, ancestor: overlay) & box.size,
+          Offset.zero & overlay.size,
         ),
-    ],
-    builder: (ctx, controller, _) => ui.Tooltip(
+        initialValue: selectedIndex < 0 ? null : selectedIndex,
+        items: [
+          for (final (i, option) in choices.indexed)
+            AppMenuItem(
+              value: i,
+              child: Row(
+                key: ValueKey('live-quality-opt-$i-${option.value}'),
+                children: [
+                  SizedBox(
+                    width: 16,
+                    child: option.value == widget.current.value
+                        ? const Icon(AppIcons.check, size: 13)
+                        : null,
+                  ),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: Text(
+                      option.label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: FontSizes.cap),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      );
+      if (mounted && selected != null) widget.onPick(choices[selected]);
+    } finally {
+      _menuOpen = false;
+      if (mounted) _focus.requestFocus();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Builder(
+    builder: (anchor) => ui.Tooltip(
       message: '清晰度',
       child: AppInkWell(
-        onTap: () => controller.isOpen ? controller.close() : controller.open(),
+        focusNode: _focus,
+        onTap: () => _showMenu(anchor),
         child: AppSurface(
           color: Colors.black.withValues(alpha: 0.42),
           borderRadius: BorderRadius.circular(999),

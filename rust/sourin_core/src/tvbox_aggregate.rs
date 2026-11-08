@@ -924,7 +924,11 @@ fn build_response(st: &crate::state::AppState, cfg: &AggregateConfig) -> serde_j
     let sites: Vec<serde_json::Value> = tvbox_sites(st)
         .into_iter()
         .map(|(id, name, api)| {
-            let implemented = crate::csp::route(&api).is_some();
+            // tvbox_sites only returns registered TVBox providers. HTTP(S) entries
+            // already use the native AppleCMS implementation; only CSP entries
+            // need the class registry. Script-only imports never register here.
+            let implemented = crate::tvbox::starts_http(&api)
+                || crate::csp::route(&api).is_some();
             serde_json::json!({
                 "id": id,
                 "name": name,
@@ -1424,6 +1428,90 @@ mod tests {
         cfg.hidden_site_ids = derive_hidden(&cfg.enabled_site_ids);
         save(&dir, &cfg).expect("写配置");
         TvboxAggregate::new(reg, dir)
+    }
+
+    #[tokio::test]
+    async fn aggregate_response_marks_registered_applecms_implemented() {
+        let dir = tmp_dir(&format!(
+            "native_implementation_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::write(dir.join("remote-pref.json"), r#"{"auto_start":false}"#).unwrap();
+        crate::tvbox::save_tvbox_update_schedule(
+            &dir,
+            &crate::tvbox::TvboxUpdateSchedule { enabled: false, interval_secs: 86_400 },
+        ).unwrap();
+        let st = crate::state::AppState::bootstrap(dir.clone()).await.unwrap();
+        let config = serde_json::json!({"sites": [
+            {"key":"native-http","name":"HTTP catalog","type":1,
+             "api":"http://content.invalid/api"},
+            {"key":"native-https","name":"HTTPS catalog","type":1,
+             "api":"https://content.invalid/api"},
+            {"key":"native-csp","name":"Implemented CSP","type":3,"api":"csp_Bili"},
+            {"key":"unsupported-csp","name":"Unsupported CSP","type":3,
+             "api":"csp_SourinUnsupportedRegression"},
+            {"key":"unsupported-script","name":"Unsupported script","type":3,
+             "api":"https://content.invalid/provider.js"}
+        ]});
+        let (jobs, skipped, _) = crate::tvbox::collect_sites(&config, "");
+        assert_eq!(jobs.iter().map(|j| j.key.as_str()).collect::<Vec<_>>(),
+                   ["native-http", "native-https", "native-csp"]);
+        assert_eq!(skipped.len(), 2, "Unsupported CSP/script must not reach registration");
+        let checked = crate::tvbox::ProbeOk { classes: vec![], total: 0 };
+        for job in &jobs {
+            let provider = crate::tvbox::build_site_provider(
+                &job.key, job, &checked, None, vec![],
+            ).unwrap();
+            st.registry.register(provider);
+            crate::tvbox::write_tvbox_meta(&dir, &job.key, &crate::tvbox::TvboxSourceMeta {
+                site_key: job.key.clone(), site_name: job.name.clone(), api: job.api.clone(),
+                ..Default::default()
+            }).unwrap();
+        }
+        // A stale unsupported CSP row must still be disabled, even if a registry
+        // entry exists. This guards against replacing capability checks with true.
+        st.registry.register(Arc::new(FakeChild {
+            manifest: manifest("stale-unsupported-csp", "tvbox"),
+            items: vec![], fail_search: false,
+        }));
+        crate::tvbox::write_tvbox_meta(&dir, "stale-unsupported-csp", &crate::tvbox::TvboxSourceMeta {
+            api: "csp_SourinUnsupportedRegression".into(), ..Default::default()
+        }).unwrap();
+        // Metadata alone must not make an unsupported script a selectable source.
+        crate::tvbox::write_tvbox_meta(&dir, "unsupported-script", &crate::tvbox::TvboxSourceMeta {
+            api: "https://content.invalid/provider.js".into(), ..Default::default()
+        }).unwrap();
+        let enabled: Vec<String> = jobs.iter().map(|j| j.key.clone()).collect();
+        save(&dir, &AggregateConfig {
+            hidden_site_ids: derive_hidden(&enabled), enabled_site_ids: enabled,
+            ..Default::default()
+        }).unwrap();
+        let response = command_get(&st).unwrap();
+        let sites = response["sites"].as_array().unwrap();
+        for id in ["native-http", "native-https", "native-csp"] {
+            let row = sites.iter().find(|s| s["id"] == id).unwrap();
+            assert_eq!(row["implemented"], true, "Registered native provider must be selectable: {row}");
+            assert_eq!(row["enabled"], true);
+            assert!(row["reason"].is_null());
+        }
+        let stale = sites.iter().find(|s| s["id"] == "stale-unsupported-csp").unwrap();
+        assert_eq!(stale["implemented"], false);
+        assert_eq!(stale["reason"], unimplemented_reason("csp_SourinUnsupportedRegression"));
+        for id in ["unsupported-csp", "unsupported-script"] {
+            assert!(st.registry.get(id).is_none());
+            assert!(!sites.iter().any(|s| s["id"] == id));
+        }
+        // Capability must not force selection back on after the user deselects it.
+        let updated = command_set(&st, &serde_json::json!({
+            "enabledSiteIds": ["native-https", "native-csp"]
+        })).unwrap();
+        let deselected = updated["sites"].as_array().unwrap().iter()
+            .find(|s| s["id"] == "native-http").unwrap();
+        assert_eq!(deselected["implemented"], true);
+        assert_eq!(deselected["enabled"], false);
+        assert_eq!(command_get(&st).unwrap(), updated);
+        drop(st);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// ★ 注入点：把 `fanout_search` 里的 `match` 改成 `?`（不隔离）⇒ 本条红

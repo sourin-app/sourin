@@ -60,7 +60,7 @@ if ($encodedDefines[0].Groups[1].Value) {
 Assert-OwnerConfiguration $targets[0].Groups[1].Value $defines
 
 $builtFiles = @(Get-WindowsPackageInventory $project)
-$packageFiles = @(Get-ChildItem -LiteralPath $package -File -Recurse)
+$packageFiles = @(Get-ChildItem -LiteralPath $package -File -Recurse -Force)
 if ($builtFiles.Count -eq 0 -or $builtFiles.Count -ne $packageFiles.Count) {
     throw 'Package file inventory differs from the verified build output'
 }

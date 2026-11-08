@@ -61,6 +61,15 @@ void main() {
     ],
     stdoutEncoding: const Utf8Codec(allowMalformed: true),
     stderrEncoding: const Utf8Codec(allowMalformed: true),
+    environment: {
+      // A parent PowerShell 7 session can omit the legacy Windows modules.
+      'PSModulePath': [
+        if (!ps!.toLowerCase().endsWith('powershell.exe'))
+          Platform.environment['PSModulePath'] ?? '',
+        '${Platform.environment['SystemRoot'] ?? 'C:/Windows'}'
+            '/System32/WindowsPowerShell/v1.0/Modules',
+      ].join(';'),
+    },
   );
 
   setUp(() {
@@ -138,6 +147,10 @@ void main() {
     expect(run('package_owner_windows.ps1').exitCode, 0);
     final extra = put('${package.path}/extra.json', [1]);
     expect(run('verify_owner_windows_package.ps1').exitCode, isNot(0));
+    expect(Process.runSync('attrib', ['+h', extra.path]).exitCode, 0);
+    expect(run('verify_owner_windows_package.ps1').exitCode, isNot(0),
+        reason: 'Hidden data is still extra package content.');
+    expect(Process.runSync('attrib', ['-h', extra.path]).exitCode, 0);
     extra.deleteSync();
     final dll = File('${package.path}/WebView2Loader.dll');
     final bytes = dll.readAsBytesSync();
@@ -156,8 +169,11 @@ void main() {
     'inventory rejects path escape, missing build file and empty manifest',
     () {
       final original = manifest.readAsStringSync();
-      manifest.writeAsStringSync('$original\n${project.path}/outside.dll');
-      expect(run('package_owner_windows.ps1').exitCode, isNot(0));
+      final outside = put('${release.path}-outside/subdir/outside.dll', [2]);
+      manifest.writeAsStringSync('$original\n${outside.path}');
+      final escaped = run('package_owner_windows.ps1');
+      expect(escaped.exitCode, isNot(0));
+      expect(escaped.stderr, contains('outside the Release directory'));
       expect(package.existsSync(), isFalse);
       manifest.writeAsStringSync('');
       expect(run('package_owner_windows.ps1').exitCode, isNot(0));
@@ -166,4 +182,14 @@ void main() {
       expect(run('package_owner_windows.ps1').exitCode, isNot(0));
     },
   );
+  test('Windows PowerShell reads UTF-8 manifest paths without a BOM', () {
+    const legacy = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+    ps = legacy;
+    final asset = put('${release.path}/data/flutter_assets/封面.png', [3]);
+    manifest.writeAsStringSync('${manifest.readAsStringSync()}\n${asset.path}');
+    final result = run('package_owner_windows.ps1');
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    expect(File('${package.path}/data/flutter_assets/封面.png').existsSync(), isTrue);
+  }, skip: File('C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe')
+      .existsSync() ? false : 'Windows PowerShell 5.1 is not installed');
 }

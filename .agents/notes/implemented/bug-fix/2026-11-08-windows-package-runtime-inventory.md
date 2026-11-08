@@ -34,6 +34,10 @@ already records installed runtime assets and is the narrower authoritative input
 Tests execute the real PowerShell assembler and verifier against synthetic builds
 containing private-data decoys. They reject changed bytes, missing dependencies,
 extra files, wrong targets, test defines, invalid core hashes and manifest escapes.
+Hidden files also count toward the complete inventory. The install manifest is
+decoded as UTF-8 explicitly, including under Windows PowerShell 5.1. Tests include
+a hidden extra file, a real adjacent-directory escape and a Chinese asset path
+read by the legacy shell.
 Tests require Windows and PowerShell, matching the scripts' deployment platform.
 Pure old-verifier comparison rejects the otherwise valid clean package because
 the build directory contains additional runtime caches.

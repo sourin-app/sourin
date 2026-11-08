@@ -5,7 +5,7 @@ function Get-WindowsPackageInventory([string]$BuildProject) {
     $release = (Resolve-Path -LiteralPath (Join-Path $project 'build/windows/x64/runner/Release')).Path
     $prefix = $release.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
     $manifest = Join-Path $project 'build/windows/x64/install_manifest.txt'
-    $installed = @(Get-Content -LiteralPath $manifest | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $installed = @(Get-Content -LiteralPath $manifest -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($installed.Count -eq 0) { throw 'Build install manifest is empty' }
     $paths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in $installed) {

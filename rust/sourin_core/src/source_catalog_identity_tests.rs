@@ -285,3 +285,130 @@ async fn catalog_read_and_mutation_repair_saved_groups_and_failed_save_keeps_ori
     assert_eq!(source(&updated, "alpha").primary_url, "https://alpha.invalid/plugin.js");
     assert_eq!(source(&updated, "beta").primary_url, "");
 }
+
+struct ExtIdentitySpy {
+    manifest: crate::model::ProviderManifest,
+}
+
+#[async_trait::async_trait]
+impl crate::provider::MediaProvider for ExtIdentitySpy {
+    fn manifest(&self) -> &crate::model::ProviderManifest {
+        &self.manifest
+    }
+
+    async fn resolve(
+        &self,
+        _: &crate::model::MediaId,
+        _: &crate::model::PlayRequest,
+    ) -> Result<Vec<crate::model::StreamCandidate>, crate::model::ProviderError> {
+        Ok(vec![])
+    }
+}
+
+fn register_ext_identity_fixture(state: &AppState, id: &str, ext: Option<&str>) {
+    state.registry.register(Arc::new(ExtIdentitySpy {
+        manifest: crate::model::ProviderManifest {
+            id: id.into(), name: "Shared site key".into(), version: "1".into(),
+            kind: "tvbox".into(), description: None, icon: None, id_prefixes: vec![],
+            capabilities: crate::model::Capabilities {
+                vod: true, search: true, ..Default::default()
+            },
+            hidden: true, cover_headers: vec![], config: vec![], api_version: 1,
+            theme_color: None, working: true, broken_reason: None, enabled: None,
+        },
+    }));
+    state.third_party.write().unwrap().push(PersistedProvider::Tvbox {
+        id: id.into(), name: "Shared site key".into(), api: "csp_XBPQ".into(),
+        categories: vec![], parsers: vec![], ext: ext.map(str::to_owned),
+    });
+    crate::tvbox::write_tvbox_meta(&state.data_dir, id, &crate::tvbox::TvboxSourceMeta {
+        source_url: Some(format!("https://{id}.invalid/config")),
+        site_key: "xbpq".into(), site_name: "Shared site key".into(),
+        api: "csp_XBPQ".into(), ..Default::default()
+    }).unwrap();
+}
+
+#[tokio::test]
+async fn different_csp_ext_is_not_an_alternative_provider_for_the_same_child() {
+    std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+    let dir = scratch("csp-ext-isolation");
+    let state = AppState::bootstrap(dir.clone()).await.unwrap();
+    // Registration after bootstrap avoids initializing a network-backed CSP.
+    // The production catalog and selection commands are still used directly.
+    register_ext_identity_fixture(&state, "mirror-a", Some("https://rules-a.invalid/xbpq.json"));
+    register_ext_identity_fixture(&state, "mirror-b", Some("https://rules-a.invalid/xbpq.json"));
+    register_ext_identity_fixture(&state, "independent", Some("https://rules-b.invalid/xbpq.json"));
+    sync_enabled(&state.registry, &dir);
+    let original_configs = serde_json::to_value(&*state.third_party.read().unwrap()).unwrap();
+    let before = catalog(&state).unwrap();
+    let shared = before.groups.iter().find(|g| g.provider_ids.contains(&"mirror-a".into())).unwrap();
+    assert_eq!(shared.provider_ids, vec!["mirror-a", "mirror-b"],
+        "different CSP ext describes a separate source, not another provider for this source");
+    let independent = before.groups.iter().find(|g| g.provider_ids.contains(&"independent".into())).unwrap();
+    assert_eq!(independent.provider_ids, vec!["independent"]);
+    let shared_id = shared.id.clone();
+    let independent_id = independent.id.clone();
+    let original_origins = before.origins.clone();
+
+    command_select(&state, &shared_id, &["mirror-b".into()]).unwrap();
+    let after = catalog(&state).unwrap();
+    assert_eq!(after.origins, original_origins, "provider choices do not rewrite source addresses");
+    assert_eq!(source(&after, "independent"), source(&before, "independent"));
+    assert_eq!(serde_json::to_value(&*state.third_party.read().unwrap()).unwrap(), original_configs);
+    let selected = crate::commands::list_providers(&state).unwrap();
+    let enabled = |id: &str| selected.iter().find(|p| p.id == id).unwrap().enabled;
+    assert_eq!(enabled("mirror-a"), Some(false));
+    assert_eq!(enabled("mirror-b"), Some(true));
+    assert_eq!(enabled("independent"), Some(true), "choosing a mirror must leave a different source enabled");
+    assert_eq!(after.groups.iter().find(|g| g.id == shared_id).unwrap().selected_provider_ids,
+        vec!["mirror-b"]);
+    assert_eq!(after.groups.iter().find(|g| g.id == independent_id).unwrap().selected_provider_ids,
+        vec!["independent"]);
+
+    command_select(&state, &shared_id, &[]).unwrap();
+    let all_off = crate::commands::list_providers(&state).unwrap();
+    assert_eq!(all_off.iter().find(|p| p.id == "independent").unwrap().enabled, Some(true));
+    assert_eq!(all_off.iter().find(|p| p.id == "mirror-b").unwrap().enabled, Some(false));
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn missing_and_empty_ext_keep_legacy_provider_group_identity() {
+    std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+    let dir = scratch("csp-ext-empty");
+    let state = AppState::bootstrap(dir.clone()).await.unwrap();
+    register_ext_identity_fixture(&state, "unset", None);
+    register_ext_identity_fixture(&state, "blank", Some(" \t "));
+    sync_enabled(&state.registry, &dir);
+    let current = catalog(&state).unwrap();
+    let group = current.groups.iter().find(|g| g.provider_ids.contains(&"unset".into())).unwrap();
+    assert_eq!(group.provider_ids, vec!["unset", "blank"]);
+    assert_eq!(group.id, format!("site-{}", crate::m3u::stable_key("xbpq\ncsp_XBPQ")));
+    assert_eq!(group.selected_provider_ids, vec!["unset", "blank"]);
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn trimmed_ext_groups_mirrors_without_reviving_independent_disabled_source() {
+    std::env::set_var("SOURIN_NO_REMOTE_AUTOSTART", "1");
+    let dir = scratch("csp-ext-disabled");
+    let state = AppState::bootstrap(dir.clone()).await.unwrap();
+    register_ext_identity_fixture(&state, "mirror-a", Some("https://rules-a.invalid/xbpq.json"));
+    register_ext_identity_fixture(&state, "mirror-b", Some(" \nhttps://rules-a.invalid/xbpq.json\t "));
+    register_ext_identity_fixture(&state, "independent", Some("{\"host\":\"https://rules-b.invalid\"}"));
+    sync_enabled(&state.registry, &dir);
+    assert!(crate::commands_provider::set_enabled_persisted(&state, "independent", false).unwrap());
+    let before = catalog(&state).unwrap();
+    let group = before.groups.iter().find(|g| g.provider_ids.contains(&"mirror-a".into())).unwrap();
+    assert_eq!(group.provider_ids, vec!["mirror-a", "mirror-b"]);
+    let independent = before.groups.iter().find(|g| g.provider_ids.contains(&"independent".into())).unwrap();
+    assert!(independent.selected_provider_ids.is_empty());
+    command_select(&state, &group.id, &["mirror-b".into()]).unwrap();
+    assert!(!crate::commands::get_provider_enabled(&state, "independent").unwrap());
+    assert!(crate::commands::load_disabled(&dir).contains(&"independent".to_owned()));
+    assert!(crate::commands::get_provider_enabled(&state, "mirror-b").unwrap());
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+}

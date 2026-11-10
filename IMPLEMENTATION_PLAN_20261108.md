@@ -1,6 +1,8 @@
 # 源影：源管理、Miuix 统一与稳定性实施计划
 
-更新：2026-11-10。状态：完整目标继续推进，全部18项反馈及多地址降级追加要求同等保留。用户新实测多数源无法播放，允许必要内嵌WASM；已按用户许可并发3个gpt-6.1-sol/high分别推进取流能力、播放器稳定性和Miuix源管理，root负责整合、串行测试与实际验证。最新用户操作重新暴露AXTree错误，先前v43无错误仅对当时采样成立，不能扩展到现在。未完成真实播放/性能/稳定性验收，不作完成声明。
+更新：2026-11-11。状态：完整目标继续推进，全部18项反馈及多地址降级追加要求同等保留。用户新实测多数源无法播放，允许必要内嵌WASM；此前按用户许可并发3个gpt-6.1-sol/high分别推进取流能力、播放器稳定性和Miuix源管理，root负责整合、串行测试与实际验证。最新用户操作重新暴露AXTree错误，先前v43无错误仅对当时采样成立，不能扩展到现在。未完成真实播放/性能/稳定性验收，不作完成声明。
+
+2026-11-11 接手续做时，用户正在使用电脑。当前只进行隔离数据的后台测试和只读检查，测试进程采用低优先级、单编译任务与两个逻辑CPU限制。窗口激活、鼠标键盘、客户端导航、重启、热重载及更新运行中的DLL均留待用户允许界面操作后进行。
 
 ## 当前安排
 
@@ -13,7 +15,7 @@
 | 5 | 切页性能、启动等待 | v25目录8004ms→16ms；v26产品默认Skia的15次导航632帧无超预算，最大raster8.762ms，4次设置滚动123帧无超预算。Impeller环境回退已实查。冷启动raster峰233.521ms仍待优化。v27/v28普通客户端实查通过，不将v26帧率读数扩大到新版本全场景 |
 | 6 | GitHub 自动发现和外部播放 | 本地代理定时及异步跨页保存19项通过；v19实际GitHub扫描→通知→手动启用→来源标识→停用/移除/已读通过。无需账号外部播放已验证一条，网盘仍未验收 |
 
-本轮完成前：串行回归 → 编译与内核身份核对 → 普通开发客户端实查 → 留在首页。后续记录用于保留证据，以上状态及末尾同项更新优先。
+完整交付前：串行回归 → 编译与内核身份核对 → 普通开发客户端实查 → 留在首页。客户端实查服从上面的电脑使用限制。后续记录用于保留证据，以上状态及末尾同项更新优先。
 
 ## 目标
 
@@ -983,3 +985,12 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - The normal release core build succeeds in 4m09s with SHA256 337c7b2c1d8375450a214a6cc631f8d0ad5077719a61dd2718f2659dc8bff875. The preserved-profile v61 developer launch finishes its Windows build in 32.8s and emits FIRST_FRAME_RENDERED. The old preview exited through its guarded tray action. New-process identity/core/Dart binding, screenshot inspection, actual route observations and bounded public-source catalog requests remain pending; no new native playback acceptance is claimed.
 - The current proxy-lifecycle-red worktree is saved separately as local commit a44d7c8 on codex/proxy-lifecycle-red-checkpoint-20261111. Fourteen files preserve older-product regressions, synthetic fixtures and their decision note. Product baseline cb613bf remains intact except cfg(test) wiring; tests may fail by design. Two extra EOF blank lines are removed without changing assertions. Generated plugin registrants have no normalized content changes. The complete notes gate and normal commit hooks pass, and this regression worktree is clean after commit. This branch is not merged into production.
 - Remaining work includes real public-service interoperability and selected playback/decode, native navigation/performance verification, the separate invalid-artwork case, two legacy live static guards, old pause/mute commands finishing after a newer resume, and the rest of the full UI/source/stability scope. Java request-order assumptions and acceptance of honest Windows metadata remain unverified against real services. Existing preview data/accounts are preserved; private bindings, responses, logs and profiles remain ignored local artifacts.
+
+### 2026-11-11 v62: background takeover and CSP configuration groups
+
+- The interrupted local chat is recovered; the full eighteen-item and additional source/proxy/playback scope remains active. The user is using the computer, so this round uses no desktop input, client navigation, restart, reload or running-DLL replacement. Test data remains isolated; processes use below-normal priority, one build worker and two logical CPUs.
+- A read-only VM/process check binds the existing v61 client to its exact executable/creation time, core SHA256 and twenty-nine loaded Dart files. Current recorded AXTree/Flutter/unhandled error counts are zero. One cover failure event remains; no new image-decode or playback acceptance follows from this check.
+- Six headless route-pop, fullscreen-return visibility and danmaku proxy suites pass forty-two cases with immutable source snapshots. The prepared native route observer is not run because it invokes navigation callbacks.
+- CSP provider groups now distinguish nonempty ext configurations while preserving missing/empty group identities and existing provider IDs, addresses and disabled choices. Clean 01a6495 qualification produces two intended failures and eight passing controls. The unchanged qualified assertions and all existing source_catalog cases pass thirty-two cases on production. The first fixture type error and the stopped premature GREEN launch are excluded from behavioral evidence. The implementation is recorded in [CSP configuration identity](.agents/notes/implemented/bug-fix/2026-11-11-csp-provider-group-ext-identity.md).
+- The current media_kit play/pause/setVolume methods independently confirm their shared native lock. The optional second command queue is not applied based on an unlocked fake. Pending user-intent ownership and rapid repeated mute actions remain separate candidates for qualified testing.
+- No new client build is launched or installed in this round. Public-service interoperability, selected-episode decode, invalid artwork, TVBox-live parent provenance, native UI/performance acceptance and the rest of the full scope remain open. Regression evidence is retained in the ignored background takeover directory and the managed RED worktree snapshot.

@@ -65,6 +65,10 @@ failure discards only that draft. Successful persistence notifies the retained
 settings owner before the refreshed catalog arrives. Empty selection remains an
 explicit request to disable every provider in the group.
 
+[CSP configuration identity](../bug-fix/2026-11-11-csp-provider-group-ext-identity.md)
+keeps different ext recipes in separate provider groups. A choice applies only
+to the matching configuration; existing provider-level disabled choices persist.
+
 Origin address editing, JS installation and live import also notify inside their
 successful persistence callbacks. A dialog's return value only controls a still
 mounted manager refresh. Removing its route cannot suppress notification of a

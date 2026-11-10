@@ -226,7 +226,7 @@ fn catalog_locked(state: &AppState) -> Result<SourceCatalog, String> {
     let mut groups: BTreeMap<String, SourceOriginGroup> = BTreeMap::new();
     for row in persisted.iter() {
         match row {
-            PersistedProvider::Tvbox { id, name, api, .. } if known.contains(id) => {
+            PersistedProvider::Tvbox { id, name, api, ext, .. } if known.contains(id) => {
                 let meta = metas.get(id);
                 let url = meta.and_then(|m| m.source_url.as_deref()).unwrap_or("").trim();
                 let label = if url.is_empty() {
@@ -238,12 +238,18 @@ fn catalog_locked(state: &AppState) -> Result<SourceCatalog, String> {
                         .unwrap_or_else(|| "TVBox 订阅".into())
                 };
                 sources.push(legacy_origin("tvbox", &label, url, id));
-                // A matching site key and API identify a shared source; names alone never do.
+                // A CSP API identifies an implementation; different ext values
+                // can select unrelated upstreams despite a shared site key.
                 let key = meta
                     .map(|m| m.site_key.as_str())
                     .filter(|s| !s.is_empty())
                     .unwrap_or(name);
-                let identity = format!("{key}\n{}", crate::tvbox::normalize_api_url(api));
+                let base_identity = format!("{key}\n{}", crate::tvbox::normalize_api_url(api));
+                // Keep the existing group identity when no ext is configured.
+                let identity = match ext.as_deref().map(str::trim).filter(|ext| !ext.is_empty()) {
+                    Some(ext) => format!("{base_identity}\n{ext}"),
+                    None => base_identity,
+                };
                 let gid = format!("site-{}", crate::m3u::stable_key(&identity));
                 let group = groups
                     .entry(gid.clone())

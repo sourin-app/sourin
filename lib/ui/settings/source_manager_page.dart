@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
@@ -12,6 +13,7 @@ import '../widgets/app_menu.dart';
 import '../widgets/miuix_controls.dart' as ui;
 import '../widgets/overlay_motion.dart';
 import '../widgets/plugin_speedtest.dart';
+import '../widgets/settings_dropdown.dart';
 import '../widgets/settings_sub_page.dart';
 import '../widgets/source_bar.dart' show sourceDisplayLabel;
 import '../widgets/source_address_fields.dart';
@@ -360,23 +362,21 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
           ),
           SizedBox(
             width: 180,
-            child: miuix.MiuixWindowDropdownMenu(
-              key: const ValueKey('source-status-filter'),
-              title: '状态：${_status.label}',
-              insideMargin: const EdgeInsets.symmetric(
-                horizontal: Sp.x3,
-                vertical: Sp.x2,
-              ),
-              entry: miuix.MiuixDropdownEntry(
-                items: [
-                  for (final status in ManagedSourceStatus.values)
-                    miuix.MiuixDropdownItem(
-                      text: status.label,
-                      selected: _status == status,
-                      onClick: () => setState(() => _status = status),
-                    ),
-                ],
-              ),
+            child: Row(
+              children: [
+                const Text('状态：'),
+                Expanded(
+                  child: SettingsDropdown<ManagedSourceStatus>(
+                    key: const ValueKey('source-status-filter'),
+                    value: _status,
+                    options: [
+                      for (final status in ManagedSourceStatus.values)
+                        SettingsDropdownOption(status, status.label),
+                    ],
+                    onChanged: (status) => setState(() => _status = status),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -797,25 +797,69 @@ class _SourceOriginPopup extends StatefulWidget {
 class _SourceOriginPopupState extends State<_SourceOriginPopup> {
   bool _show = true;
   @override
-  Widget build(BuildContext context) => miuix.MiuixWindowListPopup(
-    show: _show,
-    anchorBounds: widget.anchor,
-    alignment: miuix.MiuixPopupAlign.start,
-    enableWindowDim: false,
-    maxHeight: MediaQuery.sizeOf(context).height - 24,
-    minWidth: 280,
-    onDismissRequest: () => setState(() => _show = false),
-    onDismissFinished: () {
-      if (mounted) Navigator.of(context).pop();
-    },
-    surfaceBuilder: (_, __, child) => miuix.MiuixCard(child: child),
-    content: Padding(
-      padding: const EdgeInsets.all(Sp.x3),
-      child: _OriginSearchResults(
-        origins: widget.origins,
-        selected: widget.selected,
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final viewport = Rect.fromLTRB(
+      math.max(media.viewPadding.left, media.viewInsets.left),
+      math.max(media.viewPadding.top, media.viewInsets.top),
+      media.size.width -
+          math.max(media.viewPadding.right, media.viewInsets.right),
+      media.size.height -
+          math.max(media.viewPadding.bottom, media.viewInsets.bottom),
+    );
+    return miuix.MiuixWindowListPopup(
+      show: _show,
+      anchorBounds: widget.anchor,
+      alignment: miuix.MiuixPopupAlign.start,
+      // The window-level host uses its root overlay's full-screen MediaQuery.
+      // Keep this editor's popup inside the actual keyboard-free viewport.
+      popupPositionProvider: _SourceOriginPopupPositionProvider(viewport),
+      enableWindowDim: false,
+      maxHeight: math.max(
+        miuix.MiuixListPopupDefaults.minPopupHeight,
+        viewport.height - Sp.x6,
       ),
-    ),
+      minWidth: 280,
+      onDismissRequest: () => setState(() => _show = false),
+      onDismissFinished: () {
+        if (mounted) Navigator.of(context).pop();
+      },
+      surfaceBuilder: (_, __, child) => miuix.MiuixCard(child: child),
+      content: Padding(
+        padding: const EdgeInsets.all(Sp.x3),
+        child: _OriginSearchResults(
+          origins: widget.origins,
+          selected: widget.selected,
+        ),
+      ),
+    );
+  }
+}
+
+class _SourceOriginPopupPositionProvider
+    implements miuix.MiuixPopupPositionProvider {
+  const _SourceOriginPopupPositionProvider(this.viewport);
+  final Rect viewport;
+
+  @override
+  EdgeInsetsGeometry get margins =>
+      miuix.MiuixListPopupDefaults.dropdownPosition.margins;
+
+  @override
+  Offset calculatePosition({
+    required Rect anchorBounds,
+    required Rect windowBounds,
+    required TextDirection textDirection,
+    required Size popupContentSize,
+    required EdgeInsets popupMargin,
+    required miuix.MiuixPopupAlign alignment,
+  }) => miuix.MiuixListPopupDefaults.dropdownPosition.calculatePosition(
+    anchorBounds: anchorBounds,
+    windowBounds: windowBounds.intersect(viewport),
+    textDirection: textDirection,
+    popupContentSize: popupContentSize,
+    popupMargin: popupMargin,
+    alignment: alignment,
   );
 }
 
@@ -848,28 +892,30 @@ class _OriginSearchResultsState extends State<_OriginSearchResults> {
             onChanged: (value) => setState(() => _query = value),
             decoration: const InputDecoration(hintText: '搜索聚合来源'),
           ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 280),
-            child: SingleChildScrollView(
-              child: Column(
-                children: [
-                  ui.ListTile(
-                    title: const Text('全部聚合来源'),
-                    onTap: () => Navigator.of(context).pop(''),
-                  ),
-                  for (final origin in matches)
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 280),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
                     ui.ListTile(
-                      key: ValueKey('source-origin-option-${origin.id}'),
-                      title: Text(origin.name),
-                      subtitle: Text(
-                        '${origin.kind.toUpperCase()} · ${origin.providerIds.length} 个源',
-                      ),
-                      trailing: origin.id == widget.selected
-                          ? const Icon(Icons.check)
-                          : null,
-                      onTap: () => Navigator.of(context).pop(origin.id),
+                      title: const Text('全部聚合来源'),
+                      onTap: () => Navigator.of(context).pop(''),
                     ),
-                ],
+                    for (final origin in matches)
+                      ui.ListTile(
+                        key: ValueKey('source-origin-option-${origin.id}'),
+                        title: Text(origin.name),
+                        subtitle: Text(
+                          '${origin.kind.toUpperCase()} · ${origin.providerIds.length} 个源',
+                        ),
+                        trailing: origin.id == widget.selected
+                            ? const Icon(Icons.check)
+                            : null,
+                        onTap: () => Navigator.of(context).pop(origin.id),
+                      ),
+                  ],
+                ),
               ),
             ),
           ),

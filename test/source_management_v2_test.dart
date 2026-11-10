@@ -404,7 +404,13 @@ void main() {
       await tester.pumpAndSettle();
       Finder row(String id) => find.byKey(ValueKey('managed-source-$id'));
       final statusFilter = find.byKey(const ValueKey('source-status-filter'));
-      expect(tester.widget(statusFilter), isA<miuix.MiuixWindowDropdownMenu>());
+      expect(
+        find.descendant(
+          of: statusFilter,
+          matching: find.byType(miuix.MiuixButton),
+        ),
+        findsOneWidget,
+      );
       expect(row('a'), findsOneWidget);
       expect(row('b'), findsOneWidget);
       expect(row('c'), findsOneWidget);

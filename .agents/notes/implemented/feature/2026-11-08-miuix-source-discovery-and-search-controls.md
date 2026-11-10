@@ -150,6 +150,25 @@ can be scrolled into the remaining viewport. This phone case does not lower the
 Windows minimum window size. Fresh root-run and native results are recorded
 separately from the implementation contract.
 
+The source-status filter uses SettingsDropdown and its shared Miuix popup path.
+The direct library dropdown opened from Enter and remote Select, but its
+pointer-only option rows did not apply keyboard selection: root's behavior RED
+left the disabled provider visible after Down/Enter selected the enabled status.
+The replacement retains status/type/origin/query filtering and pointer selection
+while using the application's existing focused menu actions. Remote Select
+opening passed as a positive control; it is not a reproduced failure. The
+separate origin-popup keyboard-inset test must first tap and observe its actual
+editor focus before checking geometry. Its initial autofocus expectation failed
+before any inset assertion, so that run does not establish keyboard occlusion.
+After tapping the actual editor, root reproduced the popup bottom at 582 with
+the keyboard beginning at 380. The origin popup now derives its local usable
+viewport from view padding and keyboard insets, limits the existing Miuix
+position provider to that viewport and caps popup height there. Its option list
+uses the remaining flexible height beneath the editor, preserving scrolling and
+search selection. The window host and vendor positioning code remain shared;
+only this source-search caller supplies its keyboard-aware boundary. Actual
+editor focus, last-option reachability, filtering and selection remain asserted.
+
 Reconsider the adapters if they stop preserving the existing input/focus
 contracts, and reconsider the source-list layout if measured native or widget
 performance exceeds the established streaming-search budget.

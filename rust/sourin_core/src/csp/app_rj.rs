@@ -461,6 +461,10 @@ mod proxy_tests;
 mod playback_tests;
 
 #[cfg(test)]
+#[path = "app_rj_error_tests.rs"]
+mod error_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

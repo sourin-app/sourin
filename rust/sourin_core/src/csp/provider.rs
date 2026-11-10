@@ -222,9 +222,12 @@ impl CspProvider {
         &self.api
     }
 
-    /// 取分类：导入时探测过就用那份，没有就现问一次（真 HTTP）
+    /// Persisted general classes cannot override an explicit object directory recipe.
+    /// Other restored classes retain the existing no-network behavior.
     async fn categories_or_probe(&self) -> Result<Vec<TvboxCategoryEntry>> {
-        if !self.classes.is_empty() {
+        let declared_directory = self.site.class() == super::bili::Bili::CLASS
+            && super::bili::Bili::has_directory_ext(&self.ext);
+        if !self.classes.is_empty() && !declared_directory {
             return Ok(self.classes.clone());
         }
         let home = self
@@ -680,6 +683,10 @@ mod share_dispatch_tests;
 #[cfg(test)]
 #[path = "app_drama_availability_tests.rs"]
 mod app_drama_availability_tests;
+
+#[cfg(test)]
+#[path = "bili_theme_ext_tests.rs"]
+mod bili_theme_ext_tests;
 
 #[cfg(test)]
 mod tests {

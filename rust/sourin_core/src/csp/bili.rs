@@ -34,7 +34,8 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::time::Duration;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
 use md5::{Digest, Md5};
@@ -111,6 +112,16 @@ pub struct Bili {
     /// 上游根地址（测试时指向本地假服务）
     base: String,
     client: super::http_context::CspHttpContext,
+    directory_policy: RwLock<Option<(Arc<crate::proxy::ProxyStore>, String)>>,
+    directory_cache: tokio::sync::Mutex<Option<CachedDirectory>>,
+}
+
+type DirectoryKey = (String, usize, u64, String);
+
+struct CachedDirectory {
+    key: DirectoryKey,
+    expires: Instant,
+    categories: Vec<CspCategory>,
 }
 
 /// WBI 的 mixin 置换表（该站前端 `wbi` 混淆表的公开常量，64 项）
@@ -200,7 +211,135 @@ impl Bili {
         Self {
             base: base.trim_end_matches('/').to_string(),
             client,
+            directory_policy: RwLock::new(None),
+            directory_cache: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Only the reference-supported object mode supersedes persisted general classes.
+    pub(crate) fn has_directory_ext(ext: &str) -> bool {
+        serde_json::from_str::<Value>(ext).ok()
+            .is_some_and(|value| value.is_object() && value.get("json").is_some())
+    }
+
+    fn directory_resource(ext: &str) -> Result<Option<String>, String> {
+        if !Self::has_directory_ext(ext) { return Ok(None); }
+        let value: Value = serde_json::from_str(ext)
+            .map_err(|_| "专题目录配置不是合法 JSON".to_string())?;
+        let resource = value.get("json").and_then(Value::as_str)
+            .map(str::trim).filter(|value| !value.is_empty())
+            .ok_or("专题目录 json 必须是绝对 HTTP 地址")?;
+        let url = reqwest::Url::parse(resource)
+            .map_err(|_| "专题目录 json 必须是绝对 HTTP 地址")?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+            || !url.username().is_empty() || url.password().is_some() {
+            return Err("专题目录 json 必须是不含账号信息的绝对 HTTP 地址".to_string());
+        }
+        Ok(Some(resource.to_string()))
+    }
+
+    fn directory_key(&self, resource: &str) -> Result<DirectoryKey, String> {
+        let policy = self.directory_policy.read().map_err(|_| "专题目录请求策略忙")?;
+        Ok(Self::directory_policy_key(resource, policy.as_ref()))
+    }
+
+    fn directory_policy_key(
+        resource: &str, policy: Option<&(Arc<crate::proxy::ProxyStore>, String)>,
+    ) -> DirectoryKey {
+        match policy {
+            Some((store, provider)) => (resource.to_string(), Arc::as_ptr(store) as usize,
+                store.policy_revision(), provider.clone()),
+            None => (resource.to_string(), 0, 0, String::new()),
+        }
+    }
+
+    async fn directory_categories(&self, resource: &str) -> Result<Vec<CspCategory>, String> {
+        const MAX_BODY: usize = 512 * 1024;
+        const MAX_CATEGORIES: usize = 512;
+        let mut cached = self.directory_cache.lock().await;
+        // Obtain the client and route identity while the injection boundary is stable.
+        let (client, key) = {
+            let policy = self.directory_policy.read().map_err(|_| "专题目录请求策略忙")?;
+            let key = Self::directory_policy_key(resource, policy.as_ref());
+            let client = self.client.client()?;
+            if Self::directory_policy_key(resource, policy.as_ref()) != key {
+                return Err("专题目录请求策略已变化，请重试".to_string());
+            }
+            (client, key)
+        };
+        if let Some(entry) = cached.as_ref().filter(|entry| entry.key == key && entry.expires > Instant::now()) {
+            return Ok(entry.categories.clone());
+        }
+        // One entry per engine, keyed by resource/source/store/revision. Never use
+        // a successful prior recipe after a changed resource or rejected request.
+        *cached = None;
+        let mut response = client.get(resource)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .timeout(Duration::from_secs(5)).send().await
+            .map_err(|_| "专题目录请求失败，请稍后重试或切换来源".to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("专题目录返回 HTTP {}，请切换来源", response.status()));
+        }
+        if response.content_length().is_some_and(|size| size > MAX_BODY as u64) {
+            return Err("专题目录响应过大，请切换来源".to_string());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await
+            .map_err(|_| "专题目录响应未完整接收，请稍后重试".to_string())? {
+            if bytes.len().saturating_add(chunk.len()) > MAX_BODY {
+                return Err("专题目录响应过大，请切换来源".to_string());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "专题目录响应不是合法 JSON，请切换来源".to_string())?;
+        let classes = value.get("class").and_then(Value::as_array)
+            .filter(|classes| !classes.is_empty() && classes.len() <= MAX_CATEGORIES)
+            .ok_or("专题目录没有有效的 class 分类列表")?;
+        let mut categories = Vec::with_capacity(classes.len());
+        let mut ids = std::collections::HashSet::new();
+        for class in classes {
+            let id = class.get("type_id").and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty()).ok_or("专题目录分类缺少有效的 type_id")?;
+            let name = class.get("type_name").and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty()).ok_or("专题目录分类缺少有效的 type_name")?;
+            if !ids.insert(id) { return Err("专题目录包含重复分类".to_string()); }
+            categories.push(CspCategory { id: id.to_string(), name: name.to_string() });
+        }
+        if self.directory_key(resource)? != key {
+            return Err("专题目录请求策略已变化，请重试".to_string());
+        }
+        *cached = Some(CachedDirectory { key, expires: Instant::now() + Duration::from_secs(300),
+            categories: categories.clone() });
+        Ok(categories)
+    }
+
+    async fn keyword_list(&self, kw: &str, page: u32, themed: bool) -> Result<CspList, String> {
+        let mixin = self.wbi_mixin_key_live().await?;
+        let wts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let mut fields = vec![
+            ("search_type".to_string(), "video".to_string()),
+            ("keyword".to_string(), kw.to_string()),
+            ("page".to_string(), page.to_string()),
+        ];
+        if themed {
+            fields.push(("order".to_string(), "totalrank".to_string()));
+            fields.push(("duration".to_string(), "0".to_string()));
+        }
+        let query = Bili::signed_query(&mixin, fields, wts);
+        let data = self.get_data(&format!("/x/web-interface/wbi/search/type?{query}")).await?;
+        let items: Vec<CspItem> = data.get("result").and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Bili::to_search_item).collect()).unwrap_or_default();
+        if items.is_empty() {
+            let raw = data.get("numResults").and_then(Value::as_u64).unwrap_or(0);
+            return Err(format!("WBI 搜索没有返回条目（keyword={kw} page={page} numResults={raw}）"));
+        }
+        Ok(CspList {
+            items, page,
+            total: data.get("numResults").and_then(Value::as_u64).filter(|n| *n > 0),
+            page_count: data.get("numPages").and_then(Value::as_u64).map(|n| n as u32).filter(|n| *n > 0),
+        })
     }
 
     /// 发一次 GET 并解析成 JSON，同时**检查上游的 `code`**
@@ -390,7 +529,9 @@ impl Default for Bili {
 #[async_trait]
 impl CspSite for Bili {
     fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
-        self.client.set_proxy(proxy, provider);
+        let mut policy = self.directory_policy.write().unwrap();
+        self.client.set_proxy(proxy.clone(), provider);
+        *policy = Some((proxy, provider.to_string()));
     }
 
     fn class(&self) -> &'static str {
@@ -401,7 +542,10 @@ impl CspSite for Bili {
     ///
     /// ★ 分类表是静态的（原因见 [`CATEGORIES`]），但**条目是真取的** ——
     ///   排行接口拿不到就返回错误，而不是「分类还在、首页空着」。
-    async fn home(&self, _ext: &str) -> Result<CspHome, String> {
+    async fn home(&self, ext: &str) -> Result<CspHome, String> {
+        if let Some(resource) = Self::directory_resource(ext)? {
+            return Ok(CspHome { categories: self.directory_categories(&resource).await?, items: Vec::new() });
+        }
         let data = self
             .get_data("/x/web-interface/ranking/v2?rid=0&type=all")
             .await?;
@@ -416,7 +560,14 @@ impl CspSite for Bili {
         })
     }
 
-    async fn list(&self, tid: &str, page: u32, _ext: &str) -> Result<CspList, String> {
+    async fn list(&self, tid: &str, page: u32, ext: &str) -> Result<CspList, String> {
+        if let Some(resource) = Self::directory_resource(ext)? {
+            let categories = self.directory_categories(&resource).await?;
+            if !categories.iter().any(|category| category.id == tid) {
+                return Err("当前专题目录没有所选分类，请重新选择".to_string());
+            }
+            return self.keyword_list(tid, page.max(1), true).await;
+        }
         let tid = tid.trim();
         if tid.is_empty() {
             return Err("分类 id 为空（首页没给出分类）".to_string());
@@ -566,51 +717,7 @@ impl CspSite for Bili {
             return Err("搜索关键词为空".to_string());
         }
         let page = if page == 0 { 1 } else { page };
-        let mixin = self.wbi_mixin_key_live().await?;
-        let wts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let query = Bili::signed_query(
-            &mixin,
-            vec![
-                ("search_type".to_string(), "video".to_string()),
-                ("keyword".to_string(), kw.to_string()),
-                ("page".to_string(), page.to_string()),
-            ],
-            wts,
-        );
-        let data = self
-            .get_data(&format!("/x/web-interface/wbi/search/type?{query}"))
-            .await?;
-        let arr = data
-            .get("result")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let items: Vec<CspItem> = arr.iter().filter_map(Bili::to_search_item).collect();
-        if items.is_empty() {
-            // ★ 空即 Err（"搜不到"与"接口坏了"对用户是两件事）
-            let raw = data.get("numResults").and_then(|v| v.as_u64()).unwrap_or(0);
-            return Err(format!(
-                "WBI 搜索没有返回条目（keyword={kw} page={page} numResults={raw}）"
-            ));
-        }
-        let total = data
-            .get("numResults")
-            .and_then(|v| v.as_u64())
-            .filter(|n| *n > 0);
-        let page_count = data
-            .get("numPages")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as u32)
-            .filter(|n| *n > 0);
-        Ok(CspList {
-            items,
-            page,
-            page_count,
-            total,
-        })
+        self.keyword_list(kw, page, false).await
     }
 
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
@@ -733,6 +840,10 @@ crate::csp::register_site!(Bili);
 #[cfg(test)]
 #[path = "bili_proxy_tests.rs"]
 mod proxy_tests;
+
+#[cfg(test)]
+#[path = "bili_theme_cache_tests.rs"]
+mod theme_cache_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

@@ -115,3 +115,7 @@ cargo test --lib tvbox --release → 94 passed / 0 failed / 9 ignored（我自�
 
 - 源数口径（谁参与搜索）：[../feature/2026-10-29-restore-auto-disabled-sources.md](../feature/2026-10-29-restore-auto-disabled-sources.md)
 - 同批另一类"源坏"的定性：[./2026-10-29-five-failing-sources-triage.md](./2026-10-29-five-failing-sources-triage.md)
+
+The [AppDrama public protocol](../feature/2026-11-11-app-drama-public-protocol.md)
+replaces that class's fixed unsupported implementation while preserving this
+routing/configuration contract. Real-service playback remains separately verified.

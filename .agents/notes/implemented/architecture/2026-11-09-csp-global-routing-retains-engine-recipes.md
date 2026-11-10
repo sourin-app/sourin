@@ -119,3 +119,8 @@ Local protocol regressions observe selected-episode requests, response envelopes
 The note audit found the routing/fallback decisions and subscription lineage partially overlapping and retained them. Source-composer, source-override, intro-marker and URL-diagnostic notes concern separate paths. No existing decision is wholly absorbed or archived. Reconsider the per-engine adapter only if all engines can express their distinct builder and state requirements through a shared typed transport contract.
 
 [Homepage failure feedback](../bug-fix/2026-11-09-home-cache-and-section-failure-feedback.md) separately keeps request failures distinct from successful empty catalogs and retains already loaded cards. A readable failure card does not establish that an upstream endpoint has recovered.
+
+
+The [AppDrama public protocol](../feature/2026-11-11-app-drama-public-protocol.md)
+replaces that class's fixed unsupported implementation while preserving this
+routing/configuration contract. Real-service playback remains separately verified.

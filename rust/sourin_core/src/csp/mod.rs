@@ -214,7 +214,7 @@ pub fn unimplemented_reason(api: &str) -> String {
 /// 只描述实现本身的边界，不记录一次网络探测失败。
 pub fn unimplemented_note(api: &str) -> Option<&'static str> {
     match class_of(api)? {
-        "AppDrama" => Some("AppDrama 的浏览和播放能力尚未实现，配置已保留"),
+        "AppDrama" => None,
         // App99 已注册（浏览链路实证可用）⇒ 不再需要"暂不可用"的原因。
         // 保留这个 match 作为**机制**：将来某个类"实现了但被服务端挡住"时，往这里加一条。
         "App99" => None,
@@ -826,18 +826,23 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_reason_quotes_api_verbatim() {
-        // AppDrama has a fixed capability limit; its reason is more specific
-        // than the generic message for an unregistered implementation.
-        assert_eq!(
-            unimplemented_reason("csp_AppDrama"),
-            "csp_AppDrama 暂不可用：AppDrama 的浏览和播放能力尚未实现，配置已保留"
-        );
-        assert_eq!(
-            unimplemented_reason("  csp_AppDrama "),
-            "csp_AppDrama 暂不可用：AppDrama 的浏览和播放能力尚未实现，配置已保留"
-        );
+    fn appdrama_registered_capabilities_have_no_fixed_unimplemented_note() {
+        for api in ["csp_AppDrama", "  csp_AppDrama ", "csp_AppDrama?fixture=1"] {
+            let site = route(api).expect("registered public default AppDrama constructor");
+            assert_eq!(site.class(), "AppDrama");
+            assert!(site.supports_search());
+            assert!(site.needs_ext());
+            assert!(is_implemented(api));
+            assert_eq!(unimplemented_note(api), None,
+                "runtime upstream errors must not become a fixed implementation limit");
+        }
+        assert!(class_needs_ext("AppDrama"));
+    }
+
+    #[test]
+    fn unimplemented_reason_quotes_unregistered_api_verbatim() {
         for api in ["csp_UnregisteredFixture", "  csp_UnregisteredFixture?key=value  "] {
+            assert!(route(api).is_none());
             assert_eq!(unimplemented_reason(api), format!("{} 尚未实现", api.trim()));
         }
     }

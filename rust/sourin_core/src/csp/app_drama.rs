@@ -1,114 +1,9 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  csp_AppDrama —— TVBox `csp_AppDrama` 的 Rust 重写（3 站）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # 这个类在配置里覆盖什么（实测取自真订阅 `https://8815.kstore.vip/tvbox/wmz`）
-//
-// ```text
-// 🏵️天堂｜蓝光秒播   ext: {appName:电影天堂, pkg:com.dytiantang.one, version:3.0.0.7,
-//                        decrypt:0, site:https://dyttandroid04-…/app_dyttandroid.txt, …}
-// 🍊橘汁｜蓝光秒播   ext: {appName:橘汁,     pkg:com.mxj.wylcjbxyx, version:3.0.2.3,
-//                        decrypt:1, site:https://123-…/app.txt, …}
-// 🌌华谊｜蓝光秒播   ext: {appName:华谊,     pkg:com.muyue.tool,   version:1.0.0.4,
-//                        decrypt:1, site:https://vip.123pan.cn/…/az5.txt, …}
-// ⇒ **三站共用这一份实现**，站间差异**只在 ext**（publicKey/dataKey/dataIv/pkg/version/decrypt/site）。
-// ```
-//
-// # ★★★ 交付形态：**"打通到哪算哪 + 如实报卡点"**，不是"能用"
-//
-// Lead 2026-10-27 裁定本卡目标（(a) 拆卡：本卡只做"能通电的部分"）：
-// ```text
-// 本卡 = 取域（两跳）+ RSA/AES + v3 JSON 段；proto 段单开卡。
-// 交付目标 = 「把取域+RSA/AES+v3 JSON 打通，并**如实报出"卡在登录握手"**」，
-//            **不是**"让 AppDrama 能用"。当"能用"做不到时，**如实报就是合格交付**。
-// ```
-//
-// # ⚠️⚠️ **唯一的阻塞：登录握手**（2026-10-27 勘误后更新 —— 此前写成"两条阻塞"是错的）
-//
-// ```text
-// 【已勘误】我此前报「RSA 是钥匙，卡它就是卡全部」 —— **错了**，见
-//            `.probe/r3-appdrama-rsa-not-the-key.log`。三条独立证据：
-//   ① 长度几何：publicKey 是 1024-bit RSA ⇒ 密文 128 字节 ⇒ base64 ~172 字符；
-//      而 ext.dataKey 三站都是 **32 字符** ⇒ **根本装不下** RSA 密文。
-//   ② 32 字符 = 32 字节 = **合法 AES-256 密钥**。
-//   ③ 三站 ext **只有 publicKey、没有私钥** ⇒ 公钥**只能加密不能解密**
-//      ⇒ 客户端不可能 RSA 解 dataKey。
-//   ⇒ 结论：`dataKey` = **明文 AES 密钥，直接用**；
-//           RSA 的用途在**出站加密**（DEX 常量 publicParams / paramsData / sig 是"发上去"的）；
-//           **AES 段不需要 RSA 就能开工** ⇒ 本文件的 AES 实现是**可验证的真实现**，
-//           不是占位（见 `aes256_ecb_encrypt/decrypt` 的单测：加解密互逆可离线钉死）。
-// ```
-//
-// ```text
-// ★ 真正的、唯一的阻塞：**3 站 API 现在全部 `302 → /api.php/app/user/login.html`**
-//   （2026-10-27 实测，绕代理复核过）⇒ 该协议需要**设备注册/登录握手**
-//   （DEX 里有 `/App/Authentication/Device/{signIn,signUp}` 路径为证）。
-//   ⇒ 与 app99 的历史（"systemInit 通了但 userInfo 被拒"）**同形** ⇒ 是**一族**的问题
-//     （Lead 已把"设备注册/登录握手"记为契约能力位缺口，单开卡评估）。
-// ```
-//
-// ## 本实现对它的处理：**如实报，不硬造**
-// ```text
-// **不许**伪造设备指纹去骗过登录（Lead 明确指令）。
-// ⇒ 门关着时，`list/search/detail/play` **如实返回**"未打通 + 点名卡在登录握手"，
-//   **不许**返回空列表假装"这个源没内容"。
-// ```
-//
-// # ★ 契约边界（Lead 裁定，三处）
-//
-// ```text
-// · `loadPic`  ⇒ 本仓**不补**契约位；改用**声明式**（把取图要的头写进该源 `cover_headers`，
-//                 由宿主 `home.rs` 的 `proxy_covers` 统一代取）。
-//                 ⚠️ 若某站取图**不只是固定头**（要签名/多跳）⇒ 报 Lead，不自己造。
-// · `mProxy`   ⇒ **本批明确不做**，在此**登记为已知缺口**：
-//                 DEX 里 AppDrama 重写了 `mProxy(Map)->Object[]`（让类自己接管某条流的本地代理响应），
-//                 而本仓把"起代理端点"当**宿主职责**（`streamproxy`），且"类不许依赖宿主细节"
-//                 —— 两者相冲 ⇒ 本仓**无等价位**，**未实现**（不是静默丢，是登记缺口）。
-// · `initApi`  ⇒ 用本仓 `ext` 机制作等价物（`home(ext)/list(ext)` 就是它的位置），不补。
-// · `isVideoFormat` / `manualVideoCheck` ⇒ 见本文件末尾"无等价位的行为"一节。
-// ```
-//
-// # 取证来源（全部来自 `.probe/`，可复核；**不是**照抄 GitHub 那个空壳仓）
-//
-// ```text
-// · `.probe/r3-appdrama-protocol.log`   —— 用 `.probe/r3_scan_strings.py` 从 classes.dex 抽的
-//                                           **AppDrama 自己的** const-string（121 个）
-//   ★ 扫描器**可校验**：先用 Bili（已知实现）验通过（扫出 &qn= / &fnval=4048&fourk=1 / &w_rid=）；
-//     反证：同一扫描器扫 Bili 时 `protobuf|/api/proto/|PKCS1` 命中 **0**、扫 AppDrama 命中 **6**。
-// · `.probe/r3-appdrama-keys.log`       —— 密钥 material 精确分析（publicKey/dataKey/dataIv）
-// · `.probe/r3-live-probe-appdrama-xbpq.log` —— 实网探测（两跳取域 2/3 站 200；API 全部 302）
-// ```
-//
-// ## DEX 里逐字扫到的协议要素（不放猜测）
-// ```text
-// 路径：
-//   /api/v3/drama/getCategory?orderBy=type_id      /api/ex/v3/security/tag/list
-//   /api/v5/find/app/zone                          /api/proto/v5/drama/{category,getDetail,search}
-//   /api/proto/v5/videoUsableUrl
-// 加密：
-//   RSA/ECB/PKCS1Padding     ← ext 的 publicKey（1024-bit，见下）
-//   AES/ECB/PKCS7Padding     ← 用解出来的 dataKey
-//     ★ **ECB 不使用 IV** ⇒ `dataIv` 在本站协议下**可能根本不被使用**（见 `data_iv()` 的说明）。
-// 正文：application/json（v3）+ application/x-protobuf（v5，**本卡不做**）
-// ext 键（逐字都在 DEX 里）：appName publicKey dataKey dataIv pkg site version decrypt host
-// 设备指纹键（proto 段要用，本卡先登记）：
-//   androidID android_id udid uuid abid chid cpu cpuId density dpi brand model
-//   facturer mac net carrier country area lang vOs vOsCode vApp vName plat tenantId
-//   sig sig2 sig3 random_str timestamp young zh
-// ```
-//
-// ## 密钥 material（`.probe/r3-appdrama-keys.log` 的结论）
-// ```text
-// publicKey：base64 → DER **162 字节**，头 `30819f300d06092a864886f70d010101`
-//            ⇒ **标准 1024-bit RSA 公钥**（正是 RSA/ECB/PKCS1Padding 要的形态）
-// dataKey ：32 字符原串（如 `D2KREWRIBVNAUJJYEDL4VFHOY2Q0PQ==`）
-//            ⚠️ 它**不是**先 base64 再用 —— base64 解出 22 字节，**不是**合法 AES 密钥长度。
-//            ⇒ 见 `data_key_raw()`：按 **32 字符原样 = 32 字节（AES-256）** 用（与 app99 的 uuid 同形）。
-// dataIv  ：三站**同一值** `OC1A06E197EF10CF3F6058CA7A803B5E`
-//            ★ 首位是**字母 O**（0x4F），不是数字 0 ⇒ 直接 `bytes.fromhex` 会失败。
-//            ⇒ 见 `data_iv()`：**首位按数字 0 容错**（判别实验支持这个读法，见该函数注释）。
-// ```
+//! TVBox AppDrama facade. The registered constructor executes the public
+//! dispatch, bootstrap, catalog and selected-episode protocol through one
+//! proxy-aware transport. Legacy pure crypto helpers remain for compatibility.
+//! Note: runtime behavior is covered through this facade, not a second registry.
 
+#[cfg(test)]
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -117,13 +12,21 @@ use serde_json::Value;
 use super::{CspDetail, CspHome, CspList, CspPlay, CspSite};
 
 /// 浏览器 UA（取 `site` 配置下发的 txt 用；那些是 CDN 上的静态文件）
+#[cfg(test)]
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
 
 /// 单次请求预算
+#[cfg(test)]
 const REQ_BUDGET: Duration = Duration::from_secs(20);
 
+#[path = "app_drama_protocol.rs"]
+mod protocol;
+
 pub struct AppDrama {
+    protocol: protocol::ProtocolAppDrama,
+    // Only the legacy explicitly ignored dispatch diagnostic uses this client.
+    #[cfg(test)]
     client: super::http_context::CspHttpContext,
 }
 
@@ -131,13 +34,14 @@ impl AppDrama {
     pub const CLASS: &'static str = "AppDrama";
 
     pub fn new() -> Self {
+        #[cfg(test)]
         let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(REQ_BUDGET)
             // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
         );
-        Self { client }
+        Self { protocol: protocol::ProtocolAppDrama::new(), #[cfg(test)] client }
     }
 
     /// ext → 本次请求所需的要素（**缺一个都如实报错，不填默认值糊过去**）
@@ -549,72 +453,35 @@ fn pkcs7_unpad(data: &[u8]) -> Result<Vec<u8>, String> {
 /// ★ 而且它必须**点名卡在哪**（RSA 钥匙 / 登录握手 / proto 段），
 ///   不许笼统写"未实现" —— 笼统文案会让下一个人重新排查一遍。
 /// ```
-fn not_wired(what: &str) -> String {
-    format!(
-        "csp_AppDrama 的「{what}」段尚未打通：\
-上游要求设备注册/登录握手（实测 3 站 API 全部 302 → /api.php/app/user/login.html），\
-且 v5 接口是 protobuf（本卡按 Lead 裁定只做 v3 JSON 段）。\
-本条不是「这个源没内容」，是「我们还没打通」。"
-    )
-}
-
 #[async_trait]
 impl CspSite for AppDrama {
+    fn class(&self) -> &'static str { Self::CLASS }
     fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.protocol.set_http_context(proxy.clone(), provider);
+        #[cfg(test)]
         self.client.set_proxy(proxy, provider);
     }
-
-    fn class(&self) -> &'static str {
-        Self::CLASS
+    fn accepts_selected_episode_id(&self, id: &str) -> bool {
+        self.protocol.accepts_selected_episode_id(id)
     }
-
-    /// 首页：「两跳取域」（ext.site → 真实 API 域）
-    ///
-    /// # 为什么 `home` 就做"取域"这件事
-    /// ```text
-    /// `site` 那个 txt 是**动态下发的域**（站点会换域）⇒ 每次 `home` 都该重新解析，
-    /// 而不是写死/长期缓存（写死 = 换域后整个源失效，而用户看不出为什么）。
-    /// ```
-    async fn home(&self, ext: &str) -> Result<CspHome, String> {
-        let cfg = Self::ext_of(ext)?;
-        let url = encode_ext_url(&cfg.site);
-        let body = self.get_text(&url).await?;
-        let domain = parse_domain_dispatch(&body)?;
-        // ★ 取域通了，但**下一段（v3 JSON 分类）需要 RSA 解的 dataKey + 登录态**
-        //   ⇒ 如实报"域拿到了、段没打通"，**不返回空分类假装没内容**。
-        Err(format!(
-            "csp_AppDrama 取域成功（{domain}），但分类段尚未打通：{}",
-            not_wired("分类/home")
-        ))
+    fn supports_search(&self) -> bool { self.protocol.supports_search() }
+    fn needs_ext(&self) -> bool { self.protocol.needs_ext() }
+    async fn home(&self, ext: &str) -> Result<CspHome, String> { self.protocol.home(ext).await }
+    async fn list(&self, tid: &str, page: u32, ext: &str) -> Result<CspList, String> {
+        self.protocol.list(tid, page, ext).await
     }
-
-    async fn list(&self, _tid: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
-        Err(not_wired("列表/list"))
+    async fn search(&self, keyword: &str, page: u32, ext: &str) -> Result<CspList, String> {
+        self.protocol.search(keyword, page, ext).await
     }
-
-    async fn search(&self, _kw: &str, _page: u32, _ext: &str) -> Result<CspList, String> {
-        Err(not_wired("搜索/search"))
-    }
-
-    /// 这个类**真的**支持搜索吗？（必选，与 `search` 同一口径）
-    ///
-    /// ⚠️ 上游 ext 里写着 `searchable:1`，但**那是下游客户端的字段**，
-    ///    不代表我方"实现了" —— 我方 `search` 现在**如实报未打通** ⇒ 这里必须 `false`，
-    ///    否则 registry 会把这个源拉进搜索 ⇒ 用户搜它只会拿到错误（假能力位）。
-    fn supports_search(&self) -> bool {
-        false
-    }
-
-    async fn detail(&self, _id: &str, _ext: &str) -> Result<CspDetail, String> {
-        Err(not_wired("详情/detail"))
-    }
-
-    async fn play(&self, _flag: &str, _id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
-        Err(not_wired("取流/play"))
+    async fn detail(&self, id: &str, ext: &str) -> Result<CspDetail, String> { self.protocol.detail(id, ext).await }
+    async fn play(&self, flag: &str, id: &str, ext: &str) -> Result<Vec<CspPlay>, String> {
+        self.protocol.play(flag, id, ext).await
     }
 }
 
+#[cfg(test)]
 impl AppDrama {
+    /// Legacy ignored dispatch diagnostic; not the production protocol owner.
     /// 取文本（带 UA；错误里**保留 URL**，否则排查时不知道打的哪个域）
     async fn get_text(&self, url: &str) -> Result<String, String> {
         let resp = self
@@ -856,46 +723,30 @@ mod tests {
 
     // ── 卡点必须**如实报**（Lead 交付目标的那一条）──────────────────
 
-    #[test]
-    fn unwired_sections_report_reason_not_empty() {
-        use tokio::runtime::Builder;
-        let rt = Builder::new_current_thread().enable_all().build().expect("rt");
-        let z = AppDrama::new();
-        let ext = r#"{"appName":"x",
-            "publicKey":"p","dataKey":"D2KREWRIBVNAUJJYEDL4VFHOY2Q0PQ==",
-            "dataIv":"OC1A06E197EF10CF3F6058CA7A803B5E",
-            "site":"https://example.invalid/x.txt"}"#;
-
-        // ★ 每条未打通的段都必须 **Err + 点名卡点**（不许 Ok(空列表) 假装没内容）
-        let cases: Vec<(&str, Result<(), String>)> = vec![
-            ("list", rt.block_on(z.list("t", 1, ext)).map(|_| ())),
-            ("search", rt.block_on(z.search("k", 1, ext)).map(|_| ())),
-            ("detail", rt.block_on(z.detail("1", ext)).map(|_| ())),
-            ("play", rt.block_on(z.play("", "1", ext)).map(|_| ())),
-        ];
-        assert_eq!(cases.len(), 4, "前置：四条段都要被验到（反空真）");
-        for (name, r) in cases {
-            let e = r.expect_err(&format!("★ {name} 未打通时必须 Err，不许 Ok"));
-            assert!(
-                e.contains("尚未打通"),
-                "{name} 的报错要点明'未打通'：{e}"
-            );
-            assert!(
-                e.contains("不是") && e.contains("没内容"),
-                "★ {name} 必须写明'不是这个源没内容'（否则用户会以为是空源）：{e}"
-            );
+    #[tokio::test]
+    async fn malformed_configuration_and_unsigned_selection_fail_without_empty_success() {
+        let site = AppDrama::new();
+        for result in [
+            site.home("{}").await.map(|_| ()),
+            site.list("cat", 1, "{}").await.map(|_| ()),
+            site.search("query", 1, "{}").await.map(|_| ()),
+            site.detail("1001", "{}").await.map(|_| ()),
+        ] {
+            let error = result.expect_err("invalid configuration cannot become empty content");
+            assert!(error.starts_with("parse:"), "{error}");
+            assert!(!error.contains("尚未打通"));
         }
+        let error = site.play("", "unissued-recipe", "{}").await.unwrap_err();
+        assert!(error.starts_with("unsupported:"));
     }
 
     #[test]
-    fn supports_search_is_false_while_search_unwired() {
-        // ★ 假能力位的反面：search 报未打通 ⇒ supports_search 必须 false，
-        //   否则 registry 会把这个源拉进搜索，用户搜它只会拿到错误
-        let z = AppDrama::new();
-        assert!(
-            !z.supports_search(),
-            "search 未打通却自称支持搜索 = 假能力位"
-        );
+    fn implemented_search_and_required_configuration_match_default_protocol() {
+        let site = AppDrama::new();
+        assert!(site.supports_search());
+        assert!(site.needs_ext());
+        assert!(site.accepts_selected_episode_id("app-drama:v2|issued-opaque-token"));
+        assert!(!site.accepts_selected_episode_id("1001"));
     }
 
     #[test]
@@ -1095,3 +946,7 @@ mod tests {
         assert!(ok >= 1, "至少要有站点两跳可通（否则更像是我方网络/编码出了问题）");
     }
 }
+
+#[cfg(test)]
+#[path = "app_drama_protocol_behavior_tests.rs"]
+mod protocol_behavior_tests;

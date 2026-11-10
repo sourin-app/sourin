@@ -319,6 +319,10 @@ fn classify_err(class: &str, e: String) -> ProviderError {
         err.login_kind = Some(kind);
         return err;
     }
+    let head = e.chars().take(200).collect::<String>();
+    if e.starts_with("network:") { return ProviderError::network(head); }
+    if e.starts_with("parse:") { return ProviderError::parse(head); }
+    if e.starts_with("unsupported:") { return ProviderError::new(ErrorKind::Unsupported, head); }
     /*
      * ★ 2026-10-28：网盘类 + "要登录"的字眼 ⇒ Unauthorized + login_kind。
      *   UI 靠 `login_kind` 决定弹哪个盘的二维码（Owner：点登录要出二维码，不是空白）。
@@ -330,7 +334,6 @@ fn classify_err(class: &str, e: String) -> ProviderError {
             return err;
         }
     }
-    let head = e.chars().take(200).collect::<String>();
     if e.starts_with("HTTP ") || e.contains("请求 ") || e.contains("读取 ") {
         ProviderError::network(head)
     } else if e.contains("code=") || e.contains("不是 JSON") {
@@ -691,6 +694,10 @@ mod bili_theme_ext_tests;
 #[cfg(test)]
 #[path = "bili_bare_directory_tests.rs"]
 mod bili_bare_directory_tests;
+
+#[cfg(test)]
+#[path = "provider_app_drama_error_tests_v2.rs"]
+mod app_drama_error_tests_v2;
 
 #[cfg(test)]
 mod tests {

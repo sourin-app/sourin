@@ -1,3 +1,5 @@
+import 'dart:ui' as semantics_ui;
+
 import 'package:flutter/material.dart' as sdk;
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
@@ -20,6 +22,116 @@ Widget host(Widget child, {Brightness brightness = Brightness.light}) =>
     );
 
 void main() {
+  for (final selected in [false, true]) {
+    for (final enabled in [false, true]) {
+      testWidgets(
+        'list row exposes selected=$selected and enabled=$enabled on its named action',
+        (tester) async {
+          final semantics = tester.ensureSemantics();
+          try {
+            var current = selected;
+            var calls = 0;
+            late StateSetter update;
+            await tester.pumpWidget(
+              host(
+                StatefulBuilder(
+                  builder: (_, setState) {
+                    update = setState;
+                    // The player's stream and live drawers use this same public
+                    // adapter, with composed titles, subtitles and selected state.
+                    // This test covers the adapter, without loading native media.
+                    return ui.ListTile(
+                      dense: true,
+                      selected: current,
+                      enabled: enabled,
+                      title: const Row(
+                        children: [Text('线路甲'), SizedBox(width: 8), Text('高清')],
+                      ),
+                      subtitle: const Text('来源说明'),
+                      onTap: () => calls++,
+                    );
+                  },
+                ),
+              ),
+            );
+            await tester.pumpAndSettle();
+
+            SemanticsNode expectRow(bool value) {
+              final root = tester
+                  .binding
+                  .renderViews
+                  .single
+                  .owner!
+                  .semanticsOwner!
+                  .rootSemanticsNode!;
+              final nodes = <SemanticsNode>[];
+              bool visit(SemanticsNode node) {
+                if (!node.isMergedIntoParent) nodes.add(node);
+                node.visitChildren(visit);
+                return true;
+              }
+
+              visit(root);
+              final named = nodes.where(
+                (node) => node.getSemanticsData().label.contains('线路甲'),
+              );
+              expect(named, hasLength(1), reason: root.toStringDeep());
+              final node = named.single;
+              final data = node.getSemanticsData();
+              expect(data.label, contains('高清'));
+              expect(data.label, contains('来源说明'));
+              expect(
+                data.flagsCollection.isSelected,
+                value
+                    ? semantics_ui.Tristate.isTrue
+                    : semantics_ui.Tristate.isFalse,
+                reason: root.toStringDeep(),
+              );
+              expect(
+                data.flagsCollection.isEnabled,
+                enabled
+                    ? semantics_ui.Tristate.isTrue
+                    : semantics_ui.Tristate.isFalse,
+              );
+              expect(data.hasAction(semantics_ui.SemanticsAction.tap), enabled);
+              final actions = nodes.where(
+                (node) => node.getSemanticsData().hasAction(
+                  semantics_ui.SemanticsAction.tap,
+                ),
+              );
+              expect(
+                actions.map((node) => node.id),
+                enabled ? [node.id] : <int>[],
+              );
+              return node;
+            }
+
+            final node = expectRow(selected);
+            if (enabled) {
+              node.owner!.performAction(
+                node.id,
+                semantics_ui.SemanticsAction.tap,
+              );
+              await tester.pump();
+              expect(calls, 1);
+            } else {
+              await tester.tap(find.text('线路甲'));
+              expect(calls, 0);
+            }
+            update(() => current = !current);
+            await tester.pump();
+            expectRow(!selected);
+            expect(calls, enabled ? 1 : 0);
+            expect(tester.takeException(), isNull);
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            semantics.dispose();
+          }
+        },
+      );
+    }
+  }
+
   for (final brightness in [Brightness.light, Brightness.dark]) {
     testWidgets(
       'list typography and disabled colors follow Miuix in $brightness',
@@ -79,6 +191,96 @@ void main() {
       },
     );
   }
+
+  testWidgets(
+    'selected disabled row leaves its trailing action separately named and enabled',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        var rowCalls = 0;
+        var trailingCalls = 0;
+        await tester.pumpWidget(
+          host(
+            ui.ListTile(
+              selected: true,
+              enabled: false,
+              title: const Text('当前线路'),
+              onTap: () => rowCalls++,
+              trailing: ui.IconButton(
+                icon: const Icon(Icons.info, semanticLabel: '线路详情'),
+                onPressed: () => trailingCalls++,
+              ),
+            ),
+          ),
+        );
+        final root = tester
+            .binding
+            .renderViews
+            .single
+            .owner!
+            .semanticsOwner!
+            .rootSemanticsNode!;
+        final nodes = <SemanticsNode>[];
+        bool visit(SemanticsNode node) {
+          if (!node.isMergedIntoParent) nodes.add(node);
+          node.visitChildren(visit);
+          return true;
+        }
+
+        visit(root);
+        final row = nodes.singleWhere(
+          (node) => node.getSemanticsData().label == '当前线路',
+        );
+        final trailing = nodes.singleWhere(
+          (node) => node.getSemanticsData().label == '线路详情',
+        );
+        expect(
+          row.getSemanticsData().flagsCollection.isSelected,
+          semantics_ui.Tristate.isTrue,
+        );
+        expect(
+          row.getSemanticsData().flagsCollection.isEnabled,
+          semantics_ui.Tristate.isFalse,
+        );
+        expect(
+          row.getSemanticsData().hasAction(semantics_ui.SemanticsAction.tap),
+          isFalse,
+        );
+        expect(
+          trailing.getSemanticsData().flagsCollection.isSelected,
+          semantics_ui.Tristate.none,
+        );
+        expect(
+          trailing.getSemanticsData().flagsCollection.isEnabled,
+          semantics_ui.Tristate.isTrue,
+        );
+        expect(
+          trailing.getSemanticsData().hasAction(
+            semantics_ui.SemanticsAction.tap,
+          ),
+          isTrue,
+        );
+        final actions = nodes.where(
+          (node) => node.getSemanticsData().hasAction(
+            semantics_ui.SemanticsAction.tap,
+          ),
+        );
+        expect(actions.map((node) => node.id), [trailing.id]);
+        trailing.owner!.performAction(
+          trailing.id,
+          semantics_ui.SemanticsAction.tap,
+        );
+        await tester.pump();
+        expect(rowCalls, 0);
+        expect(trailingCalls, 1);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        semantics.dispose();
+      }
+    },
+  );
+
   testWidgets(
     'nested dark input uses its local palette and keeps separate label and hint',
     (tester) async {
@@ -208,6 +410,7 @@ void main() {
         host(
           ui.ListTile(
             focusNode: row,
+            selected: true,
             title: const Text('模板'),
             onTap: () => calls.add('row'),
             trailing: Row(

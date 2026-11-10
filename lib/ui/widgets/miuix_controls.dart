@@ -1191,6 +1191,12 @@ class ListTile extends StatelessWidget {
         onLongPress: onLongPress,
         child: body,
       );
+    // Selection belongs to the named row action, alongside its enabled state.
+    // Merge only the primary component; independent trailing controls stay
+    // outside this semantics group and retain their own names and actions.
+    body = MergeSemantics(
+      child: Semantics(selected: selected, child: body),
+    );
     // The row has one keyboard stop. Independent end actions live outside its
     // internal Miuix pressable so excluding duplicate focus cannot hide them.
     if (trailing != null)

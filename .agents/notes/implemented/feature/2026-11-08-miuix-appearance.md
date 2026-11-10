@@ -57,6 +57,16 @@ MiuixText styles and leaks unrelated ancestor typography. Explicit child
 styles retain precedence. Rendered paragraphs, disabled activation and the
 independent trailing keyboard actions are covered together in controls tests.
 
+The primary ListTile component merges its selection annotation with the named
+row's existing enabled state and tap action. Both selected and unselected
+states remain explicit, including on disabled rows and after a selection
+change. The merge surrounds only the primary component; independent trailing
+buttons retain their own labels, enabled state, actions and keyboard stops.
+This adapter contract applies to the player's selected stream/live rows,
+whose callers already pass their current selection. Controls regressions read
+the exposed semantics nodes and invoke the real accessibility tap action;
+they do not load a native player or establish native playback acceptance.
+
 Product AppTheme resolves light/dark/system independently of legacy pack selection. Explicit pack preview tooling remains available to its callers, but the product appearance page provides direct modes and an interactive switch preview. Shared settings controls use the actual Miuix widgets, including keyboard activation.
 
 ## Alternatives considered

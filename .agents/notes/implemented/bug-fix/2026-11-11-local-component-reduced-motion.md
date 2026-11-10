@@ -154,3 +154,7 @@ results above include unresolved baseline failures; targeted analysis remains
 coordinator-owned. Native Windows motion/accessibility, actual input and
 performance acceptance remain separate; no native or frame-rate conclusion is
 claimed by the widget GREEN result.
+
+
+The [route pop cache](2026-11-11-route-pop-content-cache.md) concerns secondary
+page rendering during exit; this local-reveal preference contract is unchanged.

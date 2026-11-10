@@ -173,7 +173,11 @@ class SourinPageTransitionsBuilder extends ZoomPageTransitionsBuilder {
       // its opacity and transform until the secondary animation completes.
       child: debugDisableExitSnapshot
           ? child
-          : _ExitSnapshot(animation: secondaryAnimation, child: child),
+          : _ExitSnapshot(
+              animation: secondaryAnimation,
+              primaryAnimation: animation,
+              child: child,
+            ),
       style: style,
     );
 
@@ -313,9 +317,14 @@ bool debugDisableExitSnapshot = false;
 /// ⚠️ `widget.animation` 只用于「过渡结束后让快照失效」这一件事 ——
 ///    不用它驱动任何视觉（缩放/淡出仍在外面那两层做）。
 class _ExitSnapshot extends StatefulWidget {
-  const _ExitSnapshot({required this.animation, required this.child});
+  const _ExitSnapshot({
+    required this.animation,
+    required this.primaryAnimation,
+    required this.child,
+  });
 
   final Animation<double> animation;
+  final Animation<double> primaryAnimation;
   final Widget child;
 
   @override
@@ -377,6 +386,7 @@ class _ExitSnapshotState extends State<_ExitSnapshot> {
   void initState() {
     super.initState();
     widget.animation.addStatusListener(_onStatus);
+    widget.primaryAnimation.addStatusListener(_onStatus);
     _onStatus(widget.animation.status);
   }
 
@@ -386,13 +396,21 @@ class _ExitSnapshotState extends State<_ExitSnapshot> {
     if (old.animation != widget.animation) {
       old.animation.removeStatusListener(_onStatus);
       widget.animation.addStatusListener(_onStatus);
-      _onStatus(widget.animation.status);
     }
+    if (old.primaryAnimation != widget.primaryAnimation) {
+      old.primaryAnimation.removeStatusListener(_onStatus);
+      widget.primaryAnimation.addStatusListener(_onStatus);
+    }
+    _onStatus(widget.animation.status);
   }
 
-  void _onStatus(AnimationStatus st) {
-    final flying =
-        st == AnimationStatus.forward || st == AnimationStatus.reverse;
+  void _onStatus(AnimationStatus _) {
+    // A top page exits through its primary reverse animation. Incoming pages
+    // stay live; only exiting/covered content is cached inside the outer motion.
+    final secondary = widget.animation.status;
+    final flying = secondary == AnimationStatus.forward ||
+        secondary == AnimationStatus.reverse ||
+        widget.primaryAnimation.status == AnimationStatus.reverse;
     if (flying == _snapshotting) return;
     /*
      * ★★ 唯一开关：改 controller 的 `allowSnapshotting`（不是只 setState）。
@@ -415,6 +433,7 @@ class _ExitSnapshotState extends State<_ExitSnapshot> {
   @override
   void dispose() {
     widget.animation.removeStatusListener(_onStatus);
+    widget.primaryAnimation.removeStatusListener(_onStatus);
     _c.dispose();
     super.dispose();
   }

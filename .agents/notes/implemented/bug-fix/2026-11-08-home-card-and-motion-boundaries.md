@@ -42,3 +42,8 @@ The old t1013 string ban documented a valid prior failure but rejected every pla
 Native evidence under .probe/parallel-astra-1108/tab-content-v16 compares ordinary debug shells through current navigation callbacks. Static Home and Settings content pixels match the control exactly in rows 0–739. After rapid Settings→Home→Search→Home switches the same Home region is identical to its initial frame. The remaining Home differences are confined to the bottom navigation highlight and occur in the control too. Captured middle frames keep changing with the recorded opacity; they do not remain as the settled page. No synthetic page tree, modified animation clock or OS pointer input is involved. Screenshot sampling is not a performance measurement or pointer-hit-test result.
 
 The independent native profile matrix uses the same failed Home content, 1592×904 window, DPR1, 60Hz and slideRight style. The initial delayed baseline has extra metadata requests; control2 is the valid timing control with one startup metadata request, matching the candidate. All preserve raw frame data and normal native shutdown. Remaining over-budget frames and startup time are reported in the implementation plan, without claiming all navigation or external playback is accepted.
+
+
+The [route pop content cache](2026-11-11-route-pop-content-cache.md) extends
+the same content-only rule to a top route reversing its own animation. It
+does not change the shell tab cache or claim native frame-time acceptance.

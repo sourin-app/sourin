@@ -143,6 +143,7 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
   ManagedSourceType _type = ManagedSourceType.all;
   ManagedSourceStatus _status = ManagedSourceStatus.all;
   String _query = '';
+  final _searchController = TextEditingController();
   String? _originId;
   bool _loading = true;
   bool _busy = false;
@@ -161,6 +162,12 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
         onError: (Object _) {},
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -396,6 +403,7 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
       const SizedBox(height: Sp.x3),
       ui.TextField(
         key: const ValueKey('source-manager-search'),
+        controller: _searchController,
         onChanged: (value) => setState(() => _query = value),
         decoration: const InputDecoration(
           hintText: '搜索源名称',
@@ -630,24 +638,36 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
       query: _query,
       origin: origin,
     );
+    // On touch-sized pages the multi-row filters must share the scroll area
+    // with results, so a soft keyboard cannot consume the whole list viewport.
+    final scrollFilters = Layout.isNarrow(MediaQuery.sizeOf(context).width);
+    final rowStart = scrollFilters ? 2 : 1;
     final rowIndices = <Key, int>{
       for (final (index, provider) in visible.indexed)
-        ValueKey('managed-source-row-${provider.id}'): index + 1,
+        ValueKey('managed-source-row-${provider.id}'): index + rowStart,
     };
     return SettingsSubPage(
       title: '源',
       subtitle: '启用、来源与地址 · 调整后立即应用到首页和搜索',
-      pinnedHeader: _filters(),
+      pinnedHeader: scrollFilters ? null : _filters(),
       scrollBody: ListView.builder(
         key: const PageStorageKey('source-manager-list'),
         padding: EdgeInsets.only(bottom: Sp.bottomBarInset),
-        itemCount: visible.length + 1,
+        itemCount: visible.length + rowStart,
         findChildIndexCallback: (key) =>
-            key == const ValueKey('source-manager-status')
+            scrollFilters && key == const ValueKey('source-manager-filters')
             ? 0
+            : key == const ValueKey('source-manager-status')
+            ? rowStart - 1
             : rowIndices[key],
         itemBuilder: (context, index) {
-          if (index > 0) return _sourceRow(visible[index - 1]);
+          if (scrollFilters && index == 0) {
+            return KeyedSubtree(
+              key: const ValueKey('source-manager-filters'),
+              child: _filters(),
+            );
+          }
+          if (index >= rowStart) return _sourceRow(visible[index - rowStart]);
           return Column(
             key: const ValueKey('source-manager-status'),
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -745,7 +765,16 @@ class SearchableSourceOriginPicker extends StatelessWidget {
         },
         child: Row(
           mainAxisSize: MainAxisSize.min,
-          children: [Text(name ?? '全部聚合来源'), const Icon(Icons.arrow_drop_down)],
+          children: [
+            Flexible(
+              child: Text(
+                name ?? '全部聚合来源',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down),
+          ],
         ),
       );
     },

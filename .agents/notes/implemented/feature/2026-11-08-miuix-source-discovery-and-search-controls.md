@@ -75,6 +75,14 @@ Source read failures display their error and a guarded Miuix reload action.
 Loading/error states do not claim an empty match; a successful empty result keeps
 the existing empty-match message. Reload does not announce a source mutation.
 
+Narrow source-management pages scroll their filters and rows in the same lazy
+list, leaving results reachable when a soft keyboard reduces the viewport. Wide
+pages retain pinned filters. The manager owns the search controller so recycling
+the filter row preserves the visible query. Row identity and index lookup remain
+provider-based across type, origin, status and query changes. Long selected
+origin names use a single ellipsized line inside the picker; the complete name
+and addresses remain available in the summary/editor and stored configuration.
+
 The uncalled `_openAggregatePage` route and its dedicated import are removed from
 the settings owner. Flat source rows and the selected-origin summary own the
 reachable subscription-address entries, including disabled children and rows
@@ -133,6 +141,14 @@ empty-match text. Their successful-empty negative control passed. The tests also
 inspect actual Miuix controls, canceled versus saved origin writes, ordered
 fallbacks, exact one-time mutation notification, and disabled duplicate retry
 while a read is pending. Root owns serial execution and fresh native acceptance.
+
+Touch-layout tests at 360 by 640 expose the previous selected-name horizontal
+overflow and the filter column's bottom overflow with a 260-pixel keyboard.
+The behavior gate selects the real origin popup, opens its actual editor, types
+through EditableText, and checks that matching rows and a successful empty match
+can be scrolled into the remaining viewport. This phone case does not lower the
+Windows minimum window size. Fresh root-run and native results are recorded
+separately from the implementation contract.
 
 Reconsider the adapters if they stop preserving the existing input/focus
 contracts, and reconsider the source-list layout if measured native or widget

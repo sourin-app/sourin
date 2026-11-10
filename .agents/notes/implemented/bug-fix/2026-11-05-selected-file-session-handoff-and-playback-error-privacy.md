@@ -54,6 +54,16 @@ also use the display version. URL sanitation covers parentheses, apostrophes
 and Unicode, and retains a same-line HTTP diagnostic after an address.
 Hard-wrapped address continuations remain hidden.
 
+Scheme-less playback references are also private. Known open-failure messages
+hide root-relative, network-path and path-relative addresses, including opaque
+path components, signed query parameters and wrapped continuations. Standalone
+root-relative media references use the same neutral display marker. Address
+token boundaries retain directly adjacent CJK explanations and trailing sentence
+punctuation. Ordinary readable errors, slash-separated codec names and HTTP
+status attribution remain intact; classification continues to read the raw
+error. The already-connected error card and interruption banner need no separate
+sanitizer or player-page wiring change.
+
 ## Alternatives considered
 
 - Restarting every detail backfill interrupts healthy streams and loses

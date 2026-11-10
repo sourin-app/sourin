@@ -5160,6 +5160,22 @@ class PlaybackErrorText {
     r'''(?:\r?\n[ \t]*(?:[?&][^\s<>"]+|[A-Fa-f0-9]{32,}[^\s<>"]*))*''',
     caseSensitive: false,
   );
+  // mpv may report a URI reference without its scheme or host. Bound ASCII
+  // address tokens so adjacent CJK explanations do not become part of a URL.
+  static const _referenceCharacters =
+      r'''[A-Za-z0-9\-._~%:/?#\[\]@&=+;,!'()*$]''';
+  static final RegExp _relativeOpenFailure = RegExp(
+    r'failed to open\s+(?:/{1,2}[A-Za-z0-9%._~-]|[A-Za-z0-9%._~-]+/)'
+    '$_referenceCharacters*'
+    r'(?:\r?\n[ \t]*(?:[?&]|[A-Za-z0-9_+=%\-]{32,})'
+    '$_referenceCharacters*)*',
+    caseSensitive: false,
+  );
+  static final RegExp _rootRelativeReference = RegExp(
+    r'''(^|[^A-Za-z0-9\-._~%:/?#\[\]@&=+])'''
+    r'''((?://[A-Za-z0-9%._~:\[\]\-]+[/=?#]|/[A-Za-z0-9%._~\-]+[/=?#])'''
+    '$_referenceCharacters*)',
+  );
   static final RegExp _credentialHeaders = RegExp(
     r'^(\s*(?:authorization|proxy-authorization|cookie|set-cookie)\s*:)[^\r\n]*',
     caseSensitive: false,
@@ -5174,10 +5190,22 @@ class PlaybackErrorText {
     caseSensitive: false,
   );
 
+  static String _hiddenReference(String hit, String replacement) {
+    var end = hit.length;
+    while (end > 0 && '.,;:!?)]}>\'"`'.contains(hit[end - 1])) {
+      end--;
+    }
+    return '$replacement${hit.substring(end)}';
+  }
+
   /// User-visible text and log exports; classification reads the raw error.
   static String forDisplay(String raw) {
     var text = hideInternalUrls(stripHostErrorNoise(raw));
     text = text.replaceAll(_remoteOpenFailure, '无法打开播放地址');
+    text = text.replaceAllMapped(
+      _relativeOpenFailure,
+      (match) => _hiddenReference(match[0]!, '无法打开播放地址'),
+    );
     text = text.replaceAllMapped(_playbackUrls, (match) {
       final hit = match[0]!;
       var end = hit.length;
@@ -5186,6 +5214,10 @@ class PlaybackErrorText {
       }
       return '（播放地址已隐藏）${hit.substring(end)}';
     });
+    text = text.replaceAllMapped(
+      _rootRelativeReference,
+      (match) => '${match[1]}${_hiddenReference(match[2]!, '（播放地址已隐藏）')}',
+    );
     text = text.replaceAllMapped(
       _credentialHeaders,
       (match) => '${match[1]} （凭据已隐藏）',

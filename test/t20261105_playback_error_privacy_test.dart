@@ -11,6 +11,26 @@ const _signedFailure =
     'Failed to open https://viewer:fixture-password@media.example.invalid:9090/'
     'play/fixture-private-path?token=fixture-query-secret&time=1790000000000.';
 
+// Synthetic URI references only; never copy a real resolved media address here.
+const _relativeOpaque =
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+const _relativeMediaPath =
+    '/tg/$_relativeOpaque/master.m3u8'
+    '?verify=fixture-relative-verify&expires=1790000000123';
+const _relativeFailure = 'Failed to open $_relativeMediaPath';
+
+void _expectRelativeFieldsHidden(String text) {
+  for (final value in <String>[
+    '/tg/',
+    _relativeOpaque,
+    'master.m3u8',
+    'fixture-relative-verify',
+    '1790000000123',
+  ]) {
+    expect(text, isNot(contains(value)), reason: 'Relative playback fields are private');
+  }
+}
+
 String _renderedText(WidgetTester tester) => tester
     .widgetList<Text>(find.byType(Text))
     .map((text) => text.data ?? text.textSpan?.toPlainText() ?? '')
@@ -59,6 +79,109 @@ Future<void> _capture(WidgetTester tester, String name) async {
 }
 
 void main() {
+  group('relative playback reference privacy', () {
+    for (final path in <String>[
+      _relativeMediaPath,
+      '//cdn.example.invalid$_relativeMediaPath',
+      'tg/$_relativeOpaque/master.m3u8?verify=fixture-relative-verify&expires=1790000000123',
+    ]) {
+      test('open failure hides URI reference form ${path.startsWith('//') ? 'network' : path.startsWith('/') ? 'root' : 'relative'}', () {
+        final detail = PlaybackErrorText.classify(
+          'Failed to open $path; HTTP status=502',
+          hadCandidates: true,
+        ).detail;
+        _expectRelativeFieldsHidden(detail);
+        expect(detail, isNot(contains('cdn.example.invalid')));
+        expect(detail, contains('HTTP status=502'));
+        expect(detail, contains('无法打开播放地址'));
+        expect(PlaybackErrorText.forDisplay(detail), detail);
+      });
+    }
+
+    test('CJK without spaces retains the readable cause around a private reference', () {
+      final display = PlaybackErrorText.forDisplay(
+        '播放失败：$_relativeMediaPath无法加载，请换条线路重试',
+      );
+      _expectRelativeFieldsHidden(display);
+      expect(display, startsWith('播放失败：'));
+      expect(display, endsWith('无法加载，请换条线路重试'));
+      expect(display, contains('播放地址已隐藏'));
+    });
+
+    test('opaque path without a query is private in an open failure', () {
+      final display = PlaybackErrorText.forDisplay(
+        'Failed to open /tg/$_relativeOpaque; unsupported media format',
+      );
+      _expectRelativeFieldsHidden(display);
+      expect(display, contains('unsupported media format'));
+      expect(display, contains('无法打开播放地址'));
+    });
+
+    test('wrapped relative reference removes its opaque continuation', () {
+      final detail = PlaybackErrorText.classify(
+        'Failed to open /tg/$_relativeOpaque\n'
+        '$_relativeOpaque?verify=fixture-relative-verify&expires=1790000000123\n'
+        'HTTP status=502',
+        hadCandidates: true,
+      ).detail;
+      _expectRelativeFieldsHidden(detail);
+      expect(detail, contains('HTTP status=502'));
+    });
+
+    test('relative reference redaction preserves permission attribution', () {
+      final failure = PlaybackErrorText.classify(
+        'HTTP 403 Forbidden: $_relativeFailure',
+        hadCandidates: true,
+      );
+      expect(failure.kind, PlaybackFailureKind.permission);
+      expect(failure.canRetry, isFalse);
+      _expectRelativeFieldsHidden(failure.detail);
+      expect(failure.detail, contains('HTTP 403 Forbidden'));
+    });
+
+    test('ordinary readable explanations and slash-separated formats stay intact', () {
+      for (final plain in <String>[
+        'Failed to open something',
+        'H.264/AVC 解码失败，请重试/返回',
+        '分享里有多个视频，请选择具体文件',
+        'Token expired; retry may succeed',
+        'HTTP status=502，源暂时没有返回可用内容',
+      ]) {
+        expect(PlaybackErrorText.forDisplay(plain), plain);
+      }
+    });
+
+    testWidgets('actual error card hides unclassified relative reference fields', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_errorCard(const PlaybackFailure(
+        kind: PlaybackFailureKind.unknown,
+        detail: _relativeFailure,
+      )));
+      await tester.pump();
+      _expectRelativeFieldsHidden(_renderedText(tester));
+      expect(find.text('播放失败'), findsOneWidget);
+      expect(find.text('重试'), findsOneWidget);
+      expect(find.text('返回'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('actual interruption banner hides relative reference fields', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(MaterialApp(home: Scaffold(body: Stack(children: [
+        playerPlaybackFailureBannerForProbe(
+          message: _relativeFailure,
+          onRetry: () {},
+        ),
+      ]))));
+      await tester.pump();
+      _expectRelativeFieldsHidden(_renderedText(tester));
+      expect(find.text('重试'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   test('unknown candidate failure does not expose signed playback fields', () {
     final failure = PlaybackErrorText.classify(
       _signedFailure,

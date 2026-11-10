@@ -1472,6 +1472,13 @@ class MyShelfState extends State<MyShelf> {
   Widget _buildBody(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final cards = _cards;
+    String? compactSubtitle(_Card card) =>
+        _tab == ShelfTab.following && card.releaseStatus != null
+        ? null
+        : card.subtitle;
+    final reserveSubtitleSpace = cards.any(
+      (card) => compactSubtitle(card)?.isNotEmpty ?? false,
+    );
 
     // History clearing keeps its existing two-step confirmation.
     final clearHistoryButton = (_tab == ShelfTab.history && _history.isNotEmpty)
@@ -1733,7 +1740,10 @@ class MyShelfState extends State<MyShelf> {
           )
         else if (widget.compact)
           SizedBox(
-            height: CompactShelfCard.heightOf(context),
+            height: CompactShelfCard.heightOf(
+              context,
+              reserveSubtitleSpace: reserveSubtitleSpace,
+            ),
             child: SourinHorizontalRail(
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
@@ -1747,10 +1757,8 @@ class MyShelfState extends State<MyShelf> {
                     child: CompactShelfCard(
                       title: c.title,
                       cover: c.cover,
-                      subtitle:
-                          _tab == ShelfTab.following && c.releaseStatus != null
-                          ? null
-                          : c.subtitle,
+                      subtitle: compactSubtitle(c),
+                      reserveSubtitleSpace: reserveSubtitleSpace,
                       releaseStatus: c.releaseStatus,
                       percent: c.pct,
                       unread: c.unread ?? 0,

@@ -12,6 +12,7 @@ class CompactShelfCard extends StatelessWidget {
     required this.title,
     this.cover,
     this.subtitle,
+    this.reserveSubtitleSpace = true,
     this.releaseStatus,
     this.percent,
     this.unread = 0,
@@ -21,6 +22,7 @@ class CompactShelfCard extends StatelessWidget {
   final String title;
   final String? cover;
   final String? subtitle;
+  final bool reserveSubtitleSpace;
   final String? releaseStatus;
   final int? percent;
   final int unread;
@@ -38,19 +40,23 @@ class CompactShelfCard extends StatelessWidget {
       (MediaQuery.textScalerOf(context).scale(FontSizes.cap) * _lineHeight)
           .ceilToDouble();
 
-  // Reserve the same caption space for every item, including empty subtitles.
-  // Text scaling changes only this space; the complete cover stays visible.
-  static double heightOf(BuildContext context) =>
+  /// A rail may omit the second caption row only when every subtitle is empty.
+  /// Pass the same reservation to its cards; a real subtitle still renders even
+  /// if a caller passes false, so its parent must reserve that row's height.
+  static double heightOf(
+    BuildContext context, {
+    bool reserveSubtitleSpace = true,
+  }) =>
       Sp.x2 * 2 +
       _posterWidth / AppMetrics.posterAspect +
       Sp.x2 +
       _titleHeightOf(context) +
-      Sp.x1 +
-      _subtitleHeightOf(context);
+      (reserveSubtitleSpace ? Sp.x1 + _subtitleHeightOf(context) : 0);
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final hasSubtitle = subtitle?.isNotEmpty ?? false;
     return Shortcuts(
       shortcuts: const {
         SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
@@ -125,22 +131,24 @@ class CompactShelfCard extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: Sp.x1),
-              SizedBox(
-                height: _subtitleHeightOf(context),
-                child: subtitle?.isNotEmpty ?? false
-                    ? Text(
-                        subtitle!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          height: _lineHeight,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      )
-                    : null,
-              ),
+              if (reserveSubtitleSpace || hasSubtitle) ...[
+                const SizedBox(height: Sp.x1),
+                SizedBox(
+                  height: _subtitleHeightOf(context),
+                  child: hasSubtitle
+                      ? Text(
+                          subtitle!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: FontSizes.cap,
+                            height: _lineHeight,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        )
+                      : null,
+                ),
+              ],
             ],
           ),
         ),

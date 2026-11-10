@@ -106,10 +106,10 @@ Future<void> _mount(
     }
   };
   SourinApi.debugHomeFetcher = () async => [
-    ProviderGroup(
+    const ProviderGroup(
       provider: 'fixture',
       providerName: '测试来源',
-      sections: const [
+      sections: [
         Section(
           id: 'catalog',
           title: '目录',

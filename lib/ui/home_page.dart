@@ -58,6 +58,7 @@ import 'widgets/miuix_controls.dart' as ui;
 import '../core/disk_cache.dart';
 import '../core/ffi.dart' show SourinCore, userErrorText;
 import '../core/json_utils.dart' show jmapOrNull, jmap, jlist;
+import '../core/snapshot_cover_codec.dart';
 import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
 import 'live_availability.dart';
@@ -417,6 +418,11 @@ class HomeListCache {
   /// ★ 用 `Map` 的**插入序**当 LRU 序：命中时先 remove 再写回 = 挪到末尾。
   ///   不引第三方 LRU 实现（本仓不许加依赖）。
   final Map<String, HomeSnapshot> _entries = <String, HomeSnapshot>{};
+  // Revision metadata lives only while an asynchronous preload is in flight.
+  final Map<String, int> _lastPut = <String, int>{};
+  int _activePreloads = 0;
+  int _revision = 0;
+  int _clearGeneration = 0;
 
   /// ★★ 探针开关：置 false 后本缓存**完全不起作用**（take 恒 null、put 空操作）
   ///
@@ -503,6 +509,7 @@ class HomeListCache {
 
   void put(String provider, HomeSnapshot s) {
     if (provider.isEmpty || !enabled) return;
+    if (_activePreloads > 0) _lastPut[provider] = ++_revision;
     _entries.remove(provider);
     _entries[provider] = s;
     puts++;
@@ -530,9 +537,13 @@ class HomeListCache {
     return 'home-cache-$safe.json';
   }
 
-  static Future<void> _persist(String provider, HomeSnapshot s) async {
-    await DiskCache.write(_fileNameFor(provider), s.toJson(), at: s.at);
-  }
+  static Future<void> _persist(String provider, HomeSnapshot s) =>
+      SnapshotCacheWrites.run(
+        name: _fileNameFor(provider),
+        snapshot: s.toJson(),
+        write: (data) => DiskCache.write(_fileNameFor(provider), data, at: s.at),
+        convert: SnapshotCoverCodec.homeToDurable,
+      );
 
   /// ★ 启动预热：把磁盘上的快照读回内存
   ///
@@ -548,6 +559,9 @@ class HomeListCache {
   /// 返回读回来的条数（探针/门禁读数）。
   Future<int> preload() async {
     if (!enabled) return 0;
+    final revision = _revision;
+    final clearGeneration = _clearGeneration;
+    _activePreloads++;
     try {
       final d = DiskCache.dataDir;
       if (d == null || d.isEmpty) return 0;
@@ -574,7 +588,10 @@ class HomeListCache {
         final name = f.path.split(Platform.pathSeparator).last;
         final entry = await DiskCache.read(name);
         if (entry?.data == null) continue;
-        final snap = HomeSnapshot.fromJson(jmapOrNull(entry!.data) ?? const {});
+        final raw = jmapOrNull(entry!.data);
+        if (raw == null) continue;
+        final restored = await SnapshotCoverCodec.homeToDisplay(raw);
+        final snap = HomeSnapshot.fromJson(restored);
         if (snap == null) continue;
         /*
          * ⚠️ provider 名从**快照内容**里取，不从文件名取 ——
@@ -584,6 +601,15 @@ class HomeListCache {
          */
         final pid = snap.groups.isNotEmpty ? snap.groups.first.provider : '';
         if (pid.isEmpty) continue;
+        // Reading and native registration both yield. A newer live snapshot or
+        // an explicit clear always wins over the preload that started earlier.
+        if (!enabled ||
+            _clearGeneration != clearGeneration ||
+            DiskCache.dataDir != d) {
+          return loaded;
+        }
+        if ((_lastPut[pid] ?? 0) > revision) continue;
+        if (!_entries.containsKey(pid) && _entries.length >= maxEntries) continue;
         // ⚠️ 不走 put()：put 会再写一次盘（预热不该产生写）
         _entries.remove(pid);
         _entries[pid] = snap;
@@ -593,11 +619,15 @@ class HomeListCache {
     } catch (e) {
       debugPrint('[HOME] 磁盘缓存预热失败（当作无缓存）: $e');
       return 0;
+    } finally {
+      if (--_activePreloads == 0) _lastPut.clear();
     }
   }
 
   /// 彻底清空（测试启动前调用）
   void clear() {
+    _clearGeneration++;
+    _lastPut.clear();
     _entries.clear();
   }
 }

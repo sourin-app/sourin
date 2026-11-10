@@ -1178,6 +1178,24 @@ async fn dispatch_inner(req: &str) -> String {
         "repair_library_covers" => {
             with_state_async(move |st| async move { crate::library_covers::repair(st).await }).await
         }
+        "covers_to_durable" => {
+            let batch = match crate::library_covers::CoverBatch::from_args(
+                v.get("args").unwrap_or(&serde_json::Value::Null),
+            ) {
+                Ok(batch) => batch,
+                Err(error) => return err_json(&error, "other"),
+            };
+            with_state(move |st| Ok(batch.into_durable(st)))
+        }
+        "covers_to_display" => {
+            let batch = match crate::library_covers::CoverBatch::from_args(
+                v.get("args").unwrap_or(&serde_json::Value::Null),
+            ) {
+                Ok(batch) => batch,
+                Err(error) => return err_json(&error, "other"),
+            };
+            with_state_async(move |st| async move { Ok(batch.into_display(st).await) }).await
+        }
         "list_all_progress" => with_state(|st| crate::commands::list_all_progress(st)),
         "list_history" => {
             let limit = a.u32_opt("limit");

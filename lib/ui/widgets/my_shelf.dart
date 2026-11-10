@@ -67,6 +67,7 @@ import 'miuix_controls.dart' as ui;
 
 import '../../core/disk_cache.dart';
 import '../../core/json_utils.dart' show jmapOrNull;
+import '../../core/snapshot_cover_codec.dart';
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
 import 'poster_card.dart';
@@ -369,7 +370,7 @@ class MyShelfState extends State<MyShelf> {
      *
      * # 顺序：**先读盘（同步语义上"立刻有数据"）→ 再 load() 拉新的**
      * ```text
-     * 预热拿到数据 ⇒ 首帧就有卡片（不等 FFI）
+     * 预热拿到数据 ⇒ 先画缓存卡片（只注册本地封面，不等远端列表）
      * load() 照常发（本方法下面那行，**逐字不变**）
      *   ⇒ 拿到新数据后按渲染指纹决定要不要 setState（task-36 那套）
      * ```
@@ -386,23 +387,24 @@ class MyShelfState extends State<MyShelf> {
 
   /// 从磁盘预热三份数据（Owner 要的"重启后还在"）
   ///
-  /// ⚠️ 与 `load()` **无关**：它不调任何 SourinApi、不计入 task-36 的
-  ///    `[SHELF]` 日志仪器（本方法不打那个 tag）⇒ 那些用例逐字不变。
+  /// Cover registration is local to the current core; this never reloads media
+  /// lists and does not participate in task-36's `[SHELF]` load instrument.
   Future<void> _preloadFromDisk() async {
     try {
       final e =
           await (debugShelfPreloadOverride?.call() ??
               DiskCache.read(kShelfCacheFile));
-      final m = jmapOrNull(e?.data);
-      if (m == null) return;
+      final raw = jmapOrNull(e?.data);
+      if (raw == null || !mounted) return;
+      final m = await SnapshotCoverCodec.shelfToDisplay(raw);
       final fav = _favListFrom(m['favorites']);
       final fol = _favListFrom(m['following']);
       final his = _progListFrom(m['history']);
       final count = (m['historyCount'] as num?)?.toInt();
       if (!mounted) return;
       if (fav.isEmpty && fol.isEmpty && his.isEmpty) return;
-      // A disk read can finish after the core has already returned current
-      // proxy URLs (or an intentionally empty list). Never replace that data.
+      // Recheck after both disk I/O and native registration: live data and
+      // intentionally empty successful lanes always win over cached records.
       final useFav = !_freshFavorites && fav.isNotEmpty;
       final useFol = !_freshFollowing && fol.isNotEmpty;
       final useHis = !_freshHistory && his.isNotEmpty;
@@ -457,13 +459,19 @@ class MyShelfState extends State<MyShelf> {
   /// ★ 用 `?? 旧值` 而不是 `?? 空列表`：那三路失败时 load() 会保留旧数据
   ///   （见 load() 里"保留旧数据"那段），写盘也要保持同一语义 ——
   ///   否则一次瞬时失败会把盘上好好的缓存**清成空**。
-  Future<void> _persistToDisk() async {
-    await DiskCache.write(kShelfCacheFile, <String, Object?>{
-      'favorites': [for (final f in _favorites) f.toJson()],
-      'following': [for (final f in _following) f.toJson()],
-      'history': [for (final p in _history) p.toJson()],
-      'historyCount': _historyCount,
-    });
+  Future<void> _persistToDisk() {
+    final at = DateTime.now();
+    return SnapshotCacheWrites.run(
+      name: kShelfCacheFile,
+      write: (data) => DiskCache.write(kShelfCacheFile, data, at: at),
+      convert: SnapshotCoverCodec.shelfToDurable,
+      snapshot: <String, dynamic>{
+        'favorites': [for (final f in _favorites) f.toJson()],
+        'following': [for (final f in _following) f.toJson()],
+        'history': [for (final p in _history) p.toJson()],
+        'historyCount': _historyCount,
+      },
+    );
   }
 
   /// 从子页返回时刷新（由 `_RouteGate` 回调；语义与旧 `didChangeDependencies` 版等价）。

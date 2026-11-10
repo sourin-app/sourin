@@ -4,6 +4,63 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Frontend snapshot projection. Cover conversion must retain every native
+/// identity and its position, including aggregate child::native IDs and nulls.
+/// The FFI commands own no separate unwrapping or provider-header policy.
+#[derive(serde::Serialize)]
+pub(crate) struct CoverBatch {
+    items: Vec<CoverItem>,
+}
+
+#[derive(serde::Serialize)]
+struct CoverItem {
+    provider: String,
+    id: String,
+    cover: Option<String>,
+}
+
+impl CoverBatch {
+    pub(crate) fn from_args(args: &serde_json::Value) -> Result<Self, String> {
+        const MAX_ITEMS: usize = 4096;
+        let rows = args.get("items").and_then(serde_json::Value::as_array)
+            .ok_or("items 必须是数组")?;
+        if rows.len() > MAX_ITEMS {
+            return Err(format!("items 每批最多 {MAX_ITEMS} 项"));
+        }
+        let mut items = Vec::with_capacity(rows.len());
+        for (index, row) in rows.iter().enumerate() {
+            if !row.is_object() {
+                return Err(format!("items[{index}] 必须是对象"));
+            }
+            let provider = row.get("provider").and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("items[{index}].provider 必须是字符串"))?;
+            let id = row.get("id").and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("items[{index}].id 必须是字符串"))?;
+            let cover = match row.get("cover") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(cover)) => Some(cover.clone()),
+                _ => return Err(format!("items[{index}].cover 必须是字符串或 null")),
+            };
+            items.push(CoverItem { provider: provider.into(), id: id.into(), cover });
+        }
+        Ok(Self { items })
+    }
+
+    pub(crate) fn into_durable(mut self, state: &AppState) -> Self {
+        for item in &mut self.items {
+            item.cover = durable(state, item.cover.as_deref());
+        }
+        self
+    }
+
+    pub(crate) async fn into_display(mut self, state: &AppState) -> Self {
+        for item in &mut self.items {
+            item.cover = for_display(state, &item.provider, &item.id, item.cover.as_deref()).await;
+        }
+        self
+    }
+}
+
 type CheckKey = (String, String, String);
 
 #[derive(Default)]

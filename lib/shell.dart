@@ -680,7 +680,7 @@ Future<void> main() async {
     AppLogoPreference.load();
 
     /*
-     * ★★★ 磁盘缓存：注入数据目录 + 预热首页快照（Owner 2026-10-15）
+     * ★★★ 磁盘缓存：注入数据目录（Owner 2026-10-15）
      *
      * Owner 原话：
      * ```text
@@ -694,7 +694,7 @@ Future<void> main() async {
      * 首页 initState → loadAll → homeListCache.take() 就在**首帧**发生
      * ⇒ 缓存没提前躺进内存 ⇒ 首帧还是骨架（等于没做）
      * ```
-     * ⚠️ 这里多花的是**一次本地文件读**（几十 KB，毫秒级）；
+     * ⚠️ 核心成功启动后再读盘和注册当前会话的封面地址；
      *    换来的是「重启后首页第一帧就有卡片」。
      *    与 Owner 抱怨的"彻底重载"（25 个源、几秒）不是一个量级。
      *
@@ -704,12 +704,6 @@ Future<void> main() async {
      *   探针跑在隔离目录里，碰不到用户的真实数据。
      */
     DiskCache.init(dir);
-    try {
-      final preloaded = await homeListCache.preload();
-      debugPrint('[SHELL] 首页磁盘缓存预热：$preloaded 个源');
-    } catch (e) {
-      debugPrint('[SHELL] 首页磁盘缓存预热失败（当作无缓存）: $e');
-    }
 
     /*
      * ★★ task-55：`UiPrefs` 加载完成后，把"动画风格"同步进运行期缓存
@@ -758,6 +752,14 @@ Future<void> main() async {
 
     final r = await SourinCore.startAsync(dir);
     debugPrint('[SHELL] 核心已启动: $r');
+    // Rehydration calls the core's cover policy, so it must follow successful
+    // startup while still completing before Home's first build.
+    try {
+      final preloaded = await homeListCache.preload();
+      debugPrint('[SHELL] 首页磁盘缓存预热：$preloaded 个源');
+    } catch (_) {
+      debugPrint('[SHELL] 首页磁盘缓存预热失败（当作无缓存）');
+    }
   } catch (e, st) {
     coreError = e.toString();
     /*
@@ -6717,6 +6719,7 @@ class _CoreErrorView extends StatelessWidget {
     try {
       final r = await SourinCore.startAsync(dir);
       debugPrint('[SHELL] ★ 重试启动成功: $r');
+      await homeListCache.preload();
     } catch (e) {
       debugPrint('[SHELL] ★ 重试启动仍失败: $e');
     }

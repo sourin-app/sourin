@@ -147,12 +147,79 @@ PanCheckState panCheckStateOf(String code) => switch (code) {
   _ => PanCheckState.uncertain,
 };
 
+/// A cover projection keeps its native identity, including aggregate child IDs.
+class SnapshotCoverItem {
+  const SnapshotCoverItem({
+    required this.provider,
+    required this.id,
+    required this.cover,
+  });
+
+  final String provider;
+  final String id;
+  final String? cover;
+
+  Map<String, dynamic> toJson() => {
+    'provider': provider,
+    'id': id,
+    'cover': cover,
+  };
+}
+
 /// 源影核心 API
 ///
 /// 全部方法都是静态的 —— 核心是单例（`SourinCore` 内部就是静态状态），
 /// 做成实例方法反而会让人误以为可以有多个。
 class SourinApi {
   SourinApi._();
+
+  static const int snapshotCoverBatchLimit = 4096;
+
+  /// Resolve current wrappers to durable origins without loading media metadata.
+  static Future<List<SnapshotCoverItem>> coversToDurable(
+    List<SnapshotCoverItem> items,
+  ) => _convertSnapshotCovers('covers_to_durable', items);
+
+  /// Register display covers under the current core's proxy/header policy.
+  static Future<List<SnapshotCoverItem>> coversToDisplay(
+    List<SnapshotCoverItem> items,
+  ) => _convertSnapshotCovers('covers_to_display', items);
+
+  static Future<List<SnapshotCoverItem>> _convertSnapshotCovers(
+    String command,
+    List<SnapshotCoverItem> items,
+  ) async {
+    if (items.length > snapshotCoverBatchLimit) {
+      throw ArgumentError('Snapshot cover batch exceeds the item limit');
+    }
+    if (items.isEmpty) return const [];
+    final requested = List<SnapshotCoverItem>.of(items, growable: false);
+    final response = await SourinCore.callAsync(command, {
+      'items': [for (final item in requested) item.toJson()],
+    });
+    final rows = response is Map ? response['items'] : null;
+    if (rows is! List || rows.length != requested.length) {
+      throw const FormatException('Invalid snapshot cover response');
+    }
+    final converted = <SnapshotCoverItem>[];
+    for (var index = 0; index < requested.length; index++) {
+      final row = rows[index];
+      final expected = requested[index];
+      if (row is! Map ||
+          row['provider'] != expected.provider ||
+          row['id'] != expected.id ||
+          !row.containsKey('cover') ||
+          (row['cover'] != null && row['cover'] is! String)) {
+        throw const FormatException('Invalid snapshot cover response');
+      }
+      converted.add(SnapshotCoverItem(
+        provider: expected.provider,
+        id: expected.id,
+        cover: row['cover'] as String?,
+      ));
+    }
+    return List<SnapshotCoverItem>.unmodifiable(converted);
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   //  探针 / 生命周期

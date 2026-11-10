@@ -13,7 +13,8 @@ import 'package:sourin_spike/ui/widgets/my_shelf.dart';
 import 'package:sourin_spike/ui/widgets/poster_card.dart';
 
 const _currentCover = 'http://127.0.0.1:61234/s/current-cover-fixture';
-const _oldCover = 'http://127.0.0.1:53002/s/old-cover-fixture';
+const _cachedRawCover = 'https://images.invalid/cached-cover-fixture.jpg';
+const _restoredCover = 'http://127.0.0.1:61234/s/restored-cover-fixture';
 
 Favorite _favorite(String lane, String cover) => Favorite(
   key: 'fixture:$lane',
@@ -39,9 +40,9 @@ Progress _history(String cover) => Progress(
 CacheEntry _oldCache() => CacheEntry(
   at: DateTime(2026, 11, 7),
   data: {
-    'favorites': [_favorite('favorites', _oldCover).toJson()],
-    'following': [_favorite('following', _oldCover).toJson()],
-    'history': [_history(_oldCover).toJson()],
+    'favorites': [_favorite('favorites', _cachedRawCover).toJson()],
+    'following': [_favorite('following', _cachedRawCover).toJson()],
+    'history': [_history(_cachedRawCover).toJson()],
   },
 );
 
@@ -100,10 +101,22 @@ void main() {
     // The delayed CacheEntry below is in memory. Persistence has no directory,
     // and ancillary core calls never bind a native library or read a profile.
     DiskCache.debugResetForTest(null);
-    SourinCore.debugCallAsyncTransport = (command, _) async =>
+    SourinCore.debugCallAsyncTransport = (command, args) async =>
         switch (command) {
           'list_all_progress' => <dynamic>[],
           'repair_library_covers' => 0,
+          // These read-race cases restore a durable cached origin through the
+          // current session. Unknown old tokens are covered by the cold-snapshot
+          // regressions and must not be fabricated into readable mappings here.
+          'covers_to_display' => {
+            'items': [
+              for (final row in args!['items'] as List)
+                {
+                  ...Map<String, dynamic>.from(row as Map),
+                  'cover': row['cover'] == _cachedRawCover ? _restoredCover : null,
+                },
+            ],
+          },
           _ => throw UnsupportedError('Unexpected shelf command: $command'),
         };
     addTearDown(() {
@@ -208,7 +221,7 @@ void main() {
         await tester.pump();
         for (final tab in ShelfTab.values) {
           await _showLane(tester, tab, 1);
-          _expectCover(tester, tab == failedLane ? _oldCover : _currentCover);
+          _expectCover(tester, tab == failedLane ? _restoredCover : _currentCover);
         }
         expect(tester.takeException(), isNull);
       },

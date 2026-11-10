@@ -22,6 +22,22 @@ Danmaku information uses an opaque dark MiuixCard so bright video frames cannot 
 
 Popup focus retention, Escape handling, line selection and episode identity continue through their existing controllers. The settings tab row uses keyboard-capable Miuix choice buttons. Subtitle font choices use the actual Miuix window dropdown while retaining the existing player-property callback.
 
+The small-popover layer retains its last rendered body and anchor while the
+existing opacity/slide exit completes. Controller.close changes the active
+state immediately; the retained subtree immediately loses pointer, focus and
+semantics interaction, then unmounts after the opacity completion. Reopening
+or selecting another panel cancels obsolete removal; replacing the controller
+does not retain its former panel. Keeping only an animated empty box would
+provide no actual exit motion. Tests read the rendered animation's intermediate
+opacity and content/anchor presence, rather than only its target value, and
+check focused-editor dismissal, inaccessible exit controls, quick reopen,
+replacement and disposal.
+Only a closing render binds the removal completion: a controller close that
+arrives immediately before the entering ticker's last frame must not let that
+old entrance callback remove the retained body. The exact duration edge can
+evaluate opacity to zero while the floating-point ticker is still forward;
+regressions observe the following normal frame before requiring unmount.
+
 MediaPage, standalone DetailPage and PlayerPage use AppScaffold, which mounts the actual MiuixScaffold. Windowed surfaces keep the current theme color and the fullscreen/video surfaces keep their black background. AppScaffold consumes keyboard viewInsets after applying their bottom padding, so nested media/player shells subtract the inset once. Its Padding and MediaQuery wrappers stay mounted at zero inset to preserve page state when the keyboard opens or closes.
 
 PopoverController keeps at most one pending geometry watcher. Switching the open panel or closing and reopening before the next frame reuses that watcher; otherwise each switch adds another recurring render-coordinate traversal. The regression test counts actual `applyPaintTransform` calls through the mounted anchor tree and requires one read per supplied frame, zero while closed, and no frame scheduling by the watcher.

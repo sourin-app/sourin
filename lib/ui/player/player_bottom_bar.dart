@@ -813,36 +813,28 @@ class PlayerBottomBar extends StatelessWidget {
   /// ⇒ 提到同一个 Stack 里当**兄弟**：面板从底栏上沿往上长，
   ///   而那个 Stack 是整屏（`SizedBox.expand`）⇒ 不会被任何祖先裁掉。
   /// ```
-  Widget buildPopoverLayer() {
-    final id = controller.openId;
-    final body = switch (id) {
-      PlayerPopoverIds.rate => _panelSurface(
-        rateOptions().map(_rateRow).toList(),
-      ),
-      PlayerPopoverIds.quality when qualityOptions.isNotEmpty => _panelSurface(
-        _qualityRows(),
-      ),
-      PlayerPopoverIds.lines when lineOptions.length > 1 => _linePanel(),
-      PlayerPopoverIds.tracks when trackGroups.isNotEmpty => _panelSurface([
-        for (final entry in trackGroups.entries) ...[
-          PopoverGroupLabel(entry.key),
-          for (final o in entry.value) _trackRow(entry.key, o),
-        ],
-      ], width: 220),
-      PlayerPopoverIds.danmakuQuick when danmakuQuick != null =>
-        _danmakuQuickPanel(danmakuQuick!),
-      PlayerPopoverIds.more => _morePanel(),
-      _ => const SizedBox.shrink(),
-    };
-    return _PopoverAnchorLayer(
-      controller: controller,
-      id: id,
-      child: PopoverKeepAlive(
-        controller: controller,
-        child: PopoverMotion(visible: id != null, child: body),
-      ),
-    );
-  }
+  Widget buildPopoverLayer() =>
+      _RetainedPopoverLayer(controller: controller, bodyBuilder: _popoverBody);
+
+  Widget _popoverBody(String id) => switch (id) {
+    PlayerPopoverIds.rate => _panelSurface(
+      rateOptions().map(_rateRow).toList(),
+    ),
+    PlayerPopoverIds.quality when qualityOptions.isNotEmpty => _panelSurface(
+      _qualityRows(),
+    ),
+    PlayerPopoverIds.lines when lineOptions.length > 1 => _linePanel(),
+    PlayerPopoverIds.tracks when trackGroups.isNotEmpty => _panelSurface([
+      for (final entry in trackGroups.entries) ...[
+        PopoverGroupLabel(entry.key),
+        for (final o in entry.value) _trackRow(entry.key, o),
+      ],
+    ], width: 220),
+    PlayerPopoverIds.danmakuQuick when danmakuQuick != null =>
+      _danmakuQuickPanel(danmakuQuick!),
+    PlayerPopoverIds.more => _morePanel(),
+    _ => const SizedBox.shrink(),
+  };
 
   Widget _panelSurface(List<Widget> rows, {double width = 168}) =>
       PlayerPopoverSurface(
@@ -1689,6 +1681,75 @@ class PlayerBottomBar extends StatelessWidget {
 ///
 /// ⚠️ 锚点还没登记（面板先于按钮挂载的那一帧）⇒ 退回宿主给的右下角基准，
 ///    绝不猜一个横向位置。
+class _RetainedPopoverLayer extends StatefulWidget {
+  const _RetainedPopoverLayer({
+    required this.controller,
+    required this.bodyBuilder,
+  });
+
+  final PopoverController controller;
+  final Widget Function(String id) bodyBuilder;
+
+  @override
+  State<_RetainedPopoverLayer> createState() => _RetainedPopoverLayerState();
+}
+
+class _RetainedPopoverLayerState extends State<_RetainedPopoverLayer> {
+  String? _displayedId;
+  Widget _body = const SizedBox.shrink();
+
+  void _captureOpenPanel() {
+    final id = widget.controller.openId;
+    if (id == null) return;
+    _displayedId = id;
+    _body = widget.bodyBuilder(id);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _captureOpenPanel();
+  }
+
+  @override
+  void didUpdateWidget(_RetainedPopoverLayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      _displayedId = null;
+      _body = const SizedBox.shrink();
+    }
+    _captureOpenPanel();
+  }
+
+  void _removeClosedPanel() {
+    // An interrupted exit must not remove a reopened or replacement panel.
+    if (!mounted || widget.controller.openId != null || _displayedId == null) {
+      return;
+    }
+    setState(() {
+      _displayedId = null;
+      _body = const SizedBox.shrink();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => _PopoverAnchorLayer(
+    controller: widget.controller,
+    // Keep the last anchor while the retained content fades out.
+    id: _displayedId,
+    child: PopoverKeepAlive(
+      controller: widget.controller,
+      child: PopoverMotion(
+        visible: widget.controller.openId != null,
+        // A close can arrive before the entering ticker's final frame but
+        // before this parent rebuilds. That entrance must not remove content.
+        onEnd: widget.controller.openId == null ? _removeClosedPanel : null,
+        child: _body,
+      ),
+    ),
+  );
+}
+
 class _PopoverAnchorLayer extends StatelessWidget {
   const _PopoverAnchorLayer({
     required this.controller,

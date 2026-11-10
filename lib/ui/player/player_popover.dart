@@ -495,11 +495,13 @@ class PopoverMotion extends StatelessWidget {
     required this.visible,
     required this.child,
     this.placement = PopoverPlacement.above,
+    this.onEnd,
   });
 
   final bool visible;
   final Widget child;
   final PopoverPlacement placement;
+  final VoidCallback? onEnd;
 
   /// 进场位移的方向：上方弹出的往**下**落一点，下方弹出的往**上**升一点
   Offset get _offset => placement == PopoverPlacement.above
@@ -522,7 +524,11 @@ class PopoverMotion extends StatelessWidget {
           duration: Motion.fast,
           curve: Motion.easeOut,
           opacity: visible ? 1 : 0,
-          child: child,
+          onEnd: onEnd,
+          child: ExcludeFocus(
+            excluding: !visible,
+            child: ExcludeSemantics(excluding: !visible, child: child),
+          ),
         ),
       ),
     );

@@ -31,7 +31,9 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
+
 import 'support/miuix_finders.dart';
+
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart' as mui;
@@ -41,6 +43,7 @@ import 'package:sourin_spike/ui/app_scaffold.dart' show AppThemeHost;
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
 import 'package:sourin_spike/ui/player/player_popover.dart';
+import 'package:sourin_spike/ui/tokens.dart';
 
 class _Spy {
   int advanced = 0;
@@ -190,10 +193,22 @@ void main() {
     expect(find.byType(miuix.MiuixIconButton), findsWidgets);
     expect(find.byType(miuix.MiuixButton), findsWidgets);
     final panel = find.byKey(PlayerBottomBar.danmakuQuickPanelKey);
-    expect(find.descendant(of: panel, matching: find.byType(miuix.MiuixTextField)), findsOneWidget);
-    expect(find.descendant(of: panel, matching: find.byType(EditableText)), findsOneWidget);
-    expect(find.descendant(of: panel, matching: find.byType(miuix.MiuixSlider)), findsNWidgets(4));
-    expect(t.widget(find.byKey(PlayerBottomBar.danmakuQuickScrollKey)), isA<miuix.MiuixPressable>());
+    expect(
+      find.descendant(of: panel, matching: find.byType(miuix.MiuixTextField)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: panel, matching: find.byType(EditableText)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: panel, matching: find.byType(miuix.MiuixSlider)),
+      findsNWidgets(4),
+    );
+    expect(
+      t.widget(find.byKey(PlayerBottomBar.danmakuQuickScrollKey)),
+      isA<miuix.MiuixPressable>(),
+    );
   });
 
   testWidgets('Escape closes focused quick search without submitting', (
@@ -207,6 +222,13 @@ void main() {
     await t.pump();
     await t.sendKeyEvent(LogicalKeyboardKey.escape);
     await t.pump();
+    expect(controller.openId, isNull);
+    expect(
+      t.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isFalse,
+    );
+    await t.pump(Motion.fast);
+    await t.pump(const Duration(milliseconds: 16));
     expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsNothing);
     expect(spy.searches, isEmpty);
   });
@@ -269,6 +291,9 @@ void main() {
     await t.pump(
       PopoverController.closeDelay + const Duration(milliseconds: 1),
     );
+    expect(controller.openId, isNull);
+    await t.pump(Motion.fast);
+    await t.pump(const Duration(milliseconds: 16));
     expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsNothing);
     expect(spy.searches, isEmpty);
   });
@@ -284,6 +309,13 @@ void main() {
     await t.pump();
     await t.tap(find.byKey(PlayerBottomBar.danmakuSettingsKey));
     await t.pump();
+    expect(controller.openId, isNull);
+    expect(
+      t.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isFalse,
+    );
+    await t.pump(Motion.fast);
+    await t.pump(const Duration(milliseconds: 16));
     expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsNothing);
     expect(spy.searches, isEmpty);
   });
@@ -302,10 +334,13 @@ void main() {
       await t.pump(const Duration(seconds: 1));
       await t.pump(const Duration(milliseconds: 220));
       expect(find.byType(miuix.MiuixPlainTooltip), findsOneWidget);
-      expect(find.descendant(
-        of: find.byType(miuix.MiuixPlainTooltip),
-        matching: find.text('搜索弹幕'),
-      ), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(miuix.MiuixPlainTooltip),
+          matching: find.text('搜索弹幕'),
+        ),
+        findsOneWidget,
+      );
       await mouse.removePointer();
       await t.pump();
       await t.pump(const Duration(milliseconds: 220));

@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart' as mui;
 
@@ -8,11 +9,16 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
 import 'package:sourin_spike/ui/player/player_popover.dart'
     hide PlayerPopoverIds;
+import 'package:sourin_spike/ui/tokens.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 
 Future<void> _pumpPlayerControls(
   WidgetTester tester,
-  PopoverController controller,
-) async {
+  PopoverController controller, {
+  VoidCallback? onAdvanced,
+  bool withSearch = false,
+  ValueNotifier<bool>? anchorVisible,
+}) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = const Size(1400, 900);
   addTearDown(tester.view.reset);
@@ -59,7 +65,9 @@ Future<void> _pumpPlayerControls(
       onSetShowTop: (_) {},
       onSetShowBottom: (_) {},
       onSetColorOnly: (_) {},
-      onOpenAdvanced: () {},
+      onOpenAdvanced: onAdvanced ?? () {},
+      onOpenSearch: withSearch ? () {} : null,
+      onSearch: withSearch ? (_) {} : null,
     ),
   );
   final theme = AppTheme.themeFor(mui.Brightness.dark);
@@ -75,7 +83,15 @@ Future<void> _pumpPlayerControls(
           onDoubleTap: () {},
           child: Stack(
             children: [
-              Stack(children: [bar]),
+              if (anchorVisible == null)
+                Stack(children: [bar])
+              else
+                ValueListenableBuilder<bool>(
+                  valueListenable: anchorVisible,
+                  builder: (_, visible, __) => visible
+                      ? Stack(children: [bar])
+                      : const SizedBox.expand(),
+                ),
               ListenableBuilder(
                 listenable: Listenable.merge([controller, bottomInset]),
                 builder: (_, __) => Positioned.fill(
@@ -98,6 +114,183 @@ Future<void> _pumpPlayerControls(
 void main() {
   final panel = find.byKey(PlayerBottomBar.danmakuQuickPanelKey);
   final gear = find.byKey(PlayerBottomBar.danmakuSettingsKey);
+
+  testWidgets(
+    'closing a real popover retains its fading pixels but blocks interaction',
+    (tester) async {
+      final controller = PopoverController();
+      addTearDown(controller.dispose);
+      final semantics = tester.ensureSemantics();
+      var advanced = 0;
+      try {
+        await _pumpPlayerControls(
+          tester,
+          controller,
+          onAdvanced: () => advanced++,
+          withSearch: true,
+        );
+        controller.toggleOpen(PlayerPopoverIds.danmakuQuick);
+        await tester.pump();
+        await tester.pump(Motion.fast);
+        expect(panel, findsOneWidget);
+        final rect = tester.getRect(panel);
+        final field = find.descendant(
+          of: panel,
+          matching: find.byType(ui.TextFormField),
+        );
+        await tester.enterText(field, '未提交');
+        await tester.pump();
+        final editor = tester.widget<EditableText>(
+          find.descendant(of: panel, matching: find.byType(EditableText)),
+        );
+        expect(editor.focusNode.hasFocus, isTrue);
+        controller.close();
+        await tester.pump();
+        expect(controller.openId, isNull);
+        expect(
+          panel,
+          findsOneWidget,
+          reason: 'The rendered card must remain for its exit animation.',
+        );
+        final opacityFinder = find
+            .ancestor(of: panel, matching: find.byType(AnimatedOpacity))
+            .first;
+        final opacity = tester.renderObject<RenderAnimatedOpacity>(
+          opacityFinder,
+        );
+        expect(opacity.opacity.value, 1);
+        expect(
+          tester.getRect(panel),
+          rect,
+          reason: 'Closing must preserve the last panel anchor.',
+        );
+        expect(editor.focusNode.hasFocus, isFalse);
+        expect(find.bySemanticsLabel('高级设置'), findsNothing);
+        await tester.tap(
+          find.byKey(PlayerBottomBar.danmakuQuickAdvancedKey),
+          warnIfMissed: false,
+        );
+        expect(advanced, 0);
+        await tester.pump(Motion.fast ~/ 2);
+        expect(panel, findsOneWidget);
+        expect(opacity.opacity.value, greaterThan(0));
+        expect(opacity.opacity.value, lessThan(1));
+        await tester.pump(Motion.fast);
+        expect(panel, findsNothing);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        semantics.dispose();
+      }
+    },
+  );
+
+  testWidgets(
+    'reopening or switching a closing popover cancels obsolete removal',
+    (tester) async {
+      final controller = PopoverController();
+      addTearDown(controller.dispose);
+      await _pumpPlayerControls(tester, controller);
+      controller.toggleOpen(PlayerPopoverIds.danmakuQuick);
+      await tester.pump();
+      await tester.pump(Motion.fast);
+      controller.close();
+      await tester.pump();
+      await tester.pump(Motion.fast ~/ 2);
+      controller.toggleOpen(PlayerPopoverIds.danmakuQuick);
+      await tester.pump();
+      await tester.pump(Motion.fast * 2);
+      expect(panel, findsOneWidget);
+      controller.close();
+      await tester.pump();
+      await tester.pump(Motion.fast ~/ 2);
+      controller.toggleOpen(PlayerPopoverIds.rate);
+      await tester.pump();
+      await tester.pump(Motion.fast * 2);
+      expect(panel, findsNothing);
+      expect(find.byType(PlayerPopoverSurface), findsOneWidget);
+      expect(find.text('1.5x'), findsOneWidget);
+      expect(controller.openId, PlayerPopoverIds.rate);
+      controller.close();
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(Motion.fast * 2);
+      expect(find.byType(PlayerPopoverSurface), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'closing retains its measured anchor after the control bar unmounts',
+    (tester) async {
+      final controller = PopoverController();
+      final anchorVisible = ValueNotifier(true);
+      addTearDown(controller.dispose);
+      addTearDown(anchorVisible.dispose);
+      await _pumpPlayerControls(
+        tester,
+        controller,
+        anchorVisible: anchorVisible,
+      );
+      controller.toggleOpen(PlayerPopoverIds.rate);
+      await tester.pump();
+      await tester.pump(Motion.fast);
+      final surface = find.byType(PlayerPopoverSurface);
+      final rect = tester.getRect(surface);
+      controller.close();
+      anchorVisible.value = false;
+      await tester.pump();
+      expect(surface, findsOneWidget);
+      expect(
+        tester.getRect(surface),
+        rect,
+        reason: 'Advanced/full-screen sheets can remove the bar during exit.',
+      );
+      await tester.pump(Motion.fast);
+      // The exact 150 ms edge can evaluate to zero while the floating-point
+      // simulation remains forward. Observe the next normal display frame.
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(surface, findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'an entrance completion cannot remove content closed before its next build',
+    (tester) async {
+      final controller = PopoverController();
+      addTearDown(controller.dispose);
+      await _pumpPlayerControls(tester, controller);
+      controller.toggleOpen(PlayerPopoverIds.danmakuQuick);
+      await tester.pump();
+      await tester.pump(Motion.fast ~/ 2);
+      controller.close();
+      // The entering ticker completes before the parent's closing rebuild.
+      await tester.pump(Motion.fast ~/ 2 + const Duration(milliseconds: 16));
+      expect(
+        panel,
+        findsOneWidget,
+        reason: 'Only the exit completion may remove the retained content.',
+      );
+      final opacity = tester
+          .renderObject<RenderAnimatedOpacity>(
+            find
+                .ancestor(of: panel, matching: find.byType(AnimatedOpacity))
+                .first,
+          )
+          .opacity;
+      expect(opacity.value, 1);
+      await tester.pump(Motion.fast ~/ 2);
+      expect(opacity.value, greaterThan(0));
+      expect(opacity.value, lessThan(1));
+      await tester.pump(Motion.fast);
+      expect(panel, findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('one mouse click stays open across hover and double-tap timers', (
     tester,

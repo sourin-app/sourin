@@ -22,9 +22,31 @@ async fn anonymous_resolver_immediately_decodes_selected_media() {
     };
     let plays = site.play(&selected.0, &selected.1, "").await.expect("production Rust media resolution must succeed");
     let media = plays.first().expect("one actual media candidate");
+    // Explicit diagnosis output is confined to an existing repository .probe
+    // directory. Never print or overwrite an access-bearing media address.
+    if let Some(output) = std::env::var_os("CSP_DECODE_PRIVATE_OUTPUT") {
+        use std::io::Write;
+        let output = std::path::PathBuf::from(output);
+        let scope = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.probe").canonicalize().expect("repository probe directory exists");
+        let parent = output.parent().expect("explicit private artifact has a parent")
+            .canonicalize().expect("private artifact parent already exists");
+        assert!(parent.starts_with(scope), "private media artifact must stay inside repository .probe");
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&output)
+            .expect("create a fresh private media artifact");
+        let payload = serde_json::json!({"engine":engine,"url":media.url,"headers":media.headers,
+            "selectedLine":selected.0,"selectedEpisode":selected.1,"networkRoute":"explicit_direct",
+            "createdUnixMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()});
+        file.write_all(payload.to_string().as_bytes()).expect("write private media artifact");
+    }
     let mut command = tokio::process::Command::new("ffmpeg");
+    for variable in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+        "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"] {
+        command.env_remove(variable);
+    }
+    command.env("NO_PROXY", "*").env("no_proxy", "*");
     command.kill_on_drop(true).args([
-        "-hide_banner", "-loglevel", "error", "-nostdin", "-rw_timeout", "10000000",
+        "-hide_banner", "-loglevel", "error", "-nostdin", "-http_proxy", "", "-rw_timeout", "10000000",
         "-analyzeduration", "5000000", "-probesize", "5000000",
     ]);
     let mut headers = String::new();
@@ -49,7 +71,7 @@ async fn anonymous_resolver_immediately_decodes_selected_media() {
         else if error.contains("Invalid data") { "invalid_media" }
         else if error.contains("Error opening") { "open_failed" }
         else { "other_or_none" };
-    eprintln!("[ANONYMOUS-DECODE] engine={engine} candidates={} frames={frames} exit={:?} errorClass={classification}",
+    eprintln!("[ANONYMOUS-DECODE] engine={engine} route=explicit_direct candidates={} frames={frames} exit={:?} errorClass={classification}",
         plays.len(), output.status.code());
     assert!(output.status.success() && frames >= 12,
         "immediate production resolve + decode failed: frames={frames}, errorClass={classification}");

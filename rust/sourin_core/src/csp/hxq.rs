@@ -28,6 +28,36 @@ const UA: &str = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 \
 pub const COVER_HEADERS: &[(&str, &str)] = &[];
 
 const TIMEOUT: Duration = Duration::from_secs(20);
+const EPISODE_PREFIX: &str = "hxq:v1|";
+
+fn valid_pid(pid: &str) -> bool {
+    !pid.is_empty() && pid.len() <= 256
+        && pid.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn selected_episode_id(content: &str, pid: &str, serial: i64, title: &str, flag: &str) -> String {
+    let bytes = serde_json::json!({"content":content,"pid":pid,"serial":serial,"title":title,"flag":flag}).to_string();
+    format!("{EPISODE_PREFIX}{}", crate::csp::app99::b64_encode(bytes.as_bytes()))
+}
+
+fn selected_pid(id: &str, flag: &str) -> Result<String, String> {
+    if let Some(encoded) = id.strip_prefix(EPISODE_PREFIX) {
+        if encoded.len() > 16 * 1024 { return Err("剧集标识无效，请重新选择".into()); }
+        let bytes = crate::csp::app99::b64_decode(encoded).map_err(|_| "剧集标识无效，请重新选择")?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|_| "剧集标识无效，请重新选择")?;
+        let pid = value.get("pid").and_then(Value::as_str).filter(|pid| valid_pid(pid))
+            .ok_or("剧集标识无效，请重新选择")?;
+        value.get("content").and_then(Value::as_str).filter(|id| !id.is_empty())
+            .ok_or("剧集标识缺少作品信息，请重新选择")?;
+        let line = value.get("flag").and_then(Value::as_str).ok_or("剧集标识缺少线路信息")?;
+        if !flag.is_empty() && flag != line { return Err("剧集与所选线路不一致，请重新选择".into()); }
+        Ok(pid.to_string())
+    } else if valid_pid(id) {
+        Ok(id.to_string())
+    } else {
+        Err("剧集标识无效，请重新选择".into())
+    }
+}
 
 /// 分类（`stype`）—— 实测哪些**真的有内容**
 ///
@@ -50,6 +80,8 @@ pub const SORTS: &'static [(&'static str, &'static str)] =
 pub struct Hxq {
     client: super::http_context::CspHttpContext,
     playback_session: std::sync::OnceLock<Result<playback::Session, String>>,
+    #[cfg(test)]
+    base_override: Option<String>,
 }
 
 impl Hxq {
@@ -63,12 +95,19 @@ impl Hxq {
                 // Ignore environment proxies; CspHttpContext applies app policy.
                 .no_proxy()
         });
-        Self { client, playback_session: std::sync::OnceLock::new() }
+        Self { client, playback_session: std::sync::OnceLock::new(),
+            #[cfg(test)] base_override: None }
+    }
+
+    fn base(&self) -> &str {
+        #[cfg(test)]
+        if let Some(base) = &self.base_override { return base; }
+        BASE
     }
 
     /// 带站点标识的 GET（DEX 的 `d()` 里那几个头）
     async fn get_json(&self, path: &str) -> Result<Value, String> {
-        let url = format!("{BASE}{path}");
+        let url = format!("{}{path}", self.base());
         self.get_json_url(&url, path).await
     }
 
@@ -234,6 +273,9 @@ pub fn clean_intro(html: &str) -> String {
 
 #[async_trait]
 impl CspSite for Hxq {
+    fn accepts_selected_episode_id(&self, id: &str) -> bool {
+        selected_pid(id, "").is_ok()
+    }
     fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
         self.client.set_proxy(proxy, provider);
     }
@@ -337,7 +379,7 @@ impl CspSite for Hxq {
                 title
             };
             episodes.push(CspEpisode {
-                id: pid,
+                id: selected_episode_id(sid, &pid, serial, &ep_title, "韩圈"),
                 title: ep_title,
                 // 单线路源：flag 固定（这段剧里没有多线路维度）
                 flag: "韩圈".to_string(),
@@ -399,8 +441,9 @@ impl CspSite for Hxq {
         false
     }
 
-    async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
-        self.anonymous_play(id).await
+    async fn play(&self, flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
+        let pid = selected_pid(id, flag)?;
+        self.anonymous_play(&pid).await
     }
 }
 
@@ -656,3 +699,7 @@ mod proxy_tests;
 #[cfg(test)]
 #[path = "anonymous_decode_live_tests.rs"]
 mod anonymous_decode_live_tests;
+
+#[cfg(test)]
+#[path = "hxq_provider_contract_tests.rs"]
+mod provider_contract_tests;

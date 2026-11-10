@@ -1,104 +1,14 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  csp_AppRJ —— TVBox `csp_AppRJ` 的 Rust 重写（「热剧」App 接口）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # 这个类在配置里覆盖什么
-//
-// ```json
-// {"key":"热剧","name":"🔥热剧","type":3,"api":"csp_AppRJ",
-//  "searchable":1,"quickSearch":1,"filterable":0,"ext":{"url":"http://v.rbotv.cn"}}
-// ```
-// ⇒ ext 是对象：`{"url":"http://v.rbotv.cn"}`（DEX `init` 里 `getString("url")`）。
-//
-// # ★ 分档：**上游可用 —— 真网全链路已打通**（2026-10-27 实测）
-//
-// ```text
-// ★★ 先说一个**我差点又判错**的地方（SaoHuo 那次的教训直接生效了）：
-//   第一次我用**根路径 GET** 打它 ⇒ 四个端点全返 **405 `not found`（9 字节）**。
-//   看着像"端点不存在/站点死了"。但按真实用法（**POST + multipart/form-data**）再打：
-//     405 `"sign error"`（12 字节）   ← ★ 错误**变了** ⇒ 端点**存在**、只是签名不对
-//   把签名算对之后 ⇒ **200 + 真数据**。
-//   ⇒ 这又是一次"我的探测路径不对"看起来像"上游死了"。
-//     区分它需要的**不是**"再打一次同样的路径"，而是"**按 DEX 的方式打一次**"
-//     （这里的关键是 POST/multipart，而不是根路径→内容页那种路径差别）。
-// ```
-//
-// ## ★★ 签名算法（DEX 逐条复原 + 真网验证）
-// ```text
-// 常量 KEY = "7gp0bnd2sr85ydii2j32pcypscoc4w6c7g5spl"          （DEX 逐字）
-// timestamp = System.currentTimeMillis() / 1000               （DEX：op_be = div-long，**秒**）
-// sign      = md5(KEY + timestamp).toLowerCase()              （DEX：`a(String)` = MD5 十六进制补零小写）
-// 两个字段都随表单一起 POST：`timestamp` / `sign`
-// ```
-// ⚠️ **第一版我猜过"拼接顺序"与"秒/毫秒"** —— 实测只有 `md5(KEY+秒)` 能过。
-//
-// ## 请求形态（DEX `a(String, Map)` 逐条）
-// ```text
-// POST {url}{path}
-// Content-Type: multipart/form-data（DEX 用的是 `MultipartBody.Builder`）
-// User-Agent: okhttp-okgo/jeasonlzy        ← ★ 逐字，不是浏览器 UA
-// 表单字段 = 业务参数 + timestamp + sign
-// ```
-//
-// ## 端点（DEX 逐字）
-// ```text
-// POST /v3/type/top_type      → 分类/筛选（`data.list[].{type_id,type_name,extend,area,lang,year}`）
-// POST /v3/home/type_search  → 分类列表（type_id/area/lang/class/year/page/limit/extend）
-// POST /v3/home/search       → 搜索（keyword/page）
-// POST /v3/home/vod_details  → 详情（vod_id）★ 只此一端，详情与取流都用它
-// ```
-//
-// ## ★★ 真网读数（2026-10-27，全部 200 + 真数据）
-// ```text
-// POST /v3/type/top_type      ⇒ 200 `{"msg":"","code":1,"data":{"list":[{"type_id":10,
-//                                "type_name":"内地","extend":["全部","青春",…]}]}}`
-// POST /v3/home/type_search   ⇒ 200 `{"code":1,"data":{"list":[{"vod_id":44980,
-//                                "vod_name":"仙逆","vod_remarks":"更新至164集"}]}}`
-// POST /v3/home/search        ⇒ 200 `{"code":1,"data":{"list":[{"vod_id":14574,
-//                                "vod_name":"战狼2","vod_remarks":"02:02:56"}]}}`
-// POST /v3/home/vod_details   ⇒ 200 `{"code":1,"data":{"vod_name":"战狼2", …,
-//                                "vod_play_list":[{"flag":"nby","name":"线路二 (点击换线)",
-//                                  "sid":17002,"ua":"Mozilla/5.0 (iPhone;…)",
-//                                  "parse_urls":["https://api.nbyjson.top:7788/api/?key=…&url="],
-//                                  "urls":[{"name":"1080P","nid":1,"form":"nby",
-//                                           "url":"NBY-XMYAESc5f0dcc…|84f621bd…"}]}]}}`
-// ```
-//
-// ## ★ 取流的**真实形态**（必须如实说明，不许假装是直链）
-// ```text
-// `vod_play_list[].urls[].url` **不是直链** —— 实测长这样：
-//     `NBY-XMYAESc5f0dcc880381b3cf716213c617c24b8d3cd0314b34152eb1c46b1fa464afa8e95aefa92ac3b253bb366a733dcf3f458|84f621bd4bfac2f2072ee495d829a1c8`
-// 它要经**第三方解析接口**（同一条线路里的 `parse_urls[]`，实测如
-//     `https://api.nbyjson.top:7788/api/?key=tviKuMb3MlqCW1I6gE&url=`）
-// 拼在后面再请求，才得到播放地址。
-// ```
-// ### ⇒ 处置：**把"上游给的加密串 + 解析接口前缀"一起交出去**，并在 label 里写明要经解析
-// ```text
-// 本仓 `CspPlay` **没有**"经第三方解析"这个能力位（与 csp_AppGet 的「parse」缺口同族）。
-// ⇒ 我**不假装它是直链**（那会让用户点了播不出来，且不知道为什么），
-//   而是：① 把 `parse_urls[0] + url` 拼好的**完整解析请求**交出去；
-//          ② label 里写「需经解析接口」；
-//          ③ 在文件头登记这个缺口。
-// ★ 若某条线路的 `parse_urls` 为空 ⇒ 如实返回**上游原串**并把 label 写成
-//   「上游未给解析接口（本仓无解析能力位）」—— **不编一个解析地址**。
-// ```
-//
-// # ⚠️ 已知缺口（按契约"不许静默丢、不许自己造"）
-// ```text
-// ① `mProxy` / 弹幕：DEX `playerContent` 里**有** `?do=appdanmu&vodName=…`（宿主的弹幕代理）。
-//    ⇒ 与 csp_AppGet 同一条：本仓无该能力位、本批契约明确不做 `mProxy` ⇒ **不拼**（登记为缺口）。
-// ② `loadPic` / `loadPic` 等价：DEX 里没有 ⇒ 封面走源 `cover_headers`（声明式）。
-//    ⚠️ `CspSite` **没有** `cover_headers()` 能力位（与 Douban/AppGet/Duboku/SaoHuo 同一条）。
-// ③ `initApi`：没有（`init` 只做 ext 解析）。
-// ④ `isVideoFormat` / `manualVideoCheck`：DEX 里**没有**这两个方法。
-// ⑤ ★ **第三方解析接口的 key 在 DEX 里是上游下发**（`parse_urls[]` 自带），
-//    我**不硬编码**任何解析站的 key（那些是上游数据，不是我们的常量）。
-// ```
+// Native adapter for a configured signed-form catalog and its declared parsers.
+// Per-episode identifiers retain the selected payload, parser list and media UA.
+// Parser success and real decoder/full-title acceptance remain separate gates.
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
+
+#[path = "app_rj_playback.rs"]
+mod playback;
 
 /// DEX 逐字的签名密钥
 pub const SIGN_KEY: &str = "7gp0bnd2sr85ydii2j32pcypscoc4w6c7g5spl";
@@ -277,18 +187,9 @@ pub fn cats_of(v: &Value) -> Result<Vec<CspCategory>, String> {
     Ok(out)
 }
 
-/// 详情：`data` 对象 + `vod_play_list[]` + `urls[]`
-///
-/// # 集 id 形态（**逐条带上取流所需的一切**，因为详情与取流同一个端点）
-/// ```text
-/// `{vodId}@{flag}|{idx}|{url}|{nid}|{parse_url}`
-///   flag      线路名（DEX 里 `name`/`title`/`flag` 同义；实测 `name` 最可读）
-///   idx       该线路内的集序号
-///   url       上游给的（**加密**）串 ⇒ 取流时要用
-///   nid       上游给的集号（DEX `nid`）
-///   parse_url 该线路的解析接口前缀（`parse_urls[0]`，可能为空）
-/// ```
-/// ⚠️ `url` 里可能含 `|`（实测形态 `NXY-…|84f6…`）⇒ 拆的时候**只切前 4 个 `|`**。
+/// Parse detail and retain a self-contained recipe for every selected episode.
+/// The versioned id includes the existing direct-episode delimiter; legacy ids
+/// remain readable by split_ep_id and the playback adapter.
 pub fn detail_of(v: &Value, id: &str) -> Result<CspDetail, String> {
     ensure_ok(v, "详情")?;
     let d = v.get("data").ok_or_else(|| "详情响应里没有 data".to_string())?;
@@ -299,25 +200,9 @@ pub fn detail_of(v: &Value, id: &str) -> Result<CspDetail, String> {
         .unwrap_or(id)
         .trim()
         .to_string();
-    let lines = play_lines_of(d);
-    if lines.is_empty() {
-        return Err(format!(
-            "上游详情 {id} 的 vod_play_list 解析出 0 集（键名或结构可能变了）"
-        ));
-    }
-    let mut eps = Vec::new();
-    for (flag, list) in &lines {
-        for (i, (name, url, nid, parse_url)) in list.iter().enumerate() {
-            eps.push(CspEpisode {
-                id: format!("{id}@{flag}|{i}|{nid}|{parse_url}|{url}"),
-                title: if name.trim().is_empty() {
-                    format!("第{}集", i + 1)
-                } else {
-                    name.clone()
-                },
-                flag: flag.clone(),
-            });
-        }
+    let eps = playback::episodes(d, id)?;
+    if eps.is_empty() {
+        return Err(format!("上游详情 {id} 的 vod_play_list 解析出 0 集（键名或结构可能变了）"));
     }
     Ok(CspDetail {
         id: id.to_string(),
@@ -335,57 +220,7 @@ pub fn detail_of(v: &Value, id: &str) -> Result<CspDetail, String> {
 
 /// `vod_play_list[]` → `[(线路名, [(集名, url, nid, parse_url)])]`
 pub fn play_lines_of(d: &Value) -> Vec<(String, Vec<(String, String, String, String)>)> {
-    let mut out = Vec::new();
-    let Some(arr) = d.get("vod_play_list").and_then(|x| x.as_array()) else {
-        return out;
-    };
-    for (li, line) in arr.iter().enumerate() {
-        // DEX 里 `name` / `title` / `flag` 都出现过；实测 `name` 最可读
-        let flag = line
-            .get("name")
-            .or_else(|| line.get("title"))
-            .or_else(|| line.get("flag"))
-            .and_then(|x| x.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| format!("线路{}", li + 1));
-        // ★ 解析接口前缀（实测：有的线路是空数组 ⇒ 那时不许编一个）
-        let parse_url = line
-            .get("parse_urls")
-            .and_then(|x| x.as_array())
-            .and_then(|a| a.first())
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let mut eps = Vec::new();
-        if let Some(urls) = line.get("urls").and_then(|x| x.as_array()) {
-            for (i, u) in urls.iter().enumerate() {
-                let url = u
-                    .get("url")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-                if url.is_empty() {
-                    continue;
-                }
-                let name = u
-                    .get("name")
-                    .and_then(|x| x.as_str())
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|| format!("第{}集", i + 1));
-                let nid = u
-                    .get("nid")
-                    .map(|x| x.to_string().trim_matches('"').to_string())
-                    .unwrap_or_default();
-                eps.push((name, url, nid, parse_url.clone()));
-            }
-        }
-        if !eps.is_empty() {
-            out.push((flag, eps));
-        }
-    }
-    out
+    playback::compatibility_lines(d)
 }
 
 /// 拆集 id（`{vodId}@{flag}|{idx}|{url}|{nid}|{parse_url}`）
@@ -393,6 +228,10 @@ pub fn play_lines_of(d: &Value) -> Vec<(String, Vec<(String, String, String, Str
 /// ★ `url` 里**含 `|`**（实测 `NXY-…|84f6…`）⇒ 只切**前 4 个**分隔符，
 ///   剩下的整体当 `url`（这样 `url` 里的 `|` 不会被切碎）。
 pub fn split_ep_id(ep: &str) -> Option<(String, String, usize, String, String, String)> {
+    if let Some(recipe) = playback::structured(ep) {
+        return Some((recipe.content, recipe.line, recipe.index, recipe.nid,
+            recipe.parsers.first().cloned().unwrap_or_default(), recipe.value));
+    }
     let (vid, rest) = ep.split_once('@')?;
     let mut it = rest.splitn(5, '|');
     let flag = it.next()?.to_string();
@@ -409,15 +248,8 @@ pub fn split_ep_id(ep: &str) -> Option<(String, String, usize, String, String, S
     Some((vid.to_string(), flag, idx, nid, parse_url, url))
 }
 
-/// 组装取流请求（**上游给的加密串 + 解析接口前缀**）
-///
-/// # 为什么这样交出去（而不是假装是直链）
-/// ```text
-/// `url` 实测是 `NBY-XMYAES…|<32hex>`（**加密串**），要经该线路的 `parse_urls[0]`
-/// 去请求才出真地址。本仓 `CspPlay` **没有"经第三方解析"这个能力位**
-///   ⇒ 把**拼好的解析请求**交出去 + label 写明「需经解析接口」，
-///     用户/UI 至少能看出"这条要另一步"，而不是拿到一个必然播不出的串还不知道为什么。
-/// ```
+/// Compose a declared parser prefix and payload. Playback adds the current
+/// signature/timestamp and resolves the response before returning a candidate.
 pub fn play_request_of(url: &str, parse_url: &str) -> (String, String) {
     if parse_url.trim().is_empty() {
         // ★ **不编一个解析地址** —— 如实交回原串并说明
@@ -466,6 +298,7 @@ impl AppRJ {
         let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             // Ignore environment proxies; an injected context applies the app's policy.
             .no_proxy()
+            .referer(false)
             .user_agent(APP_UA)
             .timeout(std::time::Duration::from_secs(20))
         );
@@ -611,27 +444,9 @@ impl CspSite for AppRJ {
         detail_of(&v, id.trim())
     }
 
-    /// 取流：把详情已给的（加密）串与解析接口前缀**一起**组装出去
-    ///
-    /// ⚠️ 已知缺口：DEX 还会拼宿主弹幕代理（`?do=appdanmu&…`）—— 本仓无该能力位、
-    ///   本批契约明确不做 `mProxy` ⇒ **不拼**（见文件头「已知缺口 ①」）。
-    async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
-        let (_vid, flag, _idx, _nid, parse_url, url) = split_ep_id(id).ok_or_else(|| {
-            format!(
-                "取流 id 必须是 `{{vodId}}@{{flag}}|{{idx}}|{{nid}}|{{parse_url}}|{{url}}` 形态\
-                 （原始 id={id:?}）"
-            )
-        })?;
-        let (out_url, hint) = play_request_of(&url, &parse_url);
-        Ok(vec![CspPlay {
-            url: out_url,
-            headers: vec![("User-Agent".to_string(), APP_UA.to_string())],
-            label: Some(if flag.is_empty() {
-                hint
-            } else {
-                format!("{flag}｜{hint}")
-            }),
-        }])
+    /// Resolve only the selected recipe through the current application route.
+    async fn play(&self, flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
+        self.resolve_selected(flag, id).await
     }
 }
 
@@ -640,6 +455,10 @@ crate::csp::register_site!(AppRJ);
 #[cfg(test)]
 #[path = "app_rj_proxy_tests.rs"]
 mod proxy_tests;
+
+#[cfg(test)]
+#[path = "app_rj_playback_tests.rs"]
+mod playback_tests;
 
 #[cfg(test)]
 mod tests {
@@ -871,17 +690,11 @@ mod tests {
         // play 形态不对 ⇒ Err
         let e2 = s.play("", "14574", "").await.expect_err("★ 裸 vodId 必须 Err");
         assert!(e2.contains("形态"), "{e2}");
-        // play 正常形态 ⇒ 交出解析请求 + 诚实 label
-        let p = s
-            .play(
-                "",
-                "14574@线路一|0|1|https://p.example/api?url=|NBY-abc|def",
-                "",
-            )
-            .await
-            .expect("完整 id 应能取流");
-        assert_eq!(p[0].url, "https://p.example/api?url=NBY-abc|def");
-        assert!(p[0].label.as_deref().unwrap_or("").contains("解析接口"));
+        // A legacy direct-media recipe remains readable without network work.
+        let p = s.play("", "14574@线路一|0|1||https://media.invalid/selected.mp4", "")
+            .await.expect("legacy direct media should stay usable");
+        assert_eq!(p[0].url, "https://media.invalid/selected.mp4");
+        assert_eq!(p[0].headers, vec![("User-Agent".into(), APP_UA.into())]);
     }
 
     #[test]

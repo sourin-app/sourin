@@ -532,7 +532,9 @@ impl MediaProvider for CspProvider {
             order: req.episode_order.or_else(|| context.as_ref().map(|c| c.1)),
         };
         // Bare item IDs need detail lookup; explicit selection still takes precedence.
-        let episode = if episode_id_is_direct_play(&episode) {
+        let explicit_selected = req.episode_id.as_deref().is_some_and(|id| !id.trim().is_empty());
+        let episode = if episode_id_is_direct_play(&episode)
+            || (explicit_selected && self.site.accepts_selected_episode_id(&episode)) {
             episode
         } else {
             let d = self

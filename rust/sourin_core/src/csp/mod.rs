@@ -329,6 +329,10 @@ pub trait CspSite: Send + Sync {
     /// Only engines with a migrated HTTP context override this hook.
     fn set_http_context(&self, _proxy: Arc<crate::proxy::ProxyStore>, _provider: &str) {}
 
+    /// Opt in only for a validated id explicitly supplied as a selected episode.
+    /// The provider never applies this hook to an ordinary content-id lookup.
+    fn accepts_selected_episode_id(&self, _id: &str) -> bool { false }
+
     /// 类名（= api 去掉 `csp_` 前缀，注册表键）
     fn class(&self) -> &'static str;
 

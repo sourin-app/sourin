@@ -183,7 +183,7 @@ impl Hxq {
     }
 
     pub(super) async fn anonymous_play(&self, pid: &str) -> Result<Vec<CspPlay>, String> {
-        self.anonymous_play_at(pid, super::BASE).await
+        self.anonymous_play_at(pid, self.base()).await
     }
 
     // The private base seam lets loopback tests observe the same GET chain without

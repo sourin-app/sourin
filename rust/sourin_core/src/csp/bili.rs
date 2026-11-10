@@ -845,6 +845,10 @@ mod proxy_tests;
 #[path = "bili_theme_cache_tests.rs"]
 mod theme_cache_tests;
 
+#[cfg(test)]
+#[path = "bili_theme_duplicate_tests.rs"]
+mod theme_duplicate_tests;
+
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════

@@ -58,6 +58,8 @@ import 'package:flutter/foundation.dart'
 //   `KeyEventResult` 由 `material_ui`（widgets）导出，不在这里 show。
 import 'package:flutter/services.dart'
     show KeyDownEvent, KeyEvent, LogicalKeyboardKey;
+import 'package:flutter/rendering.dart'
+    show RenderAbstractViewport, SliverMultiBoxAdaptorParentData, ScrollDirection;
 import 'package:material_ui/material_ui.dart';
 
 import 'widgets/miuix_controls.dart' as ui;
@@ -103,6 +105,7 @@ import 'widgets/cover_image.dart';
 //   （那两个文件本身**保留** —— 别的页面可能还在用；只删本页的引用）
 import 'widgets/app_dialog_shell.dart';
 import 'widgets/live_embedded_player.dart';
+import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart' show showAppDialog;
 import '../design/icons/app_icons.dart';
 
@@ -4191,6 +4194,258 @@ class LiveChannelList extends StatefulWidget {
 }
 
 class LiveChannelListState extends State<LiveChannelList> {
+  // The list owns reveal even when its selected row has no mounted State yet.
+  // Data indexes rebuild with the filtered sequence; animation passes visit
+  // only mounted rows and never setState the page or request another stream.
+  final _channelScroll = ScrollController();
+  final _mountedRows = <String, _ChannelTileState>{};
+  List<String> _shownKeys = const [];
+  Map<String, int> _shownIndexes = const {};
+  String? _selectionIdentity;
+  String? _revealTarget;
+  int _revealGeneration = 0;
+  bool _hasShownSnapshot = false;
+  bool _revealPending = false;
+  bool _requestRevealFocus = false;
+  Set<FocusNode> _revealFocusOwners = const {};
+  int? _drivenReveal;
+
+  void _attachRow(_ChannelTileState row) {
+    _mountedRows[row.identity] = row;
+  }
+
+  void _detachRow(_ChannelTileState row) {
+    if (identical(_mountedRows[row.identity], row)) {
+      _mountedRows.remove(row.identity);
+    }
+  }
+
+  void _syncReveal(List<LiveFlatEntry> shown) {
+    final keys = [
+      for (final entry in shown)
+        liveChannelRowKey(entry.provider, entry.channel.id),
+    ];
+    var changed = keys.length != _shownKeys.length;
+    if (!changed) {
+      for (var index = 0; index < keys.length; index++) {
+        if (keys[index] != _shownKeys[index]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (changed) {
+      _shownKeys = keys;
+      _shownIndexes = {
+        for (var index = 0; index < keys.length; index++) keys[index]: index,
+      };
+    }
+    var selected = widget.selectedRow;
+    if (selected == null && widget.selectedId != null) {
+      final index = shown.indexWhere(
+        (entry) => entry.channel.id == widget.selectedId,
+      );
+      if (index >= 0) selected = keys[index];
+    }
+    final newSelection = selected != _selectionIdentity;
+    _selectionIdentity = selected;
+    if (!_shownIndexes.containsKey(selected)) selected = null;
+    final targetChanged = selected != _revealTarget;
+    final shouldReveal = newSelection ||
+        targetChanged ||
+        !_hasShownSnapshot ||
+        (changed && _revealPending);
+    if (newSelection || targetChanged || !_hasShownSnapshot) {
+      _requestRevealFocus = _hasShownSnapshot && newSelection;
+      final origin = FocusManager.instance.primaryFocus;
+      _revealFocusOwners = {
+        if (origin != null) origin,
+        if (origin != null) ...origin.ancestors,
+      };
+    }
+    _hasShownSnapshot = true;
+    _revealTarget = selected;
+    if (changed || newSelection || targetChanged) _revealGeneration++;
+    if (selected == null) {
+      _revealPending = false;
+      if (_drivenReveal != null) {
+        final generation = _revealGeneration;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && generation == _revealGeneration) _stopDrivenReveal();
+        });
+      }
+      return;
+    }
+    if (shouldReveal) _scheduleReveal(selected);
+  }
+
+  bool _ownsReveal(int generation, String identity) =>
+      mounted && generation == _revealGeneration && _revealTarget == identity;
+
+  ({int index, RenderBox box, double offset})? _rowGeometry(
+    String identity,
+    _ChannelTileState row,
+  ) {
+    if (!row.mounted) return null;
+    final box = row.context.findRenderObject();
+    if (box is! RenderBox || !box.attached || !box.hasSize) return null;
+    RenderObject? child = box;
+    while (child != null && child.parentData is! SliverMultiBoxAdaptorParentData) {
+      child = child.parent;
+    }
+    final data = child?.parentData;
+    final index = _shownIndexes[identity];
+    if (index == null ||
+        data is! SliverMultiBoxAdaptorParentData ||
+        data.keptAlive ||
+        data.layoutOffset == null ||
+        data.index != index) {
+      return null;
+    }
+    final viewport = RenderAbstractViewport.maybeOf(box);
+    if (viewport == null) return null;
+    final offset = viewport.getOffsetToReveal(box, 0).offset;
+    if (!offset.isFinite || !box.size.height.isFinite || box.size.height <= 0) {
+      return null;
+    }
+    return (index: index, box: box, offset: offset);
+  }
+
+  void _stopDrivenReveal() {
+    if (_drivenReveal == null || !_channelScroll.hasClients) return;
+    _drivenReveal = null;
+    _channelScroll.jumpTo(_channelScroll.position.pixels);
+  }
+
+  void _scheduleReveal(String identity) {
+    final generation = ++_revealGeneration;
+    final focusOwners = _revealFocusOwners;
+    final requestFocus = _requestRevealFocus;
+    _revealPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        if (!_ownsReveal(generation, identity) || !_channelScroll.hasClients) {
+          return;
+        }
+        _stopDrivenReveal();
+        for (var pass = 0; pass < 12; pass++) {
+          if (!_ownsReveal(generation, identity) ||
+              !_channelScroll.hasClients) {
+            return;
+          }
+          // Scrollable may replace its position after dependency changes while
+          // retaining this controller. Never reuse one across a layout await.
+          final position = _channelScroll.position;
+          if (!position.hasContentDimensions) return;
+          final index = _shownIndexes[identity];
+          if (index == null) return;
+          final tile = _mountedRows[identity];
+          final target = tile == null ? null : _rowGeometry(identity, tile);
+          if (target != null) {
+            final viewport = RenderAbstractViewport.of(target.box);
+            final end = viewport.getOffsetToReveal(target.box, 1).offset;
+            if (!end.isFinite) return;
+            final offset = (end <= target.offset
+                    ? position.pixels.clamp(end, target.offset)
+                    : target.offset)
+                .clamp(position.minScrollExtent, position.maxScrollExtent);
+            if ((offset - position.pixels).abs() > .5) {
+              if (!mounted) return;
+              final duration = MotionPrefs.duration(context, Motion.medium);
+              if (duration == Duration.zero) {
+                position.jumpTo(offset);
+              } else {
+                _drivenReveal = generation;
+                await position.animateTo(
+                  offset,
+                  duration: duration,
+                  curve: MotionPrefs.curve(context, Motion.easeOut),
+                );
+              }
+            }
+            if (!_ownsReveal(generation, identity) ||
+                !_channelScroll.hasClients) {
+              return;
+            }
+            if (!identical(position, _channelScroll.position)) {
+              if (_drivenReveal == generation) _drivenReveal = null;
+              continue;
+            }
+            final activeTile = tile!;
+            if (!_ownsReveal(generation, identity) ||
+                !activeTile.mounted ||
+                !activeTile.widget.active) {
+              return;
+            }
+            final currentFocus = FocusManager.instance.primaryFocus;
+            // Lazy eviction may move focus to a captured ancestor such as the
+            // traversal-group node, which is not necessarily a FocusScopeNode.
+            // A user-selected sibling control or a new popup scope is outside
+            // that original chain and must retain its explicit focus instead.
+            if (requestFocus &&
+                activeTile._node.canRequestFocus &&
+                (currentFocus == null || focusOwners.contains(currentFocus))) {
+              activeTile._node.requestFocus();
+            }
+            return;
+          }
+
+          // Inspect only the mounted window, excluding offscreen focus keepalive
+          // geometry. No all-channel widget/key walk occurs during these frames.
+          ({int index, RenderBox box, double offset})? first, last;
+          for (final entry in _mountedRows.entries) {
+            final row = _rowGeometry(entry.key, entry.value);
+            if (row == null) continue;
+            if (first == null || row.index < first.index) first = row;
+            if (last == null || row.index > last.index) last = row;
+          }
+          if (first == null || last == null) return;
+          final spacing = last.index > first.index
+              ? (last.offset - first.offset) / (last.index - first.index)
+              : first.box.size.height;
+          if (!spacing.isFinite || spacing <= 0) return;
+          final estimate = index == 0
+              ? position.minScrollExtent
+              : index == _shownKeys.length - 1
+              ? position.maxScrollExtent
+              : first.offset + (index - first.index) * spacing;
+          final offset = estimate.clamp(
+            position.minScrollExtent,
+            position.maxScrollExtent,
+          );
+          if ((offset - position.pixels).abs() <= .5) return;
+          position.jumpTo(offset);
+          await WidgetsBinding.instance.endOfFrame;
+        }
+      } finally {
+        if (generation == _revealGeneration) _revealPending = false;
+        if (_drivenReveal == generation) _drivenReveal = null;
+      }
+    });
+  }
+
+  bool _observeChannelScroll(ScrollNotification notification) {
+    if (notification.depth == 0 &&
+        ((notification is ScrollStartNotification &&
+                notification.dragDetails != null) ||
+            (notification is UserScrollNotification &&
+                notification.direction != ScrollDirection.idle))) {
+      // Manual browsing wins over a pending selection's scroll/focus handoff.
+      _revealGeneration++;
+      _revealPending = false;
+      _requestRevealFocus = false;
+      _drivenReveal = null;
+    }
+    return false;
+  }
+
+  @override
+  void dispose() {
+    _revealGeneration++;
+    _channelScroll.dispose();
+    super.dispose();
+  }
+
   /// ★ 当前筛的源（`null` = 全部源）—— **纯视图状态**，不落盘、不调 API
   String? _sourceFilter;
 
@@ -4448,6 +4703,7 @@ class LiveChannelListState extends State<LiveChannelList> {
     _healSourceFilter();
     final groups = _groups;
     final shown = _filtered;
+    _syncReveal(shown);
     // ★ 有筛选生效吗（决定空态文案要说"没有频道"还是"这个筛选下没有频道"）
     final filtering =
         _sourceFilter != null ||
@@ -4676,42 +4932,55 @@ class LiveChannelListState extends State<LiveChannelList> {
 
           // ── 频道（★ task-42：平铺；task-1013：按当前筛选过滤）──
           Expanded(
-            child: ListView(
-              clipBehavior: Clip.antiAlias,
-              padding: const EdgeInsets.all(Sp.x3),
-              children: [
-                for (final entry in shown)
-                  _ChannelTile(
-                    // ★ R1：身份 = provider + id（跨源同名频道不许撞 key）
-                    provider: entry.provider,
-                    channel: entry.channel,
-                    // ★ tag = 它来自哪个源（用户说"以分组加 tag 作为标记"）
-                    tag: entry.tag,
-                    /*
-                     * ★ 第 15 项缺口：选中判据用**身份**（provider:id），
-                     *   不再用裸 id（两个源同 id 时那样会两行一起高亮）。
-                     * ⚠️ `selectedRow == null` 时退回老判据 —— 只影响
-                     *   "还没跟上新字段"的调用点，不改它们的行为。
-                     */
-                    active: widget.selectedRow != null
-                        ? liveChannelRowKey(entry.provider, entry.channel.id) ==
-                              widget.selectedRow
-                        : entry.channel.id == widget.selectedId,
-                    // ★ N15：播放结果状态（null 回调 ⇒ unknown ⇒ 不显示徽标）
-                    health:
-                        widget.healthOf?.call(entry.channel) ??
-                        LivePlaybackHealth.unknown,
-                    onTap: () => widget.onPickEntry != null
-                        ? widget.onPickEntry!(entry)
-                        : widget.onPickChannel(entry.channel),
-                  ),
-                /*
-                 * ★ 全被剔除时的空态 —— 不能只留一片空白
-                 *
-                 * 否则用户看到"列表是空的"，第一反应是"源坏了"。
-                 */
-                if (shown.isEmpty)
-                  Padding(
+            child: NotificationListener<ScrollNotification>(
+              onNotification: _observeChannelScroll,
+              child: ListView.builder(
+                controller: _channelScroll,
+                clipBehavior: Clip.antiAlias,
+                padding: const EdgeInsets.all(Sp.x3),
+                itemCount: shown.isEmpty ? 1 : shown.length,
+                findChildIndexCallback: (key) => key is ValueKey<String>
+                    ? _shownIndexes[key.value]
+                    : null,
+                itemBuilder: (context, index) {
+                  if (shown.isNotEmpty) {
+                    final entry = shown[index];
+                    return _ChannelTile(
+                      key: ValueKey(
+                        liveChannelRowKey(entry.provider, entry.channel.id),
+                      ),
+                      onAttach: _attachRow,
+                      onDetach: _detachRow,
+                      // ★ R1：身份 = provider + id（跨源同名频道不许撞 key）
+                      provider: entry.provider,
+                      channel: entry.channel,
+                      // ★ tag = 它来自哪个源（用户说"以分组加 tag 作为标记"）
+                      tag: entry.tag,
+                      /*
+                       * ★ 第 15 项缺口：选中判据用**身份**（provider:id），
+                       *   不再用裸 id（两个源同 id 时那样会两行一起高亮）。
+                       * ⚠️ `selectedRow == null` 时退回老判据 —— 只影响
+                       *   "还没跟上新字段"的调用点，不改它们的行为。
+                       */
+                      active: widget.selectedRow != null
+                          ? liveChannelRowKey(entry.provider, entry.channel.id) ==
+                                widget.selectedRow
+                          : entry.channel.id == widget.selectedId,
+                      // ★ N15：播放结果状态（null 回调 ⇒ unknown ⇒ 不显示徽标）
+                      health:
+                          widget.healthOf?.call(entry.channel) ??
+                          LivePlaybackHealth.unknown,
+                      onTap: () => widget.onPickEntry != null
+                          ? widget.onPickEntry!(entry)
+                          : widget.onPickChannel(entry.channel),
+                    );
+                  }
+                  /*
+                   * ★ 全被剔除时的空态 —— 不能只留一片空白
+                   *
+                   * 否则用户看到"列表是空的"，第一反应是"源坏了"。
+                   */
+                  return Padding(
                     padding: const EdgeInsets.all(Sp.x5),
                     child: Text(
                       // ★★ task-1013：空态文案**分两种**（用户要求"明确的空态"）
@@ -4746,8 +5015,9 @@ class LiveChannelListState extends State<LiveChannelList> {
                         color: colors.onSurfaceVariant,
                       ),
                     ),
-                  ),
-              ],
+                  );
+                },
+              ),
             ),
           ),
         ],
@@ -5784,10 +6054,13 @@ class _LineChip extends StatelessWidget {
 /// 频道行（task-42：平铺 + 行尾来源 tag）
 class _ChannelTile extends StatefulWidget {
   const _ChannelTile({
+    super.key,
     required this.provider,
     required this.channel,
     required this.active,
     required this.onTap,
+    required this.onAttach,
+    required this.onDetach,
     this.tag,
     this.health = LivePlaybackHealth.unknown,
   });
@@ -5803,6 +6076,8 @@ class _ChannelTile extends StatefulWidget {
   final LiveChannel channel;
   final bool active;
   final VoidCallback onTap;
+  final ValueChanged<_ChannelTileState> onAttach;
+  final ValueChanged<_ChannelTileState> onDetach;
 
   /// ★ N15：这个频道最近一次**播放结果**（不是探测结果，见 `_health` 注释）
   ///
@@ -5838,87 +6113,19 @@ class _ChannelTileState extends State<_ChannelTile> {
     debugLabel: 'chan-${widget.channel.id}',
   );
 
+  String get identity => liveChannelRowKey(widget.provider, widget.channel.id);
+
   @override
-  void dispose() {
-    _node.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    widget.onAttach(this);
   }
 
   @override
-  void didUpdateWidget(covariant _ChannelTile oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    /*
-     * ★★ 变成"选中"时**把自己滚进可视区**（task-39）
-     *
-     * # 为什么必须（用户会以为按键没反应）
-     * ```text
-     * 列表可能比容器高（iptv 有 28 个频道）。
-     * 用户按 ↓ 切到第 20 个台时，它在**屏幕外** ——
-     * 高亮跑了但看不见 ⇒ 体验上就是"按了没反应"。
-     * ```
-     *
-     * # ★ 为什么用**自己的** ensureVisible 而不靠 spatial_nav
-     * ```text
-     * task-3 要给 `spatial_nav._scrollIntoView` 加"输入来源门控"
-     * （只让键盘/遥控滚，不让鼠标滚轮滚）。
-     * ⇒ 本页**不依赖**那条路径 ⇒ task-3 改动本页不受影响。
-     * ★ 也正因如此，我在 `spatial_nav.dart` 里写明了
-     *   "遥控/键盘导航必须保留滚动"这条约束（见那里的长注释）。
-     * ```
-     *
-     * ⚠️ 用 `addPostFrameCallback` —— 刚 setState 完还没布局，
-     *    立刻 ensureVisible 会拿到旧位置。
-     */
-    if (widget.active && !oldWidget.active) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        final ctx = context;
-        if (!ctx.mounted) return;
-        /*
-         * ★★★ task-82【Q3】把**焦点环搬到本行** —— 让焦点跟着选中走
-         *
-         * # 为什么只能这么做（不能去拦 shell）
-         * ```text
-         * SDK `focus_manager.dart:2249-2254`：early handler **全部**依次执行，
-         *   某条返回 handled **不会**中断这个循环；`:2271-2273` 之后才决定
-         *   是否跳过焦点树。
-         * ⇒ 一次 ↓ 有**两个** early handler 都在跑：
-         *     · 本页 `:316` `_onHardwareKey` ⇒ `cycleChannel(1)`（选中 +1）
-         *     · `shell.dart:2162` `_onGlobalKey` ⇒ `moveFocus(↓)`（焦点 +1）
-         * ★ 而 shell 的 `moveFocus` 在本文件里**拦不住**（`lib/shell.dart`
-         *   不在本任务写入范围）。⇒ 唯一可行的修法是：
-         *   **让焦点环跟着选中走** —— 选中哪一行，焦点就落到哪一行。
-         * ```
-         *
-         * # 为什么必须在这个 post-frame 回调里（顺序是判据的一部分）
-         * ```text
-         * 两个 early handler 都在**按键事件里**同步跑完，shell 的
-         *   `moveFocus` 是**后**一个 `requestFocus()`；而 `requestFocus()`
-         *   是**微任务**生效（SDK `focus_manager.dart:1936 _markNeedsUpdate`
-         *   → `scheduleMicrotask(_applyFocusChange)`）。
-         * 本回调在**帧末**执行 ⇒ 我们是最后一个动焦点的 ⇒ 必然覆盖它。
-         * （与 `_pageFocus` 注释里那条"顺序很重要"同一手法。）
-         * ```
-         *
-         * # ⚠️ 已知边界（如实记录，不假装已覆盖）
-         * ```text
-         * `ListView(children:)` 的 Element **惰性挂载** —— 实测 TV 上 56 个
-         *   频道只有 **6–7 行**在树里（`sliver_multi_box_adaptor.dart:418-421`
-         *   的 `visitChildrenForSemantics` 只访问已布局的子节点）。
-         * ⇒ 选中的行若落在**挂载窗口之外**，它没有 State ⇒ 本回调根本不会
-         *   跑 ⇒ 那一格的焦点仍留在 shell 选中的行上。
-         * ★ 这一段**没有**修好，已写进交付说明的"未证/未覆盖"一节。
-         * ```
-         */
-        if (_node.canRequestFocus) _node.requestFocus();
-        Scrollable.ensureVisible(
-          ctx,
-          alignment: 0.5,
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-        );
-      });
-    }
+  void dispose() {
+    widget.onDetach(this);
+    _node.dispose();
+    super.dispose();
   }
 
   @override

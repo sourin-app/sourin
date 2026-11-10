@@ -11,6 +11,10 @@ owns component choice. Neither appearance decision changes.
 The proposed/implemented/rejected note audit found these overlapping owners and
 no separate owner of selected-source scroll positioning.
 
+[Live keyboard channel reveal](2026-11-11-live-keyboard-lazy-channel-reveal.md)
+owns the corresponding vertical lazy-channel boundary and its row focus
+handoff. This source-rail decision keeps its separate geometry and evidence.
+
 ## Problem
 
 The rail scrolled to index times 108 pixels. Pill widths vary with source names.

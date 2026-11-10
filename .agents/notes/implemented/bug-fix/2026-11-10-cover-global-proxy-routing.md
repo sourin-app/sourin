@@ -27,6 +27,17 @@ Because wrapping hides the original CDN host from Flutter, resolve its existing
 exact-host Referer/User-Agent defaults before registration. Explicit provider
 headers override defaults case-insensitively. Local/data image URLs remain intact.
 
+Failed cover responses emit one bounded `COVER_FAILURE` record at the actual
+forwarding response boundary. Its closed schema contains received status, final
+response scheme, a known HTTPS-only marker classification, proxy-header presence
+flags and conservative attribution. It contains no URL, token, username, raw
+header value or body. It borrows the existing response without another request,
+retry, protocol rewrite or body read. An exact known marker on a 403 is only a
+proxy-advertised block, not authenticated proof of who generated the response.
+Unknown/duplicate marker values and generic Via/Proxy-Status headers do not
+upgrade attribution. Media failures and successful covers do not emit this
+cover-specific record; client selection and routing policy are unchanged.
+
 ## Alternatives considered
 
 Treating ApiOnly as All would change video routing. Wrapping only while a proxy
@@ -42,7 +53,12 @@ uses real library/detail commands without source headers; the repaired path
 fetches the proxy's PNG while the direct origin serves a transparent sentinel.
 The library suite passes 13 cases, including durable data, restart, header
 isolation, CDN defaults/overrides and preservation of progress/history metadata.
-Final stream, build and native evidence is recorded in the implementation plan.
+Real local HTTP fixtures observe the registered cover request, actual final
+response arguments and emitted JSON. They cover known/unknown markers, spoofed
+headers, privacy, error bodies that never complete, and success/media controls.
+The missing diagnostics fail on the clean prior commit. These observations do
+not establish recovery of a remote cover. Final stream, build and native
+evidence is recorded in the implementation plan.
 
 This fixes routing, not unavailable upstream images. HTTP errors, expired remote
 URLs, and cold startup performance need separate evidence. No cloud account

@@ -66,6 +66,9 @@ use bytes::Bytes;
 use futures_core::Stream;
 use tokio::sync::mpsc;
 
+#[path = "streamproxy_cover_diagnostics.rs"]
+mod cover_diagnostics;
+
 /*
  * ═══════════════════════════════════════════════════════════════════
  * ★★★ 观测：走 **stderr** 的日志（issue #9 的「黑盒」修复）
@@ -2520,6 +2523,15 @@ async fn forward_request(
      * 因为没有任何日志。加上之后一眼看出「上游 403 + 带了哪些头」。
      */
     if !status.is_success() {
+        // A failed cover is observed at the actual upstream response boundary.
+        // The diagnostic borrows headers/status/final scheme only: it never
+        // consumes the body, changes transport, or exports raw network values.
+        if matches!(kind, ForwardKind::Cover) {
+            let diagnostic = cover_diagnostics::CoverFailureDiagnostic::from_response(&upstream);
+            if let Ok(json) = serde_json::to_string(&diagnostic) {
+                splog!("COVER_FAILURE {json}");
+            }
+        }
         /*
          * ★★★ issue #9：这条就是「最可能真因」的那条路 ——
          *   该源需要附加头才走代理，头一失效上游就 403，代理原样透传。
@@ -3046,6 +3058,10 @@ pub async fn maybe_proxy(
 #[cfg(test)]
 #[path = "streamproxy_global_proxy_tests.rs"]
 mod global_proxy_tests;
+
+#[cfg(test)]
+#[path = "streamproxy_cover_diagnostics_tests.rs"]
+mod cover_diagnostics_tests;
 
 #[cfg(test)]
 mod tests {

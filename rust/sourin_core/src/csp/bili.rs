@@ -216,26 +216,36 @@ impl Bili {
         }
     }
 
-    /// Only the reference-supported object mode supersedes persisted general classes.
+    /// Explicit object or absolute HTTP directory recipes supersede general classes.
     pub(crate) fn has_directory_ext(ext: &str) -> bool {
-        serde_json::from_str::<Value>(ext).ok()
-            .is_some_and(|value| value.is_object() && value.get("json").is_some())
+        Self::bare_directory_ext(ext)
+            || serde_json::from_str::<Value>(ext).ok()
+                .is_some_and(|value| value.is_object() && value.get("json").is_some())
+    }
+
+    fn bare_directory_ext(ext: &str) -> bool {
+        ext.trim().split_once(':').is_some_and(|(scheme, _)|
+            scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
     }
 
     fn directory_resource(ext: &str) -> Result<Option<String>, String> {
         if !Self::has_directory_ext(ext) { return Ok(None); }
-        let value: Value = serde_json::from_str(ext)
-            .map_err(|_| "专题目录配置不是合法 JSON".to_string())?;
-        let resource = value.get("json").and_then(Value::as_str)
-            .map(str::trim).filter(|value| !value.is_empty())
-            .ok_or("专题目录 json 必须是绝对 HTTP 地址")?;
-        let url = reqwest::Url::parse(resource)
+        let resource = if Self::bare_directory_ext(ext) {
+            ext.trim().to_string()
+        } else {
+            let value: Value = serde_json::from_str(ext)
+                .map_err(|_| "专题目录配置不是合法 JSON".to_string())?;
+            value.get("json").and_then(Value::as_str)
+                .map(str::trim).filter(|value| !value.is_empty())
+                .ok_or("专题目录 json 必须是绝对 HTTP 地址")?.to_string()
+        };
+        let url = reqwest::Url::parse(&resource)
             .map_err(|_| "专题目录 json 必须是绝对 HTTP 地址")?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
             || !url.username().is_empty() || url.password().is_some() {
             return Err("专题目录 json 必须是不含账号信息的绝对 HTTP 地址".to_string());
         }
-        Ok(Some(resource.to_string()))
+        Ok(Some(resource))
     }
 
     fn directory_key(&self, resource: &str) -> Result<DirectoryKey, String> {
@@ -293,9 +303,11 @@ impl Bili {
         }
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|_| "专题目录响应不是合法 JSON，请切换来源".to_string())?;
-        let classes = value.get("class").and_then(Value::as_array)
+        // Canonical presence is authoritative, including null/invalid values.
+        // A classes alias must not replace or hide a declared class catalog.
+        let classes = value.get("class").or_else(|| value.get("classes")).and_then(Value::as_array)
             .filter(|classes| !classes.is_empty() && classes.len() <= MAX_CATEGORIES)
-            .ok_or("专题目录没有有效的 class 分类列表")?;
+            .ok_or("专题目录没有有效的 class/classes 分类列表")?;
         let mut categories = Vec::with_capacity(classes.len());
         let mut ids = std::collections::HashSet::new();
         for class in classes {
@@ -565,6 +577,10 @@ impl CspSite for Bili {
             let categories = self.directory_categories(&resource).await?;
             if !categories.iter().any(|category| category.id == tid) {
                 return Err("当前专题目录没有所选分类，请重新选择".to_string());
+            }
+            if matches!(tid, "我的关注" | "历史记录" | "最新动态" | "其他分区")
+                || tid.starts_with("bili_up_") {
+                return Err("unsupported: 当前专题入口需要独立的账号、作者或分区协议，尚未支持，请选择其他分类".to_string());
             }
             return self.keyword_list(tid, page.max(1), true).await;
         }

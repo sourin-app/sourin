@@ -2,6 +2,10 @@
 
 Status: implemented
 
+Related: [bare-resource directory forms](2026-11-11-bare-directory-classes-contract.md)
+retains this normalization while adding the observed envelope alias and precise
+special-selection refusal. This note's Decision is unchanged.
+
 Applies after the tests-only `23fe9aa` checkpoint on 2026-11-11. Continues the
 [duplicate regression checkpoint](../../proposed/bug-fix/2026-11-11-themed-directory-duplicate-regression-checkpoint.md).
 The [object directory contract](2026-11-11-object-ext-themed-directory-contract.md)

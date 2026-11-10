@@ -2,6 +2,10 @@
 
 Status: implemented
 
+The [bare-resource follow-up](2026-11-11-bare-directory-classes-contract.md)
+extends explicit directory forms and adds precise special-selection refusal.
+This note retains its original Decision and local evidence.
+
 Current duplicate-ID policy: [stable first occurrence](2026-11-11-themed-directory-stable-duplicate-ids.md)
 supersedes only the duplicate-rejection sub-decision recorded below. Its local
 RED/GREEN is qualified; fresh-core native directory and playback verification

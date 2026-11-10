@@ -222,7 +222,7 @@ impl CspProvider {
         &self.api
     }
 
-    /// Persisted general classes cannot override an explicit object directory recipe.
+    /// Persisted general classes cannot override an explicit directory recipe.
     /// Other restored classes retain the existing no-network behavior.
     async fn categories_or_probe(&self) -> Result<Vec<TvboxCategoryEntry>> {
         let declared_directory = self.site.class() == super::bili::Bili::CLASS
@@ -687,6 +687,10 @@ mod app_drama_availability_tests;
 #[cfg(test)]
 #[path = "bili_theme_ext_tests.rs"]
 mod bili_theme_ext_tests;
+
+#[cfg(test)]
+#[path = "bili_bare_directory_tests.rs"]
+mod bili_bare_directory_tests;
 
 #[cfg(test)]
 mod tests {

@@ -138,9 +138,18 @@ Receipts/logs are `v59-bare-directory-green`, `v59-directory-related-green` and
 
 ## Remaining verification
 
-Fresh-core native verification of this bare-resource mode remains pending. The
+At the production commit, fresh-core native verification of this bare-resource
+mode remained pending. The subsequent v59 developer-client check binds the
+rebuilt core and makes one actual native category call through the configured
+global proxy: 35 categories match the independently captured directory exactly
+in ID, name and order. The request has no retry, source change or account
+operation; no list call is made. Its retained result is
+`native-verify-v59/bare-native-once/result.json` in ignored evidence.
+This closes only the native category gate.
+
+The
 resource read stays anonymous and within the existing size/time/route boundaries.
-Repeated or returned cookie URLs must never be followed. Actual native category,
+Repeated or returned cookie URLs must never be followed. Actual native
 list, detail, exact episode and decoder frames/progress remain separate gates.
 Neither eight local cases nor one external directory establishes seven supported
 sources or playable media.

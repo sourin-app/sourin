@@ -61,6 +61,25 @@ the property read across real unmount and observes the next requested property;
 a mounted ready result remains a positive control. This is observer lifecycle
 coverage and does not establish hardware decoding.
 
+Native startup configuration also retains its captured Player and checks page
+ownership at entry and after every awaited configuration stage. Cache-directory
+creation, native property writes and directory-size enumeration can outlive
+page disposal; their late completion must not proceed into another property
+write. Cache, zoom and Android subtitle-font helpers enforce
+the same ownership condition when called independently. An already submitted
+native operation may finish, but its result cannot continue the closed startup
+chain. Zoom's original native-error diagnostic remains unconditional: lifecycle
+cancellation must prevent the call, rather than hide a failed native attempt.
+Active configuration values and error handling retain their contracts.
+The mounted regression pauses the actual cache-directory listing, completes
+real native disposal, then releases the filesystem stream. The old code reaches
+the native disposed precondition and emits the zoom failure diagnostic. Its
+mounted positive control reads the actual native zoom value after applying the
+stored 125 percent setting. The first fixture's directory-factory recursion is
+an instrumentation failure; the corrected parent-zone delegation establishes
+the qualified lifecycle baseline. These tests use no native property seam and
+do not establish rendered video or sustained source playback.
+
 Migration is per engine, with local request observations. A wrapper's hook does not cover independent downstream cloud/share clients. Explicitly unavailable engines do not become playable by migrating their client. Counts and execution results belong to the implementation plan; this note does not claim every historical engine is covered.
 
 The two anonymous playback adapters retain their engine-specific protocol as well as routing. The protobuf adapter signs the exact selected line and opaque episode value with the same SHA-256 request bytes as the public web client, using existing cryptographic dependencies without an additional runtime. It decodes the actual protobuf media field, preserves signed URL query bytes and keeps platform, login and membership rejections as failures without reflecting private payloads. The encrypted episode adapter holds one anonymous identity per engine instance, supplies the public client headers, decrypts the episode envelope, verifies the returned pid and permission, and signs that selected pid/scid before decrypting the returned media and headers. It neither switches episodes nor rotates identity in response to denial or limits. Both use their existing CspHttpContext. Registration, catalog retrieval, media resolution and real decoder frames remain separate acceptance stages.

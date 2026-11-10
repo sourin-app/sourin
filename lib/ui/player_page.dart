@@ -2152,6 +2152,9 @@ class _PlayerPageState extends State<PlayerPage>
   bool _isCurrentPlayResolve(int generation) =>
       mounted && !_playClosed && generation == _playGeneration;
 
+  bool _ownsPlayer(Player player) =>
+      mounted && !_playClosed && identical(_player, player);
+
   /// 是否已触发过片头跳过（避免反复跳）
   bool _introSkipped = false;
 
@@ -4937,8 +4940,10 @@ class _PlayerPageState extends State<PlayerPage>
   /// 两件事被混在一个函数里，就是本 bug 的根因。
   /// 读取挪到 [_reportHwdecAfterReady]。
   Future<void> _setHwdec() async {
+    final player = _player;
+    if (!_ownsPlayer(player)) return;
     try {
-      final native = _player.platform;
+      final native = player.platform;
       if (native is NativePlayer) {
         /*
          * ★★★ task-22 P2-9：解码模式
@@ -4957,6 +4962,7 @@ class _PlayerPageState extends State<PlayerPage>
         } else {
           await native.setProperty('hwdec', _hwdecMode.wire);
         }
+        if (!_ownsPlayer(player)) return;
 
         /*
          * ★★★ 缺陷⑧（2026-10-25）：把 `network-timeout` 的取值**显式下沉**给 mpv
@@ -4981,6 +4987,7 @@ class _PlayerPageState extends State<PlayerPage>
           'network-timeout',
           '$kPlaybackNetworkTimeoutSeconds',
         );
+        if (!_ownsPlayer(player)) return;
 
         /*
          * ══════════════════════════════════════════════════════════════
@@ -5025,12 +5032,16 @@ class _PlayerPageState extends State<PlayerPage>
          *    如实记录，不把它说成"已完全修好"。
          */
         await native.setProperty('load-unsafe-playlists', 'yes');
+        if (!_ownsPlayer(player)) return;
         debugPrint('[PLAYER] mpv: hwdec=auto-safe, load-unsafe-playlists=yes');
       }
     } catch (e) {
+      if (!_ownsPlayer(player)) return;
       debugPrint('[PLAYER] 设置 hwdec 失败（回退软解）: $e');
     }
+    if (!_ownsPlayer(player)) return;
     await _setSubtitleFont();
+    if (!_ownsPlayer(player)) return;
     // ★ ④：每次起播都把「缓存上限」真正下发到 mpv。
     //   放在这里（`_setHwdec()` 末尾）是因为它是**唯一**每次起播都跑的
     //   初始化点（`initState` :1569 调用，与 `_bindPlayerStreams()` 并列）。
@@ -5038,6 +5049,7 @@ class _PlayerPageState extends State<PlayerPage>
     //   mpv 仍用构造期的 `bufferSize`（:1552 32MB）和它自己的默认
     //   `cache-dir`（不在 <dataDir>\mpv-cache 里，我们清不掉）。
     await _applyMpvCacheSettings();
+    if (!_ownsPlayer(player)) return;
     /*
      * ★★★ task-22 P1-11：画面缩放同样是**逐文件**属性
      *
@@ -5071,13 +5083,17 @@ class _PlayerPageState extends State<PlayerPage>
   /// 是 `_readMpvCacheSettings()` 的回读 —— 读不到（空串）就是失败，
   /// **不猜**。
   Future<void> _applyMpvCacheSettings() async {
+    final player = _player;
+    if (!_ownsPlayer(player)) return;
     try {
-      final native = _player.platform;
+      final native = player.platform;
       if (native is! NativePlayer) return;
       final dir = await ClipDownloader.mpvCacheDir();
+      if (!_ownsPlayer(player)) return;
       final props = ClipDownloader.mpvCacheProperties(dir);
       for (final p in props) {
         await native.setProperty(p.$1, p.$2);
+        if (!_ownsPlayer(player)) return;
       }
       final parts = <String>[];
       for (final p in props) {
@@ -5085,11 +5101,13 @@ class _PlayerPageState extends State<PlayerPage>
       }
       // 顺手报一下这个目录当前多大 —— 只读，不改变行为
       final used = await ClipDownloader.mpvCacheBytes();
+      if (!_ownsPlayer(player)) return;
       debugPrint(
         '[PLAYER] mpv 缓存属性已下发: ${parts.join(', ')}'
         '（目录现占 ${ClipDownloader.humanBytes(used)}）',
       );
     } catch (e) {
+      if (!_ownsPlayer(player)) return;
       debugPrint('[PLAYER] 下发 mpv 缓存属性失败: $e');
     }
   }
@@ -5178,12 +5196,15 @@ class _PlayerPageState extends State<PlayerPage>
   /// `video-zoom` 是**逐文件**属性（换文件时 mpv 会复位）⇒ 除了切档/拖条，
   /// 每次起播也要重新下发（见 `_setHwdec()` 末尾与 `_startPlayback()`）。
   Future<void> _applyVideoZoom() async {
+    final player = _player;
+    if (!_ownsPlayer(player)) return;
     try {
-      final native = _player.platform;
+      final native = player.platform;
       if (native is! NativePlayer) return;
       // 100% ⇒ 0.000000，写下去等价于「复位」（mpv 的默认就是 0）
       final v = videoZoomToMpv(_videoZoomPct).toStringAsFixed(6);
       await native.setProperty('video-zoom', v);
+      if (!_ownsPlayer(player)) return;
       debugPrint('[PLAYER] mpv: video-zoom=$v（${_videoZoomPct.round()}%）');
     } catch (e) {
       debugPrint('[PLAYER] 下发画面缩放失败: $e');
@@ -5529,8 +5550,10 @@ class _PlayerPageState extends State<PlayerPage>
   /// 零体积增量、零授权风险。
   Future<void> _setSubtitleFont() async {
     if (!Platform.isAndroid) return;
+    final player = _player;
+    if (!_ownsPlayer(player)) return;
     try {
-      final native = _player.platform;
+      final native = player.platform;
       if (native is! NativePlayer) return;
 
       /*
@@ -5538,14 +5561,18 @@ class _PlayerPageState extends State<PlayerPage>
        *    不打开的话 `sub-fonts-dir` 不生效。
        */
       await native.setProperty('config', 'yes');
+      if (!_ownsPlayer(player)) return;
       await native.setProperty('sub-fonts-dir', '/system/fonts');
+      if (!_ownsPlayer(player)) return;
       /*
        * 字体**名**（不是文件名）——
        * NotoSansCJK-Regular.ttc 里家族名是 "Noto Sans CJK SC"。
        */
       await native.setProperty('sub-font', 'Noto Sans CJK SC');
+      if (!_ownsPlayer(player)) return;
       debugPrint('[PLAYER] Android 字幕字体已指向 /system/fonts');
     } catch (e) {
+      if (!_ownsPlayer(player)) return;
       debugPrint('[PLAYER] 设置字幕字体失败（字幕可能不显示）: $e');
     }
   }

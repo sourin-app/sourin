@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:sourin_spike/core/clip_download.dart';
 import 'package:sourin_spike/core/device.dart';
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
@@ -61,6 +62,128 @@ Future<void> _pushCreatedTextures() async {
           ),
           null,
         );
+  }
+}
+
+class _ZoomDirectoryGate implements Directory {
+  _ZoomDirectoryGate(this.delegate, this.parentZone);
+
+  final Directory delegate;
+  final Zone parentZone;
+  final entered = Completer<void>();
+  final resume = Completer<void>();
+  final deliveredClose = Completer<void>();
+  int listCalls = 0;
+  int forwardedEntries = 0;
+  bool realListingCompleted = false;
+  Object? listingError;
+
+  void release() {
+    if (!resume.isCompleted) resume.complete();
+  }
+
+  @override
+  String get path => delegate.path;
+
+  @override
+  Directory get absolute => this;
+
+  @override
+  Uri get uri => parentZone.run(() => delegate.uri);
+
+  @override
+  Future<bool> exists() => parentZone.run(delegate.exists);
+
+  @override
+  Future<Directory> create({bool recursive = false}) async {
+    await parentZone.run(() => delegate.create(recursive: recursive));
+    return this;
+  }
+
+  @override
+  Stream<FileSystemEntity> list({
+    bool recursive = false,
+    bool followLinks = true,
+  }) {
+    listCalls++;
+    if (listCalls != 1) throw StateError('Unexpected second cache enumeration');
+    late final StreamController<FileSystemEntity> output;
+    output = StreamController<FileSystemEntity>(onListen: () async {
+      entered.complete();
+      await resume.future;
+      try {
+        final realListing = parentZone.run(() => delegate.list(
+          recursive: recursive,
+          followLinks: followLinks,
+        ));
+        await output.addStream(realListing.map((entry) {
+          forwardedEntries++;
+          return entry;
+        }));
+        realListingCompleted = true;
+      } catch (error, stack) {
+        listingError = error;
+        output.addError(error, stack);
+      } finally {
+        await output.close();
+        deliveredClose.complete();
+      }
+    });
+    return output.stream;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw StateError(
+    'Unexpected cache Directory operation: ${invocation.memberName}',
+  );
+}
+
+String _zoomPathKey(String path) => path.replaceAll('\\', '/').toLowerCase();
+
+Future<void> _withZoomStartupGate(
+  WidgetTester tester,
+  Future<void> Function(_ZoomDirectoryGate gate) body,
+) async {
+  final parentZone = Zone.current;
+  // Directory.absolute constructs another Directory through IOOverrides.
+  // Resolve it in the captured parent zone, outside this fixture's override.
+  Directory realDirectory(String path) =>
+      parentZone.run(() => Directory(path).absolute);
+  final sandboxResult = await tester.runAsync(
+    () => Directory.systemTemp.createTemp('sourin-zoom-startup-'),
+  );
+  expect(sandboxResult, isNotNull);
+  final sandbox = sandboxResult!;
+  final directory = realDirectory(
+    '${sandbox.path}${Platform.pathSeparator}mpv-cache',
+  );
+  await tester.runAsync(() => directory.create(recursive: true));
+  final gate = _ZoomDirectoryGate(directory, parentZone);
+  ClipDownloader.debugSetDataDir(sandbox.path);
+  UiPrefs.debugResetForTest({'dsh.playprefs.videoZoom': '125'});
+  try {
+    await IOOverrides.runZoned(
+      () => body(gate),
+      createDirectory: (path) {
+        final actual = realDirectory(path);
+        return _zoomPathKey(actual.path) == _zoomPathKey(directory.path)
+            ? gate
+            : actual;
+      },
+    );
+  } finally {
+    try {
+      gate.release();
+      if (gate.entered.isCompleted) {
+        await _waitFor(tester, () => gate.deliveredClose.isCompleted);
+        await tester.pump();
+      }
+      if (find.byType(PlayerPage).evaluate().isNotEmpty) await _finish(tester);
+    } finally {
+      ClipDownloader.debugSetDataDir(null);
+      UiPrefs.debugResetForTest();
+      await tester.runAsync(() => sandbox.delete(recursive: true));
+    }
   }
 }
 
@@ -494,6 +617,98 @@ void main() {
 
       expect(reads, ['video-params', 'hwdec-current']);
       await _finish(tester);
+    });
+  });
+
+  // Insert inside main() in the existing native player test, next batch only.
+  group('zoom startup lifecycle', () {
+    testWidgets('filesystem completion after unmount cannot apply zoom', (
+      tester,
+    ) async {
+      var disposedPhase = false;
+      final zoomEventsAfterDispose = <String>[];
+      final previousPrinter = debugPrint;
+      debugPrint = (message, {wrapWidth}) {
+        if (disposedPhase && message != null) {
+          if (message.startsWith('[PLAYER] 下发画面缩放失败:')) {
+            final event = message.contains('[Player] has been disposed')
+                ? 'native-zoom-disposed'
+                : 'native-zoom-other-failure';
+            zoomEventsAfterDispose.add(event);
+            previousPrinter('[ZOOM-LIFECYCLE] $event', wrapWidth: wrapWidth);
+            return;
+          } else if (message.startsWith('[PLAYER] mpv: video-zoom=')) {
+            zoomEventsAfterDispose.add('native-zoom-applied');
+          }
+        }
+        previousPrinter(message, wrapWidth: wrapWidth);
+      };
+      try {
+        await _withZoomStartupGate(tester, (gate) async {
+          await _mount(tester, <_Opened>[]);
+          final native = tester.widget<Video>(find.byType(Video)).controller
+              .player.platform as NativePlayer;
+          await _waitFor(tester, () => gate.entered.isCompleted);
+          expect(gate.listCalls, 1);
+          expect(gate.deliveredClose.isCompleted, isFalse);
+          expect(zoomEventsAfterDispose, isEmpty);
+
+          await _finish(tester);
+          expect(native.disposed, isTrue);
+          disposedPhase = true;
+          gate.release();
+          await _waitFor(tester, () => gate.deliveredClose.isCompleted);
+          await tester.pump();
+          expect(gate.realListingCompleted, isTrue);
+          expect(gate.listingError, isNull);
+          expect(gate.forwardedEntries, 0,
+              reason: 'An empty real directory leaves no length I/O outstanding');
+          expect(zoomEventsAfterDispose, isEmpty,
+              reason: 'The disposed player must not receive late startup zoom');
+        });
+      } finally {
+        debugPrint = previousPrinter;
+      }
+    });
+
+    testWidgets('mounted filesystem completion applies real native zoom', (
+      tester,
+    ) async {
+      var successLogs = 0;
+      final previousPrinter = debugPrint;
+      debugPrint = (message, {wrapWidth}) {
+        if (message?.startsWith('[PLAYER] mpv: video-zoom=') ?? false) {
+          successLogs++;
+        }
+        previousPrinter(message, wrapWidth: wrapWidth);
+      };
+      try {
+        await _withZoomStartupGate(tester, (gate) async {
+          await _mount(tester, <_Opened>[]);
+          final native = tester.widget<Video>(find.byType(Video)).controller
+              .player.platform as NativePlayer;
+          await _waitFor(tester, () => gate.entered.isCompleted);
+          expect(successLogs, 0, reason: 'The real startup must still be paused');
+          final before = await tester.runAsync(
+            () => native.getProperty('video-zoom'),
+          );
+          expect(double.parse(before!), 0.0);
+          gate.release();
+          await _waitFor(tester, () => gate.deliveredClose.isCompleted);
+          expect(gate.listCalls, 1);
+          expect(gate.realListingCompleted, isTrue);
+          expect(gate.listingError, isNull);
+          await _waitFor(tester, () => successLogs == 1);
+          final applied = await tester.runAsync(
+            () => native.getProperty('video-zoom'),
+          );
+          expect(double.parse(applied!), closeTo(0.32192809488736235, 0.000001));
+          expect(gate.forwardedEntries, 0);
+          await _finish(tester);
+        });
+      } finally {
+        debugPrint = previousPrinter;
+      }
     });
   });
 }

@@ -14,6 +14,57 @@ const VERSION: &str = "6.9";
 const ENVELOPE_SALT: &str = "34F9Q53w/HJW8E6Q";
 const QUERY_SALT: &str = "2E159Q/Z8979WckQ";
 const MAX_BODY: usize = 2 * 1024 * 1024;
+const MEDIA_ORIGIN: &str = "https://voldn-ser01.51touxiang.com";
+
+// The reference client runs decrypted media values through Hxq.L. Its media
+// origin/scheme correction is part of this source protocol, not a generic CDN
+// fallback. Keep the original raw query: parsing/re-encoding would alter signs.
+fn normalize_media_url(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.chars().any(char::is_control) {
+        return Err("播放响应媒体地址无效".into());
+    }
+    if raw.len() >= 20 && raw.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+        return Ok(format!("{MEDIA_ORIGIN}/m3u8/{raw}.m3u8"));
+    }
+    let value = if raw.starts_with("/m3u8/") || raw.starts_with("/video/") {
+        format!("{MEDIA_ORIGIN}{raw}")
+    } else {
+        raw.to_string()
+    };
+    let parsed = reqwest::Url::parse(&value).map_err(|_| "播放响应媒体地址无效")?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
+        || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("播放响应媒体地址无效".into());
+    }
+    let host = parsed.host_str().unwrap();
+    let source_media_host = host.contains("51touxiang.com");
+    let origin = if source_media_host {
+        MEDIA_ORIGIN.to_string()
+    } else {
+        let authority = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
+        let authority = match parsed.port() { Some(port) => format!("{authority}:{port}"), None => authority };
+        format!("{}://{authority}", parsed.scheme())
+    };
+    let query = value.split_once('?').map(|(_, query)| query.split('#').next().unwrap_or("")).unwrap_or("");
+    let query = if query.is_empty() { String::new() } else { format!("?{query}") };
+    static MEDIA_PATH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static VIDEO_PATH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let media_path = MEDIA_PATH.get_or_init(|| regex::Regex::new(r"/m3u8/([A-Za-z0-9_]+)(?:\.m3u8)?").unwrap());
+    if let Some(captures) = media_path.captures(parsed.path()) {
+        return Ok(format!("{origin}/m3u8/{}.m3u8{query}", &captures[1]));
+    }
+    let video_path = VIDEO_PATH.get_or_init(|| regex::Regex::new(r"/video/[A-Za-z0-9_]+\.mp4$").unwrap());
+    if video_path.is_match(parsed.path()) {
+        return Ok(format!("{origin}{}{query}", parsed.path()));
+    }
+    // Hxq.L keeps unsupported/nonmedia routes unchanged. Only a recognized
+    // media-shaped value uses the origin selected above.
+    if value.starts_with("http") && (value.contains(".m3u8") || value.contains(".mp4")) {
+        return Ok(format!("{origin}{}{query}", parsed.path()));
+    }
+    Ok(value)
+}
 
 fn md5(text: &str) -> String { format!("{:x}", Md5::digest(text.as_bytes())) }
 
@@ -138,11 +189,7 @@ impl Session {
             let object: Value = serde_json::from_str(&text).map_err(|_| "播放媒体响应格式无效")?;
             let url = ["playUrl", "url", "m3u8"].iter().find_map(|key| object.get(key).and_then(Value::as_str))
                 .ok_or("播放响应没有媒体地址")?;
-            let parsed = reqwest::Url::parse(url).map_err(|_| "播放响应媒体地址无效")?;
-            if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
-                || !parsed.username().is_empty() || parsed.password().is_some() {
-                return Err("播放响应媒体地址无效".into());
-            }
+            let url = normalize_media_url(url)?;
             let mut headers: Vec<(String, String)> = vec![("User-Agent".into(), MEDIA_UA.into())];
             if let Some(values) = object.get("header").and_then(Value::as_object) {
                 for (name, value) in values {
@@ -155,7 +202,7 @@ impl Session {
                     headers.push((name.to_string(), value.to_string()));
                 }
             }
-            plays.push(CspPlay { url: url.to_string(), headers, label: None });
+            plays.push(CspPlay { url, headers, label: None });
         }
         if plays.is_empty() { return Err("当前剧集没有返回可播放地址".into()); }
         Ok(plays)

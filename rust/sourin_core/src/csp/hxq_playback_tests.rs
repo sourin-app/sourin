@@ -10,6 +10,52 @@ fn session() -> Session {
         advertising: "fedcba9876543210".into(), installed: 1793062600000 }
 }
 
+fn encrypted_candidate(session: &Session, url: &str) -> Value {
+    let key = md5(&format!("{}{ENVELOPE_SALT}", session.key()));
+    let data = encrypt(&json!({"playUrl":url,"header":{"User-Agent":"FixtureMediaUA"}}).to_string(),
+        &key.as_bytes()[..16], &key.as_bytes()[16..]).unwrap();
+    json!({"rescode":0,"datas":[{"data":data}]})
+}
+
+#[test]
+fn normalization_candidates_apply_reference_media_origin_and_keep_raw_query() {
+    let session = session();
+    let query = "sign=synthetic%2bkeep%2Fraw&repeated=one&repeated=two&empty=&plus=a+b";
+    let input = format!("http://legacy.51touxiang.com/m3u8/fixture_media?{query}");
+    let plays = session.candidates(&encrypted_candidate(&session, &input)).unwrap();
+    assert_eq!(plays[0].url, format!("https://voldn-ser01.51touxiang.com/m3u8/fixture_media.m3u8?{query}"));
+    assert_eq!(plays[0].headers, vec![("User-Agent".into(), "FixtureMediaUA".into())]);
+}
+
+#[test]
+fn normalization_candidates_accept_reference_relative_and_bare_media_forms() {
+    let session = session();
+    for (input, expected) in [
+        ("/m3u8/fixture_media?x=keep%2Braw", "https://voldn-ser01.51touxiang.com/m3u8/fixture_media.m3u8?x=keep%2Braw"),
+        ("/video/fixture_media.mp4?x=keep+raw", "https://voldn-ser01.51touxiang.com/video/fixture_media.mp4?x=keep+raw"),
+        ("fixture_media_1234567890", "https://voldn-ser01.51touxiang.com/m3u8/fixture_media_1234567890.m3u8"),
+    ] {
+        let plays = session.candidates(&encrypted_candidate(&session, input)).unwrap();
+        assert_eq!(plays[0].url, expected);
+    }
+}
+
+#[test]
+fn normalization_candidates_leave_unrelated_hosts_and_nonmedia_paths_unchanged() {
+    let session = session();
+    for input in [
+        "http://media.invalid/video/fixture.mp4?sign=synthetic%2braw",
+        "https://media.invalid/m3u8/fixture_media.m3u8?x=a+b&x=c",
+        "http://legacy.51touxiang.com/catalog/item?sign=synthetic%2braw",
+    ] {
+        let plays = session.candidates(&encrypted_candidate(&session, input)).unwrap();
+        assert_eq!(plays[0].url, input, "reference normalization must not rewrite an unrelated/nonmedia route");
+    }
+    for input in ["file:///private/movie.mp4", "https://user:password@media.invalid/video/a.mp4", "/catalog/not-a-media-route"] {
+        assert!(session.candidates(&encrypted_candidate(&session, input)).is_err());
+    }
+}
+
 #[test]
 fn query_and_envelope_match_independent_protocol_fixtures() {
     let session = session();

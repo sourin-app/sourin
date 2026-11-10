@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "revision": "sourin-glass-demand-v21",
+  "modifiedFiles": [
+    "shaders/miuix_os4_glass.frag",
+    "lib/src/theme/miuix/components/miuix_glass.dart"
+  ],
+  "upstreamSha256": "5f673ae1719985353553ae3f87adf9ba4cab038727b46604bb8d2a599659f614",
+  "compare2CandidateSha256": "f4b24691e8ada44e9eb6c5fc80a5793872648de9fc2aae3c3880fcd0f3c117fa",
+  "patchedSha256": "fde7a5bca61710685991acfb3fc164aca1ea0449ba763c1d3c899242ee308667",
+  "patchFile": "patches/0001-impeller-material-loop.patch",
+  "patchSha256": "0185cbf1647403909cbbb8f45471adf71c11f0297d042142c159f3f2a692a76f",
+  "downstreamAnnotation": "// Sourin downstream change (2026-11-09): use one material call site on Impeller;\r\n// preserve the original Skia branch and uniform ABI. See SOURIN_PATCHES.md.\r\n",
+  "upstreamManifestSha256": "4269ccbbb61ba6d30f793bef803a4eefa41215dd6a3670ccac834e96e5f2e42c",
+  "preservedUniformFloatCount": 53,
+  "preservedSamplerCount": 1,
+  "validation": {
+    "compare2": "Parent reported 24/24 cases with zero pixel differences, repeat and alpha positive controls passed; task-local candidate only.",
+    "productionPackageValidation": "Pending; not implied by vendor verification.",
+    "performance": "Diagnostic load fences only; no cold-start improvement claim."
+  },
+  "surfaceLoadingPatch": {
+    "file": "lib/src/theme/miuix/components/miuix_glass.dart",
+    "upstreamSha256": "df4165dcfb55504c3c051ae285e5fa73473187af9434274c4c8e79cdeefe681a",
+    "patchedSha256": "510d20904691f3bb1530af0f3320f9bf35471e9b4a948657fdf696d00129c438",
+    "patchFile": "patches/0002-demand-glass-background-programs.patch",
+    "patchSha256": "67da828cdfe8bb2771111133af3014cc6a85647fae121e7f5774f8ab556c2d38",
+    "contract": "Public load() still preloads all programs. Surfaces without a backdrop load mask/stroke/shadow/rim. Adding a backdrop loads remaining programs and repaints the same State."
+  }
+}

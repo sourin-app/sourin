@@ -1,0 +1,71 @@
+--- a/shaders/miuix_os4_glass.frag
++++ b/shaders/miuix_os4_glass.frag
+@@ -1,10 +1,12 @@
+-#version 460 core
+-#include <flutter/runtime_effect.glsl>
+-// Generated from GLASS_SHADER; upstream 3f7debbf.
+-// SPDX-License-Identifier: Apache-2.0
+-uniform vec2 u_textureSize;
+-
+-uniform sampler2D child;
++#version 460 core
++#include <flutter/runtime_effect.glsl>
++// Generated from GLASS_SHADER; upstream 3f7debbf.
++// SPDX-License-Identifier: Apache-2.0
++// Sourin downstream change (2026-11-09): use one material call site on Impeller;
++// preserve the original Skia branch and uniform ABI. See SOURIN_PATCHES.md.
++uniform vec2 u_textureSize;
++
++uniform sampler2D child;
+ vec4 sampleChild(vec2 p) { return texture(child, p / u_textureSize); }
+ 
+ uniform vec2 in_pad;          // component origin inside the padded layer
+@@ -356,6 +358,7 @@
+     // than one pixel of this layer. Read once per pixel it would alias into a staircase, so inside
+     // the band the material is integrated across the pixel instead. One dimension is enough: the
+     // rim varies along the distance field's gradient and is constant across it.
++#if defined(SKIA_GRAPHICS_BACKEND)
+     if (-d < edge && length(gradient) > 0.5) {
+         material = shadeMaterial(local - gradient * 0.375, d - 0.375, gradient, edge) * 0.25;
+         material += shadeMaterial(local, d, gradient, edge) * 0.5;
+@@ -363,10 +366,37 @@
+     } else {
+         material = shadeMaterial(local, d, gradient, edge);
+     }
++#else
++    // One material call site. The runtime bound is 3 for the rim and 1 otherwise.
++    // Keep both coordinate expressions and the original weighted addition order.
++    bool integrateRim = -d < edge && length(gradient) > 0.5;
++    int materialCount = integrateRim ? 3 : 1;
++    for (int materialIndex = 0; materialIndex < materialCount; materialIndex++) {
++        vec2 sampleLocal = local;
++        float sampleDistance = d;
++        if (integrateRim && materialIndex == 0) {
++            sampleLocal = local - gradient * 0.375;
++            sampleDistance = d - 0.375;
++        } else if (integrateRim && materialIndex == 2) {
++            sampleLocal = local + gradient * 0.375;
++            sampleDistance = d + 0.375;
++        }
++        vec4 shaded = shadeMaterial(sampleLocal, sampleDistance, gradient, edge);
++        if (!integrateRim) {
++            material = shaded;
++        } else if (materialIndex == 0) {
++            material = shaded * 0.25;
++        } else if (materialIndex == 1) {
++            material += shaded * 0.5;
++        } else {
++            material += shaded * 0.25;
++        }
++    }
++#endif
+ 
+     float alpha = material.a * in_alphaEdge.x;
+     return vec4(vec3(material.rgb * alpha), float(alpha));
+ }
+-
+-out vec4 fragColor;
+-void main() { fragColor = shaderMain(FlutterFragCoord().xy); }
++
++out vec4 fragColor;
++void main() { fragColor = shaderMain(FlutterFragCoord().xy); }

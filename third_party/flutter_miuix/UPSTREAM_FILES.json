@@ -1,0 +1,806 @@
+{
+  "schemaVersion": 1,
+  "package": "flutter_miuix",
+  "version": "1.3.0",
+  "repository": "https://github.com/ChuxinNeko/flutter_miuix",
+  "archiveUrl": "https://pub.dev/api/archives/flutter_miuix-1.3.0.tar.gz",
+  "archiveSha256": "79557980f191131888dd6b164d460d03a70e9cae1cbce9799046942ef4719513",
+  "archiveBytes": 7774867,
+  "excludedTopLevelDirectories": [
+    "example"
+  ],
+  "includedFiles": [
+    {
+      "path": "CHANGELOG.md",
+      "size": 14005,
+      "sha256": "1a7c57fd8e37f3a7b3793e635715ffdec974aa3e004babe2bdf7614366562664"
+    },
+    {
+      "path": "LICENSE",
+      "size": 11356,
+      "sha256": "e2ceaecc024d3cabc4ceabec8375167f6af6e46c00928e669f37e6a07119fafb"
+    },
+    {
+      "path": "README.md",
+      "size": 10962,
+      "sha256": "c46215e247bdaaeccb09cf6d842a63f610e5923472ea86051c2211ba98e87065"
+    },
+    {
+      "path": "README_ZH-CN.md",
+      "size": 10668,
+      "sha256": "9a2052521cfc9b9a7e6581851bcf91bed53ef7aa9b69b0c81e13fd15dfcd8497"
+    },
+    {
+      "path": "analysis_options.yaml",
+      "size": 1448,
+      "sha256": "b63207cf529949ec4727b68c23dbb38ce255b6f6f4ae1effcb5c1dcf2852d238"
+    },
+    {
+      "path": "lib/miuix.dart",
+      "size": 6445,
+      "sha256": "d6c0d9e7296e47bd58d7f50512c0ed95808b2dddef1fc65f3129b8b1a567ae79"
+    },
+    {
+      "path": "lib/src/theme/miuix/blur/miuix_backdrop.dart",
+      "size": 3832,
+      "sha256": "d5437278e3a9653009cb3b321b8095a9452944d2670912b9ebc1b87a59dec294"
+    },
+    {
+      "path": "lib/src/theme/miuix/blur/miuix_blur_defaults.dart",
+      "size": 10315,
+      "sha256": "f408ef7c6b4b78f9b33327fe52cb2bb15db9ba14156ec4cecd0e292893501a62"
+    },
+    {
+      "path": "lib/src/theme/miuix/blur/miuix_highlight.dart",
+      "size": 12391,
+      "sha256": "f4a1166bdc962c72717a2bebc71eaec4a1ffb8d513719406763372ab5a555845"
+    },
+    {
+      "path": "lib/src/theme/miuix/blur/miuix_layer_backdrop.dart",
+      "size": 5078,
+      "sha256": "ba78ebfe060602114c856072527d08530ac1806708ef49cdcbedabd25ddcb7f1"
+    },
+    {
+      "path": "lib/src/theme/miuix/blur/miuix_texture_blur.dart",
+      "size": 8129,
+      "sha256": "6e468073eaeff49432a3ef6cf865a18e6736955d3516f1b99b1e3151540b8a93"
+    },
+    {
+      "path": "lib/src/theme/miuix/color/extensions.dart",
+      "size": 1824,
+      "sha256": "99f6c8feb5236710ce4f420fdd366cd8e0e0799938ad8202278da881a700801f"
+    },
+    {
+      "path": "lib/src/theme/miuix/color/hsv.dart",
+      "size": 2423,
+      "sha256": "13b60d6aabad97aa02c5c252179f49b1852cc96ce0b06fb29ea452c24e7f64ab"
+    },
+    {
+      "path": "lib/src/theme/miuix/color/ok_hsv.dart",
+      "size": 1802,
+      "sha256": "3938fcb13b035d5731d53e9d677c1e637e3a84757a50ccbaae1b67ebe8f93b03"
+    },
+    {
+      "path": "lib/src/theme/miuix/color/ok_lab.dart",
+      "size": 2049,
+      "sha256": "4f73f6395c03dd8ccb732b3a392dfab1fc7eccf54a0f478edf381491573f8a91"
+    },
+    {
+      "path": "lib/src/theme/miuix/color/ok_lch.dart",
+      "size": 2031,
+      "sha256": "bcb33509cf15c8baa49611326b45fd379024e2984c29b649211f48128171602c"
+    },
+    {
+      "path": "lib/src/theme/miuix/color/transforms.dart",
+      "size": 13453,
+      "sha256": "238b555fe5aae64bc9028278739f33af1a5336f5ed7b34503449c09589ca709b"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_arrow_preference.dart",
+      "size": 6236,
+      "sha256": "21eff8903c95c77d14785e8136cd83ec451bb751bde01780a866cb55870c287a"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_badge.dart",
+      "size": 9174,
+      "sha256": "5068174b493db2782324a1d5156e547e2d7644eeabf6825d932fc095fbc81138"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_basic_component.dart",
+      "size": 13847,
+      "sha256": "4f11a9525a44b3bfa7fbb417c05ed6dcbe55933279ed48a2f5a06de4a2dd913b"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_blur_top_app_bar.dart",
+      "size": 838,
+      "sha256": "86997744b94d722570797f0dd19a5050ae1ece72130d78d3e0a54c73739bf808"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_bottom_sheet.dart",
+      "size": 19479,
+      "sha256": "14d4d0a9cb38ffe9baacd46e055f2e40aceb0261f89bd7fdaf5186aa3f487fd9"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_breadcrumb_bar.dart",
+      "size": 10319,
+      "sha256": "c42c5f23758b951bc7e9cdd8b092157d5836f4721bb7a5e87e4c0928f65e8807"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_button.dart",
+      "size": 5705,
+      "sha256": "c79820bffd6732fac2fb0d7551c982b65f247d840c0b3488bb86a1b7da6f2f69"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_card.dart",
+      "size": 3240,
+      "sha256": "8008243d1702c0e427ec2bd4112dd57a195d612c175214b410c8ca368908396d"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_cascading_dropdown_menu.dart",
+      "size": 9848,
+      "sha256": "775d49f50b1b755355faae1f57fadfcdfe18488cb11cbe7e907a4be4a8792f50"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_cascading_list_popup.dart",
+      "size": 9777,
+      "sha256": "580903410f7d844e2b6479deac4476b2ae841c4fb1178e87bbb1be685d202201"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_checkbox.dart",
+      "size": 9068,
+      "sha256": "666b65b1e896a625c3c7a3efa7ed13b426a731298481df48107b778d7d618c24"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_checkbox_preference.dart",
+      "size": 5678,
+      "sha256": "89e82b8479c9bf1036845cd7a56f599f1aa6d8128ebdd28ea8605c3b7cdbe2ee"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_color_palette.dart",
+      "size": 23300,
+      "sha256": "79ecd678e16f7e2a2f486f805d881395598e8e410d75c3c0d927accf82ae76f7"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_color_picker.dart",
+      "size": 21055,
+      "sha256": "780d56ab7e2496d1d5eb55b5e7541fb36ac7ee06bbebeb313d5b0a46b047ea90"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_date_picker.dart",
+      "size": 21818,
+      "sha256": "82ce44db2e2c8ad67ce10eecda2386779c578ba70d3487f7544ba36ddfbc2da2"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_divider.dart",
+      "size": 2945,
+      "sha256": "0d6ba8958303b280f5de3b03f8b2b7a1fcddbbbb1301ac6e10d4f59b4a5386de"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_dropdown.dart",
+      "size": 23829,
+      "sha256": "4218eb97856ec0b83ef3aae239836dc24c61efe39e3bad6cf4b0d9070acf74ff"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_dropdown_menu.dart",
+      "size": 16324,
+      "sha256": "7517ffdd5aa2de244502666a965b632931368cac4c38b7e0c14371dde021fa8a"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_dropdown_popup.dart",
+      "size": 17491,
+      "sha256": "fe215f259d691d75886a41fbbb2142896ab7217dc0d95c939bd72cff0867dbd5"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_dropdown_preference.dart",
+      "size": 14367,
+      "sha256": "049c919e8ecf46a2aed9057ec0de325180f486e7fe9c39ee692458858f81ed8c"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_floating_action_button.dart",
+      "size": 4934,
+      "sha256": "47ca0d4f298bd5c7a5dad5777074757ebec8a003b9f3c7aacb41c9cd55e35d5a"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_floating_toolbar.dart",
+      "size": 3756,
+      "sha256": "c36237810c9a03064bf1df9f5d9a0afd39873245f0cd25c0b2cf17c1cbbf1dfc"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass.dart",
+      "size": 23834,
+      "sha256": "df4165dcfb55504c3c051ae285e5fa73473187af9434274c4c8e79cdeefe681a"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_dialog.dart",
+      "size": 1131,
+      "sha256": "cc3623fef4cc1ec031345a8516ff17f0f691693d0bee10562b6270b118c7176b"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_dropdown_popup.dart",
+      "size": 906,
+      "sha256": "4dccf83d083ce0476f19c168489c6354bac4a476ed34743e396d7f8216275e1e"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_icon_button.dart",
+      "size": 6978,
+      "sha256": "aa203c57786883db71fc12b998992c972d5cdee6d770bd0b3fc19d64c39bf500"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_navigation_bar.dart",
+      "size": 20567,
+      "sha256": "9d95626c2fc078c4cc1879147bc2a10726192ac3c2ccfb5d17c549efca67591e"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_popup.dart",
+      "size": 860,
+      "sha256": "741f604ce952ca497b4dd4952fa1d83805f5e3e21c82159a17ebe39d7d7d4d24"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_popup_item.dart",
+      "size": 6072,
+      "sha256": "cd416110146c9fa8b249b7946b9911802b1c023f4e2e2903ece76d6e7c095a9e"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_secondary_popup.dart",
+      "size": 947,
+      "sha256": "0eb5bc8adc397e9c1e6008ec60838c9a543dba2974810851c36f57dfd8c8aa59"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_segmented_tab_row.dart",
+      "size": 9281,
+      "sha256": "93008fed4350a39d4362734d22bfc971b920aac6e9be19926a8f55c99d342811"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_tab_row.dart",
+      "size": 9823,
+      "sha256": "90ee49da2b054ca5d603d7ae20cc82f6363ad6345028a0381773cb6312628c63"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_top_app_bar.dart",
+      "size": 11194,
+      "sha256": "245d97401be58cf5e74575418ca8ec56788d156ed2ff746642f4427bc9297233"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_glass_transform_popup.dart",
+      "size": 1024,
+      "sha256": "33e1ec101ac18c8f0068091c704b5e1c59e67bbbfc7f7a545e2a4709db57a2fe"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_icon.dart",
+      "size": 5287,
+      "sha256": "efd53bde7931febd703058057e4d2302d403fdcbf3ed76219422e458ccc813a4"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_icon_button.dart",
+      "size": 3114,
+      "sha256": "d3a8b4e4b47b27f16f41d2cf882cdf67908d27061c58b6c17611938cdec50515"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_list_popup.dart",
+      "size": 24888,
+      "sha256": "55156439cbc157b81b9f4ee245187c7601ac76ade86c78bfde8e6249ec68c0e7"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_list_popup_host.dart",
+      "size": 14287,
+      "sha256": "7ca04bcb5a44ed1e7a96fffb9dae97ca8bdd8c6d67e512d018eaf0947f03a870"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_navigation_bar.dart",
+      "size": 23272,
+      "sha256": "903314b79e8e2b4e9b5782e07a1ef98665d40508c8b140316c2749705fbfe702"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_navigation_rail.dart",
+      "size": 27246,
+      "sha256": "fe363c5aab498eb54c2f56c89c644f9ed03ee94cdf1aef70ae80dd01a5f0cb18"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_numberpicker.dart",
+      "size": 9729,
+      "sha256": "f0dcb439b5d695790841cf72ebd312a99689c8e46417db245070f2a08bdbe9ed"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_overlay_dialog.dart",
+      "size": 9848,
+      "sha256": "5261661677aa19d0eea1c428c8d7959dd3f88578e48eccf731ed5adfe4e3f595"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_progress_indicator.dart",
+      "size": 14211,
+      "sha256": "1dbca361ca6b072bb3f422cf3ff28df849bbdaa9697c8f1e7290afc4bc62ca49"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_pull_to_refresh.dart",
+      "size": 26707,
+      "sha256": "ede5b1a7a87e6e172d229bef1420e0debd93e636e4ca1ca9fdbc742ff6df6503"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_radio_button_preference.dart",
+      "size": 8549,
+      "sha256": "a9352e5ae7cfe9a05aaeef8fcd17474592f80b89e54fd318f5463a4a22ba8c73"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_radiobutton.dart",
+      "size": 5410,
+      "sha256": "e282363e00fd7d6759f786a65bd264b2be92a9448d4786517ffc946252142c34"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_scaffold.dart",
+      "size": 14972,
+      "sha256": "411ae34abcc0e2c022f9747d975231ecba24dbb7fcf726f78a7e0567f4256714"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_scroll_bar.dart",
+      "size": 16046,
+      "sha256": "28d33a4005e1a8fb2ccdd58c84a3fc6f6fc18bd199bedcce5f4f87796d17990d"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_search_bar.dart",
+      "size": 11740,
+      "sha256": "641b944bf83b11d8c48a2621fa73438a95455fbff659f0e6f5d14cf3e284c3c8"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_slider.dart",
+      "size": 55653,
+      "sha256": "b19f2f30cc96c480f88234ca21090b3b5223c874b0605fac2da54aaa44723d13"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_slider_preference.dart",
+      "size": 14131,
+      "sha256": "6be3ea25eda4ea6adb965f00c55cb6ae58e8e13a17599354bb9a9412ff05899a"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_small_title.dart",
+      "size": 1175,
+      "sha256": "c3f8e9b011f8e0963a836a89a27fbe968ff4c44becb5aa30039f3b5e22fdce63"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_snackbar.dart",
+      "size": 22382,
+      "sha256": "dacdfc14e5344d11e9e5422fdbe93c4346de8c8efbd1a556707b693dc04821ef"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_spinner_preference.dart",
+      "size": 17780,
+      "sha256": "c0041a23fcb3928ceb9caa65dd8ef79d886bb141487733f2de917b8365bd5c4c"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_surface.dart",
+      "size": 2492,
+      "sha256": "08721af8aaac5361138bc602a29120f7a3ab45750de4c378efbb49e7aa6e3fb6"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_switch.dart",
+      "size": 10871,
+      "sha256": "84594bd5aab2ba943c21b47583238a7b77f7ec98c8a15bbdde762afa3180e4d6"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_switch_preference.dart",
+      "size": 3738,
+      "sha256": "8b3d8b52c31d5f0d0bd2b2e455c7100888bf93a935b372e3431a1dcd1aa3dbf2"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_tab_row.dart",
+      "size": 14296,
+      "sha256": "2743e2de37a6105d39bedb4bff6a8682f1f6639b73e4c57f86bed00a3b0684c6"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_text.dart",
+      "size": 2286,
+      "sha256": "6d7179befa80b40628b1162e75da6961c2ecba81e75fe05166ea3718671820e6"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_textfield.dart",
+      "size": 13441,
+      "sha256": "fdff76549dbb0120fa150080f1a7dee46121613a5e728c8c5cd831c95d02491a"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_tooltip.dart",
+      "size": 26085,
+      "sha256": "8b81c65c5d6faed03d5548c8cb3915cd519bc0f20a33388fdf5570cc5afc30e2"
+    },
+    {
+      "path": "lib/src/theme/miuix/components/miuix_top_app_bar.dart",
+      "size": 49185,
+      "sha256": "283b49941c05de4b9084ac34e65543200d42ef0c3e154bfd15c033afadb1f597"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_content_color.dart",
+      "size": 871,
+      "sha256": "b5c07c7e5b1585f1b46d66f9465f99163a4c9f4201af230bf9e92832d40d0c10"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_popup_utils.dart",
+      "size": 40303,
+      "sha256": "d68cb9be7e50d02b2d4d59227e1665580478ac11c7686a1b5d4d4200d653d7f6"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_pressable.dart",
+      "size": 13353,
+      "sha256": "273fc0997f9aa6baaaee45a645c3d7e55b8452cd0f7f7b3ec71cdac9b7c901b1"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_runtime_shader.dart",
+      "size": 4809,
+      "sha256": "ac0f87c8a6eb08dff0802581c5144385d5c40f947cea1388f704619de7a946a8"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_scroll_end_haptic.dart",
+      "size": 4367,
+      "sha256": "7687ba16430528b10066893c738fbf5964a2442939888fc3545c3090445d8cc8"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_spring_utils.dart",
+      "size": 6546,
+      "sha256": "c935c7f047f87cdbf21ea6e42f406ff8ff8547377ac627186c03f20875df2130"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_squircle.dart",
+      "size": 4501,
+      "sha256": "dfc6ff8c6791fcf698851adfd6c8e7804fc1ad302af09d81e25893cb07c0a87e"
+    },
+    {
+      "path": "lib/src/theme/miuix/foundation/miuix_vector_icon.dart",
+      "size": 7118,
+      "sha256": "9564fcb3f4b44448529ef89a3fbe5c60a778c48abd89130b27c3bba8f08e5c9b"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/internal/animation.dart",
+      "size": 2434,
+      "sha256": "67f86ed0eeed5989d02abbec0dc974d06b5d40aeddac49488b391301245125ac"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/internal/bar_scope.dart",
+      "size": 1164,
+      "sha256": "e240a8d31052525152e7c1ffa4ecf340c148ed37cdcfa0f8b0836915403500a1"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/internal/interactive.dart",
+      "size": 2268,
+      "sha256": "08ac4fb3be88635950d585c5fda98a5636a85bf814bfee420977672b88729083"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/internal/miuix_glass_uniforms.dart",
+      "size": 1450,
+      "sha256": "b5e6551fca56288746ecbea8b9f4ac9edecbb3dcfcac7150394322c2801db96c"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/internal/popup_layout.dart",
+      "size": 7601,
+      "sha256": "e822b6e16141ce9f079950c6d25c0a309622aa0d88314d69e99ae22cbec3f8a2"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/internal/popup_presenter.dart",
+      "size": 20651,
+      "sha256": "a3d9b1fdceb3404a2ff0a8a373850f521dea5f51c116cf54bbf104f8be041efe"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_decoration.dart",
+      "size": 4163,
+      "sha256": "e1852882d2e4feb5de1f15de0a16546cf87c85af3dff1a8b1890999d791cec46"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_material.dart",
+      "size": 5226,
+      "sha256": "4b57b9ca93060d0989696a88eb0983320132c904fb10ad8b40bc8f18b69773c2"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_motion.dart",
+      "size": 3522,
+      "sha256": "69e79f0d2f1ccab9c02930e6ccaf99ff6200090235cd7bb405ae03d839d75d51"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_navigation_geometry.dart",
+      "size": 1621,
+      "sha256": "282571c92d4bef48d21ac32b3533654d60e78c5ab4397f2e825ea970db5d8c5c"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_popup_anchor.dart",
+      "size": 2527,
+      "sha256": "00e8fe8ed511aeb3bc384f53d2751e3df7563767a7eb5d81c5265dab74caa8e3"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_popup_style.dart",
+      "size": 6072,
+      "sha256": "dd4091de41b5846fbf17edcfde998fc57a5341b6e77f8578e52a05f6507e2824"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_shape.dart",
+      "size": 1539,
+      "sha256": "1ac5120ff9a08ae88f012413de2b4247b99c05cfa571145233582988a39302d8"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_style.dart",
+      "size": 6868,
+      "sha256": "f1590fd345ece7f6352d5891bdfa5f2e644bd08e6dc96ab95f3a107c6a370134"
+    },
+    {
+      "path": "lib/src/theme/miuix/glass/miuix_glass_styles.dart",
+      "size": 41172,
+      "sha256": "f6add119abb5729bc2771ef9b2fe0b84b364dcc91a8515a9edd7c6540a2c3c12"
+    },
+    {
+      "path": "lib/src/theme/miuix/icon/miuix_basic_icons.dart",
+      "size": 16406,
+      "sha256": "c9e16023598f175605570396444b27266164876b40b591fd49de1ffc5ddd88bb"
+    },
+    {
+      "path": "lib/src/theme/miuix/icon/miuix_extended_icons.dart",
+      "size": 1341601,
+      "sha256": "c7c71e2730dfb7ec3a795f7323f0868d64606a4587af61bb0d33248954de0008"
+    },
+    {
+      "path": "lib/src/theme/miuix/icon/miuix_os4_icons.dart",
+      "size": 2325768,
+      "sha256": "b1a98c8954a195c38d63a6812dc292e87f9ed3748043868361ac14f8445a11b0"
+    },
+    {
+      "path": "lib/src/theme/miuix/theme/miuix_colors.dart",
+      "size": 20862,
+      "sha256": "19d7deff20c76ffcb97ffd2f79a14cd64524a953773bfdb3c7ac406a333af851"
+    },
+    {
+      "path": "lib/src/theme/miuix/theme/miuix_dynamic_colors.dart",
+      "size": 5684,
+      "sha256": "31b91119a62b1d9a51298ef6059f353d00cc668c95425524cd97758a5fadd40b"
+    },
+    {
+      "path": "lib/src/theme/miuix/theme/miuix_monet_mapping.dart",
+      "size": 7963,
+      "sha256": "920bf6a4f76965b8e4f0497889029830f31b44a6ad4476d75f08e6e5035cbf95"
+    },
+    {
+      "path": "lib/src/theme/miuix/theme/miuix_motion.dart",
+      "size": 2605,
+      "sha256": "cb68051b64b18eeb60198543d2c8664c0f43b9a5395b3306e81a04666c62e2b2"
+    },
+    {
+      "path": "lib/src/theme/miuix/theme/miuix_platform_dynamic_colors.dart",
+      "size": 1795,
+      "sha256": "48644ec90bdca6890926c6e63d59d1fd862ae305c053f58baeffc3e04ec2bda4"
+    },
+    {
+      "path": "lib/src/theme/miuix/theme/miuix_text_styles.dart",
+      "size": 5252,
+      "sha256": "68a194b06255cc43c003fb1861fe06a7d670cb53fd7e2dd97117973370c67046"
+    },
+    {
+      "path": "lib/src/theme/miuix/theme/miuix_theme.dart",
+      "size": 12152,
+      "sha256": "93b693269c0733b40eaee4db6cf4149e5584fd51cfa58ba74860dcaf0e2ced5b"
+    },
+    {
+      "path": "pubspec.yaml",
+      "size": 3732,
+      "sha256": "5a6f3c4e0ce13e1c1c09a62f72b9afbf7e1bb30b07ef90faa61208c3b0bde2cd"
+    },
+    {
+      "path": "shaders/miuix_bloom_stroke.frag",
+      "size": 3759,
+      "sha256": "7fa635fcd83e6445a7201ab9170e5e114b8dd0d8b6ab9a3b2a282fa727d50184"
+    },
+    {
+      "path": "shaders/miuix_os4_blend.frag",
+      "size": 3101,
+      "sha256": "0c25e3782b60e4c8974321c795f09fa5e3a75be1ec0a3a6a21ba443101db0319"
+    },
+    {
+      "path": "shaders/miuix_os4_glass.frag",
+      "size": 17824,
+      "sha256": "5f673ae1719985353553ae3f87adf9ba4cab038727b46604bb8d2a599659f614"
+    },
+    {
+      "path": "shaders/miuix_os4_mask.frag",
+      "size": 2135,
+      "sha256": "1e3651908a0eb02d0aefa19775734c4e7a225bdf8754df7bb34886e03f39b442"
+    },
+    {
+      "path": "shaders/miuix_os4_rim.frag",
+      "size": 9727,
+      "sha256": "9566bf1e4ae320a63a40546094f4f83a30ac790db5b7bc5de5414aa5a0ef2438"
+    },
+    {
+      "path": "shaders/miuix_os4_shadow.frag",
+      "size": 2548,
+      "sha256": "cc358c203f8cfa3ed5deecab2070dedb451573081b4efe5b8fe90eb1e6c7e436"
+    },
+    {
+      "path": "shaders/miuix_os4_stroke.frag",
+      "size": 5361,
+      "sha256": "5960cede81f2fb756415b7bf2ce7add82941b2361019687902c0ca0f6ea9d4d6"
+    },
+    {
+      "path": "test/bottom_sheet_dismiss_test.dart",
+      "size": 3672,
+      "sha256": "1bb538fed04a3742c61aabfbce03f56431e08361f17bd7a86167c024b844915a"
+    },
+    {
+      "path": "test/floating_toolbar_tap_test.dart",
+      "size": 1013,
+      "sha256": "34ca390f30c39f311932f2239141ea41e69ea97f89c75c3d70770fb0adda07f3"
+    },
+    {
+      "path": "test/font_weight_adjustment_test.dart",
+      "size": 4181,
+      "sha256": "2226da7f72392d42a98c02b6ea545dcb2b819461292a45d0f742740ea8f94e16"
+    },
+    {
+      "path": "test/miuix_input_field_ime_test.dart",
+      "size": 2235,
+      "sha256": "091fb3f4ea962991e74728a229a33a53cc388afbd625c94bb702d7d7d6b33c3d"
+    },
+    {
+      "path": "test/miuix_textfield_tap_test.dart",
+      "size": 2406,
+      "sha256": "dc7eea0d042adc5097298fe5670a399894aa523d5c81e56bfd13f522163d0829"
+    },
+    {
+      "path": "test/os4_glass_popup_test.dart",
+      "size": 12497,
+      "sha256": "6d9ec880fdde536953aabf39ff3c4cbf48d646cacf3a3b062b8187b31695e3d3"
+    },
+    {
+      "path": "test/os4_glass_render_test.dart",
+      "size": 23363,
+      "sha256": "73f2dbe5cfe9db0bdcc04ddeb441d019a4681e65bebfc0954e87130bedb18541"
+    },
+    {
+      "path": "test/os4_glass_test.dart",
+      "size": 26527,
+      "sha256": "48be78be70895e08b2e4ac30bfe141d47d65a620845ba59a4ff10e2b0aaf9ebf"
+    },
+    {
+      "path": "test/os4_glass_top_bar_test.dart",
+      "size": 4946,
+      "sha256": "3b5fe4f0ef586bcc7c4044da5e5223679500ab8eeebc3bbe4b2211f53b3b366f"
+    },
+    {
+      "path": "test/overlay_dialog_ime_test.dart",
+      "size": 1751,
+      "sha256": "08a88185256958f25167e8114ea5910d7d033b8478f2abcaea9629594c6cd562"
+    },
+    {
+      "path": "test/pull_to_refresh_interrupt_test.dart",
+      "size": 2279,
+      "sha256": "0c9695037d1d9c951be54835743dea1eba1070dee989e1500073a24c42cb22bc"
+    },
+    {
+      "path": "test/slider_drag_test.dart",
+      "size": 4696,
+      "sha256": "6328bfa81a3f5db3f18c71c49392f6f3ee6a34886699ac8e3ba1ef5514187514"
+    },
+    {
+      "path": "test/top_app_bar_collapse_probe_test.dart",
+      "size": 3400,
+      "sha256": "d001aab81e725ae1914cb44d024cac41f0d7dab47f03597e117c5a3a69f5534b"
+    },
+    {
+      "path": "test/top_app_bar_release_snap_test.dart",
+      "size": 5582,
+      "sha256": "b868055bc7b1896c9fb6972f5844742b99a6b9b057c4e25fb719f781d3ff6bcd"
+    },
+    {
+      "path": "test/top_app_bar_scroll_gate_test.dart",
+      "size": 5181,
+      "sha256": "384e71e3540ff46123afd6ef2b9afa32b7b586b1de23ad1e5a657f8852868937"
+    },
+    {
+      "path": "test/widget_test.dart",
+      "size": 1074,
+      "sha256": "536022d5a7e9ee332de1384558a5c575b89963aced0831d66fe9143057c39708"
+    }
+  ],
+  "excludedFiles": [
+    {
+      "path": "example/README.md",
+      "size": 652,
+      "sha256": "ae96d469df90c82d109162abc96d335a761e538fcfe517346e6f2e3f21c41b79"
+    },
+    {
+      "path": "example/analysis_options.yaml",
+      "size": 1448,
+      "sha256": "b63207cf529949ec4727b68c23dbb38ce255b6f6f4ae1effcb5c1dcf2852d238"
+    },
+    {
+      "path": "example/assets/pencil.jpg",
+      "size": 1051197,
+      "sha256": "7e7a8861fec6ba37fec9151bf40ade462c74231464180a7590482b14bed02106"
+    },
+    {
+      "path": "example/fonts/MiSans-Normal.ttf",
+      "size": 7943504,
+      "sha256": "fe0adb56147299e53d5b208a561d6ca7fe4ce5c727a5ead38ad9827b26024f3a"
+    },
+    {
+      "path": "example/lib/main.dart",
+      "size": 38649,
+      "sha256": "c0ca8cb0dcaaab049b061e32edb155102f211a0a598a474ce7bef15c32e67b0e"
+    },
+    {
+      "path": "example/lib/showcase/blur.dart",
+      "size": 5602,
+      "sha256": "d22ac0ec72552d3ce435a330a7928da4d2bc030922cfc689a631a91a1f8927c9"
+    },
+    {
+      "path": "example/lib/showcase/buttons.dart",
+      "size": 7890,
+      "sha256": "8748788c3766d18ec4088f44afcd2995d8cc48e9db8b32e40a521c1850184f2d"
+    },
+    {
+      "path": "example/lib/showcase/common.dart",
+      "size": 7116,
+      "sha256": "d9a4a6ca9d2e23c7385b94e528f318342679fea195b48c2ecad74c2906b8c37f"
+    },
+    {
+      "path": "example/lib/showcase/display.dart",
+      "size": 11392,
+      "sha256": "2500b7c699aef54a978da57fb1cc42feabb99520c1b8f0f1ad53f9a9306ab5ea"
+    },
+    {
+      "path": "example/lib/showcase/feedback.dart",
+      "size": 15119,
+      "sha256": "6527195196aea5363062641da36267dfe9483f4dfa17d1c49ea6224ea4ed28d3"
+    },
+    {
+      "path": "example/lib/showcase/foundation.dart",
+      "size": 4732,
+      "sha256": "76f3948e3e84316d7cb2f6b26a11924139cc3c1f5a0b492fc1e7c22d6c1729b0"
+    },
+    {
+      "path": "example/lib/showcase/inputs.dart",
+      "size": 14637,
+      "sha256": "38a7917ccb2795bfe29248691b95c5a5d811c9c2f62eead85c0845080840fbe2"
+    },
+    {
+      "path": "example/lib/showcase/menus.dart",
+      "size": 8320,
+      "sha256": "67e0257d63230eb893a20bb671f202e174734684f2a9b8f30875f2580ad61fcc"
+    },
+    {
+      "path": "example/lib/showcase/navigation.dart",
+      "size": 11278,
+      "sha256": "60150c347d3ae97c1b220749751aba759b07e1473aca43e21fd73f46e89cc792"
+    },
+    {
+      "path": "example/lib/showcase/os4.dart",
+      "size": 31186,
+      "sha256": "36fa3598b0019133362c2187cb260f2e01d48f5211bf0761e4565a0fa3b71ee0"
+    },
+    {
+      "path": "example/lib/showcase/overlays.dart",
+      "size": 11880,
+      "sha256": "e7e57e4e634cac2ae1c79110724bfbed05121d79f46b32ec72860de8e02c334f"
+    },
+    {
+      "path": "example/lib/showcase/pickers.dart",
+      "size": 14128,
+      "sha256": "63a04ea7baca301acb2c67092555a9d93133a8717607053bae5c9f99bcbc0c0f"
+    },
+    {
+      "path": "example/lib/showcase/preferences.dart",
+      "size": 9312,
+      "sha256": "8293f93105e1fc5cd16f34d7f29bd9c63a2452eeb12ce0f0cf6ae29abf6ce6f1"
+    },
+    {
+      "path": "example/lib/showcase/theming.dart",
+      "size": 18850,
+      "sha256": "0adc5f727f2ab0938574cb9160c9ecfbdf2d66aae9bf2453f6dc9ae43cd815d8"
+    },
+    {
+      "path": "example/lib/showcase/utility.dart",
+      "size": 12551,
+      "sha256": "afecc162adc6add90c011a14d9e71dcf6c7f52fc313c7c340f044ae392deeea2"
+    },
+    {
+      "path": "example/pubspec.yaml",
+      "size": 474,
+      "sha256": "756c57d9d1f981125ff17ca276bfe66b6fe68589d96c59773134e6a026a2cae3"
+    },
+    {
+      "path": "example/test/widget_test.dart",
+      "size": 752,
+      "sha256": "c76df58e16ed1cec8fd00cb7f472265825b6d6cc683b137db27792ff52a1983b"
+    }
+  ]
+}

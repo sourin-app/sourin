@@ -1,0 +1,131 @@
+--- a/lib/src/theme/miuix/components/miuix_glass.dart
++++ b/lib/src/theme/miuix/components/miuix_glass.dart
+@@ -2,6 +2,8 @@
+ // 源自 compose-miuix-ui/miuix 的 Glass.kt、GlassPanel.kt 与 internal/GlassUniforms.kt。
+ // 背景先低分辨率高斯模糊/混色，再运行源端折射 shader；轮廓、高光和阴影全分辨率绘制。
+ // SPDX-License-Identifier: Apache-2.0
++// Sourin downstream: load background programs only for surfaces with a backdrop.
++// Public full preload and shader sources remain unchanged; see SOURIN_PATCHES.md.
+ import 'dart:math' as math;
+ import 'dart:ui' as ui;
+ import 'package:flutter/rendering.dart';
+@@ -32,7 +34,10 @@
+ class MiuixGlassRendering {
+   MiuixGlassRendering._();
+   static final Map<String, ui.FragmentProgram> _programs = {};
+-  static Future<void>? _loading;
++  static Future<void>? _loading, _surfaceLoading;
++  static final Map<String, Future<void>> _programLoads = {};
++  static const _surfacePrograms = <String>['mask', 'stroke', 'shadow', 'rim'];
++  static bool get _surfaceLoaded => _surfacePrograms.every(has);
+   static bool get isLoaded => _programs.length == miuixGlassUniforms.length;
+ 
+   /// 加载失败的原因；`null` 表示没失败过。shader 缺失会静默把玻璃降级成
+@@ -44,33 +49,39 @@
+   static Iterable<String> get loadedPrograms => _programs.keys;
+   static bool has(String name) => _programs.containsKey(name);
+ 
+-  static Future<void> load() => _loading ??= _load();
+-  static Future<void> _load() async {
+-    // 逐个捕获：一个 shader 编不过不该把其余八个一起拖下水——mask/stroke 挂了
+-    // 也还能靠 blend 画出真玻璃。
+-    Object? failure;
+-    for (final name in miuixGlassUniforms.keys) {
+-      if (_programs.containsKey(name)) continue;
+-      final asset = 'shaders/miuix_os4_$name.frag';
++  /// Explicit full preload retains its original contract.
++  static Future<void> load() => _loading ??= _load(miuixGlassUniforms.keys);
++  static Future<void> _loadSurface() =>
++      _surfaceLoading ??= _load(_surfacePrograms);
++
++  static Future<void> _load(Iterable<String> names) async {
++    for (final name in names) {
++      // Surface-only and full requests can overlap. Each program, including a
++      // failed attempt, is shared just as the original full preload was shared.
++      await _programLoads.putIfAbsent(name, () => _loadProgram(name));
++    }
++  }
++
++  static Future<void> _loadProgram(String name) async {
++    if (_programs.containsKey(name)) return;
++    final asset = 'shaders/miuix_os4_$name.frag';
++    try {
++      ui.FragmentProgram program;
+       try {
+-        ui.FragmentProgram program;
+-        try {
+-          program = await ui.FragmentProgram.fromAsset(
+-            'packages/flutter_miuix/$asset',
+-          );
+-        } catch (_) {
+-          program = await ui.FragmentProgram.fromAsset(asset);
+-        }
+-        _programs[name] = program;
+-      } catch (error) {
+-        failure ??= error;
+-        assert(() {
+-          debugPrint('Miuix OS4: shader "$asset" unavailable → $error');
+-          return true;
+-        }());
++        program = await ui.FragmentProgram.fromAsset(
++          'packages/flutter_miuix/$asset',
++        );
++      } catch (_) {
++        program = await ui.FragmentProgram.fromAsset(asset);
+       }
+-    }
+-    loadError = failure;
++      _programs[name] = program;
++    } catch (error) {
++      loadError ??= error;
++      assert(() {
++        debugPrint('Miuix OS4: shader "$asset" unavailable → $error');
++        return true;
++      }());
++    }
+   }
+ }
+ 
+@@ -110,16 +121,36 @@
+ }
+ 
+ class _MiuixGlassState extends State<MiuixGlass> {
+-  /// shader 的加载**已经结束**（成功与否逐个看 [MiuixGlassRendering.has]）。
+-  /// 结束前所有 shader 路径都按缺失处理，结束后重绘一次。
++  /// 基础表面程序可用后允许逐个使用已加载 shader；背景程序可继续异步加载。
++  /// 完成后重绘，失败的单个程序仍按 [MiuixGlassRendering.has] 走降级。
+   bool _ready = false;
++  int _loadEpoch = 0;
+   @override
+   void initState() {
+     super.initState();
+-    _ready = MiuixGlassRendering.isLoaded;
+-    if (_ready) return;
+-    MiuixGlassRendering.load().whenComplete(() {
+-      if (mounted) setState(() => _ready = true);
++    _prepareShaders();
++  }
++
++  @override
++  void didUpdateWidget(MiuixGlass oldWidget) {
++    super.didUpdateWidget(oldWidget);
++    if ((oldWidget.backdrop == null) != (widget.backdrop == null)) {
++      _prepareShaders();
++    }
++  }
++
++  void _prepareShaders() {
++    final epoch = ++_loadEpoch;
++    final needsBackground = widget.backdrop != null;
++    // Keep loaded contours while new background programs are pending. The
++    // renderer already falls back per program until sampling is available.
++    _ready = MiuixGlassRendering._surfaceLoaded;
++    if (_ready && (!needsBackground || MiuixGlassRendering.isLoaded)) return;
++    final loading = needsBackground
++        ? MiuixGlassRendering.load()
++        : MiuixGlassRendering._loadSurface();
++    loading.whenComplete(() {
++      if (mounted && epoch == _loadEpoch) setState(() => _ready = true);
+     });
+   }
+ 

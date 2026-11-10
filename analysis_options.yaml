@@ -13,6 +13,8 @@ analyzer:
     - android/**
     - windows/**
     - macos/**
+    # The pinned dependency retains its upstream analysis rules and tests.
+    - third_party/flutter_miuix/**
 include: package:flutter_lints/flutter.yaml
 
 linter:

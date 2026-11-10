@@ -251,9 +251,13 @@ dependencies:
   # Version pinning (same rule as desktop_webview_window): EXACT pin,
   # resolved windows implementation 0.6.0 recorded in pubspec.lock.
   flutter_inappwebview: 6.1.5
-  flutter_miuix: 1.3.0
+  # Pinned 1.3.0 sources with an Impeller glass shader compile-time fix.
+  # Provenance and explicit upstream patches: third_party/flutter_miuix/SOURIN_PATCHES.md.
+  flutter_miuix:
+    path: third_party/flutter_miuix
 
 dev_dependencies:
+  fake_async: 1.3.3
   flutter_test:
     sdk: flutter
 

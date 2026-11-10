@@ -2,6 +2,11 @@
 
 Status: implemented
 
+Related: [source-switch search generations](../bug-fix/2026-11-10-source-switch-search-generation.md)
+guards keyword resubmission, obsolete results and search-state lifetime. It
+extends this dialog's event path without replacing the provider exclusion,
+matching order or selected-result handoff specified here.
+
 ## Problem
 
 Owner 实测换源后仍不跟进度，明确要求候选列表排除当前片源：
@@ -100,4 +105,4 @@ final sorted = stableRankDesc(candidates, (c) => c.score);
   **未覆盖边界（如实标注）**：Owner 主诉的**换源续播**（换源后不跟上次进度）本身
   仍未复现定位 —— 本项只完成了"排除当前片源"那一半，续播待实机复现。
 
-Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；已按标题关键词在 .agents/notes 全树检索（同日与相关主题），未发现记录同一决定的笔记，故不构成取代关系。正文未改，仅补声明。
+Independent: 本篇记录 2026-10-27 批内一次具体改动的决策；当时按标题关键词在 .agents/notes 全树检索，未发现记录同一决定的笔记，故不构成取代关系。后续部分重叠的请求代次决定见上方链接。

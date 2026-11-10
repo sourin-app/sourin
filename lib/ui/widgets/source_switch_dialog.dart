@@ -220,6 +220,7 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
   );
 
   bool _searching = false;
+  int _searchRevision = 0;
   int _settled = 0;
   int _totalProviders = 0;
 
@@ -249,13 +250,26 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
   }
 
   void _cancel() {
-    // callStream 的取消由 searchAllStream 内部管理（token 在它那儿）
-    // 这里只需阻止后续 setState
+    // The next event returns false to callStream, which cancels that stream.
+    // Invalidate pending provider reads and completion handlers immediately.
+    _searchRevision++;
   }
 
   Future<void> _run() async {
+    if (!mounted) {
+      return;
+    }
     final kw = _kw.text.trim();
     if (kw.isEmpty) return;
+    final revision = ++_searchRevision;
+    bool isCurrent() => mounted && revision == _searchRevision;
+    bool onEvent(SearchStreamEvent event) {
+      if (!isCurrent()) {
+        return false;
+      }
+      _handleEvent(event);
+      return true;
+    }
 
     setState(() {
       _searching = true;
@@ -273,30 +287,27 @@ class _SourceSwitchDialogState extends State<_SourceSwitchDialog> {
        */
       final injected = debugSwitchSearchRunner;
       if (injected != null) {
-        await injected(kw, (ev) {
-          if (!mounted) return false;
-          _handleEvent(ev);
-          return true;
-        });
+        await injected(kw, onEvent);
         return;
       }
 
       final providers = await SourinApi.listProviders();
-      if (mounted) {
-        setState(
-          () => _totalProviders = providers.where((p) => p.enabled).length,
-        );
+      if (!isCurrent()) {
+        return;
       }
+      setState(
+        () => _totalProviders = providers.where((p) => p.enabled).length,
+      );
 
-      await SourinApi.searchAllStream(kw, (ev) {
-        if (!mounted) return false;
-        _handleEvent(ev);
-        return true;
-      });
+      await SourinApi.searchAllStream(kw, onEvent);
     } catch (e) {
-      debugPrint('[SWITCH] 搜索失败: $e');
+      if (isCurrent()) {
+        debugPrint('[SWITCH] 搜索失败: $e');
+      }
     } finally {
-      if (mounted) setState(() => _searching = false);
+      if (isCurrent()) {
+        setState(() => _searching = false);
+      }
     }
   }
 

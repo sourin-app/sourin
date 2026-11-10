@@ -67,9 +67,18 @@ completed write; the retained settings owner checks its own lifetime before
 notifying its shell or loading data. Canceled and failed writes never notify,
 and a successful mounted dialog notifies exactly once.
 
+A selected TVBox subscription shows its name, child count and Miuix address
+action in the filter area. Its address form remains reachable with zero child
+providers or when filters hide every child; the child rows remain flat. The
+summary and row editor share the same selected origin and persistence path.
+Source read failures display their error and a guarded Miuix reload action.
+Loading/error states do not claim an empty match; a successful empty result keeps
+the existing empty-match message. Reload does not announce a source mutation.
+
 The uncalled `_openAggregatePage` route and its dedicated import are removed from
-the settings owner. Flat source rows own the reachable subscription-address entry,
-including disabled children and rows narrowed by type, origin and text. The
+the settings owner. Flat source rows and the selected-origin summary own the
+reachable subscription-address entries, including disabled children and rows
+narrowed by type, origin and text. The
 shared aggregate page file and its independent widgets remain available. Product
 entry tests open Settings, edit the exact row's origin, check cancel has no write
 and inspect the submitted primary address and ordered fallback list.
@@ -117,6 +126,13 @@ as ordinary completion, for edit/install/import and success/failure. The actual
 Settings-to-origin test failed with expected notification count one and actual
 zero before the callback notification repair. Passing and native results remain
 recorded separately in the root plan.
+
+The empty-origin address entry and initial-load recovery tests failed on the
+prior UI because the summary was absent and read failure also rendered the
+empty-match text. Their successful-empty negative control passed. The tests also
+inspect actual Miuix controls, canceled versus saved origin writes, ordered
+fallbacks, exact one-time mutation notification, and disabled duplicate retry
+while a read is pending. Root owns serial execution and fresh native acceptance.
 
 Reconsider the adapters if they stop preserving the existing input/focus
 contracts, and reconsider the source-list layout if measured native or widget

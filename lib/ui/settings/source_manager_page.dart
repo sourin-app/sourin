@@ -223,6 +223,12 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
     }
   }
 
+  Future<void> _retryLoad() async {
+    if (!mounted || _loading || _busy) return;
+    setState(() => _loading = true);
+    await _load();
+  }
+
   Future<void> _change(Future<void> Function() persist) => _run(() async {
     await persist();
     // Home/search must reject old work before the catalog reload can finish.
@@ -233,6 +239,10 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
 
   SourceOriginGroup? _groupOf(String providerId) =>
       _groupsByProvider[providerId];
+
+  SourceOrigin? get _selectedOrigin => _catalog?.origins
+      .where((o) => o.id == _originId && isTvboxSubscriptionOrigin(o))
+      .firstOrNull;
 
   Future<void> _editOrigin(SourceOrigin origin) async {
     final changed = await showAppDialog<bool>(
@@ -364,6 +374,25 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
           ),
         ],
       ),
+      if (_selectedOrigin case final origin?) ...[
+        const SizedBox(height: Sp.x3),
+        Wrap(
+          key: const ValueKey('source-origin-summary'),
+          spacing: Sp.x2,
+          runSpacing: Sp.x2,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text(
+              '${origin.name.trim().isEmpty ? 'TVBox 订阅' : origin.name} · ${origin.providerIds.length} 个源',
+            ),
+            ui.TextButton(
+              key: const ValueKey('source-origin-edit'),
+              onPressed: _busy ? null : () => _editOrigin(origin),
+              child: const Text('编辑地址'),
+            ),
+          ],
+        ),
+      ],
       const SizedBox(height: Sp.x3),
       ui.TextField(
         key: const ValueKey('source-manager-search'),
@@ -593,9 +622,7 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final origin = _catalog?.origins
-        .where((o) => o.id == _originId && isTvboxSubscriptionOrigin(o))
-        .firstOrNull;
+    final origin = _selectedOrigin;
     final visible = managedSourceList(
       _providers,
       type: _type,
@@ -635,14 +662,25 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: Sp.x3),
-                  child: Text(
-                    _error!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _error!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                      const SizedBox(height: Sp.x2),
+                      ui.TextButton(
+                        key: const ValueKey('source-manager-retry'),
+                        onPressed: _loading || _busy ? null : _retryLoad,
+                        child: const Text('重试'),
+                      ),
+                    ],
                   ),
                 ),
-              if (!_loading && visible.isEmpty)
+              if (!_loading && _error == null && visible.isEmpty)
                 const Padding(
                   padding: EdgeInsets.all(Sp.x6),
                   child: Text('没有匹配的源'),

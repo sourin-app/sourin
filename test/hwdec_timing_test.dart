@@ -53,7 +53,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   /// 读被测源码（只读一次，多个断言共用）
-  final src = File('lib/ui/player_page.dart').readAsStringSync();
+  final src = File('lib/ui/player_page.dart').readAsStringSync().replaceAll('\r\n', '\n');
   final lines = src.split('\n');
 
   /// 把"行号"（1 基）转成该行内容

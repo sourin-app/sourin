@@ -14,6 +14,22 @@ Several installed CSP engines create their own clients with direct routing. A si
 
 The default environment-proxy suppression remains in engine recipes. The application policy is then deliberately applied to that builder. This distinguishes an explicit global proxy from ambient environment settings. The [earlier fallback-client rule](../testing/2026-10-28-no-proxy-gate-can-be-bypassed-by-fallback-client.md) remains relevant, but the presence of `.no_proxy()` is no longer sufficient to prove application routing. The [provider identity wiring](../bug-fix/2026-10-17-plugin-http-ignored-per-source-proxy.md) remains useful even though user configuration is now global rather than separate per-source forms.
 
+Native playback also preserves the core-selected route. Setting mpv's own
+`http-proxy` to an empty string omits the FFmpeg option and still permits its
+environment fallback. The shared native transport preparation explicitly writes
+`stream-lavf-o=http_proxy=` before opening media and checks the nonempty option
+readback, because the current media_kit setter discards libmpv's error code.
+Unconfirmed configuration prevents opening the stream with a neutral error.
+The main player, both live open paths and the independent marker preview await
+this step and reject obsolete completion after the await. Existing demuxer
+options and protocol allowlists stay intact. Application All-scope routing remains
+owned by the core's local forwarding URLs; suppressing a second native environment
+proxy does not disable that configured route. Non-native backends use their own
+transport. An isolated test with the deployed DLL observes a false environment
+proxy on the old settings, then origin manifest/segment requests and changing
+software-rendered frames after the explicit empty AVOption. This establishes the
+native routing boundary, not remote source availability or full-title playback.
+
 Migration is per engine, with local request observations. A wrapper's hook does not cover independent downstream cloud/share clients. Explicitly unavailable engines do not become playable by migrating their client. Counts and execution results belong to the implementation plan; this note does not claim every historical engine is covered.
 
 The two anonymous playback adapters retain their engine-specific protocol as well as routing. The protobuf adapter signs the exact selected line and opaque episode value with the same SHA-256 request bytes as the public web client, using existing cryptographic dependencies without an additional runtime. It decodes the actual protobuf media field, preserves signed URL query bytes and keeps platform, login and membership rejections as failures without reflecting private payloads. The encrypted episode adapter holds one anonymous identity per engine instance, supplies the public client headers, decrypts the episode envelope, verifies the returned pid and permission, and signs that selected pid/scid before decrypting the returned media and headers. It neither switches episodes nor rotates identity in response to denial or limits. Both use their existing CspHttpContext. Registration, catalog retrieval, media resolution and real decoder frames remain separate acceptance stages.

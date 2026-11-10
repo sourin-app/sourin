@@ -149,6 +149,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../core/sourin_api.dart';
+import '../../core/native_media_transport.dart';
 import '../tokens.dart';
 import 'app_dialog_shell.dart';
 import 'app_loading.dart';
@@ -893,6 +894,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   ///    Future）。两者取先到者 —— 单一信号在异常路径下可能不触发，
   ///    两个都挂能降低"永远转圈"的风险。
   Future<void> _initPreview() async {
+    Player? pendingPlayer;
     try {
       /*
        * ⚠️ 与主播放器**完全相同**的硬解设置
@@ -909,6 +911,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
           logLevel: MPVLogLevel.error,
         ),
       );
+      pendingPlayer = p;
       /*
        * ⚠️ `setProperty` 在 `Player` 上**不存在** —— 必须拿到
        *    `p.platform` 并转成 `NativePlayer`（我第一版写错了，
@@ -1025,20 +1028,28 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
        * `_previewRange` 里显式调 `_preview?.play()`（区间循环必须有播放
        * 才能验证"这段跳得对不对"）。这里只是把"没人要求就播"去掉。
        */
+      await prepareNativeMediaTransport(p.platform);
+      if (!mounted) return;
       await p.open(Media(widget.streamUrl), play: false);
       if (!mounted) {
-        await p.dispose();
         return;
       }
       setState(() {
         _preview = p;
         _previewCtrl = c;
       });
+      pendingPlayer = null;
       debugPrint('[SKIPDLG] 独立预览播放器已启动（与主播放器无关）');
     } catch (e) {
       if (!mounted) return;
       setState(() => _previewError = userErrorText(e, fallback: '预览无法启动'));
       debugPrint('[SKIPDLG] 预览启动失败: $e');
+    } finally {
+      try {
+        await pendingPlayer?.dispose();
+      } catch (error) {
+        debugPrint('[SKIPDLG] 预览资源释放失败：${error.runtimeType}');
+      }
     }
   }
 

@@ -111,6 +111,7 @@ import '../core/clip_download.dart';
 import '../core/batch_bind.dart';
 import '../core/danmaku.dart';
 import '../core/device.dart';
+import '../core/native_media_transport.dart';
 // ★ task-38：为了 `SourinCoreException.kind`（结构化错误类别）
 //
 // `sourin_api.dart` 里没有导出这个类型（它在 ffi.dart 定义），
@@ -4931,9 +4932,6 @@ class _PlayerPageState extends State<PlayerPage>
     try {
       final native = _player.platform;
       if (native is NativePlayer) {
-        // Global All traffic is already wrapped by the core; native playback
-        // must not independently pick another proxy from environment variables.
-        await native.setProperty('http-proxy', '');
         /*
          * ★★★ task-22 P2-9：解码模式
          *
@@ -7087,6 +7085,10 @@ class _PlayerPageState extends State<PlayerPage>
        */
       // ★ 伪装的 .mp3（其实是 mp4）必须在 open 前纠正 demuxer，否则只有音轨
       await _applyDemuxerOverride();
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) {
+        return;
+      }
+      await prepareNativeMediaTransport(_player.platform);
       if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
         return;
       if (!debugPlayerSkipOpenForProbe) {

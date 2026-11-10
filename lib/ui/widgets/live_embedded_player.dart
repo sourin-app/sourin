@@ -57,6 +57,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/app_log.dart';
 import '../../core/models.dart';
+import '../../core/native_media_transport.dart';
 import '../../core/ui_prefs.dart';
 import '../tokens.dart';
 import '../media_session.dart';
@@ -606,6 +607,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// 而"切频道"时我们会先释放再重建 ⇒ 容易重复释放。
   /// media_kit 重复 dispose 会抛（或静默损坏原生状态）。
   bool _disposed = false;
+  int _transportGeneration = 0;
 
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<bool>? _bufferingSub;
@@ -1071,6 +1073,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
 
   /// 打开/切换当前流
   Future<void> _openCurrent() async {
+    if (_disposed) {
+      return;
+    }
+    final transportGeneration = ++_transportGeneration;
     final p = _player;
     final st = widget.stream;
     if (p == null) return;
@@ -1182,9 +1188,28 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       if (native0 is NativePlayer) {
         await _applyLiveFastStart(p);
       }
+      await prepareNativeMediaTransport(p.platform);
+      if (!mounted || _disposed ||
+          transportGeneration != _transportGeneration ||
+          !identical(_player, p)) {
+        return;
+      }
+      if (!_visibleNow) {
+        _pendingStream = st;
+        _suppressedStart = true;
+        return;
+      }
       await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
+      if (!mounted || _disposed ||
+          transportGeneration != _transportGeneration ||
+          !identical(_player, p)) {
+        return;
+      }
       if (widget.playWhenReady && _visibleNow) {
         await p.play();
+      }
+      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+        return;
       }
       // ★ 计时：首次起播的 open+play 耗时。
       //   留着是因为它是**下一次定位起播慢的唯一数据源**（Owner 报过 8 秒）。
@@ -1254,7 +1279,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       }
     } catch (e) {
       debugPrint('[LIVE-EMBED] 起播失败: $e');
-      if (!mounted) return;
+      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+        return;
+      }
       _error = '起播失败：$e';
       setState(() {});
       widget.onError?.call(_error!);
@@ -1266,6 +1293,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// 返回是否成功。失败时把错误写进 `_error` 并回调外层。
   Future<void> open(StreamCandidate st) async {
     if (_disposed) return;
+    final transportGeneration = ++_transportGeneration;
     final p = _player;
     if (p == null) {
       /*
@@ -1302,10 +1330,29 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     try {
       // ★ headers 是 `Media` 的构造参数（见 `_openCurrent` 的说明）
       await _applyLiveFastStart(p); // ★ 换台路径同样要设（见 _applyLiveFastStart）
+      await prepareNativeMediaTransport(p.platform);
+      if (!mounted || _disposed ||
+          transportGeneration != _transportGeneration ||
+          !identical(_player, p)) {
+        return;
+      }
+      if (!_visibleNow) {
+        _pendingStream = st;
+        _suppressedStart = true;
+        return;
+      }
       final tSwitch = DateTime.now();
       await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
+      if (!mounted || _disposed ||
+          transportGeneration != _transportGeneration ||
+          !identical(_player, p)) {
+        return;
+      }
       if (widget.playWhenReady && _visibleNow) {
         await p.play();
+      }
+      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+        return;
       }
       /*
        * ★ 2026-13 计时探针（Owner 报「切到直播页要 8 秒才出画面」）：
@@ -1355,7 +1402,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       }
     } catch (e) {
       debugPrint('[LIVE-EMBED] 换台失败: $e');
-      if (!mounted) return;
+      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+        return;
+      }
       _error = '换台失败：$e';
       setState(() {});
       widget.onError?.call(_error!);

@@ -303,7 +303,7 @@ impl Bili {
                 .filter(|id| !id.trim().is_empty()).ok_or("专题目录分类缺少有效的 type_id")?;
             let name = class.get("type_name").and_then(Value::as_str)
                 .filter(|name| !name.trim().is_empty()).ok_or("专题目录分类缺少有效的 type_name")?;
-            if !ids.insert(id) { return Err("专题目录包含重复分类".to_string()); }
+            if !ids.insert(id) { continue; }
             categories.push(CspCategory { id: id.to_string(), name: name.to_string() });
         }
         if self.directory_key(resource)? != key {

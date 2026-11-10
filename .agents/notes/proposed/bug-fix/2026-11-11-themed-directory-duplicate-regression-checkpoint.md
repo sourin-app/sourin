@@ -57,3 +57,9 @@ Qualify the four tests on an isolated current production baseline, inspect the
 public resource shape through the configured proxy, implement the bounded
 compatibility correction and rerun existing directory regressions. Validate the
 result in a fresh client before claiming the actual directory is usable.
+
+Follow-up (2026-11-11): the
+[stable duplicate-ID decision](../../implemented/bug-fix/2026-11-11-themed-directory-stable-duplicate-ids.md)
+records the later qualified RED, real public-body shape, implementation and
+GREEN. This checkpoint retains its original tests-only state; native directory
+and playback verification remain separate.

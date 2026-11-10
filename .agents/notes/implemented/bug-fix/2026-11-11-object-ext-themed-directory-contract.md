@@ -2,6 +2,11 @@
 
 Status: implemented
 
+Current duplicate-ID policy: [stable first occurrence](2026-11-11-themed-directory-stable-duplicate-ids.md)
+supersedes only the duplicate-rejection sub-decision recorded below. Its local
+RED/GREEN is qualified; fresh-core native directory and playback verification
+remain pending. The original Decision is retained as history.
+
 Applies to the current source on 2026-11-11. Related:
 [engine-owned HTTP routing](../architecture/2026-11-09-csp-global-routing-retains-engine-recipes.md)
 owns the client policy;
@@ -115,4 +120,11 @@ owning object-ext theme loading. The routing and honest-contract notes above
 own related boundaries and remain in force. The saved-source import notes own
 configuration retention; generic UI theme notes and runtime registry proposals
 are unrelated. No earlier decision is superseded or archived.
+
+Follow-up (2026-11-11): the
+[stable duplicate-ID decision](2026-11-11-themed-directory-stable-duplicate-ids.md)
+replaces only the duplicate-rejection sub-decision after a real directory and
+qualified RED expose that compatibility constraint. Local GREEN is complete;
+fresh native verification remains pending. The Decision above records the
+initial behavior and is retained as history.
 

@@ -1051,15 +1051,16 @@ impl CspSite for App99 {
         })
     }
 
-    /// 分类列表：`tid` 当作搜索词（该源的分类就是服务端的检索词，见 DEX 的 categoryContent）
+    /// 分类列表：分类 ID 走 pid；空关键词和目录排序与搜索请求分开。
     async fn list(&self, tid: &str, page: u32, _ext: &str) -> Result<CspList, String> {
         let page = if page == 0 { 1 } else { page };
         let body = serde_json::json!({
-            "kw": tid.trim(),
-            "page": page,
+            "kw": "",
+            "page": page.to_string(),
             "limit": 21,
-            "orderBy": "vod_hits_month",
-            "sort": "desc",
+            "pid": tid.trim(),
+            "orderBy": "time",
+            "isCategory": 1,
         });
         let v = self.call("/vod/search", body).await?;
         let items = items_of(&v)?;
@@ -1245,6 +1246,10 @@ crate::csp::register_site!(App99);
 #[cfg(test)]
 #[path = "app99_proxy_tests.rs"]
 mod proxy_tests;
+
+#[cfg(test)]
+#[path = "app99_category_tests.rs"]
+mod category_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

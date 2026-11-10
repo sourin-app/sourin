@@ -35,6 +35,7 @@ import 'miuix_controls.dart' as ui;
 
 import '../../design/widgets/app_ink_well.dart';
 import '../tokens.dart';
+import 'motion_prefs.dart';
 import '../../design/icons/app_icons.dart';
 
 /// 一条弹幕来源
@@ -532,6 +533,7 @@ class DanmakuInfoPanel extends StatefulWidget {
 class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
     with SingleTickerProviderStateMixin {
   late bool _expanded = widget.initiallyExpanded;
+  final _contentKey = GlobalKey();
 
   /// ★★★ 2026-10-19（第 66 轮 Owner 第 ⑤ 条）：「上次更新时间」
   ///
@@ -609,11 +611,18 @@ class _DanmakuInfoPanelState extends State<DanmakuInfoPanel>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedSize(
-      duration: Motion.fast,
-      curve: Motion.easeOut,
-      alignment: Alignment.topRight,
+    // Keep the real content State/focus when entering or leaving the size
+    // animation. Reduced motion lays it out directly and owns no size ticker.
+    final content = KeyedSubtree(
+      key: _contentKey,
       child: _expanded ? _buildExpanded(context) : _buildCollapsed(context),
+    );
+    if (MotionPrefs.reduce(context)) return content;
+    return AnimatedSize(
+      duration: MotionPrefs.duration(context, Motion.fast),
+      curve: MotionPrefs.curve(context, Motion.easeOut),
+      alignment: Alignment.topRight,
+      child: content,
     );
   }
 

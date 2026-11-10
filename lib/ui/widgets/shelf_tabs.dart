@@ -3,6 +3,7 @@ import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
+import 'motion_prefs.dart';
 
 /// The shared library categories, in their stable source-key order.
 class ShelfTabs extends StatelessWidget {
@@ -107,6 +108,17 @@ class _MiuixSegmentedTabsState extends State<MiuixSegmentedTabs> {
   int? _pendingVisibleIndex;
   double? _lastViewportWidth;
   double? _lastComponentWidth;
+  bool _reduceMotion = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion = MotionPrefs.reduce(context);
+    if (_reduceMotion != reduceMotion) {
+      _reduceMotion = reduceMotion;
+      _ensureVisible(widget.selected);
+    }
+  }
 
   void _ensureVisible(int index) {
     final scheduled = _pendingVisibleIndex != null;
@@ -118,8 +130,13 @@ class _MiuixSegmentedTabsState extends State<MiuixSegmentedTabs> {
       if (!mounted ||
           pending == null ||
           pending >= widget.tabs.length ||
-          !_scrollController.hasClients)
+          !_scrollController.hasClients) {
         return;
+      }
+      if (_reduceMotion &&
+          _scrollController.position.isScrollingNotifier.value) {
+        _scrollController.jumpTo(_scrollController.position.pixels);
+      }
       final nodes = _group.traversalDescendants.toList();
       if (nodes.length != widget.tabs.length) return;
       final target = nodes[pending].context?.findRenderObject();
@@ -127,8 +144,11 @@ class _MiuixSegmentedTabsState extends State<MiuixSegmentedTabs> {
       _scrollController.position.ensureVisible(
         target,
         alignment: .5,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOut,
+        duration: MotionPrefs.duration(
+          context,
+          const Duration(milliseconds: 120),
+        ),
+        curve: MotionPrefs.curve(context, Curves.easeOut),
       );
     });
   }

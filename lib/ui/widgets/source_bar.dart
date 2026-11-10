@@ -30,6 +30,7 @@ import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
+import 'motion_prefs.dart';
 import '../../core/sourin_api.dart';
 import '../../design/icons/app_icons.dart';
 
@@ -145,11 +146,22 @@ class _SourceBarState extends State<SourceBar> {
   final _controller = ScrollController();
   final _pillKeys = <String, GlobalKey>{};
   int _revealRevision = 0;
+  bool _reduceMotion = false;
 
   @override
   void initState() {
     super.initState();
     _scrollToCurrent();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion = MotionPrefs.reduce(context);
+    if (_reduceMotion != reduceMotion) {
+      _reduceMotion = reduceMotion;
+      _scrollToCurrent();
+    }
   }
 
   @override
@@ -208,11 +220,16 @@ class _SourceBarState extends State<SourceBar> {
               );
           // A fully visible selection stays put, including after a mouse click.
           if ((target - position.pixels).abs() > .5) {
-            await position.animateTo(
-              target,
-              duration: Motion.base,
-              curve: Motion.easeOut,
-            );
+            final duration = MotionPrefs.duration(context, Motion.base);
+            if (duration == Duration.zero) {
+              position.jumpTo(target);
+            } else {
+              await position.animateTo(
+                target,
+                duration: duration,
+                curve: MotionPrefs.curve(context, Motion.easeOut),
+              );
+            }
           }
           return;
         }

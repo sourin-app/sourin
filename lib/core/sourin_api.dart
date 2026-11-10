@@ -1532,6 +1532,21 @@ class SourinApi {
   /// 写 history 和 progress 两张表），**清除时是要一起清的**。
   static Future<void> clearHistory() => SourinCore.callAsync('clear_history');
 
+  /// Conditionally fills metadata on an existing episode without saving playback.
+  static Future<void> patchProgressMetadata(
+    Progress expected, {
+    required String title,
+    String? cover,
+  }) => SourinCore.callAsync('patch_progress_metadata', {
+    'provider': expected.provider,
+    'id': expected.nativeId,
+    'episode_id': expected.episodeId,
+    'expected_title': expected.title,
+    'expected_cover': expected.cover,
+    'title': title,
+    'cover': cover,
+  });
+
   /// 保存播放进度（**同时写一条历史**）
   ///
   /// # 自动判定「看完」

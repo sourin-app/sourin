@@ -1301,6 +1301,13 @@ async fn dispatch_inner(req: &str) -> String {
                 )
             })
         }
+        "patch_progress_metadata" => {
+            let patch = match crate::commands_write::ProgressMetadataPatch::from_args(&a) {
+                Ok(patch) => patch,
+                Err(error) => return err_json(&error, "other"),
+            };
+            with_state(move |state| crate::commands_write::patch_progress_metadata(state, &patch))
+        }
         "clear_history" => with_state(|st| crate::commands_write::clear_history(st)),
         "set_skip_marker" => {
             let provider = match a.str("provider") {
@@ -3025,6 +3032,22 @@ fn split_login_kind_marker(msg: &str) -> (&str, Option<&str>) {
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod progress_metadata_boundary_tests {
+    #[tokio::test]
+    async fn progress_metadata_cas_ffi_decodes_required_snapshot_before_state_access() {
+        for (args, field) in [
+            (serde_json::json!({"provider":"p","id":"i"}), "episode_id"),
+            (serde_json::json!({"provider":"p","id":"i","episode_id":null,
+                "expected_title":"","title":"Title","cover":null}), "expected_cover"),
+        ] {
+            let packet = serde_json::json!({"cmd":"patch_progress_metadata","args":args});
+            let response: serde_json::Value = serde_json::from_str(&super::dispatch_inner(&packet.to_string()).await).unwrap();
+            assert!(response.to_string().contains(field), "actual dispatch must decode the metadata command contract: {response}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod pan_cleanup_envelope_tests {

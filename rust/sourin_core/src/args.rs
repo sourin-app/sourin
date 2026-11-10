@@ -181,6 +181,16 @@ impl<'a> Args<'a> {
         v.as_str().ok_or_else(|| self.bad_type(name, "字符串", v))
     }
 
+    /// A required snapshot field may explicitly be null. Missing and null
+    /// cannot be conflated when null is part of a compare-and-set contract.
+    pub fn nullable_str(&self, name: &str) -> Result<Option<&'a str>, String> {
+        let value = self.raw.get(name).or_else(|| {
+            name.contains('_').then(|| self.raw.get(to_camel_case(name))).flatten()
+        }).ok_or_else(|| self.missing(name, "字符串或 null"))?;
+        if value.is_null() { return Ok(None); }
+        value.as_str().map(Some).ok_or_else(|| self.bad_type(name, "字符串或 null", value))
+    }
+
     /// 可选字符串参数
     pub fn str_or<'d>(&self, name: &str, default: &'d str) -> &'d str
     where

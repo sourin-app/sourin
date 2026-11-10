@@ -217,8 +217,8 @@ void main() {
       /*
        * ⚠️ 这条守的是**最危险的回归**：
        *    回填只该改 `title` / `cover`。
-       *    若实现里漏传 `position`/`duration`（`save_progress` 是 upsert）
-       *    ⇒ 用户的**观看进度会被冲成 0** —— 那比"没标题"严重得多。
+       *    元数据回填只把原记录作为条件快照，实际命令不再保存播放进度。
+       *    读取当前记录后合并时也必须保留位置、时长和集身份。
        */
       final f = FakeDetail(title: '无职转生 第三季', cover: 'https://x.invalid/c.jpg');
       final s = FakeSaver();
@@ -360,7 +360,7 @@ void main() {
       final b = mk(key: 'k:b', provider: 'k', nativeId: 'b', title: '');
       final merged = mergeBackfilled(
         [a, b],
-        [withBackfilledMeta(b, title: 'B 的新标题')],
+        [ProgressMetadataPatch(expected: b, title: 'B 的新标题')],
       );
 
       expect(merged.length, 2, reason: '★ 回填**不许**增删列表项');

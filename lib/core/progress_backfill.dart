@@ -97,15 +97,26 @@ typedef DetailFetcher = Future<MediaDetail> Function(String provider, String id)
 
 /// 回填用的写回函数（可注入）
 ///
-/// ⚠️ 参数故意是**整条记录 + 新值**而不是散开的 8 个参数：
-///    回填**只**改标题/封面，位置/时长/集 id 必须**原样保留**
-///    （否则回填会把用户的观看进度冲掉 —— 那比"没标题"严重得多）。
-///    把原记录整体传进来，实现里逐字段照抄，就不容易漏。
+/// [p] is the expected metadata snapshot, not a replacement progress record.
+/// Persistence compares its title/cover and changes only those fields.
 typedef ProgressSaver = Future<void> Function(
   Progress p, {
   required String title,
   String? cover,
 });
+
+/// Metadata returned for one captured record. Playback fields are never a patch.
+class ProgressMetadataPatch {
+  const ProgressMetadataPatch({
+    required this.expected,
+    required this.title,
+    this.cover,
+  });
+
+  final Progress expected;
+  final String title;
+  final String? cover;
+}
 
 /// 把回填后的记录**合并**回原列表（纯函数）
 ///
@@ -113,14 +124,39 @@ typedef ProgressSaver = Future<void> Function(
 /// 见 `rust/sourin_core/src/store.rs` 的 `progress_key`；老口径是
 /// `item_key(provider, id)`）。匹配不到的原样保留 —— 回填**不许**增删列表项。
 ///
-/// ⚠️ `patched` 与 `current` 的 key 同源（都由 Rust 生成），所以按 key 配对
-///    对口径变化**免疫** —— 这里只把它当不透明标识用。
-List<Progress> mergeBackfilled(List<Progress> current, List<Progress> patched) {
+/// Keys are opaque Rust identifiers. Metadata fields compare their captured
+/// values independently; playback fields and ordering always come from current.
+List<Progress> mergeBackfilled(
+  List<Progress> current,
+  List<ProgressMetadataPatch> patched,
+) {
   if (patched.isEmpty) return current;
-  final byKey = <String, Progress>{for (final p in patched) p.key: p};
+  final byKey = <String, ProgressMetadataPatch>{
+    for (final patch in patched) patch.expected.key: patch,
+  };
   return [
-    for (final p in current) byKey[p.key] ?? p,
+    for (final p in current) _mergeMetadata(p, byKey[p.key]),
   ];
+}
+
+Progress _mergeMetadata(Progress current, ProgressMetadataPatch? patch) {
+  if (patch == null) return current;
+  final expected = patch.expected;
+  if (current.provider != expected.provider ||
+      current.nativeId != expected.nativeId ||
+      current.episodeId != expected.episodeId) {
+    return current;
+  }
+  final title = current.title == expected.title &&
+          current.title.trim().isEmpty && patch.title.trim().isNotEmpty
+      ? patch.title
+      : current.title;
+  final cover = current.cover == expected.cover &&
+          patch.cover != null && patch.cover!.trim().isNotEmpty
+      ? patch.cover
+      : current.cover;
+  if (title == current.title && cover == current.cover) return current;
+  return withBackfilledMeta(current, title: title, cover: cover);
 }
 
 /// 用新标题/封面复制一条记录（其余字段**逐字照抄**）
@@ -207,27 +243,17 @@ class ProgressTitleBackfill {
     required String title,
     String? cover,
   }) =>
-      SourinApi.saveProgress(
-        p.provider,
-        p.nativeId,
+      SourinApi.patchProgressMetadata(
+        p,
         title: title,
         cover: cover,
-        /*
-         * ⚠️ 这四个必须**原样带回去** —— 见 [ProgressSaver] 的说明。
-         *    `save_progress` 是 **upsert**：少传哪个字段就可能把哪一列写坏。
-         */
-        episodeId: p.episodeId,
-        episodeTitle: p.episodeTitle,
-        position: p.position,
-        duration: p.duration,
-        finished: p.finished,
       );
 
   /// 对 [items] 里需要回填的条目跑一轮（返回**已回填**的那些，可能为空）
   ///
   /// ⚠️ **不抛异常**：任何单条失败都吞掉（`catch (_) {}`），
   ///    因为回填是**尽力而为**的旁路 —— 它失败不该让追更页报错。
-  Future<List<Progress>> backfill(List<Progress> items) async {
+  Future<List<ProgressMetadataPatch>> backfill(List<Progress> items) async {
     final todo = <Progress>[];
     for (final p in items) {
       if (!needsTitleBackfill(p)) continue;
@@ -236,7 +262,7 @@ class ProgressTitleBackfill {
     }
     if (todo.isEmpty) return const [];
 
-    final done = <Progress>[];
+    final done = <ProgressMetadataPatch>[];
     for (var i = 0; i < todo.length; i += maxConcurrent) {
       final end = (i + maxConcurrent).clamp(0, todo.length);
       final chunk = todo.sublist(i, end);
@@ -249,7 +275,7 @@ class ProgressTitleBackfill {
   }
 
   /// 回填**单条**（失败/无标题 ⇒ 返回 null，不抛）
-  Future<Progress?> _one(Progress p) async {
+  Future<ProgressMetadataPatch?> _one(Progress p) async {
     try {
       final d = await _fetch(p.provider, p.nativeId);
       final t = d.title.trim();
@@ -261,7 +287,7 @@ class ProgressTitleBackfill {
       if (t.isEmpty) return null;
 
       await _save(p, title: d.title, cover: d.cover);
-      return withBackfilledMeta(p, title: d.title, cover: d.cover);
+      return ProgressMetadataPatch(expected: p, title: d.title, cover: d.cover);
     } catch (_) {
       /*
        * ★ 静默：不弹 toast、不写日志噪音、不改列表。

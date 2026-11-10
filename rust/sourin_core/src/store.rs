@@ -1365,6 +1365,28 @@ impl Db {
 
     // ─────────────────── 进度 ───────────────────
 
+    /// Metadata is a delayed observation, not a new playback event. Field CAS
+    /// operates under the connection lock and never inserts or changes time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn patch_progress_metadata(
+        &self, provider: &str, native_id: &str, episode_id: Option<&str>,
+        expected_title: &str, expected_cover: Option<&str>, title: &str, cover: Option<&str>,
+    ) -> Result<(), String> {
+        let key = progress_key(provider, native_id, episode_id);
+        let conn = self.conn.lock().unwrap();
+        let title = title.trim();
+        let cover = cover.map(str::trim).filter(|cover| !cover.is_empty());
+        let update_title = expected_title.trim().is_empty() && !title.is_empty();
+        conn.execute(
+            "UPDATE progress SET \
+             title=CASE WHEN ?2 AND title=?3 THEN ?4 ELSE title END, \
+             cover=CASE WHEN ?5 IS NOT NULL AND cover IS ?6 THEN ?5 ELSE cover END \
+             WHERE key=?1",
+            params![key, update_title, expected_title, title, cover, expected_cover],
+        ).map_err(|_| "补全播放记录信息失败".to_string())?;
+        Ok(())
+    }
+
     pub fn upsert_progress(&self, p: &Progress) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         /*

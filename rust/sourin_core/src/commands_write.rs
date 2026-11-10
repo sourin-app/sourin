@@ -136,6 +136,47 @@ pub fn save_progress(
     })
 }
 
+/// Delayed metadata request contains no playback or ordering fields.
+#[derive(Debug)]
+pub(crate) struct ProgressMetadataPatch {
+    provider: String,
+    id: String,
+    episode_id: Option<String>,
+    expected_title: String,
+    expected_cover: Option<String>,
+    title: String,
+    cover: Option<String>,
+}
+
+impl ProgressMetadataPatch {
+    pub(crate) fn from_args(args: &crate::args::Args<'_>) -> Result<Self, String> {
+        let provider = args.str("provider")?.to_string();
+        let id = args.str("id")?.to_string();
+        if provider.trim().is_empty() || id.trim().is_empty() { return Err("播放记录标识不能为空".into()); }
+        Ok(Self {
+            provider, id,
+            episode_id:args.nullable_str("episode_id")?.map(str::to_owned),
+            expected_title:args.str("expected_title")?.to_string(),
+            expected_cover:args.nullable_str("expected_cover")?.map(str::to_owned),
+            title:args.str("title")?.to_string(),
+            cover:args.nullable_str("cover")?.map(str::to_owned),
+        })
+    }
+}
+
+pub(crate) fn patch_progress_metadata(state: &AppState, patch: &ProgressMetadataPatch) -> Result<(), String> {
+    let expected_cover = crate::library_covers::durable(state, patch.expected_cover.as_deref());
+    // An expired wrapper cannot represent a known null snapshot. Refuse the
+    // cover update while allowing the independent title comparison to proceed.
+    let unresolved_expected = patch.expected_cover.as_deref().is_some_and(|value| !value.trim().is_empty())
+        && expected_cover.is_none();
+    let cover = if unresolved_expected { None } else {
+        crate::library_covers::durable(state, patch.cover.as_deref())
+    };
+    state.db.patch_progress_metadata(&patch.provider, &patch.id, patch.episode_id.as_deref(),
+        &patch.expected_title, expected_cover.as_deref(), &patch.title, cover.as_deref())
+}
+
 /// 清空观看历史
 pub fn clear_history(state: &AppState) -> Result<(), String> {
     state.db.clear_history()
@@ -642,6 +683,10 @@ pub fn repoint_item(
     log::info!("★ 换源迁移记录: {from_key} → {to_key}");
     state.db.repoint_item(&from_key, &to_key)
 }
+
+#[cfg(test)]
+#[path = "progress_metadata_cas_tests.rs"]
+mod progress_metadata_cas_tests;
 
 #[cfg(test)]
 mod midroll_tests {

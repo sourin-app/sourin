@@ -10,7 +10,7 @@
 ///
 /// ## 一、为什么不发明一套新的插件格式
 /// 本仓**已经有**一个"配置而非代码"的源格式 —— `DeclarativeSource`
-/// （见 `provider_import_dialog.dart` 的 `kDeclarativeTemplate`）：
+/// （保留用于共享编排器的数据模型）：
 /// ```text
 /// { id, name, base, headers, capabilities,
 ///   endpoints: { categories|list|detail|search: { path, params, map } } }
@@ -98,7 +98,7 @@ class ComposerDraft {
   Iterable<ComposerEndpoint> get enabled =>
       endpoints.entries.where((e) => e.value.enabled).map((e) => e.key);
 
-  /// 编出来的 JSON —— 与 `kDeclarativeTemplate` 的形状**逐字一致**
+  /// 编出来的 JSON —— 保持声明式配置的数据形状
   ///
   /// ⚠️ 2026-10-17（CodeRabbit CR）：`id`/`name`/`base` 必须 **trim** 后再输出。
   ///   改前 `_canSubmit` 用 `trim()` **判断**非空、但 `toJson()` 输出的是

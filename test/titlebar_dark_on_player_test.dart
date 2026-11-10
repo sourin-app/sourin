@@ -95,27 +95,27 @@ void main() {
        * `dispose` 覆盖所有销毁路径（含 pushReplacement），
        * `_exitPlayer` 覆盖"主动返回"。
        */
-      final sets = RegExp(r'titleBarDark\.value\s*=\s*true')
+      final sets = RegExp(r'_titleBarSession\s*=\s*PlayerTitleBarSession\(\)')
           .allMatches(playerSrc)
           .length;
-      final resets = RegExp(r'titleBarDark\.value\s*=\s*false')
+      final resets = RegExp(r'_titleBarSession\.release\(\)')
           .allMatches(playerSrc)
           .length;
 
-      expect(sets, greaterThanOrEqualTo(1),
-          reason: '★ `PlayerPage` 进入播放页时必须把标题栏转暗');
+      expect(
+        sets,
+        greaterThanOrEqualTo(1),
+        reason: '★ `PlayerPage` 进入播放页时必须把标题栏转暗',
+      );
       expect(
         resets,
         greaterThanOrEqualTo(2),
-        reason: '★★ 至少要有 **2 处**复位（`dispose` + `_exitPlayer`）—— '
+        reason:
+            '★★ 至少要有 **2 处**复位（`dispose` + `_exitPlayer`）—— '
             '漏了的话"进过播放页后返回首页标题栏一直是黑的"。'
             '当前只有 $resets 处。',
       );
-      expect(
-        resets,
-        greaterThanOrEqualTo(sets),
-        reason: '复位点不能少于置位点',
-      );
+      expect(resets, greaterThanOrEqualTo(sets), reason: '复位点不能少于置位点');
     });
 
     test('★ `_CustomTitleBar` 必须接受并真的用上 `dark`', () {
@@ -125,14 +125,16 @@ void main() {
         reason: '`dark` 要有默认值 false（其它页面不受影响）',
       );
       expect(
-        shellSrc.contains('_CustomTitleBar(') && shellSrc.contains('dark: isDark'),
+        shellSrc.contains('_CustomTitleBar(') &&
+            shellSrc.contains('dark: isDark'),
         isTrue,
         reason: '★ `_TitleBarHost` 必须把 `titleBarDark` 的值传进去',
       );
       expect(
         shellSrc.contains('_titleBarRow('),
         isTrue,
-        reason: '★ 浅色/深色两种外观必须**共用同一个内容行** —— '
+        reason:
+            '★ 浅色/深色两种外观必须**共用同一个内容行** —— '
             '各写一份很容易在深色态漏掉拖动区，'
             '那会重现用户抱怨过的"播放页无法拖动窗口"',
       );
@@ -158,7 +160,8 @@ void main() {
       expect(
         row.contains('windowManager.startDragging()'),
         isTrue,
-        reason: '★★ 拖动区必须在**共用**的 `_titleBarRow` 里 —— '
+        reason:
+            '★★ 拖动区必须在**共用**的 `_titleBarRow` 里 —— '
             '这样深色态（播放页）同样能拖窗口',
       );
       expect(
@@ -168,35 +171,43 @@ void main() {
       );
     });
 
-    test('★ 深色态不得再用 `GlassContainer`（黑底上会发灰）', () {
-      /*
-       * 液态玻璃是"折射背后内容"。背后是纯黑播放页时，
-       * 它只会得到一条**发灰**的带子 —— 那正是用户说"有点丑"的来源。
-       *
-       * ⚠️ 断言范围必须**精确切出深色分支**。我第一版取了固定 700 字符，
-       *    结果窗口越界进了**浅色分支**（那里本来就有 `GlassContainer`），
-       *    报了一个假失败。
-       */
-      final darkIdx = shellSrc.indexOf('if (dark) {');
-      expect(darkIdx, greaterThan(0), reason: '找不到深色分支');
-      // 以浅色分支的注释作为结束锚点（结构上稳定）
-      final lightIdx = shellSrc.indexOf('标题栏 = 开源包的', darkIdx);
-      expect(lightIdx, greaterThan(darkIdx),
-          reason: '找不到浅色分支的起始注释，无法界定深色分支范围');
-      final darkBlock = shellSrc.substring(darkIdx, lightIdx);
-
+    test('★ 播放页标题栏使用不透明黑色 MiuixSurface 和白色前景', () {
+      // The Miuix implementation shares one surface and chooses its color.
+      // Scope this check to the real build method, without comment anchors or
+      // requiring the previous implementation's separate `if (dark)` branch.
+      final code = stripComments(shellSrc);
+      final classStart = code.indexOf('class _CustomTitleBar ');
+      expect(classStart, greaterThanOrEqualTo(0));
+      final buildStart = code.indexOf(
+        'Widget build(BuildContext context)',
+        classStart,
+      );
+      final rowStart = code.indexOf('Widget _titleBarRow(', buildStart);
+      expect(buildStart, greaterThan(classStart));
+      expect(rowStart, greaterThan(buildStart));
+      final build = code.substring(buildStart, rowStart);
       expect(
-        darkBlock.contains('Colors.black'),
-        isTrue,
-        reason: '★ 深色态应直接用纯黑，与播放页无缝',
+        build,
+        matches(
+          RegExp(
+            r'miuix\.MiuixSurface\(\s*color:\s*dark\s*\?\s*Colors\.black\s*:\s*colors\.surface\s*,\s*child:\s*_titleBarRow\(foreground,\s*foreground\)',
+          ),
+        ),
+        reason: '播放态的实际表面必须直接使用不透明 Colors.black；普通页面保持主题 surface。',
       );
       expect(
-        darkBlock.contains('GlassContainer'),
-        isFalse,
-        reason: '★ 深色态**不要**用 GlassContainer —— '
-            '黑底上液态玻璃会发灰，看起来更脏。'
-            '（实测深色分支内容：${darkBlock.length} 字符）',
+        build,
+        matches(
+          RegExp(
+            r'final\s+foreground\s*=\s*dark\s*\?\s*Colors\.white\s*:\s*colors\.onSurface\s*;',
+          ),
+        ),
+        reason: '深色标题栏的共用内容行必须收到白色前景，保持标题及窗口按钮可见。',
       );
+      expect(build, isNot(contains('GlassContainer')));
+      expect(build, isNot(contains('MiuixGlass')));
+      expect(build, isNot(contains('Opacity(')));
+      expect(build, isNot(contains('BackdropFilter(')));
     });
 
     test('★ `_WinButton` 必须支持自定义图标色（否则黑底黑图标）', () {
@@ -251,7 +262,8 @@ void main() {
       expect(
         shellSrc.contains('titleBarDark.addListener('),
         isFalse,
-        reason: '★★ 不得再用 `titleBarDark.addListener` 触发整页 setState —— '
+        reason:
+            '★★ 不得再用 `titleBarDark.addListener` 触发整页 setState —— '
             '那会在返回帧之后重建整个首页子树（Owner 第 2 条卡顿）',
       );
     });

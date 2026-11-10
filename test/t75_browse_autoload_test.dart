@@ -43,6 +43,7 @@ import 'package:sourin_spike/core/models.dart' as models;
 import 'package:sourin_spike/ui/browse_page.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/widgets/app_page_header.dart';
 
 // ══════════════════════════════════════════════════════════════════════════
 // 夹具
@@ -51,20 +52,23 @@ import 'package:sourin_spike/ui/app_theme.dart';
 /// 视口 —— 与 Owner 截图同宽（1280），高取 900 便于量吸顶几何
 const Size kViewport = Size(1280, 900);
 
-/// 吸顶高度（`browse_page.dart` 的 `_headerMinExtent` = 48 + `Sp.x5`）
-const double kHeaderMin = 48 + 20;
-
-/// 展开高度（= 吸顶高度 + `Sp.x8`）
-const double kHeaderMax = kHeaderMin + 32;
-
-Widget host(Widget child) {
+Widget host(
+  Widget child, {
+  Size viewport = kViewport,
+  double textScale = 1,
+  double topInset = 0,
+}) {
   final theme = AppTheme.themeFor(Brightness.light);
   return MaterialApp(
     debugShowCheckedModeBanner: false,
     theme: theme,
     builder: (_, c) => AppThemeHost(data: theme, child: c ?? const SizedBox()),
     home: MediaQuery(
-      data: const MediaQueryData(size: kViewport),
+      data: MediaQueryData(
+        size: viewport,
+        textScaler: TextScaler.linear(textScale),
+        padding: EdgeInsets.only(top: topInset),
+      ),
       child: Directionality(
         textDirection: TextDirection.ltr,
         child: Scaffold(body: child),
@@ -73,8 +77,7 @@ Widget host(Widget child) {
   );
 }
 
-models.MediaItem item(int i) =>
-    models.MediaItem(id: 'demo:$i', title: '条目$i');
+models.MediaItem item(int i) => models.MediaItem(id: 'demo:$i', title: '条目$i');
 
 /// 一页 [n] 条，共 [pageCount] 页
 models.Page<models.MediaItem> pageOf(int n, {int page = 1, int? pageCount}) =>
@@ -84,8 +87,8 @@ models.Page<models.MediaItem> pageOf(int n, {int page = 1, int? pageCount}) =>
       pageCount: pageCount,
     );
 
-/// 返回按钮（`Icons.chevron_left`）—— 需求②的主角
-final Finder kBack = find.byIcon(Icons.chevron_left);
+/// Shared page-header navigation, including its full interactive hit target.
+final Finder kBack = find.byKey(const ValueKey('page-header-back'));
 
 /// 吸顶条那层 `Container`（delegate 里画底色的那个）
 ///
@@ -141,8 +144,12 @@ Future<(BrowsePageState, List<int>)> mount(
   required Future<models.Page<models.MediaItem>> Function(int page) loader,
   int? cats,
   bool awaitFirstPage = true,
+  Size viewport = kViewport,
+  double textScale = 1,
+  double topInset = 0,
+  String title = '电影',
 }) async {
-  t.view.physicalSize = kViewport;
+  t.view.physicalSize = viewport;
   t.view.devicePixelRatio = 1.0;
   addTearDown(t.view.reset);
 
@@ -154,12 +161,15 @@ Future<(BrowsePageState, List<int>)> mount(
       host(
         BrowsePage(
           provider: 'demo',
-          title: '电影',
+          title: title,
           pageLoaderForTest: (p) {
             calls.add(p);
             return loader(p);
           },
         ),
+        viewport: viewport,
+        textScale: textScale,
+        topInset: topInset,
       ),
     );
 
@@ -212,8 +222,7 @@ Future<void> at(WidgetTester t, ScrollController c, double off) async {
 void main() {
   // ══════════════════════════════════════════════════════════════════════
   group('task-75① 需求①：触底自动加载（按钮已删）', () {
-    testWidgets('A1 页面上**没有**「加载更多」按钮 —— 且它不是"从来就没画过"',
-        (t) async {
+    testWidgets('A1 页面上**没有**「加载更多」按钮 —— 且它不是"从来就没画过"', (t) async {
       final (st, calls) = await mount(
         t,
         loader: (p) async => pageOf(20, page: p, pageCount: 5),
@@ -223,29 +232,21 @@ void main() {
       expect(
         st.debugItemCount,
         20,
-        reason: '★ 前置：第 1 页必须真的进来了（实测 ${st.debugItemCount} 条）'
+        reason:
+            '★ 前置：第 1 页必须真的进来了（实测 ${st.debugItemCount} 条）'
             '—— 不成立的话下面"没有按钮"就是对空树的断言',
       );
 
       // ── 本需求的主角 ──
-      expect(
-        find.text('加载更多'),
-        findsNothing,
-        reason: '★★ 需求①：那个按钮必须真的不存在了',
-      );
-      expect(
-        find.text('加载中…'),
-        findsNothing,
-        reason: '★ 需求①：连它的加载态文案也一起没了',
-      );
+      expect(find.text('加载更多'), findsNothing, reason: '★★ 需求①：那个按钮必须真的不存在了');
+      expect(find.text('加载中…'), findsNothing, reason: '★ 需求①：连它的加载态文案也一起没了');
       // ★ 负向也留个正向锚：旧的按钮是 `FilledButton.tonal`。
       //   这里不断言"一个 FilledButton 都没有"（分类栏将来可能加），
       //   只断言带这个文案的按钮没了 —— 上面两条已覆盖。
       expect(calls, [1], reason: '★ 前置：只应取过第 1 页（实测 $calls）');
     });
 
-    testWidgets('B1[阳性对照] 滚到底 ⇒ **真的**自动取回第 2 页（20 → 40）',
-        (t) async {
+    testWidgets('B1[阳性对照] 滚到底 ⇒ **真的**自动取回第 2 页（20 → 40）', (t) async {
       final (st, calls) = await mount(
         t,
         loader: (p) async => pageOf(20, page: p, pageCount: 5),
@@ -259,7 +260,8 @@ void main() {
       expect(
         calls,
         contains(2),
-        reason: '★★ 需求①：滚到底必须**自动**发第 2 页请求'
+        reason:
+            '★★ 需求①：滚到底必须**自动**发第 2 页请求'
             '（实测取页记录 = $calls）',
       );
       expect(
@@ -272,13 +274,13 @@ void main() {
       expect(
         after.dy,
         lessThan(before.dy),
-        reason: '★★ 阳性对照：内容必须真的在滚（条目0 的 y 从 ${before.dy} '
+        reason:
+            '★★ 阳性对照：内容必须真的在滚（条目0 的 y 从 ${before.dy} '
             '变成 ${after.dy}）—— 不成立则"触底"这个前提没成立',
       );
     });
 
-    testWidgets('B2[阴性对照] 已经到底 ⇒ 再触发**不**增加条目（闸门真的闸住）',
-        (t) async {
+    testWidgets('B2[阴性对照] 已经到底 ⇒ 再触发**不**增加条目（闸门真的闸住）', (t) async {
       final (st, calls) = await mount(
         t,
         loader: (p) async => pageOf(20, page: p, pageCount: 2),
@@ -299,7 +301,8 @@ void main() {
       expect(
         calls,
         callsAtEnd,
-        reason: '★★ 阴性对照：到底之后再滚/再触发都**不该**发请求'
+        reason:
+            '★★ 阴性对照：到底之后再滚/再触发都**不该**发请求'
             '（实测取页记录 $callsAtEnd → $calls）',
       );
       expect(st.debugItemCount, 40, reason: '★ 条目数不该变');
@@ -332,37 +335,41 @@ void main() {
       expect(
         calls,
         contains(2),
-        reason: '★★ 需求①：内容填不满一屏 ⇒ 必须继续补取，'
+        reason:
+            '★★ 需求①：内容填不满一屏 ⇒ 必须继续补取，'
             '否则用户永远看不到第 2 页（实测取页记录 = $calls）',
       );
     });
 
-    testWidgets('C2[阴性对照] 上游返回空页 ⇒ 补取必须**停下**（不死循环）',
-        (t) async {
+    testWidgets('C2[阴性对照] 上游返回空页 ⇒ 补取必须**停下**（不死循环）', (t) async {
       /*
        * `_fillViewportIfNeeded` 的 `grew` 判据：只有上一页**真的带回了条目**
        * 才继续补。空页不增加内容 ⇒ `maxScrollExtent` 恒为 0 ⇒
        * 没有这个判据就是无限发请求。
        */
       var served = 0;
-      final (st, calls) = await mount(t, loader: (p) async {
-        served++;
-        // 第 1 页给 4 条（填不满一屏），之后**全是空页**
-        return served == 1
-            ? pageOf(4, page: 1, pageCount: 99)
-            : models.Page<models.MediaItem>(
-                items: const [],
-                page: p,
-                pageCount: 99,
-              );
-      });
+      final (st, calls) = await mount(
+        t,
+        loader: (p) async {
+          served++;
+          // 第 1 页给 4 条（填不满一屏），之后**全是空页**
+          return served == 1
+              ? pageOf(4, page: 1, pageCount: 99)
+              : models.Page<models.MediaItem>(
+                  items: const [],
+                  page: p,
+                  pageCount: 99,
+                );
+        },
+      );
 
       final n = calls.length;
       expect(n, greaterThan(1), reason: '★ 前置：至少补取过一次（实测 $calls）');
       expect(
         n,
         lessThan(12),
-        reason: '★★ 阴性对照：空页必须让补取**停下**，不能无限发请求'
+        reason:
+            '★★ 阴性对照：空页必须让补取**停下**，不能无限发请求'
             '（实测发了 $n 次：$calls）',
       );
       expect(st.debugItemCount, 4, reason: '★ 条目数还是 4');
@@ -419,9 +426,7 @@ void main() {
       final stalePage2 = gate[2]!;
 
       // 用户换分类 ⇒ 代次 +1，然后放行**旧分类**的第 2 页
-      st.debugSetCategories([
-        const models.Category(id: '9', name: '分类9'),
-      ]);
+      st.debugSetCategories([const models.Category(id: '9', name: '分类9')]);
       await t.pump();
       /*
        * ⚠️ 必须先滚回顶部才能点分类 —— `find` 只遍历**已 build 的元素树**，
@@ -462,7 +467,8 @@ void main() {
       expect(
         st.debugItemCount,
         20,
-        reason: '★★ 竞态：旧分类迟到的第 2 页必须被丢弃，**不能**拼进列表'
+        reason:
+            '★★ 竞态：旧分类迟到的第 2 页必须被丢弃，**不能**拼进列表'
             '（实测 ${st.debugItemCount} 条；拼上就是 40，清空就是 0）',
       );
       expect(
@@ -486,7 +492,8 @@ void main() {
       expect(
         calls.length,
         before,
-        reason: '★★ 旧页的 finally 不能误清新页的 `_loading`：新分类第 1 页'
+        reason:
+            '★★ 旧页的 finally 不能误清新页的 `_loading`：新分类第 1 页'
             '还在飞的时候，滚到底**不该**发出任何新请求（实测多发了 '
             '${calls.sublist(before)}）',
       );
@@ -554,20 +561,20 @@ void main() {
       expect(
         calls,
         contains(2),
-        reason: '★ 前置：滚到 20 就该自动取第 2 页了'
+        reason:
+            '★ 前置：滚到 20 就该自动取第 2 页了'
             '（20 条时 maxScrollExtent 只有 233.5 < 600；实测 $calls）',
       );
 
-      st.debugSetCategories([
-        const models.Category(id: '9', name: '分类9'),
-      ]);
+      st.debugSetCategories([const models.Category(id: '9', name: '分类9')]);
       await t.pump();
       final chip = find.text('分类9');
       expect(chip, findsOneWidget, reason: '★ 前置：分类胶囊在视口里');
       expect(
         st.debugScrollController.offset,
         greaterThan(0),
-        reason: '★ 前置：此刻**不在**顶部 —— 否则 `jumpTo(0)` 不发通知，'
+        reason:
+            '★ 前置：此刻**不在**顶部 —— 否则 `jumpTo(0)` 不发通知，'
             '这条测试会空转成绿',
       );
 
@@ -578,7 +585,8 @@ void main() {
       expect(
         calls.sublist(before),
         [1],
-        reason: '★★ 换分类后**只该**发第 1 页。先发第 2 页的话，它会拼在'
+        reason:
+            '★★ 换分类后**只该**发第 1 页。先发第 2 页的话，它会拼在'
             '旧分类那 20 条后面（列表混进上一个分类的内容），'
             '随后第 1 页再整体覆盖 —— 白跑一趟还闪一下错内容'
             '（实测 ${calls.sublist(before)}）',
@@ -588,12 +596,10 @@ void main() {
 
   // ══════════════════════════════════════════════════════════════════════
   group('task-75② 需求②：返回按钮吸顶', () {
-    testWidgets('A1 页头在 `SliverPersistentHeader` 里，且 `pinned: true`',
-        (t) async {
-      await mount(
-        t,
-        loader: (p) async => pageOf(20, page: p, pageCount: 5),
-      );
+    testWidgets('A1 页头在 `SliverPersistentHeader` 里，且 `pinned: true`', (
+      t,
+    ) async {
+      await mount(t, loader: (p) async => pageOf(20, page: p, pageCount: 5));
 
       final h = t.widget<SliverPersistentHeader>(
         find.byType(SliverPersistentHeader),
@@ -604,10 +610,15 @@ void main() {
         reason: '★★ 需求②：页头必须 `pinned: true` —— 这是"钉在视口顶"的**唯一**来源',
       );
       expect(
-        find.descendant(of: find.byType(SliverPersistentHeader), matching: kBack),
+        find.descendant(
+          of: find.byType(SliverPersistentHeader),
+          matching: kBack,
+        ),
         findsOneWidget,
         reason: '★★ 需求②：返回按钮必须是这个 pinned 头的**子件**（不是并列兄弟）',
       );
+      expect(find.byType(AppPageHeader), findsOneWidget);
+      expect(t.widget<AppPageHeader>(find.byType(AppPageHeader)).title, '电影');
     });
 
     testWidgets('A2 分类栏**不**在 pinned 头里（只有页头吸顶）', (t) async {
@@ -624,17 +635,14 @@ void main() {
           matching: find.text('分类0'),
         ),
         findsNothing,
-        reason: '★ 只钉页头 —— 分类栏若也钉住会吃掉一大块可视高度'
+        reason:
+            '★ 只钉页头 —— 分类栏若也钉住会吃掉一大块可视高度'
             '（Owner 只要求"返回按钮"固定）',
       );
     });
 
-    testWidgets('B1 静止态：页头高度正好是 maxExtent（与改造前逐像素一致）',
-        (t) async {
-      await mount(
-        t,
-        loader: (p) async => pageOf(20, page: p, pageCount: 5),
-      );
+    testWidgets('B1 静止态：页头为共享标题实际高度加上下间距', (t) async {
+      await mount(t, loader: (p) async => pageOf(20, page: p, pageCount: 5));
 
       // 页头那层 `Container`（delegate 里那个）—— 取 pinned 头内的第一个
       final box = t.renderObject<RenderBox>(
@@ -645,16 +653,46 @@ void main() {
             )
             .first,
       );
+      final headerHeight = t.getSize(find.byType(AppPageHeader)).height;
+      expect(headerHeight, greaterThan(0));
       expect(
         box.size.height,
-        kHeaderMax,
-        reason: '★ 静止态高度必须 == maxExtent($kHeaderMax)：'
-            '改造前是 `Sp.x8 + 48 + Sp.x5` = 100，观感不许变（实测 ${box.size.height}）',
+        closeTo(headerHeight + 32 + 20, 0.01),
+        reason: '共享页头必须完整容纳，保留顶部 32px 和底部 20px 间距',
       );
+      expect(t.takeException(), isNull);
     });
 
-    testWidgets('B2 扫描 9 个偏移：页头**钉在视口顶**，按钮最多上移「收缩量」',
-        (t) async {
+    testWidgets('共享页头在窄屏、大字和顶部安全区下保持可见且吸顶', (t) async {
+      const title = '一个需要省略显示的很长分类名称与影片榜单';
+      final (st, _) = await mount(
+        t,
+        viewport: const Size(360, 800),
+        textScale: 1.5,
+        topInset: 24,
+        title: title,
+        loader: (p) async => pageOf(20, page: p, pageCount: 5),
+      );
+      final header = find.byType(AppPageHeader);
+      expect(t.widget<AppPageHeader>(header).title, title);
+      final titleRect = t.getRect(find.text(title));
+      final headerRect = t.getRect(header);
+      expect(titleRect.left, greaterThanOrEqualTo(headerRect.left));
+      expect(titleRect.right, lessThanOrEqualTo(headerRect.right));
+      expect(titleRect.center.dx, closeTo(headerRect.center.dx, 0.51));
+      expect(t.getTopLeft(kBack).dy, greaterThanOrEqualTo(24));
+      expect(kBack.hitTestable(), findsOneWidget);
+
+      await at(t, st.debugScrollController, 60);
+      final pinnedTop = t.getTopLeft(kBack).dy;
+      await at(t, st.debugScrollController, 200);
+      expect(t.getTopLeft(kBack).dy, closeTo(pinnedTop, 0.51));
+      expect(pinnedTop, greaterThanOrEqualTo(24));
+      expect(kBack.hitTestable(), findsOneWidget);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('B2 扫描 9 个偏移：页头**钉在视口顶**，按钮最多上移「收缩量」', (t) async {
       /*
        * ★★ 判据怎么定的（不是照抄 delegate 的公式 —— 那等于抄答案，见铁律 #522）
        *
@@ -665,7 +703,7 @@ void main() {
        * ③ 返回按钮**始终在视口内**      ⇒ Owner 要的就是"不要随页面消失"
        * ④ 按钮相对静止态**最多上移 32px** ⇒ 收缩量有上界，不会一路滑出去
        * ```
-       * ⚠️ 这条设计是**可收缩**页头（静止 100 → 吸顶 68），与
+       * ⚠️ 这条设计是**可收缩**页头（共享标题高度 + 间距），与
        *    `lib/ui/search_page.dart:663-672` 的搜索框吸顶条同源：
        *    多出来的那 32px 是**顶部呼吸**，随滚动收掉。
        *    ⇒ 按钮会**上移 32px 然后永远不动**，而不是"从第一像素起就不动"。
@@ -681,6 +719,8 @@ void main() {
         find.byType(SliverPersistentHeader),
       );
       final collapse = hdr.delegate.maxExtent - hdr.delegate.minExtent;
+      final headerMin = t.getSize(find.byType(AppPageHeader)).height + 20;
+      final headerMax = headerMin + 32;
 
       await at(t, c, 0);
       final restTop = t.getTopLeft(kBack).dy;
@@ -691,41 +731,46 @@ void main() {
         final top = t.getTopLeft(kBack).dy;
         final barTop = t.getTopLeft(kBar).dy;
         final barH = t.getSize(kBar).height;
-        rows.add('off=${off.toStringAsFixed(0).padLeft(4)} '
-            'btn=${top.toStringAsFixed(1).padLeft(6)} '
-            'barTop=${barTop.toStringAsFixed(1).padLeft(5)} '
-            'barH=${barH.toStringAsFixed(1).padLeft(6)}');
+        rows.add(
+          'off=${off.toStringAsFixed(0).padLeft(4)} '
+          'btn=${top.toStringAsFixed(1).padLeft(6)} '
+          'barTop=${barTop.toStringAsFixed(1).padLeft(5)} '
+          'barH=${barH.toStringAsFixed(1).padLeft(6)}',
+        );
 
         expect(
           barTop,
           closeTo(0.0, 0.51),
-          reason: '★★ 需求②：页头条顶边必须恒为 0（钉在视口顶）。\n'
+          reason:
+              '★★ 需求②：页头条顶边必须恒为 0（钉在视口顶）。\n'
               '实测全表：\n${rows.join('\n')}',
         );
         expect(
           barH,
-          inInclusiveRange(kHeaderMin - 0.01, kHeaderMax + 0.01),
-          reason: '★ 页头高度必须落在 [minExtent, maxExtent] 内 —— '
+          inInclusiveRange(headerMin - 0.01, headerMax + 0.01),
+          reason:
+              '★ 页头高度必须落在 [minExtent, maxExtent] 内 —— '
               '塌成 0 就是"又消失了"，比静止态还高就是算错了。\n'
               '实测全表：\n${rows.join('\n')}',
         );
         expect(
           top,
           inInclusiveRange(-0.51, kViewport.height),
-          reason: '★★ 需求②：返回按钮必须**始终在视口内**（这才是 Owner 的原话'
+          reason:
+              '★★ 需求②：返回按钮必须**始终在视口内**（这才是 Owner 的原话'
               '"不要随这页面消失"）。\n实测全表：\n${rows.join('\n')}',
         );
         expect(
           top,
           inInclusiveRange(restTop - collapse - 0.51, restTop + 0.51),
-          reason: '★ 按钮相对静止态最多上移「收缩量」($collapse px) —— '
+          reason:
+              '★ 按钮相对静止态最多上移「收缩量」($collapse px) —— '
               '上移超过它就是一路滑出去了。\n实测全表：\n${rows.join('\n')}',
         );
       }
     });
 
-    testWidgets('B3 收完之后：按钮 y **一步不动**（比较多个偏移的读数）',
-        (t) async {
+    testWidgets('B3 收完之后：按钮 y **一步不动**（比较多个偏移的读数）', (t) async {
       /*
        * ★ 判据是「**多次测量之间相等**」，不是「等于某个我算出来的数」——
        *   后者只是把我的算术抄进测试，测不出东西。
@@ -745,8 +790,10 @@ void main() {
       await at(t, c, collapse);
       final pinned = t.getTopLeft(kBack).dy;
 
-      final rows = <String>['off=${collapse.toStringAsFixed(0)} '
-          'btn=${pinned.toStringAsFixed(2)}  ← 基准'];
+      final rows = <String>[
+        'off=${collapse.toStringAsFixed(0)} '
+            'btn=${pinned.toStringAsFixed(2)}  ← 基准',
+      ];
       for (final off in <double>[collapse + 1, 100, 200, 400, 800]) {
         await at(t, c, off);
         final top = t.getTopLeft(kBack).dy;
@@ -755,14 +802,14 @@ void main() {
         expect(
           top,
           closeTo(pinned, 0.51),
-          reason: '★★ 需求②：页头收完之后，返回按钮必须**一步不动**'
+          reason:
+              '★★ 需求②：页头收完之后，返回按钮必须**一步不动**'
               '（这是"固定在上面"的字面判据）。\n实测全表：\n${rows.join('\n')}',
         );
       }
     });
 
-    testWidgets('C1[两极对照] 同一次读数：内容**真的在滚**，而返回按钮**纹丝不动**',
-        (t) async {
+    testWidgets('C1[两极对照] 同一次读数：内容**真的在滚**，而返回按钮**纹丝不动**', (t) async {
       /*
        * ★★★ 这条是本组最关键的 —— 没有它，"返回按钮没动"证明不了吸顶：
        *   如果内容根本没滚，按钮不动是**必然**的（#522 家族）。
@@ -803,60 +850,65 @@ void main() {
       expect(
         o2 - o1,
         greaterThan(100),
-        reason: '★ 前置：两次采样之间的滚动位置必须真的差一大截'
+        reason:
+            '★ 前置：两次采样之间的滚动位置必须真的差一大截'
             '（实测 $o1 → $o2，只差 ${o2 - o1}px）',
       );
       // ── 阳性：内容真的滚了 ──
       expect(
         cardBefore - cardAfter,
         greaterThan(100),
-        reason: '★★ 阳性对照：内容必须真的滚走一大截'
+        reason:
+            '★★ 阳性对照：内容必须真的滚走一大截'
             '（条目7 的 y：$cardBefore → $cardAfter）',
       );
       // ── 阴性：按钮一步没动 ──
       expect(
         backAfter,
         closeTo(backBefore, 0.51),
-        reason: '★★ 需求②：内容滚了 ${cardBefore - cardAfter}px，'
+        reason:
+            '★★ 需求②：内容滚了 ${cardBefore - cardAfter}px，'
             '返回按钮的 y 必须**纹丝不动**（实测 $backBefore → $backAfter）',
       );
     });
 
-    testWidgets('D1 吸顶状态下点返回按钮，仍然真的能 pop（不是只剩个画）',
-        (t) async {
+    testWidgets('D1 吸顶状态下点返回按钮，仍然真的能 pop（不是只剩个画）', (t) async {
       final theme = AppTheme.themeFor(Brightness.light);
-      await t.pumpWidget(MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: theme,
-        builder: (_, c) => AppThemeHost(data: theme, child: c ?? const SizedBox()),
-        home: MediaQuery(
-          data: const MediaQueryData(size: kViewport),
-          child: Directionality(
-            textDirection: TextDirection.ltr,
-            child: Builder(
-              builder: (ctx) => Scaffold(
-                body: Center(
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.of(ctx).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => BrowsePage(
-                          provider: 'demo',
-                          title: '电影',
-                          // ★ 必须走构造参数：`_init()` 挂在 post-frame 上，
-                          //   push 完再注入就已经晚了（见 `mount` 的注释）。
-                          pageLoaderForTest: (p) async =>
-                              pageOf(20, page: p, pageCount: 5),
+      await t.pumpWidget(
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: theme,
+          builder: (_, c) =>
+              AppThemeHost(data: theme, child: c ?? const SizedBox()),
+          home: MediaQuery(
+            data: const MediaQueryData(size: kViewport),
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: Builder(
+                builder: (ctx) => Scaffold(
+                  body: Center(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(ctx).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => BrowsePage(
+                            provider: 'demo',
+                            title: '电影',
+                            // ★ 必须走构造参数：`_init()` 挂在 post-frame 上，
+                            //   push 完再注入就已经晚了（见 `mount` 的注释）。
+                            pageLoaderForTest: (p) async =>
+                                pageOf(20, page: p, pageCount: 5),
+                          ),
                         ),
                       ),
+                      child: const Text('进浏览页'),
                     ),
-                    child: const Text('进浏览页'),
                   ),
                 ),
               ),
             ),
           ),
         ),
-      ));
+      );
 
       /*
        * ★ 必须整段放进 `runAsync`：与 `mount()` 同一个根因 ——
@@ -895,17 +947,14 @@ void main() {
       expect(
         find.byType(BrowsePage),
         findsNothing,
-        reason: '★★ 需求②：吸顶状态下点返回必须**真的** pop —— '
+        reason:
+            '★★ 需求②：吸顶状态下点返回必须**真的** pop —— '
             '否则"钉住"只是个画，用户还是出不去',
       );
     });
 
-    testWidgets('E1 吸顶条底色**不透明**（否则卡片会从它下面透出来叠字）',
-        (t) async {
-      await mount(
-        t,
-        loader: (p) async => pageOf(20, page: p, pageCount: 5),
-      );
+    testWidgets('E1 吸顶条底色**不透明**（否则卡片会从它下面透出来叠字）', (t) async {
+      await mount(t, loader: (p) async => pageOf(20, page: p, pageCount: 5));
 
       // delegate 里那层 `Container` 的 color（widget 层读，最直接）
       final container = t.widget<Container>(
@@ -921,7 +970,8 @@ void main() {
       expect(
         color!.a,
         1.0,
-        reason: '★★ 吸顶条底色必须**完全不透明**（实测 alpha=${color.a}）'
+        reason:
+            '★★ 吸顶条底色必须**完全不透明**（实测 alpha=${color.a}）'
             '—— 内容会从它下面滚过，半透明会叠字',
       );
     });

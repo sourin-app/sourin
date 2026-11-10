@@ -38,10 +38,10 @@
 // Dart 侧**统一返回 Future** —— 因为即使本地命令也不该阻塞 UI 线程。
 // `call` 走同步路径（快），`callAsync` 走线程池（慢/网络）。
 
-// ⚠️ 只为了 `@visibleForTesting`（task-11 的三个探针注入点）——
-//    用 `show` 限定，不把整个 foundation 拉进来。
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, ValueNotifier, visibleForTesting;
 
+import 'dart:async' show scheduleMicrotask;
 import 'dart:convert' show jsonEncode;
 
 import 'ffi.dart';
@@ -93,13 +93,7 @@ export 'models.dart';
 /// ⚠️ 为什么这两个类型挂在**顶层**而不是 `SourinApi` 里：
 ///    Dart **不允许** class 内嵌 enum / class。方法与注入点仍留在
 ///    `SourinApi`（见 `SourinApi.panCheck` / `SourinApi.debugPanCheckFetcher`）。
-enum PanCheckState {
-  ok,
-  locked,
-  bad,
-  uncertain,
-  unsupported,
-}
+enum PanCheckState { ok, locked, bad, uncertain, unsupported }
 
 /// 一条预检结果（见 [PanCheckState] 的契约与语义说明）
 class PanCheckResult {
@@ -132,13 +126,13 @@ class PanCheckResult {
   /// 抛会让整页白屏，猜会把新状态当成已有的某一档 ⇒ 两种都更糟。
   /// ```
   factory PanCheckResult.fromJson(Map<String, dynamic> j) => PanCheckResult(
-        url: j['url'] is String ? j['url'] as String : '',
-        kind: j['kind'] is String ? j['kind'] as String : '',
-        shareId: j['shareId'] is String ? j['shareId'] as String : '',
-        state: panCheckStateOf(j['state'] is String ? j['state'] as String : ''),
-        summary: j['summary'] is String ? j['summary'] as String : '',
-        cacheable: j['cacheable'] == true,
-      );
+    url: j['url'] is String ? j['url'] as String : '',
+    kind: j['kind'] is String ? j['kind'] as String : '',
+    shareId: j['shareId'] is String ? j['shareId'] as String : '',
+    state: panCheckStateOf(j['state'] is String ? j['state'] as String : ''),
+    summary: j['summary'] is String ? j['summary'] as String : '',
+    cacheable: j['cacheable'] == true,
+  );
 }
 
 /// 机器可读 state 码 → 枚举（**纯函数**，门禁可直接喂）
@@ -146,12 +140,12 @@ class PanCheckResult {
 /// 未知/缺失一律落 [PanCheckState.uncertain]（理由见 [PanCheckResult.fromJson]）。
 @visibleForTesting
 PanCheckState panCheckStateOf(String code) => switch (code) {
-      'ok' => PanCheckState.ok,
-      'locked' => PanCheckState.locked,
-      'bad' => PanCheckState.bad,
-      'unsupported' => PanCheckState.unsupported,
-      _ => PanCheckState.uncertain,
-    };
+  'ok' => PanCheckState.ok,
+  'locked' => PanCheckState.locked,
+  'bad' => PanCheckState.bad,
+  'unsupported' => PanCheckState.unsupported,
+  _ => PanCheckState.uncertain,
+};
 
 /// 源影核心 API
 ///
@@ -209,13 +203,15 @@ class SourinApi {
     String provider,
     String categoryId, {
     int page,
-  })? debugListFetcher;
+  })?
+  debugListFetcher;
   @visibleForTesting
   static Future<Page<MediaItem>> Function(
     String provider,
     String rankId, {
     int page,
-  })? debugRankFetcher;
+  })?
+  debugRankFetcher;
 
   /// 装/卸这两个注入点（`null` = 恢复真实实现）
   static void debugSetListFetchers({
@@ -243,7 +239,8 @@ class SourinApi {
   static Future<List<StreamCandidate>> Function(
     String provider,
     String channelId,
-  )? debugLiveStreamFetcher;
+  )?
+  debugLiveStreamFetcher;
 
   /// 门禁注入点：`resolve_stream`（PR#22 切集续播提示门禁用）
   ///
@@ -266,7 +263,8 @@ class SourinApi {
     String provider,
     String id, {
     PlayRequest? req,
-  })? debugResolveStreamFetcher;
+  })?
+  debugResolveStreamFetcher;
 
   /// 清空直播取址缓存（T27-06）
   ///
@@ -305,6 +303,7 @@ class SourinApi {
     // ★ CodeRabbit PR#5 N1：**只删条目是不够的** —— 见 [_liveStreamGen]。
     _liveStreamGen[key] = (_liveStreamGen[key] ?? 0) + 1;
   }
+
   /// 测试可见的缓存条目数（门禁断言「空结果不缓存」用）
   @visibleForTesting
   static int get debugLiveStreamCacheSize => _liveStreamCache.length;
@@ -352,6 +351,54 @@ class SourinApi {
     final r = await SourinCore.callAsync('tvbox_aggregate_get', const {});
     return TvboxAggregate.fromJson(jmap(r));
   }
+
+  /// Real subscription origins and the selected providers for each shared site.
+  static Future<SourceCatalog> sourceCatalogGet() async =>
+      SourceCatalog.fromJson(
+        jmap(await SourinCore.callAsync('source_catalog_get', const {})),
+      );
+
+  static Future<ProviderManifest> importLiveSource(
+    String url, {
+    String? name,
+    List<String> backupUrls = const [],
+  }) async => ProviderManifest.fromJson(
+    jmap(
+      await SourinCore.callAsync('import_live_source', {
+        'url': url,
+        'name': name ?? '',
+        'backupUrls': backupUrls,
+      }),
+    ),
+  );
+
+  static Future<SourceCatalog> sourceCatalogSetOrigin(
+    String id, {
+    String? name,
+    String? primaryUrl,
+    List<String>? backupUrls,
+  }) async => SourceCatalog.fromJson(
+    jmap(
+      await SourinCore.callAsync('source_catalog_set_origin', {
+        'id': id,
+        if (name != null) 'name': name,
+        if (primaryUrl != null) 'primaryUrl': primaryUrl,
+        if (backupUrls != null) 'backupUrls': backupUrls,
+      }),
+    ),
+  );
+
+  static Future<SourceCatalog> sourceCatalogSelectProviders(
+    String groupId,
+    List<String> providerIds,
+  ) async => SourceCatalog.fromJson(
+    jmap(
+      await SourinCore.callAsync('source_catalog_select_providers', {
+        'groupId': groupId,
+        'providerIds': providerIds,
+      }),
+    ),
+  );
 
   /// 保存聚合配置（**部分更新**：只传要改的字段）
   ///
@@ -416,7 +463,10 @@ class SourinApi {
   static Future<TvboxDedupeResult> tvboxAggregateDedupeSites() async {
     final f = debugTvboxAggregateDedupe;
     if (f != null) return f();
-    final r = await SourinCore.callAsync('tvbox_aggregate_dedupe_sites', const {});
+    final r = await SourinCore.callAsync(
+      'tvbox_aggregate_dedupe_sites',
+      const {},
+    );
     return TvboxDedupeResult.fromJson(jmap(r));
   }
 
@@ -530,9 +580,10 @@ class SourinApi {
     final r = await SourinCore.callAsync('list_providers');
     // ★ A′：被聚合器接管的子站（hidden）不在列表里单独出现；
     //   但它们的 id 仍然有效（收藏/进度/弹幕绑定照旧路由）。
-    return jlist<ProviderManifest>(r, ProviderManifest.fromJson)
-        .where((m) => !m.hidden)
-        .toList();
+    return jlist<ProviderManifest>(
+      r,
+      ProviderManifest.fromJson,
+    ).where((m) => !m.hidden).toList();
   }
 
   /// 源的显示顺序
@@ -592,17 +643,17 @@ class SourinApi {
   /// ```
   @visibleForTesting
   static Future<bool> Function(String id, bool enabled)?
-      debugProviderEnabledHook;
+  debugProviderEnabledHook;
 
   /// 启用/停用某个源（**会落盘**，重启后保持）
   static Future<bool> setProviderEnabled(String id, bool enabled) async {
     // ★ 探针注入点（默认 null ⇒ 生产路径逐字不变）
     final hook = debugProviderEnabledHook;
     if (hook != null) return hook(id, enabled);
-    final r = await SourinCore.callAsync(
-      'set_provider_enabled',
-      {'id': id, 'enabled': enabled},
-    );
+    final r = await SourinCore.callAsync('set_provider_enabled', {
+      'id': id,
+      'enabled': enabled,
+    });
     return r == true;
   }
 
@@ -690,9 +741,7 @@ class SourinApi {
   /// ⚠️ 若将来 `.probe/` 被整体删除，这三个方法应一并删除。
   /// ```
   static Future<void> setPrefetchDisabled(bool disabled) async {
-    await SourinCore.callAsync('set_prefetch_disabled', {
-          'disabled': disabled,
-        });
+    await SourinCore.callAsync('set_prefetch_disabled', {'disabled': disabled});
   }
 
   /// 读当前并行预取开关 —— ⚠️ **仅实验用**（详见上方 [setPrefetchDisabled] 的例外声明）
@@ -766,10 +815,9 @@ class SourinApi {
 
   /// 导入声明式源（JSON 配置）
   static Future<ProviderManifest> importDeclarativeProvider(String json) async {
-    final r = await SourinCore.callAsync(
-      'import_declarative_provider',
-      {'json': json},
-    );
+    final r = await SourinCore.callAsync('import_declarative_provider', {
+      'json': json,
+    });
     return ProviderManifest.fromJson(jmap(r) ?? {});
   }
 
@@ -801,6 +849,20 @@ class SourinApi {
     return getHomeReal();
   }
 
+  /// Homepage selection fetches one enabled provider, without aggregate fan-out.
+  static Future<List<ProviderGroup>> getProviderHome(String provider) async {
+    final hook = debugHomeFetcher;
+    if (hook != null) {
+      return (await hook())
+          .where((group) => group.provider == provider)
+          .toList();
+    }
+    final result = await SourinCore.callAsync('get_provider_home', {
+      'provider': provider,
+    });
+    return jlist<ProviderGroup>(result, ProviderGroup.fromJson).toList();
+  }
+
   /// **真实实现**（不经 hook）—— 只给探针在计数包装里"转发"用
   ///
   /// ⚠️ 为什么必须单独暴露它（第一版踩到的硬 bug，实测炸过）
@@ -820,7 +882,9 @@ class SourinApi {
 
   /// 某源的分类列表
   static Future<List<Category>> getCategories(String provider) async {
-    final r = await SourinCore.callAsync('get_categories', {'provider': provider});
+    final r = await SourinCore.callAsync('get_categories', {
+      'provider': provider,
+    });
     return jlist<Category>(r, Category.fromJson).toList();
   }
 
@@ -1034,12 +1098,11 @@ class SourinApi {
     String keyword,
     bool Function(SearchStreamEvent) onEvent, {
     int page = 1,
-  }) =>
-      SourinCore.callStream(
-        'search_all_stream',
-        {'keyword': keyword, 'page': page},
-        (ev) {
-          /*
+  }) => SourinCore.callStream(
+    'search_all_stream',
+    {'keyword': keyword, 'page': page},
+    (ev) {
+      /*
            * ★★ 必须先把 JSON Map 转成 SearchStreamEvent（2026-09-22 实测踩到）
            *
            * 我第一版直接写 `ev.kind` —— 但 `callStream` 交过来的是
@@ -1053,17 +1116,17 @@ class SourinApi {
            * 教训：**dynamic 的边界要立刻收窄成具体类型**，
            * 否则拼写/类型错误全留到运行时。
            */
-          final event = SearchStreamEvent.fromJson(jmap(ev));
-          // done / error 是流结束信号，不交给业务回调
-          // （callStream 内部已识别并处理，这里再兜一次以防字段名不一致）
-          if (event.kind == SearchEventKind.done) return true;
-          if (event.kind == SearchEventKind.error) {
-            // ⚠️ SourinCoreException 是 (message, kind) 两个参数
-            throw SourinCoreException(event.error ?? '流式搜索失败', 'other');
-          }
-          return onEvent(event);
-        },
-      );
+      final event = SearchStreamEvent.fromJson(jmap(ev));
+      // done / error 是流结束信号，不交给业务回调
+      // （callStream 内部已识别并处理，这里再兜一次以防字段名不一致）
+      if (event.kind == SearchEventKind.done) return true;
+      if (event.kind == SearchEventKind.error) {
+        // ⚠️ SourinCoreException 是 (message, kind) 两个参数
+        throw SourinCoreException(event.error ?? '流式搜索失败', 'other');
+      }
+      return onEvent(event);
+    },
+  );
 
   // ═══════════════════════════════════════════════════════════════════
   //  直播
@@ -1198,7 +1261,10 @@ class SourinApi {
   }
 
   /// 电子节目单（EPG）
-  static Future<List<EpgEntry>> getEpg(String provider, String channelId) async {
+  static Future<List<EpgEntry>> getEpg(
+    String provider,
+    String channelId,
+  ) async {
     final r = await SourinCore.callAsync('get_epg', {
       'provider': provider,
       'channel_id': channelId,
@@ -1256,10 +1322,9 @@ class SourinApi {
   static Future<List<Favorite>> listFavorites({
     bool followingOnly = false,
   }) async {
-    final r = await SourinCore.callAsync(
-      'list_favorites',
-      {'following_only': followingOnly},
-    );
+    final r = await SourinCore.callAsync('list_favorites', {
+      'following_only': followingOnly,
+    });
     return jlist<Favorite>(r, Favorite.fromJson).toList();
   }
 
@@ -1397,7 +1462,9 @@ class SourinApi {
 
   /// 手动触发追更检查 —— 返回本次发现的更新
   static Future<List<UpdateInfo>> checkUpdates({int maxItems = 50}) async {
-    final r = await SourinCore.callAsync('check_updates', {'max_items': maxItems});
+    final r = await SourinCore.callAsync('check_updates', {
+      'max_items': maxItems,
+    });
     return jlist<UpdateInfo>(r, UpdateInfo.fromJson).toList();
   }
 
@@ -1432,6 +1499,12 @@ class SourinApi {
   static Future<List<Progress>> continueWatching({int limit = 20}) async {
     final r = await SourinCore.callAsync('continue_watching', {'limit': limit});
     return jlist<Progress>(r, Progress.fromJson).toList();
+  }
+
+  /// 同一续播筛选口径的总数，不受首页和追更页的预览条数限制。
+  static Future<int> continueWatchingCount() async {
+    final count = await SourinCore.callAsync('continue_watching_count');
+    return (count as num).toInt();
   }
 
   /// 全部进度（同步/备份用）
@@ -1475,18 +1548,17 @@ class SourinApi {
     required int position,
     required int duration,
     bool? finished,
-  }) =>
-      SourinCore.callAsync('save_progress', {
-        'provider': provider,
-        'id': id,
-        'title': title,
-        if (cover != null) 'cover': cover,
-        if (episodeId != null) 'episode_id': episodeId,
-        if (episodeTitle != null) 'episode_title': episodeTitle,
-        'position': position,
-        'duration': duration,
-        if (finished != null) 'finished': finished,
-      });
+  }) => SourinCore.callAsync('save_progress', {
+    'provider': provider,
+    'id': id,
+    'title': title,
+    if (cover != null) 'cover': cover,
+    if (episodeId != null) 'episode_id': episodeId,
+    if (episodeTitle != null) 'episode_title': episodeTitle,
+    'position': position,
+    'duration': duration,
+    if (finished != null) 'finished': finished,
+  });
 
   /// ★★★ task-67 需求⑤：换源时把记录**搬到**新源
   ///
@@ -1530,13 +1602,12 @@ class SourinApi {
     required String fromId,
     required String toProvider,
     required String toId,
-  }) =>
-      SourinCore.callAsync('repoint_item', {
-        'fromProvider': fromProvider,
-        'fromId': fromId,
-        'toProvider': toProvider,
-        'toId': toId,
-      });
+  }) => SourinCore.callAsync('repoint_item', {
+    'fromProvider': fromProvider,
+    'fromId': fromId,
+    'toProvider': toProvider,
+    'toId': toId,
+  });
 
   // ═══════════════════════════════════════════════════════════════════
   //  片头 / 片尾跳过点
@@ -1552,7 +1623,7 @@ class SourinApi {
   ///      竞态路径（否则只能打 `native-media` 标签、在 CI 里被默认跳过）。
   @visibleForTesting
   static Future<SkipMarker?> Function(String provider, String id)?
-      debugSkipMarkerFetcher;
+  debugSkipMarkerFetcher;
 
   static Future<SkipMarker?> getSkipMarker(String provider, String id) async {
     final fake = debugSkipMarkerFetcher;
@@ -1634,11 +1705,13 @@ class SourinApi {
     int? outroStart,
     int? outroEnd,
     bool? autoSkip,
+
     /// 中插区间（与 `setSkipMarker` 的 `midrolls` 同形状）
     ///
     /// ★ 注入口必须跟着真入口长（今天反复踩过"注入口没跟上 ⇒ 门禁盖不到"）
     List<({int startSec, int endSec})>? midrolls,
-  })? debugSkipMarkerWriter;
+  })?
+  debugSkipMarkerWriter;
 
   /// 清空跳过点 —— 同上，生产路径永不为非 null
   @visibleForTesting
@@ -1653,6 +1726,7 @@ class SourinApi {
     int? outroStart,
     int? outroEnd,
     bool? autoSkip,
+
     /// 中插广告区间（秒，半开 `[startSec, endSec)`）
     ///
     /// 不传 ⇒ 后端保持旧行为（空数组）。传 `[]` ⇒ 明确清空。
@@ -1683,7 +1757,7 @@ class SourinApi {
       // ★ 中插：只有"明确给了"才传（`[]` 表示清空；不传 ⇒ 后端保持旧值/空数组）
       if (midrolls != null)
         'midrolls': [
-          for (final m in midrolls) {'start': m.startSec, 'end': m.endSec}
+          for (final m in midrolls) {'start': m.startSec, 'end': m.endSec},
         ],
     });
   }
@@ -1782,8 +1856,16 @@ class SourinApi {
   }
 
   /// 从 URL 安装插件（自动解析各种插件市场链接）
-  static Future<PluginInstallResult> installPlugin(String url) async {
-    final r = await SourinCore.callAsync('install_plugin', {'url': url});
+  static Future<PluginInstallResult> installPlugin(
+    String url, {
+    List<String> backupUrls = const [],
+    String? name,
+  }) async {
+    final r = await SourinCore.callAsync('install_plugin', {
+      'url': url,
+      if (backupUrls.isNotEmpty) 'backupUrls': backupUrls,
+      if (name != null) 'name': name,
+    });
     return PluginInstallResult.fromJson(jmap(r) ?? {});
   }
 
@@ -1851,7 +1933,7 @@ class SourinApi {
   /// ```
   @visibleForTesting
   static Future<PanShareListing> Function(String text, String? pwd)?
-      debugPanListShareFetcher;
+  debugPanListShareFetcher;
 
   // ═══════════════════════════════════════════════════════════════════
   //  ★★★ T1b 接线①（2026-11-01）：网盘分享链接**零凭据预检**
@@ -1899,8 +1981,9 @@ class SourinApi {
   /// 调用方负责先筛（见 `isPanShareUrl`）；这里只是第二道闸。
   /// ```
   static Future<List<PanCheckResult>> panCheck(
-    List<({String url, String? pwd})> items,
-  ) async {
+    List<({String url, String? pwd})> items, {
+    String? provider,
+  }) async {
     if (items.isEmpty) return const <PanCheckResult>[];
     final f = debugPanCheckFetcher;
     if (f != null) return f(items);
@@ -1916,7 +1999,10 @@ class SourinApi {
           if (it.pwd != null && it.pwd!.isNotEmpty) 'pwd': it.pwd!,
         },
     ]);
-    final r = await SourinCore.callAsync('tvbox_pan_check', {'items': payload});
+    final r = await SourinCore.callAsync('tvbox_pan_check', {
+      'items': payload,
+      if (provider != null) 'provider': provider,
+    });
     final raw = jmap(r)['results'];
     if (raw is! List) return const <PanCheckResult>[];
     return <PanCheckResult>[
@@ -1936,7 +2022,8 @@ class SourinApi {
   @visibleForTesting
   static Future<List<PanCheckResult>> Function(
     List<({String url, String? pwd})> items,
-  )? debugPanCheckFetcher;
+  )?
+  debugPanCheckFetcher;
 
   /// **123 云盘的账号密码登录**（`pan_password_login`）
   ///
@@ -1985,9 +2072,15 @@ class SourinApi {
   /// skipped[]  → 没导入的 {name,type,stage,reason}（stage: type=类型不支持 / probe=探测失败）
   /// lives[]    → 配置里的直播源（**本版本不导入**，只如实回报）
   /// ```
-  static Future<TvboxImportResult> importTvboxConfig(String config) async {
+  static Future<TvboxImportResult> importTvboxConfig(
+    String config, {
+    String? name,
+    List<String> backupUrls = const [],
+  }) async {
     final r = await SourinCore.callAsync('import_tvbox_config', {
       'config': config,
+      if (name != null) 'name': name,
+      if (backupUrls.isNotEmpty) 'backupUrls': backupUrls,
     });
     // ⚠️ 这里**不用** `jmap(r) ?? {}`：`jmap` 返回非空类型（null 直接抛），
     //    加 `?? {}` 会多出两条 dead_code 告警。同文件的旧写法是历史遗留，
@@ -2133,7 +2226,7 @@ class SourinApi {
 
   /// 门禁注入点：写订阅自动更新配置的替身（生产恒 null）
   static Future<TvboxUpdateSchedule> Function(bool enabled, int intervalSecs)?
-      debugTvboxScheduleSetter;
+  debugTvboxScheduleSetter;
 
   /// 读订阅自动更新配置
   static Future<TvboxUpdateSchedule> tvboxUpdateScheduleGet() async {
@@ -2227,7 +2320,9 @@ class SourinApi {
   /// 内部会：下载 → 校验 @id 一致 → 归档旧版到 `.versions/` → 写盘 → 热重载。
   /// `updated == false` 表示"内容一致，无需更新"（不是错误）。
   static Future<PluginUpdateResult> updatePluginFromSource(String id) async {
-    final r = await SourinCore.callAsync('update_plugin_from_source', {'id': id});
+    final r = await SourinCore.callAsync('update_plugin_from_source', {
+      'id': id,
+    });
     return PluginUpdateResult.fromJson(jmap(r) ?? {});
   }
 
@@ -2237,9 +2332,7 @@ class SourinApi {
   static Future<List<PluginVersionEntry>> listPluginVersions(String id) async {
     final r = await SourinCore.callAsync('list_plugin_versions', {'id': id});
     if (r is List) {
-      return r
-          .map((e) => PluginVersionEntry.fromJson(jmap(e) ?? {}))
-          .toList();
+      return r.map((e) => PluginVersionEntry.fromJson(jmap(e) ?? {})).toList();
     }
     return <PluginVersionEntry>[];
   }
@@ -2333,7 +2426,9 @@ class SourinApi {
 
   /// 取当前会话（null = 未登录）
   static Future<Map<String, dynamic>?> providerSession(String provider) async {
-    final r = await SourinCore.callAsync('provider_session', {'provider': provider});
+    final r = await SourinCore.callAsync('provider_session', {
+      'provider': provider,
+    });
     /*
      * ★★★ 必须用 `jmapOrNull`（2026-09-23 同类 bug 的第二处）
      *
@@ -2401,7 +2496,6 @@ class SourinApi {
     });
     return jmap(r) ?? {};
   }
-
 
   // ═══════════════════════════════════════════════════════════════════
   //  插件弹幕（task-T2，2026-10-16）
@@ -2539,16 +2633,19 @@ class SourinApi {
     final r = await SourinCore.callAsync('list_proxy_configs');
     final m = jmap(r);
     if (m == null) return {};
-    return m.map(
-      (k, v) => MapEntry(k, ProxyConfig.fromJson(jmap(v) ?? {})),
-    );
+    return m.map((k, v) => MapEntry(k, ProxyConfig.fromJson(jmap(v) ?? {})));
   }
+
+  static const globalProxyProvider = '__global__';
 
   /// 设置某源的代理
   ///
   /// ★ 写后**主动失效缓存**（原版注释：用户改了代理设置时主动失效）——
   ///   漏掉的话用户改完再进来看到的是旧值。
-  static Future<void> setProxyConfig(String provider, ProxyConfig config) async {
+  static Future<void> setProxyConfig(
+    String provider,
+    ProxyConfig config,
+  ) async {
     await SourinCore.callAsync('set_proxy_config', {
       'provider': provider,
       'config': config.toJson(),
@@ -2690,7 +2787,9 @@ class SourinApi {
   static Future<List<Map<String, dynamic>>> listPlatformHistory({
     int limit = 100,
   }) async {
-    final r = await SourinCore.callAsync('list_platform_history', {'limit': limit});
+    final r = await SourinCore.callAsync('list_platform_history', {
+      'limit': limit,
+    });
     // 元素本身就是对象 → 用 jlist<Map<String, dynamic>> 直接透传
     return jlist<Map<String, dynamic>>(r, (m) => m);
   }
@@ -2899,7 +2998,8 @@ class SourinApi {
     final r = await SourinCore.callAsync('sync_settings_set', {
       if (retainCount != null) 'retain_count': retainCount,
       if (autoEnabled != null) 'auto_enabled': autoEnabled,
-      if (autoIntervalMinutes != null) 'auto_interval_minutes': autoIntervalMinutes,
+      if (autoIntervalMinutes != null)
+        'auto_interval_minutes': autoIntervalMinutes,
       if (autoOnChange != null) 'auto_on_change': autoOnChange,
       if (autoBackupIntervalMinutes != null)
         'auto_backup_interval_minutes': autoBackupIntervalMinutes,
@@ -2992,10 +3092,9 @@ class SourinApi {
 
   /// 设置开机自启（只改偏好，不影响当前是否在跑）
   static Future<bool> remoteSetAutoStart(bool enabled) async {
-    final r = await SourinCore.callAsync(
-      'remote_set_auto_start',
-      {'enabled': enabled},
-    );
+    final r = await SourinCore.callAsync('remote_set_auto_start', {
+      'enabled': enabled,
+    });
     return r == true;
   }
 
@@ -3118,7 +3217,7 @@ class SourinApi {
   ///   是原版那次「15 次 IPC」在我们这里的放大版，见类文档。
   static Future<ProxyConfig> proxyConfigFor(String provider) async {
     final all = await ProxyCache.configs();
-    return all[provider] ?? const ProxyConfig();
+    return all[globalProxyProvider] ?? all[provider] ?? const ProxyConfig();
   }
 
   /// 读一个源的代理配置 **+ 密码标记**（面板一次拿全，少一次往返）
@@ -3126,12 +3225,17 @@ class SourinApi {
   /// ★ 两个读都走共享缓存（任务 AE）—— 这是**每张源卡片**都会调的那个，
   ///   所以它是"26 张卡片 × 3 次 IPC"里最主要的两个来源。
   static Future<ProxyConfig> proxyConfigWithPassword(String provider) async {
+    final all = await ProxyCache.configs();
+    final credentialKey = all.containsKey(globalProxyProvider)
+        ? globalProxyProvider
+        : provider;
     final results = await Future.wait([
       proxyConfigFor(provider),
-      ProxyCache.hasPassword(provider),
+      ProxyCache.hasPassword(credentialKey),
     ]);
-    return (results[0] as ProxyConfig)
-        .copyWith(hasPassword: results[1] as bool);
+    return (results[0] as ProxyConfig).copyWith(
+      hasPassword: results[1] as bool,
+    );
   }
 
   /// 只改模式（UI 上那三个 pill 就是调它）
@@ -3306,6 +3410,11 @@ class SourinApi {
 class ProxyCache {
   ProxyCache._();
 
+  static final _revision = ValueNotifier<int>(0);
+  static ValueListenable<int> get revision => _revision;
+  static Object? _pendingNotification;
+  static int _configEpoch = 0;
+
   /// 底层 `list_proxy_configs` 真正被调用的次数（**测试探针**）
   static int configFetches = 0;
 
@@ -3363,6 +3472,8 @@ class ProxyCache {
 
   /// 清空缓存**并归零计数**（每个用例开始前调，避免用例互相污染）
   static void reset() {
+    _configEpoch++;
+    _pendingNotification = null;
     _configs = null;
     _hasPw.clear();
     _sysHint = null;
@@ -3379,9 +3490,10 @@ class ProxyCache {
   static Future<Map<String, ProxyConfig>> configs() async {
     final hit = _configs;
     if (hit != null) return hit;
+    final epoch = _configEpoch;
     configFetches++;
     final v = await _fetchConfigs();
-    _configs = v;
+    if (epoch == _configEpoch) _configs = v;
     return v;
   }
 
@@ -3407,10 +3519,21 @@ class ProxyCache {
 
   /// 写操作后失效（原版 `invalidateProxy()` 的等价物）
   static void invalidate() {
+    _configEpoch++;
     _configs = null;
     _hasPw.clear();
     _sysHint = null;
     _sysHintLoaded = false;
+    // Several writes can finish together. Notify mounted summaries once,
+    // outside the caller's build stack, after the shared cache is cleared.
+    if (_pendingNotification != null) return;
+    final pending = Object();
+    _pendingNotification = pending;
+    scheduleMicrotask(() {
+      if (!identical(_pendingNotification, pending)) return;
+      _pendingNotification = null;
+      _revision.value++;
+    });
   }
 
   /// 只失效某个源的密码标记（改密码后调 —— 不必把全量配置也丢掉）
@@ -3541,8 +3664,7 @@ class ProviderImportSeed {
 const String kTvboxUnpersistedRowSuffix = '（重启后需重新导入）';
 
 /// 副提示：**会发生什么 + 怎么恢复 + 原件不动**（三件事缺一不可）
-const String kTvboxUnpersistedHint =
-    '这些源的数据没有随程序保存；重新导入同一份配置即可恢复，配置文件本身不会被改动。';
+const String kTvboxUnpersistedHint = '这些源的数据没有随程序保存；重新导入同一份配置即可恢复，配置文件本身不会被改动。';
 
 /// 警示标题 —— 必须**点名**（用户要靠名字判断"是不是我正在用的那个源"）
 String tvboxUnpersistedWarningText(List<String> names) =>
@@ -3555,9 +3677,9 @@ String tvboxUnpersistedToastSuffix(int count) => '，其中 $count 个重启后�
 ///
 /// ⚠️ 空名字不进清单：清单是给用户看的，混进 `''` 会变成「甲乙、、丙」。
 List<String> tvboxUnpersistedNames(Iterable<TvboxRemoteSite> sites) => <String>[
-      for (final s in sites)
-        if (!s.persisted && s.name.trim().isNotEmpty) s.name,
-    ];
+  for (final s in sites)
+    if (!s.persisted && s.name.trim().isNotEmpty) s.name,
+];
 
 /// 导入成功的一个源
 class TvboxImportedSource {
@@ -3638,11 +3760,11 @@ class TvboxSkippedSite {
   final String reason;
 
   factory TvboxSkippedSite.fromJson(Map<String, dynamic> j) => TvboxSkippedSite(
-        name: j['name'] as String? ?? '',
-        type: (j['type'] as num?)?.toInt(),
-        stage: j['stage'] as String? ?? '',
-        reason: j['reason'] as String? ?? '',
-      );
+    name: j['name'] as String? ?? '',
+    type: (j['type'] as num?)?.toInt(),
+    stage: j['stage'] as String? ?? '',
+    reason: j['reason'] as String? ?? '',
+  );
 }
 
 /// 配置里的直播源（**本版本不导入**，只如实回报）
@@ -3653,9 +3775,9 @@ class TvboxLiveSource {
   final String url;
 
   factory TvboxLiveSource.fromJson(Map<String, dynamic> j) => TvboxLiveSource(
-        name: j['name'] as String? ?? '',
-        url: j['url'] as String? ?? '',
-      );
+    name: j['name'] as String? ?? '',
+    url: j['url'] as String? ?? '',
+  );
 }
 
 /// TVBox 配置导入的结果
@@ -3723,40 +3845,39 @@ class TvboxImportResult {
   /// 有没有「重启后要重新导入」的源（界面据此决定要不要画警示）
   bool get hasNotPersisted => notPersisted.isNotEmpty;
 
-  factory TvboxImportResult.fromJson(Map<String, dynamic> j) => TvboxImportResult(
+  factory TvboxImportResult.fromJson(Map<String, dynamic> j) =>
+      TvboxImportResult(
         totalSites: (j['totalSites'] as num?)?.toInt() ?? 0,
         imported: _listOf(j['imported'], TvboxImportedSource.fromJson),
         skipped: _listOf(j['skipped'], TvboxSkippedSite.fromJson),
         lives: _listOf(j['lives'], TvboxLiveSource.fromJson),
         // ★ 用 `is List` 而不是 `as List?`：后者在字段是字符串时会**抛类型错误**，
         //   把整个导入结果解析打挂（实测被 zz_t1035 抓到）。缺字段/类型异常都退化为 0。
-        liveImportedCount:
-            j['liveImported'] is List ? (j['liveImported'] as List).length : 0,
+        liveImportedCount: j['liveImported'] is List
+            ? (j['liveImported'] as List).length
+            : 0,
         multiRepo: j['multiRepo'] == true,
         repos: _listOf(j['repos'], TvboxSubRepo.fromJson),
         notPersisted: _stringsOf(j['notPersisted']),
       );
 
-  static List<T> _listOf<T>(
-    Object? raw,
-    T Function(Map<String, dynamic>) f,
-  ) =>
+  static List<T> _listOf<T>(Object? raw, T Function(Map<String, dynamic>) f) =>
       raw is List
-          ? raw
-              .whereType<Map>()
-              .map((e) => f(e.cast<String, dynamic>()))
-              .toList(growable: false)
-          : const [];
+      ? raw
+            .whereType<Map>()
+            .map((e) => f(e.cast<String, dynamic>()))
+            .toList(growable: false)
+      : const [];
 
   /// 只收**非空字符串**：Rust 侧是 `Vec<String>`，但旧版本/将来改动可能
   /// 出现 null 或非字符串 —— 那种情况退化成"没有这一项"，而不是把整份
   /// 结果解析打挂（同 `_listOf` 的纪律）。
   static List<String> _stringsOf(Object? raw) => raw is List
       ? raw
-          .whereType<String>()
-          .map((s) => s.trim())
-          .where((s) => s.isNotEmpty)
-          .toList(growable: false)
+            .whereType<String>()
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList(growable: false)
       : const [];
 }
 
@@ -3772,9 +3893,9 @@ class TvboxSubRepo {
   final String url;
 
   factory TvboxSubRepo.fromJson(Map<String, dynamic> j) => TvboxSubRepo(
-        name: (j['name'] as String?)?.trim() ?? '',
-        url: (j['url'] as String?)?.trim() ?? '',
-      );
+    name: (j['name'] as String?)?.trim() ?? '',
+    url: (j['url'] as String?)?.trim() ?? '',
+  );
 
   /// 界面直接显示用（名字缺了就显示地址）
   String get label => name.isEmpty ? url : '$name（$url）';
@@ -3835,21 +3956,21 @@ class TvboxSourceInfo {
   final String? lastUpdateError;
 
   factory TvboxSourceInfo.fromJson(Map<String, dynamic> j) => TvboxSourceInfo(
-        id: j['id'] as String? ?? '',
-        name: j['name'] as String? ?? '',
-        api: j['api'] as String? ?? '',
-        sourceUrl: (j['sourceUrl'] as String?)?.trim().isEmpty ?? true
-            ? null
-            : (j['sourceUrl'] as String).trim(),
-        needsSource: j['needsSource'] != false,
-        siteKey: j['siteKey'] as String? ?? '',
-        installedAt: (j['installedAt'] as num?)?.toInt() ?? 0,
-        lastUpdateAt: (j['lastUpdateAt'] as num?)?.toInt() ?? 0,
-        lastUpdateOk: j['lastUpdateOk'] == true,
-        lastUpdateError: (j['lastUpdateError'] as String?)?.trim().isEmpty ?? true
-            ? null
-            : (j['lastUpdateError'] as String).trim(),
-      );
+    id: j['id'] as String? ?? '',
+    name: j['name'] as String? ?? '',
+    api: j['api'] as String? ?? '',
+    sourceUrl: (j['sourceUrl'] as String?)?.trim().isEmpty ?? true
+        ? null
+        : (j['sourceUrl'] as String).trim(),
+    needsSource: j['needsSource'] != false,
+    siteKey: j['siteKey'] as String? ?? '',
+    installedAt: (j['installedAt'] as num?)?.toInt() ?? 0,
+    lastUpdateAt: (j['lastUpdateAt'] as num?)?.toInt() ?? 0,
+    lastUpdateOk: j['lastUpdateOk'] == true,
+    lastUpdateError: (j['lastUpdateError'] as String?)?.trim().isEmpty ?? true
+        ? null
+        : (j['lastUpdateError'] as String).trim(),
+  );
 }
 
 /// 一条「上次启动没能恢复的源」
@@ -3865,10 +3986,10 @@ class RestoreFailure {
   });
 
   factory RestoreFailure.fromJson(Map<String, dynamic> j) => RestoreFailure(
-        id: (j['id'] ?? '').toString(),
-        api: (j['api'] ?? '').toString(),
-        reason: (j['reason'] ?? '').toString(),
-      );
+    id: (j['id'] ?? '').toString(),
+    api: (j['api'] ?? '').toString(),
+    reason: (j['reason'] ?? '').toString(),
+  );
 
   final String id;
   final String api;
@@ -3910,15 +4031,15 @@ class TvboxSourceList {
   final TvboxSourceInfo? aggregate;
 
   factory TvboxSourceList.fromJson(Map<String, dynamic> j) => TvboxSourceList(
-        sources: jlist(j['sources'], TvboxSourceInfo.fromJson),
-        total: (j['total'] as num?)?.toInt() ?? 0,
-        withSource: (j['withSource'] as num?)?.toInt() ?? 0,
-        aggregate: j['aggregate'] is Map
-            ? TvboxSourceInfo.fromJson(
-                Map<String, dynamic>.from(j['aggregate'] as Map),
-              )
-            : null,
-      );
+    sources: jlist(j['sources'], TvboxSourceInfo.fromJson),
+    total: (j['total'] as num?)?.toInt() ?? 0,
+    withSource: (j['withSource'] as num?)?.toInt() ?? 0,
+    aggregate: j['aggregate'] is Map
+        ? TvboxSourceInfo.fromJson(
+            Map<String, dynamic>.from(j['aggregate'] as Map),
+          )
+        : null,
+  );
 
   /// 没有链接的源（界面如实说明"查不了"的那些）
   List<TvboxSourceInfo> get withoutSource =>
@@ -3930,10 +4051,7 @@ class TvboxSourceList {
 /// 权威定义在 Rust 侧 `tvbox.rs::TvboxUpdateSchedule`（camelCase 一致）。
 /// 默认（没有配置文件）= 开 + 24h；`intervalSecs <= 0` 由 Rust 侧按「关」收口。
 class TvboxUpdateSchedule {
-  const TvboxUpdateSchedule({
-    this.enabled = true,
-    this.intervalSecs = 86400,
-  });
+  const TvboxUpdateSchedule({this.enabled = true, this.intervalSecs = 86400});
 
   final bool enabled;
   final int intervalSecs;
@@ -3980,13 +4098,13 @@ class TvboxRemoteSite {
   final String kindTag;
 
   factory TvboxRemoteSite.fromJson(Map<String, dynamic> j) => TvboxRemoteSite(
-        key: j['key'] as String? ?? '',
-        name: j['name'] as String? ?? '',
-        api: j['api'] as String? ?? '',
-        // ⚠️ 同 TvboxImportedSource：`is bool` 容错，非 bool 不当 true 处理会抛
-        persisted: j['persisted'] is bool ? j['persisted'] as bool : true,
-        kindTag: j['kindTag'] as String? ?? '',
-      );
+    key: j['key'] as String? ?? '',
+    name: j['name'] as String? ?? '',
+    api: j['api'] as String? ?? '',
+    // ⚠️ 同 TvboxImportedSource：`is bool` 容错，非 bool 不当 true 处理会抛
+    persisted: j['persisted'] is bool ? j['persisted'] as bool : true,
+    kindTag: j['kindTag'] as String? ?? '',
+  );
 }
 
 /// 一条**远端已消失**的本地站点（默认只报告，绝不自动删）
@@ -4004,11 +4122,11 @@ class TvboxLocalSite {
   final String api;
 
   factory TvboxLocalSite.fromJson(Map<String, dynamic> j) => TvboxLocalSite(
-        id: j['id'] as String? ?? '',
-        key: j['key'] as String? ?? '',
-        name: j['name'] as String? ?? '',
-        api: j['api'] as String? ?? '',
-      );
+    id: j['id'] as String? ?? '',
+    key: j['key'] as String? ?? '',
+    name: j['name'] as String? ?? '',
+    api: j['api'] as String? ?? '',
+  );
 }
 
 /// 一条**变更**（同一个站，接口或名字变了）
@@ -4030,13 +4148,13 @@ class TvboxSiteChange {
   final String newApi;
 
   factory TvboxSiteChange.fromJson(Map<String, dynamic> j) => TvboxSiteChange(
-        id: j['id'] as String? ?? '',
-        key: j['key'] as String? ?? '',
-        oldName: j['oldName'] as String? ?? '',
-        newName: j['newName'] as String? ?? '',
-        oldApi: j['oldApi'] as String? ?? '',
-        newApi: j['newApi'] as String? ?? '',
-      );
+    id: j['id'] as String? ?? '',
+    key: j['key'] as String? ?? '',
+    oldName: j['oldName'] as String? ?? '',
+    newName: j['newName'] as String? ?? '',
+    oldApi: j['oldApi'] as String? ?? '',
+    newApi: j['newApi'] as String? ?? '',
+  );
 
   /// 是不是换了接口（而不是只改了名字）
   bool get apiChanged => oldApi != newApi;
@@ -4113,23 +4231,23 @@ class TvboxUpdateItem {
   bool get hasChanges => added.isNotEmpty || changed.isNotEmpty;
 
   factory TvboxUpdateItem.fromJson(Map<String, dynamic> j) => TvboxUpdateItem(
-        sourceUrl: j['sourceUrl'] as String? ?? '',
-        ids: jstrList(j['ids']),
-        ok: j['ok'] == true,
-        error: (j['error'] as String?)?.trim().isEmpty ?? true
-            ? null
-            : (j['error'] as String).trim(),
-        multiRepo: j['multiRepo'] == true,
-        repos: jlist(j['repos'], TvboxSubRepo.fromJson),
-        remoteTotalSites: (j['remoteTotalSites'] as num?)?.toInt() ?? 0,
-        remoteConvertible: (j['remoteConvertible'] as num?)?.toInt() ?? 0,
-        remoteUnsupported: (j['remoteUnsupported'] as num?)?.toInt() ?? 0,
-        added: jlist(j['added'], TvboxRemoteSite.fromJson),
-        removed: jlist(j['removed'], TvboxLocalSite.fromJson),
-        changed: jlist(j['changed'], TvboxSiteChange.fromJson),
-        unchanged: (j['unchanged'] as num?)?.toInt() ?? 0,
-        unchangedForeign: (j['unchangedForeign'] as num?)?.toInt() ?? 0,
-      );
+    sourceUrl: j['sourceUrl'] as String? ?? '',
+    ids: jstrList(j['ids']),
+    ok: j['ok'] == true,
+    error: (j['error'] as String?)?.trim().isEmpty ?? true
+        ? null
+        : (j['error'] as String).trim(),
+    multiRepo: j['multiRepo'] == true,
+    repos: jlist(j['repos'], TvboxSubRepo.fromJson),
+    remoteTotalSites: (j['remoteTotalSites'] as num?)?.toInt() ?? 0,
+    remoteConvertible: (j['remoteConvertible'] as num?)?.toInt() ?? 0,
+    remoteUnsupported: (j['remoteUnsupported'] as num?)?.toInt() ?? 0,
+    added: jlist(j['added'], TvboxRemoteSite.fromJson),
+    removed: jlist(j['removed'], TvboxLocalSite.fromJson),
+    changed: jlist(j['changed'], TvboxSiteChange.fromJson),
+    unchanged: (j['unchanged'] as num?)?.toInt() ?? 0,
+    unchangedForeign: (j['unchangedForeign'] as num?)?.toInt() ?? 0,
+  );
 }
 
 /// [SourinApi.checkTvboxUpdates] 的返回
@@ -4160,11 +4278,11 @@ class TvboxUpdateCheck {
   }
 
   factory TvboxUpdateCheck.fromJson(Map<String, dynamic> j) => TvboxUpdateCheck(
-        items: jlist(j['items'], TvboxUpdateItem.fromJson),
-        checked: (j['checked'] as num?)?.toInt() ?? 0,
-        skipped: (j['skipped'] as num?)?.toInt() ?? 0,
-        skippedIds: jstrList(j['skippedIds']),
-      );
+    items: jlist(j['items'], TvboxUpdateItem.fromJson),
+    checked: (j['checked'] as num?)?.toInt() ?? 0,
+    skipped: (j['skipped'] as num?)?.toInt() ?? 0,
+    skippedIds: jstrList(j['skippedIds']),
+  );
 }
 
 /// 一键更新的结果（[SourinApi.updateTvboxSource]）
@@ -4316,16 +4434,16 @@ class PluginUpdateInfo {
   bool get checked => canCheck && error == null;
 
   factory PluginUpdateInfo.fromJson(Map<String, dynamic> j) => PluginUpdateInfo(
-        id: j['id'] as String? ?? '',
-        file: j['file'] as String? ?? '',
-        version: j['version'] as String? ?? '',
-        needsSource: j['needs_source'] as bool? ?? false,
-        sourceUrl: j['source_url'] as String?,
-        remoteVersion: j['remote_version'] as String?,
-        hasUpdate: j['has_update'] as bool? ?? false,
-        sameContent: j['same_content'] as bool? ?? false,
-        error: j['error'] as String?,
-      );
+    id: j['id'] as String? ?? '',
+    file: j['file'] as String? ?? '',
+    version: j['version'] as String? ?? '',
+    needsSource: j['needs_source'] as bool? ?? false,
+    sourceUrl: j['source_url'] as String?,
+    remoteVersion: j['remote_version'] as String?,
+    hasUpdate: j['has_update'] as bool? ?? false,
+    sameContent: j['same_content'] as bool? ?? false,
+    error: j['error'] as String?,
+  );
 }
 
 /// 更新 / 回滚的结果
@@ -4458,10 +4576,10 @@ class PluginWireComment {
   ///
   /// ★ 这里**必须**保证 `cid` 非空 —— 见 [PluginDanmakuBundle.fromJson] 的说明。
   Map<String, dynamic> toWireJson() => {
-        if (cid != null) 'cid': cid,
-        'p': p,
-        'm': m,
-      };
+    if (cid != null) 'cid': cid,
+    'p': p,
+    'm': m,
+  };
 }
 
 /// 插件取弹幕的返回
@@ -4512,11 +4630,7 @@ class PluginDanmakuBundle {
      */
     for (var i = 0; i < out.length; i++) {
       if (out[i].cid == null) {
-        out[i] = PluginWireComment(
-          cid: i + 1,
-          p: out[i].p,
-          m: out[i].m,
-        );
+        out[i] = PluginWireComment(cid: i + 1, p: out[i].p, m: out[i].m);
       }
     }
     return PluginDanmakuBundle(
@@ -4766,8 +4880,7 @@ class PlaybackFailure {
     PlaybackFailureKind.network => '等一会儿再点「重试」。',
     PlaybackFailureKind.timeout => '点「重试」；一直这样就把日志发给我们。',
     PlaybackFailureKind.shareFileGone => '换一条线路试试（右上角的线路列表）。',
-    PlaybackFailureKind.tempCopyStuck =>
-        '稍后点「重试」通常可恢复；不行就换一条线路。',
+    PlaybackFailureKind.tempCopyStuck => '稍后点「重试」通常可恢复；不行就换一条线路。',
     PlaybackFailureKind.unknown => '',
   };
 
@@ -5016,7 +5129,8 @@ class PlaybackErrorText {
     for (final m in _loopbackProxyUrl.allMatches(raw)) {
       var hit = m[0]!;
       var cut = 0;
-      while (hit.length - cut > 1 && tailPunct.contains(hit[hit.length - 1 - cut])) {
+      while (hit.length - cut > 1 &&
+          tailPunct.contains(hit[hit.length - 1 - cut])) {
         cut++;
       }
       buf
@@ -5154,9 +5268,11 @@ class PlaybackErrorText {
       //    且**不许**跨越 `/` 之外的路径字符 —— 否则会从 URL 里抠数字。
       RegExp(r'\bhttp(?:/[0-9.]*)?\s+(?:status\s*[:=]?\s*)?(\d{3})\b'),
       RegExp(r'\bstatus\s*[:=]\s*(\d{3})\b'),
-      RegExp(r'\b(\d{3})\s+(?:forbidden|unauthorized|too\s+many|'
-          r'internal\s+server|bad\s+gateway|service\s+unavailable|'
-          r'gateway\s+time-?out|not\s+found)\b'),
+      RegExp(
+        r'\b(\d{3})\s+(?:forbidden|unauthorized|too\s+many|'
+        r'internal\s+server|bad\s+gateway|service\s+unavailable|'
+        r'gateway\s+time-?out|not\s+found)\b',
+      ),
     ]) {
       final m = re.firstMatch(lower);
       if (m != null) {
@@ -5348,7 +5464,8 @@ class PlaybackErrorText {
      *    归成 proxy 本身没错，错的是**「没起来」这个措辞** ——
      *    代理是起来的，只是那一条流打不开。措辞见 `_headline`。
      */
-    final loopbackFailed = lower.contains('127.0.0.1') ||
+    final loopbackFailed =
+        lower.contains('127.0.0.1') ||
         lower.contains('localhost') ||
         lower.contains('[::1]');
     /*
@@ -5370,10 +5487,13 @@ class PlaybackErrorText {
      *    会**真的改常量**再跑一次，窗口不跟着走就红。
      */
     final timeoutWindow = Duration(seconds: kPlaybackNetworkTimeoutSeconds);
-    final withinTimeoutWindow = elapsed != null &&
+    final withinTimeoutWindow =
+        elapsed != null &&
         elapsed >= timeoutWindow - kPlaybackTimeoutWindowSlack &&
         elapsed <= timeoutWindow + kPlaybackTimeoutWindowSlack;
-    if (withinTimeoutWindow && loopbackFailed && lower.contains('failed to open')) {
+    if (withinTimeoutWindow &&
+        loopbackFailed &&
+        lower.contains('failed to open')) {
       return PlaybackFailure(
         kind: PlaybackFailureKind.timeout,
         detail: display,
@@ -5383,7 +5503,8 @@ class PlaybackErrorText {
         canSwitchSource: true,
       );
     }
-    final proxyDown = lower.contains('connection refused') ||
+    final proxyDown =
+        lower.contains('connection refused') ||
         lower.contains('连接被拒绝') ||
         // mpv 明确说「打不开」+ 目标是环回地址 ⇒ 是代理这一层
         (lower.contains('failed to open') && loopbackFailed);
@@ -5403,17 +5524,26 @@ class PlaybackErrorText {
      *   前者可以重试（上游可能只是抖了），后者换源才有用。
      */
     if (lower.contains('取流失败')) {
-      return PlaybackFailure(
-        kind: PlaybackFailureKind.source,
-        detail: display,
-      );
+      return PlaybackFailure(kind: PlaybackFailureKind.source, detail: display);
     }
 
     // ── ② 源站权限（E 类：只优化提示，不绕过）─────────────────────
     const permWords = <String>[
-      '大会员', '会员', 'vip', '付费', '购买', '订阅',
-      '地区', '版权', '仅限', '无权', '没有权限', '权限不足',
-      '需要登录', '登录后', 'unauthorized',
+      '大会员',
+      '会员',
+      'vip',
+      '付费',
+      '购买',
+      '订阅',
+      '地区',
+      '版权',
+      '仅限',
+      '无权',
+      '没有权限',
+      '权限不足',
+      '需要登录',
+      '登录后',
+      'unauthorized',
     ];
     if (permWords.any(lower.contains) || kindHint == 'unauthorized') {
       return PlaybackFailure(
@@ -5438,8 +5568,13 @@ class PlaybackErrorText {
      *    `netWords` 只留**文字**关键词。
      */
     const netWords = <String>[
-      'timeout', '超时', 'timed out',
-      'too many requests', '稍后', '限流', 'temporarily',
+      'timeout',
+      '超时',
+      'timed out',
+      'too many requests',
+      '稍后',
+      '限流',
+      'temporarily',
     ];
     if (netWords.any(lower.contains) || kindHint == 'network') {
       return PlaybackFailure(
@@ -5451,27 +5586,31 @@ class PlaybackErrorText {
     // ── ④ 解码（A 类）────────────────────────────────────────────
     // 这几条是 libmpv 的原句，实测形态见本方法的文档
     const decodeWords = <String>[
-      'could not open codec', 'unsupported', 'invalid data found',
-      'failed to recognize file format', 'no video', '解码',
-      'codec', '不支持的格式',
+      'could not open codec',
+      'unsupported',
+      'invalid data found',
+      'failed to recognize file format',
+      'no video',
+      '解码',
+      'codec',
+      '不支持的格式',
     ];
     if (decodeWords.any(lower.contains)) {
-      return PlaybackFailure(
-        kind: PlaybackFailureKind.decode,
-        detail: display,
-      );
+      return PlaybackFailure(kind: PlaybackFailureKind.decode, detail: display);
     }
 
     // ── ⑤ 源解析（D 类）──────────────────────────────────────────
     const srcWords = <String>[
-      '没有可播放的地址', '不可播', '无法路由', 'not found',
-      'no playable', '找不到', '解析',
+      '没有可播放的地址',
+      '不可播',
+      '无法路由',
+      'not found',
+      'no playable',
+      '找不到',
+      '解析',
     ];
     if (srcWords.any(lower.contains) || !hadCandidates) {
-      return PlaybackFailure(
-        kind: PlaybackFailureKind.source,
-        detail: display,
-      );
+      return PlaybackFailure(kind: PlaybackFailureKind.source, detail: display);
     }
 
     return PlaybackFailure(kind: PlaybackFailureKind.unknown, detail: display);
@@ -5623,8 +5762,10 @@ class PanShareStatus {
   final String? account;
   final bool expired;
   final bool keyringAvailable;
+
   /// **当前恒为 false**：取直链功能尚未实现
   final bool resolvable;
+
   /// 分层的真实原因（可直接显示给用户）
   final String reason;
 
@@ -5632,17 +5773,17 @@ class PanShareStatus {
   bool get recognized => kind != 'unknown' && shareId.isNotEmpty;
 
   factory PanShareStatus.fromJson(Map<String, dynamic> j) => PanShareStatus(
-        kind: j['kind'] as String? ?? 'unknown',
-        kindName: j['kindName'] as String? ?? '未知网盘',
-        shareId: j['shareId'] as String? ?? '',
-        pwd: j['pwd'] as String?,
-        loggedIn: j['loggedIn'] == true,
-        account: j['account'] as String?,
-        expired: j['expired'] == true,
-        keyringAvailable: j['keyringAvailable'] != false,
-        resolvable: j['resolvable'] == true,
-        reason: j['reason'] as String? ?? '',
-      );
+    kind: j['kind'] as String? ?? 'unknown',
+    kindName: j['kindName'] as String? ?? '未知网盘',
+    shareId: j['shareId'] as String? ?? '',
+    pwd: j['pwd'] as String?,
+    loggedIn: j['loggedIn'] == true,
+    account: j['account'] as String?,
+    expired: j['expired'] == true,
+    keyringAvailable: j['keyringAvailable'] != false,
+    resolvable: j['resolvable'] == true,
+    reason: j['reason'] as String? ?? '',
+  );
 }
 
 /// 分享里的一个条目（网盘目录项）
@@ -5678,10 +5819,10 @@ class PanShareEntry {
   }
 
   factory PanShareEntry.fromJson(Map<String, dynamic> j) => PanShareEntry(
-        name: '${j['name'] ?? ''}',
-        size: (j['size'] as num?)?.toInt() ?? 0,
-        isDir: j['isDir'] == true,
-      );
+    name: '${j['name'] ?? ''}',
+    size: (j['size'] as num?)?.toInt() ?? 0,
+    isDir: j['isDir'] == true,
+  );
 }
 
 /// 一次**匿名列目录**的结果（`pan_list_share`）
@@ -5810,14 +5951,14 @@ class TvboxAggregateSite {
       );
 
   TvboxAggregateSite copyWith({bool? enabled}) => TvboxAggregateSite(
-        id: id,
-        name: name,
-        api: api,
-        kindTag: kindTag,
-        implemented: implemented,
-        enabled: enabled ?? this.enabled,
-        reason: reason,
-      );
+    id: id,
+    name: name,
+    api: api,
+    kindTag: kindTag,
+    implemented: implemented,
+    enabled: enabled ?? this.enabled,
+    reason: reason,
+  );
 }
 
 /// `tvbox_aggregate_get` / `set` 的返回
@@ -5930,4 +6071,75 @@ class TvboxDedupeResult {
   }
 }
 
+/// A real TVBox subscription, JS installation origin, or live playlist.
+class SourceOrigin {
+  const SourceOrigin({
+    required this.id,
+    this.name = '',
+    this.kind = '',
+    this.primaryUrl = '',
+    this.backupUrls = const [],
+    this.lastSuccessfulUrl,
+    this.providerIds = const [],
+  });
+  final String id;
+  final String name;
+  final String kind;
+  final String primaryUrl;
+  final List<String> backupUrls;
+  final String? lastSuccessfulUrl;
+  final List<String> providerIds;
+  factory SourceOrigin.fromJson(Map<String, dynamic> j) => SourceOrigin(
+    id: '${j['id'] ?? ''}',
+    name: '${j['name'] ?? ''}',
+    kind: '${j['kind'] ?? ''}',
+    primaryUrl: '${j['primaryUrl'] ?? ''}',
+    backupUrls: (j['backupUrls'] as List? ?? const [])
+        .whereType<String>()
+        .toList(),
+    lastSuccessfulUrl: j['lastSuccessfulUrl'] as String?,
+    providerIds: (j['providerIds'] as List? ?? const [])
+        .whereType<String>()
+        .toList(),
+  );
+}
 
+class SourceOriginGroup {
+  const SourceOriginGroup({
+    required this.id,
+    this.name = '',
+    this.providerIds = const [],
+    this.selectedProviderIds = const [],
+  });
+  final String id;
+  final String name;
+  final List<String> providerIds;
+  final List<String> selectedProviderIds;
+  factory SourceOriginGroup.fromJson(Map<String, dynamic> j) =>
+      SourceOriginGroup(
+        id: '${j['id'] ?? ''}',
+        name: '${j['name'] ?? ''}',
+        providerIds: (j['providerIds'] as List? ?? const [])
+            .whereType<String>()
+            .toList(),
+        selectedProviderIds: (j['selectedProviderIds'] as List? ?? const [])
+            .whereType<String>()
+            .toList(),
+      );
+}
+
+class SourceCatalog {
+  const SourceCatalog({
+    this.version = 1,
+    this.origins = const [],
+    this.groups = const [],
+  });
+  final int version;
+  final List<SourceOrigin> origins;
+  final List<SourceOriginGroup> groups;
+  factory SourceCatalog.fromJson(Map<String, dynamic> j) => SourceCatalog(
+    version: (j['version'] as num?)?.toInt() ?? 1,
+    origins: jlist(j['origins'], SourceOrigin.fromJson),
+    groups: jlist(j['groups'], SourceOriginGroup.fromJson),
+  );
+}

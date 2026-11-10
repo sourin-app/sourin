@@ -19,6 +19,7 @@
 
 import 'dart:async';
 
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
 import 'widgets/miuix_controls.dart' as ui;
@@ -27,6 +28,7 @@ import 'app_scaffold.dart';
 import '../core/models.dart' as models;
 import '../core/sourin_api.dart';
 import 'tokens.dart';
+import 'widgets/app_page_header.dart';
 import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
 import '../design/icons/app_icons.dart';
@@ -654,8 +656,23 @@ class BrowsePageState extends State<BrowsePage> {
                         (context, i) => PosterCard(
                           title: _items[i].title,
                           cover: _items[i].cover,
-                          subtitle: _items[i].note,
-                          titleLines: 2,
+                          subtitle:
+                              PosterCard.releaseStatusFor(
+                                    note: _items[i].note,
+                                  ) ==
+                                  null
+                              ? _items[i].note
+                              : null,
+                          releaseStatus: PosterCard.releaseStatusFor(
+                            note: _items[i].note,
+                          ),
+                          width: Layout.cellWidthFor(
+                            Layout.bandFor(MediaQuery.sizeOf(context).width),
+                            Layout.columnsForBand(
+                              Layout.bandFor(MediaQuery.sizeOf(context).width),
+                            ),
+                          ),
+                          titleLines: 1,
                           onTap: () => _open(_items[i]),
                         ),
                         childCount: _items.length,
@@ -737,11 +754,12 @@ class BrowsePageState extends State<BrowsePage> {
       crossAxisCount: Layout.columnsForBand(band),
       crossAxisSpacing: Layout.gapFor(band),
       mainAxisSpacing: Sp.x5,
-      // 高度 = 海报高 + 标题两行（原版 base.css:844-854 固定两行）
-      childAspectRatio:
-          AppMetrics.posterWidth /
-          (AppMetrics.posterWidth / AppMetrics.posterAspect +
-              AppMetrics.posterMetaHeight(titleLines: 2)),
+      // Match the real cell width and a single title line at this text scale.
+      mainAxisExtent: PosterCard.heightOf(
+        context,
+        width: Layout.cellWidthFor(band, Layout.columnsForBand(band)),
+        hasSubtitle: true,
+      ),
     );
   }
 
@@ -750,54 +768,22 @@ class BrowsePageState extends State<BrowsePage> {
   /// ⚠️ 纵向的内边距**归 [`_StickyHeaderBar`] 管**（它要用 `padTop`
   ///    把顶部呼吸随滚动收掉）。这里若再写一遍纵向 padding，
   ///    吸顶时就是"两层 32px"，子件会被挤出紧约束 ⇒ `RenderFlex overflowed`。
-  Widget _header(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: Layout.contentInsetOf(context),
-      child: Row(
-        children: [
-          ui.IconButton(
-            onPressed: () => Navigator.of(context).maybePop(),
-            icon: const Icon(AppIcons.chevron_left),
-            tooltip: '返回',
-          ),
-          const SizedBox(width: Sp.x2),
-          Expanded(
-            child: Text(
-              _title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: FontSizes.xl,
-                fontWeight: FontWeights.semibold,
-                color: colors.onSurface,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _header(BuildContext context) => Padding(
+    padding: Layout.contentInsetOf(context),
+    child: AppPageHeader(
+      title: _title,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+    ),
+  );
 }
 
-/// 页头吸顶条的**吸顶高度**（= 返回按钮那一行的高度 + 底部呼吸）
-///
-/// ★ 实测值，不是估的：`test/t75_browse_autoload_test.dart` 渲染整页并
-///   量 `RenderBox.size.height`。`IconButton` 在 forui/material 主题下的
-///   自然高度由主题决定（`iconSize` + `padding`，且受 `tapTargetSize`
-///   影响）—— 猜错就是 `RenderFlex overflowed`（紧约束），所以必须量。
-///
-/// ⚠️ `SliverPersistentHeader` 给子件的是**紧约束**：子件高度不等于
-///    `extent` 就会报溢出。`t75` 那条测试会渲染并滚动整页，
-///    溢出直接让它变红 —— 这个数字**有守卫**。
-const double _headerMinExtent = 48 + Sp.x5;
+/// Follow the shared Miuix header's own height rather than the old icon row's
+/// 48px. The enclosing SafeArea has already consumed the top system inset.
+/// Browse has no subtitle/actions that would add another header row.
+const double _headerMinExtent =
+    miuix.MiuixTopAppBarDefaults.smallTopAppBarCenterHeight + Sp.x5;
 
-/// 未滚动时的展开高度 = 吸顶高度 + 顶部呼吸 [Sp.x8]
-///
-/// ★ 与改造前**逐像素一致**：原来那个 `SliverToBoxAdapter` 用的是
-///   `EdgeInsets.fromLTRB(contentPadding, Sp.x8, contentPadding, Sp.x5)`
-///   ⇒ 静止时总高 = `Sp.x8 + 48 + Sp.x5` = 32 + 48 + 20 = 100，
-///   正是这个值。所以这次改造**只改滚动行为，不改静止时的观感**。
+/// Keep the existing breathing space, which collapses before the header pins.
 const double _headerMaxExtent = _headerMinExtent + Sp.x8;
 
 /// 「返回 + 标题」吸顶条的 delegate（task-75 需求②）
@@ -891,10 +877,11 @@ class _SkeletonGrid extends StatelessWidget {
         crossAxisSpacing: Layout.gapFor(band),
         mainAxisSpacing: Sp.x5,
         // ★ 必须与 _gridDelegate 逐值相同，否则骨架→内容卡片跳位
-        childAspectRatio:
-            AppMetrics.posterWidth /
-            (AppMetrics.posterWidth / AppMetrics.posterAspect +
-                AppMetrics.posterMetaHeight(titleLines: 2)),
+        mainAxisExtent: PosterCard.heightOf(
+          context,
+          width: Layout.cellWidthFor(band, Layout.columnsForBand(band)),
+          hasSubtitle: true,
+        ),
       ),
       delegate: SliverChildBuilderDelegate(
         (_, __) => Column(

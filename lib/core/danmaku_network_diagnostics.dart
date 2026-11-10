@@ -78,18 +78,20 @@ Future<DanmakuHttpResponse> diagnoseDanmakuEndpoint(
   DanmakuTransport? transport,
   Duration timeout = const Duration(seconds: 12),
 }) async {
-  final t = transport ?? IoDanmakuTransport(
-    timeout: timeout,
-    findProxy: currentDanmakuFindProxy(),
-  );
+  final t = transport ?? CoreDanmakuTransport(timeout: timeout);
   try {
-    final uri = endpoint?.resolve(
-      DanmakuLocalService.searchProbePath, const {'keyword': 'a'},
-    ) ?? Uri.http('127.0.0.1:2080', DanmakuLocalService.versionPath);
-    return await t.send(
-      method: 'GET', uri: uri,
-      headers: const {'Accept': 'application/json'},
-    ).timeout(timeout);
+    final uri =
+        endpoint?.resolve(DanmakuLocalService.searchProbePath, const {
+          'keyword': 'a',
+        }) ??
+        Uri.http('127.0.0.1:2080', DanmakuLocalService.versionPath);
+    return await t
+        .send(
+          method: 'GET',
+          uri: uri,
+          headers: const {'Accept': 'application/json'},
+        )
+        .timeout(timeout);
   } finally {
     if (transport == null) t.close();
   }
@@ -106,10 +108,7 @@ Future<List<String>> lookupDanmakuDoh(
 }) async {
   if (host.isEmpty || InternetAddress.tryParse(host) != null) return [];
   final transport = request == null
-      ? IoDanmakuTransport(
-          timeout: timeout,
-          findProxy: findProxy ?? currentDanmakuFindProxy(),
-        )
+      ? CoreDanmakuTransport(timeout: timeout)
       : null;
   final clock = Stopwatch()..start();
   try {
@@ -120,23 +119,24 @@ Future<List<String>> lookupDanmakuDoh(
     ]) {
       final remaining = timeout - clock.elapsed;
       if (remaining <= Duration.zero) break;
-      final uri = Uri.parse(provider).replace(queryParameters: {
-        'name': host,
-        'type': 'A',
-      });
+      final uri = Uri.parse(provider)
+          .replace(queryParameters: {'name': host, 'type': 'A'});
       try {
-        final text = await (request != null
-            ? request(uri)
-            : transport!.send(
-                method: 'GET',
-                uri: uri,
-                headers: const {'Accept': 'application/dns-json'},
-              ).then((response) {
-                if (!response.isOk) throw const FormatException('DoH status');
-                return response.body;
-              })).timeout(
-                Duration(microseconds: remaining.inMicroseconds ~/ 2),
-              );
+        final text =
+            await (request != null
+                    ? request(uri)
+                    : transport!
+                          .send(
+                            method: 'GET',
+                            uri: uri,
+                            headers: const {'Accept': 'application/dns-json'},
+                          )
+                          .then((response) {
+                            if (!response.isOk)
+                              throw const FormatException('DoH status');
+                            return response.body;
+                          }))
+                .timeout(Duration(microseconds: remaining.inMicroseconds ~/ 2));
         final data = jsonDecode(text);
         if (data is! Map || data['Status'] != 0) continue;
         final answers = data['Answer'];

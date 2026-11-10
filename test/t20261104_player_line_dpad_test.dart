@@ -87,16 +87,18 @@ FocusNode _controlNode(WidgetTester t, Finder target) {
   // Miuix buttons have an internal focus node excluded by the shared keyboard
   // adapter. Select the nearest eligible node within the actual control, never
   // an excluded package node or the page-level video shortcut handler.
-  final boundary = find.ancestor(
-    of: target,
-    matching: find.byWidgetPredicate(
-      (w) =>
-          w is controls.TextButton ||
-          w is controls.OutlinedButton ||
-          w is controls.ChoiceChip ||
-          w is PopoverRow,
-    ),
-  );
+  final boundary = find
+      .ancestor(
+        of: target,
+        matching: find.byWidgetPredicate(
+          (w) =>
+              w is controls.TextButton ||
+              w is controls.OutlinedButton ||
+              w is controls.ChoiceChip ||
+              w is PopoverRow,
+        ),
+      )
+      .first;
   expect(boundary, findsOneWidget);
   final control = t.element(boundary);
   final inner = Focus.of(t.element(target));

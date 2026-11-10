@@ -85,27 +85,46 @@ void main() {
             history: _history,
           );
           await tester.pump();
-          final tabs = find.byType(miuix.MiuixTabRow);
+          final tabs = find.byType(miuix.MiuixGlassSegmentedTabRow);
           expect(tabs, findsOneWidget);
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).tabs, [
-            '最近追更 1',
-            '最近收藏 1',
-            '播放历史 1',
+          expect(tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).tabs, [
+            '追更 1',
+            '收藏 1',
+            '历史 1',
           ]);
+          expect(find.text('我的'), findsNothing);
+          expect(
+            find.byKey(const ValueKey('shelf-current-count')),
+            findsNothing,
+          );
           final bounds = tester.getRect(tabs);
           expect(bounds.left, greaterThanOrEqualTo(0));
           expect(bounds.right, lessThanOrEqualTo(width));
-          expect(bounds.height, greaterThanOrEqualTo(44));
+          expect(bounds.height, greaterThanOrEqualTo(40));
+          expect(bounds.height, lessThanOrEqualTo(44));
+          final hitTargets = find.descendant(
+            of: tabs,
+            matching: find.byType(FocusableActionDetector),
+          );
+          expect(hitTargets, findsNWidgets(3));
+          for (var i = 0; i < 3; i++) {
+            expect(
+              tester.getSize(hitTargets.at(i)).height,
+              greaterThanOrEqualTo(34),
+            );
+          }
 
           for (final (label, title, page, id, index) in [
-            ('最近追更 1', '追更示例', 'following', 'follow', 0),
-            ('最近收藏 1', '收藏示例', 'all', 'favorite', 1),
-            ('播放历史 1', '历史示例', 'continue', 'history', 2),
+            ('追更', '追更示例', 'following', 'follow', 0),
+            ('收藏', '收藏示例', 'all', 'favorite', 1),
+            ('历史', '历史示例', 'continue', 'history', 2),
           ]) {
-            await tester.tap(find.text(label));
+            await tester.tap(find.text('$label 1'));
             await tester.pump();
             expect(
-              tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex,
+              tester
+                  .widget<miuix.MiuixGlassSegmentedTabRow>(tabs)
+                  .selectedIndex,
               index,
             );
             expect(find.text(title), findsOneWidget);
@@ -125,12 +144,24 @@ void main() {
             .4,
           );
 
-          Focus.of(tester.element(tabs)).requestFocus();
+          await tester.tap(find.text('清空历史'));
+          await tester.pump();
+          expect(find.text('再点一次确认清空'), findsOneWidget);
+          expect(find.text('历史示例'), findsOneWidget);
+
+          Focus.of(tester.element(find.text('历史 1'))).requestFocus();
           await tester.pump();
           await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
           await tester.pump();
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 1);
+          expect(
+            tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+            1,
+          );
           expect(find.text('收藏示例'), findsOneWidget);
+          expect(
+            Focus.of(tester.element(find.text('收藏 1'))).hasPrimaryFocus,
+            isTrue,
+          );
           expect(tester.takeException(), isNull);
           await tester.pumpWidget(const SizedBox.shrink());
           await tester.pump(const Duration(seconds: 5));

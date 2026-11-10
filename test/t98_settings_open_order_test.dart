@@ -1,5 +1,4 @@
 @Tags(['native-media'])
-
 // ══════════════════════════════════════════════════════════════════════
 //  t98 —— ★★★ 桌面端第 3 条回归：点齿轮必须**立刻**开出面板
 // ══════════════════════════════════════════════════════════════════════
@@ -45,7 +44,6 @@
 // ⚠️ 必须带 \`@Tags(['native-media'])\` 并用 \`--run-skipped --tags native-media\` 跑
 //    （见 dart_test.yaml:62-69：本标签默认 skip）
 // ══════════════════════════════════════════════════════════════════════
-
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -58,13 +56,9 @@ import 'package:sourin_spike/ui/remote_bridge.dart';
 import 'package:sourin_spike/ui/widgets/player_settings_sheet.dart';
 
 List<Episode> fakeEpisodes(int n) => [
-      for (var i = 1; i <= n; i++)
-        Episode(
-          id: 'ep$i',
-          title: '第$i集',
-          url: 'https://example.invalid/$i.m3u8',
-        ),
-    ];
+  for (var i = 1; i <= n; i++)
+    Episode(id: 'ep$i', title: '第$i集', url: 'https://example.invalid/$i.m3u8'),
+];
 
 Future<void> mountPlayer(WidgetTester t) async {
   await t.binding.setSurfaceSize(const Size(1280, 800));
@@ -110,18 +104,19 @@ void main() {
     await mountPlayer(t);
     expect(debugPlayerOpenSettingsForProbe(), isTrue);
     await t.pump();
+    await t.pump();
     expect(debugPlayerSettingsOpen(), isTrue);
     expect(sheet, findsOneWidget);
     await drain(t);
   });
 
-  testWidgets('② ★★ 缺陷 B 回归：开过 portal **之后**的浮层再开设置面板，必须仍然开得出来',
-      (t) async {
+  testWidgets('② ★★ 缺陷 B 回归：开过 portal **之后**的浮层再开设置面板，必须仍然开得出来', (t) async {
     await mountPlayer(t);
     expect(sheet, findsNothing, reason: '★ 起手不能有面板');
 
     // ── 第一次：正常打开 ──
     expect(debugPlayerOpenSettingsForProbe(), isTrue);
+    await t.pump();
     await t.pump();
     expect(sheet, findsOneWidget, reason: '★ 第一次必须开得出来（阳性对照）');
 
@@ -131,6 +126,7 @@ void main() {
      *   （改前 `_settingsPortalShown` 会永久停在 true）。
      */
     expect(debugPlayerCloseSettingsForProbe(), isTrue);
+    await t.pump();
     await t.pump();
     expect(sheet, findsNothing, reason: '★ 关掉后树上不该还有面板');
 
@@ -147,10 +143,12 @@ void main() {
     // ── 第二次：缺陷 B 就发生在这里 ──
     expect(debugPlayerOpenSettingsForProbe(), isTrue);
     await t.pump();
+    await t.pump();
     expect(
       sheet,
       findsOneWidget,
-      reason: '★★★ 第 3 条缺陷 B：开过别的浮层之后再开设置面板，面板必须仍然出现 —— '
+      reason:
+          '★★★ 第 3 条缺陷 B：开过别的浮层之后再开设置面板，面板必须仍然出现 —— '
           '没有就是 portal 的 Element 被重建而 controller 状态没跟随',
     );
     await drain(t);
@@ -163,6 +161,7 @@ void main() {
     await t.pump();
     expect(debugPlayerOpenSettingsForProbe(), isTrue);
     await t.pump();
+    await t.pump();
     expect(
       sheet,
       findsOneWidget,
@@ -174,56 +173,46 @@ void main() {
   testWidgets('④ ★ 开关两轮：面板不许「开过一次就再也开不出来」', (t) async {
     await mountPlayer(t);
     for (var round = 0; round < 3; round++) {
-      expect(debugPlayerOpenSettingsForProbe(), isTrue, reason: '★ 第 $round 轮要能开');
+      expect(
+        debugPlayerOpenSettingsForProbe(),
+        isTrue,
+        reason: '★ 第 $round 轮要能开',
+      );
+      await t.pump();
       await t.pump();
       expect(sheet, findsOneWidget, reason: '★ 第 $round 轮面板必须在树上');
       expect(debugPlayerCloseSettingsForProbe(), isTrue);
+      await t.pump();
       await t.pump();
       expect(sheet, findsNothing, reason: '★ 第 $round 轮关掉后必须真的没了');
     }
     await drain(t);
   });
 
-  testWidgets('⑤ ★ 静态审计：挂载点必须有**常量** Key，show/hide 不许只信镜像 bool', (t) async {
+  testWidgets('⑤ settings visibility has one owner per mounted portal', (
+    t,
+  ) async {
     final src = File('lib/ui/player_page.dart').readAsStringSync();
-
+    final portal = File('lib/ui/player/player_settings_portal.dart')
+        .readAsStringSync();
     expect(
       src.contains("key: const ValueKey<String>('player-settings-portal'),"),
       isTrue,
-      reason: '★★★ 第 3 条缺陷 B：挂载点必须给常量 Key —— '
-          '否则 Stack 按位置槽位匹配会把 portal 的 Element 重建掉',
     );
-
-    // show()：必须先写镜像，再按 **controller 真实状态** 判早退
-    final showAt = src.indexOf('void _showSettingsPortal() {');
-    expect(showAt, greaterThan(-1), reason: '★ 找不到 _showSettingsPortal');
-    final showBody = src.substring(showAt, showAt + 900);
+    expect(src.contains('visible: _settingsOpen,'), isTrue);
     expect(
-      showBody.contains('_settingsPortal.isShowing'),
-      isTrue,
-      reason: '★★★ _showSettingsPortal 必须用 controller 的**真实** isShowing 判据，'
-          '不能只信自己记的镜像 bool（镜像会过期 ⇒ 面板再也画不出来）',
-    );
-    /*
-     * ★ 字段本身必须消失。
-     *   ⚠️ 不能断言"源码里不含 `_settingsPortalShown` 这个字符串" ——
-     *      注释里**应当**留着它（解释为什么删掉），所以只钉**声明**那一行。
-     */
-    expect(
-      src.contains('bool _settingsPortalShown'),
+      src.contains('final OverlayPortalController _settingsPortal'),
       isFalse,
-      reason: '★★★ 镜像 bool 已删除：只要它回来，就又会「过期 ⇒ show() 被吞」'
-          '⇒ 第 3 条缺陷复活',
     );
-
-    final hideAt = src.indexOf('void _hideSettingsPortal() {');
-    expect(hideAt, greaterThan(-1), reason: '★ 找不到 _hideSettingsPortal');
-    final hideBody = src.substring(hideAt, hideAt + 700);
+    expect(src.contains('bool _settingsPortalShown'), isFalse);
     expect(
-      hideBody.contains('_settingsPortal.isShowing'),
+      portal.contains('final _controller = OverlayPortalController('),
       isTrue,
-      reason: '★ _hideSettingsPortal 同款：controller 没在显示就别 hide()'
-          '（未 attach 且 zOrder 为 null 时 hide() 里的 assert 会炸）',
+    );
+    expect(portal.contains('addPostFrameCallback'), isTrue);
+    expect(
+      portal.contains('if (!mounted || revision != _revision) return;'),
+      isTrue,
     );
   });
 
@@ -232,9 +221,11 @@ void main() {
 
     expect(debugPlayerOpenSettingsForProbe(), isTrue);
     await t.pump();
+    await t.pump();
     expect(sheet, findsOneWidget);
 
     expect(debugPlayerCloseSettingsForProbe(), isTrue);
+    await t.pump();
     await t.pump();
     expect(sheet, findsNothing);
     /*
@@ -242,8 +233,11 @@ void main() {
      *   所以底栏不会自动回来 —— 它回来靠的是 onClose / Esc 里那两句
      *   `_showControls()`。⑦ 用静态审计钉住那两句的存在与位置。
      */
-    expect(debugPlayerControlsVisible(), isNotNull,
-        reason: '★ 探针要能读到真实的 _controlsVisible');
+    expect(
+      debugPlayerControlsVisible(),
+      isNotNull,
+      reason: '★ 探针要能读到真实的 _controlsVisible',
+    );
     await drain(t);
   });
 
@@ -251,16 +245,27 @@ void main() {
     final src = File('lib/ui/player_page.dart').readAsStringSync();
 
     final closeAt = src.indexOf('onClose: () {');
-    expect(closeAt, greaterThan(-1),
-        reason: '★★★ 面板的 onClose 必须改成一个**块**（原来是一行 lambda）—— '
-            '一行里塞不进自愈调用');
-    expect(src.substring(closeAt, closeAt + 300).contains('_showControls();'), isTrue,
-        reason: '★★★ 关面板（X）后必须把底栏叫回来：'
-            '否则面板一旦「开着但画不出来」，底栏就永远不回来（第 3 条）');
+    expect(
+      closeAt,
+      greaterThan(-1),
+      reason:
+          '★★★ 面板的 onClose 必须改成一个**块**（原来是一行 lambda）—— '
+          '一行里塞不进自愈调用',
+    );
+    expect(
+      src.substring(closeAt, closeAt + 300).contains('_showControls();'),
+      isTrue,
+      reason:
+          '★★★ 关面板（X）后必须把底栏叫回来：'
+          '否则面板一旦「开着但画不出来」，底栏就永远不回来（第 3 条）',
+    );
 
     final escAt = src.indexOf('_hideSettingsPortal();');
     expect(escAt, greaterThan(-1));
-    expect(src.substring(escAt, escAt + 900).contains('_showControls();'), isTrue,
-        reason: '★★★ Esc 关面板后同样要把底栏叫回来');
+    expect(
+      src.substring(escAt, escAt + 900).contains('_showControls();'),
+      isTrue,
+      reason: '★★★ Esc 关面板后同样要把底栏叫回来',
+    );
   });
 }

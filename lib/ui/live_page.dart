@@ -412,6 +412,7 @@ class LivePage extends StatefulWidget {
     this.onWatchLive,
     this.onWatchLivePlayback,
     this.onWatchReplay,
+    this.onManageSources,
     this.isTv = false,
     this.visible,
   });
@@ -463,6 +464,8 @@ class LivePage extends StatefulWidget {
     String episodeTitle,
   )?
   onWatchReplay;
+
+  final Future<void> Function()? onManageSources;
 
   final bool isTv;
 
@@ -3100,10 +3103,12 @@ class LivePageState extends State<LivePage> {
     }
 
     if (phase == LiveLoadPhase.empty) {
-      return const _EmptyState(
+      return _EmptyState(
         icon: AppIcons.live_tv_outlined,
         title: '没有可用的直播源',
-        desc: '在设置中启用一个支持直播的内容源',
+        desc: '导入直播订阅，或启用已有的直播源',
+        actionLabel: '管理直播源',
+        onAction: widget.onManageSources,
       );
     }
 
@@ -4898,9 +4903,9 @@ class _FilterBar extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
 
     return miuix.MiuixCard(
-      cornerRadius: Radii.sm,
+      cornerRadius: Radii.md,
       child: SizedBox(
-        height: Sp.x8 + Sp.x1,
+        height: Sp.x10 + Sp.x1,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
           /*
@@ -4908,11 +4913,6 @@ class _FilterBar extends StatelessWidget {
          *   玻璃化后这条线仍然有用（玻璃本身有边缘高光，但那条高光
          *   是**贴边**的，不足以替代一条明确的分隔）。
          */
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: colors.outlineVariant, width: 0.6),
-            ),
-          ),
           child: Row(
             children: [
               /*
@@ -5924,219 +5924,108 @@ class _ChannelTileState extends State<_ChannelTile> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final palette = miuix.MiuixTheme.of(context).colors;
     final channel = widget.channel;
     final active = widget.active;
-
-    return ui.InkWell(
-      /*
-       * ★★★ 第 15 项验收：给**行本身**一个稳定 key
-       *
-       * # 为什么必须有（不然"选中只作用于目标项"根本没法机器验）
-       * ```text
-       * 判据要求区分三件东西：频道高亮 / 焦点环 / 筛选浮层，
-       * 并证明高亮**不越出本行**、不遮文字按钮、不留透明拦截层。
-       * 没有 key ⇒ 测试只能数 `Container` 个数（脆弱）或读源码字符串
-       * （假绿）。有 key ⇒ 可以直接 `getRect` / `hitTestable` 量几何与命中。
-       * ★ 与 `live-volume-slider` 同一个理由：可控性不是装饰，是判据前提。
-       * ```
-       */
-      key: liveChannelTileKey(widget.provider, widget.channel.id),
-      onTap: widget.onTap,
-      /*
-       * ★★★ task-82【Q3】把**本行自己的** node 交给 `InkWell`
-       *
-       * 不传时节点由 `InkWell` 内部创建，外部拿不到句柄 ⇒
-       * 上面 `didUpdateWidget` 里的 `_node.requestFocus()` 就**永远
-       * 打在一个不在焦点树里的节点上**（等于没写）。
-       * ★ 这一行是"焦点跟随选中"能成立的**前提**。
-       */
-      focusNode: _node,
-      borderRadius: Radii.rSm,
-      child: Container(
-        /*
-         * ★★★ 第 15 项验收：高亮**块本身**单独一个 key
-         *
-         * # 为什么不能跟行共用一个 key
-         * ```text
-         * 行 = InkWell（点击热区，含 margin 之外的范围）；
-         * 高亮 = 这个 Container 的 decoration（画在 padding 盒里、含 2px 下边距）。
-         * 要证明"高亮不越出本行 / 不遮相邻项"，必须能分别量这两个矩形
-         * ⇒ 一个 key 量不出两个盒子。
-         * ```
-         */
-        key: liveChannelHighlightKey(widget.provider, channel.id),
-        /*
-         * ★★★ task-34（Owner 第 12 条）：「分类+源把列表都挤得看不到了」
-         *
-         * # 这条改的是**行密度**，不只是把头部压扁
-         * ```text
-         * Owner 的要求是「一屏看到的源 ≥ 现在一倍」。
-         * 实测（.probe/probe_tests/zz_t64_measure_probe_test.dart，1280x800）：
-         *   行距 pitch = **52px**，其中内容只有 **30px**，间距占了 **22px**（42%）
-         *   把头部从 253 压到 0 ⇒ 800/52 = 最多 **14 行** ⇒ 只涨 40%，
-         *   **永远到不了 2 倍**。
-         * ⇒ 光改组头部到不了目标，**必须同时收紧行距** —— 这是第二个杠杆。
-         * ```
-         *
-         * # 改法（34 logo + 16 垂直内边距 + 2 边距 = 52 ⇒ 目标 40）
-         * ```text
-         * logo 34 → 26（仍够认出图标；文字回退仍显示前 4 字）
-         * 垂直内边距 Sp.x2(8) → Sp.x1(4)
-         * 底部 margin 2 → 2（保留：行与行之间的缝隙，也是点击热区的间隔）
-         * ```
-         *
-         * ⚠️ 为什么不把 padding 砍到 0：那会让行贴在一起，
-         *   选中高亮块之间没有缝隙 ⇒ 视觉上糊成一片，比挤更难用。
-         */
-        padding: const EdgeInsets.symmetric(horizontal: Sp.x2, vertical: Sp.x1),
-        margin: const EdgeInsets.only(bottom: 2),
-        decoration: BoxDecoration(
-          color: active ? colors.primary.withValues(alpha: 0.14) : null,
-          borderRadius: Radii.rSm,
-        ),
-        child: Row(
-          children: [
-            // ── logo（无图时显示前 4 个字）──
-            // ★ task-34：34 → 26（见上面行密度的注释）
-            SizedBox(
-              width: 26,
-              height: 26,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(5),
-                child: channel.logo != null && channel.logo!.isNotEmpty
-                    ? coverImage(
-                        context,
-                        url: channel.logo!,
-                        // 上面的 SizedBox 就是 26x26，硬编码且无 LayoutBuilder
-                        layoutWidth: 26,
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) => _logoText(colors),
-                      )
-                    : _logoText(colors),
-              ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Semantics(
+        selected: active,
+        child: miuix.MiuixPressable(
+          key: liveChannelTileKey(widget.provider, channel.id),
+          onPressed: widget.onTap,
+          focusNode: _node,
+          borderRadius: Radii.rMd,
+          semanticLabel: channel.name,
+          child: miuix.MiuixCard(
+            key: liveChannelHighlightKey(widget.provider, channel.id),
+            cornerRadius: Radii.md,
+            colors: miuix.MiuixCardColors(
+              color: active
+                  ? palette.primary.withValues(alpha: 0.12)
+                  : palette.surfaceContainer,
+              contentColor: active ? palette.primary : palette.onSurface,
             ),
-            const SizedBox(width: Sp.x2),
-            Expanded(
-              child: Text(
-                channel.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                  color: active ? colors.primary : colors.onSurface,
-                ),
-              ),
+            insideMargin: const EdgeInsets.symmetric(
+              horizontal: Sp.x3,
+              vertical: 7,
             ),
-            /*
-             * ★★★ task-42：来源 tag（用户要求"以分组加 tag 作为标记"）
-             *
-             * # 用户原话
-             * ```text
-             * 直播页面,左侧不再分组,直接平铺下去 …
-             * 平铺下去 以分组加 tag 作为标记
-             * ```
-             * ⇒ 去掉分组标题行，改成**每行行尾**一个来源标签。
-             *
-             * # ⚠️ 我第一版**加了字段却忘了渲染**（真 bug，差点交付）
-             * ```text
-             * 我在 `_ChannelTile` 上加了 `final String? tag`，
-             * 构造处也传了 `tag: entry.tag`，
-             * ★ 但 build() 里**从来没有用它** —— analyze 也不报错
-             *   （写进字段但没读，Dart 不警告 —— 它是 public final）。
-             * ⇒ 截图验收时才看出来：列表里**没有 tag**。
-             * ⇒ 教训：**"传了参数"≠"画出来了"** —— 必须看渲染结果。
-             * ```
-             */
-            if (widget.tag != null && widget.tag!.isNotEmpty) ...[
-              const SizedBox(width: Sp.x2),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: colors.surfaceContainerHighest.withValues(alpha: 0.8),
-                  borderRadius: Radii.rSm,
-                  border: Border.all(color: colors.outlineVariant),
-                ),
-                child: Text(
-                  widget.tag!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
+            child: Row(
+              children: [
+                SizedBox.square(
+                  dimension: 28,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(7),
+                    child: channel.logo != null && channel.logo!.isNotEmpty
+                        ? coverImage(
+                            context,
+                            url: channel.logo!,
+                            layoutWidth: 28,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) => _logoText(colors),
+                          )
+                        : _logoText(colors),
                   ),
                 ),
-              ),
-            ],
-            /*
-             * ★★★ N15：播放结果徽标（用户原话「打开如果不能播放,动态标记」）
-             *
-             * # 三种状态各自的呈现（**必须**不同）
-             * ```text
-             * idle   ⇒ ● 灰点 + 「未检测到画面（可能未开播）」
-             * broken ⇒ ● 红点 + 「不可用」
-             * playable / unknown ⇒ 不画任何东西
-             * ```
-             *
-             * # 为什么 idle 和 broken 不能共用一个样子
-             * ```text
-             * 「不可用」      ⇒ 这个源坏了，别试了
-             * 「未检测到画面」⇒ 可能它现在没播，过会儿再看看
-             * ★ 混成一个「不可用」，用户会**放弃一个其实只是暂时没播的源**。
-             *   （这也是为什么本行文案不写死"未开播"—— 见 liveHealthLabel）
-             * ```
-             *
-             * # 为什么 playable 不画
-             * ```text
-             * 绝大多数频道都正常。给它们全加上"可用"绿点，
-             * 列表会变成一片绿 —— 信息量归零，还压窄了频道名。
-             * ★ 只标记**异常**，正常保持安静。
-             * ```
-             */
-            if (_healthLabel.isNotEmpty) ...[
-              const SizedBox(width: Sp.x2),
-              ui.Tooltip(
-                message: _healthLabel,
-                child: Container(
-                  key: ValueKey('live-health-${widget.channel.id}'),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _healthColor(colors).withValues(alpha: 0.12),
-                    borderRadius: Radii.rSm,
-                    border: Border.all(
-                      color: _healthColor(colors).withValues(alpha: 0.5),
+                const SizedBox(width: Sp.x3),
+                Expanded(
+                  child: Text(
+                    channel.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: FontSizes.sm,
+                      fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                      color: active ? palette.primary : palette.onSurface,
                     ),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: _healthColor(colors),
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        _healthLabel,
+                ),
+                if (widget.tag?.isNotEmpty ?? false) ...[
+                  const SizedBox(width: Sp.x2),
+                  miuix.MiuixBadge(
+                    containerColor: palette.surfaceContainerHigh,
+                    contentColor: palette.onSurfaceVariantSummary,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 64),
+                      child: Text(
+                        widget.tag!,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          color: _healthColor(colors),
+                          fontSize: 11,
+                          color: palette.onSurfaceVariantSummary,
                         ),
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-            ],
-          ],
+                ],
+                if (_healthLabel.isNotEmpty) ...[
+                  const SizedBox(width: Sp.x2),
+                  ui.Tooltip(
+                    message: _healthLabel,
+                    child: miuix.MiuixBadge(
+                      key: ValueKey('live-health-${channel.id}'),
+                      containerColor: _healthColor(colors)
+                          .withValues(alpha: 0.1),
+                      contentColor: _healthColor(colors),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 72),
+                        child: Text(
+                          _healthLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: _healthColor(colors),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -6397,7 +6286,7 @@ class LiveSearchField extends StatelessWidget {
         Expanded(
           child: SizedBox(
             // 单行高度写死 —— 与 `_FilterBar` 的 36 同量级，避免挤压主体
-            height: compact ? 36 : 40,
+            height: compact ? 40 : 44,
             child: ui.TextField(
               key: const ValueKey('live-search-field'),
               controller: controller,
@@ -6407,9 +6296,9 @@ class LiveSearchField extends StatelessWidget {
               decoration: InputDecoration(
                 isDense: true,
                 filled: true,
-                fillColor: colors.surfaceContainerHighest.withValues(
-                  alpha: 0.5,
-                ),
+                fillColor: miuix.MiuixTheme.of(context)
+                    .colors
+                    .surfaceContainerHigh,
                 // ★ 窄栏里长提示语会被截断成省略号 ⇒ 缩短（语义不变）
                 hintText: compact ? '搜频道' : '搜频道名（跨全部直播源）',
                 hintStyle: TextStyle(
@@ -6557,11 +6446,15 @@ class _EmptyState extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.desc,
+    this.actionLabel,
+    this.onAction,
   });
 
   final IconData icon;
   final String title;
   final String desc;
+  final String? actionLabel;
+  final VoidCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
@@ -6595,6 +6488,10 @@ class _EmptyState extends StatelessWidget {
                 color: colors.onSurfaceVariant,
               ),
             ),
+            if (onAction != null && actionLabel != null) ...[
+              const SizedBox(height: Sp.x5),
+              ui.FilledButton(onPressed: onAction, child: Text(actionLabel!)),
+            ],
           ],
         ),
       ),

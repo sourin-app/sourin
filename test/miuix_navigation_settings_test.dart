@@ -1,3 +1,5 @@
+import 'support/miuix_finders.dart';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter_test/flutter_test.dart';
@@ -34,7 +36,7 @@ void main() {
       await tester.pumpWidget(
         _host(
           StatefulBuilder(
-            builder: (_, setState) => Column(
+            builder: (context, setState) => Column(
               children: [
                 SettingsGestureToggle(
                   label: '手势开关',
@@ -48,8 +50,8 @@ void main() {
                   onTap: () => setState(() => selected = !selected),
                 ),
                 SizedBox(
-                  width: 280,
-                  height: 140,
+                  width: CompactShelfCard.width,
+                  height: CompactShelfCard.heightOf(context),
                   child: CompactShelfCard(
                     title: '紧凑卡片',
                     onTap: () => details++,
@@ -105,8 +107,15 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(miuix.MiuixNavigationBar), findsOneWidget);
-    expect(find.byType(miuix.MiuixNavigationBarItem), findsNWidgets(5));
+    expect(find.byType(miuix.MiuixGlassNavigationBar), findsOneWidget);
+    expect(
+      tester
+          .widget<miuix.MiuixGlassNavigationBar>(
+            find.byType(miuix.MiuixGlassNavigationBar),
+          )
+          .items,
+      hasLength(5),
+    );
     expect(find.byType(miuix.MiuixBadge), findsOneWidget);
     for (final tab in [
       AppTab.home,
@@ -114,7 +123,7 @@ void main() {
       AppTab.follow,
       AppTab.search,
     ]) {
-      final item = find.byKey(ValueKey('shell-nav-${tab.name}'));
+      final item = miuixNavigationItem(tab.label);
       final bounds = tester.getRect(item);
       expect(bounds.left, greaterThanOrEqualTo(0));
       expect(bounds.right, lessThanOrEqualTo(360));
@@ -124,18 +133,20 @@ void main() {
       expect(selected, tab);
     }
     for (final tab in [AppTab.cached, AppTab.settings]) {
-      await tester.tap(find.byKey(const ValueKey('shell-nav-more')));
+      await tester.tap(
+        miuixNavigationItem(selected == AppTab.cached ? selected.label : '更多'),
+      );
       await tester.pumpAndSettle();
       await tester.tap(find.text(tab.label).last);
       await tester.pumpAndSettle();
       expect(selected, tab);
-      final more = tester.widget<miuix.MiuixNavigationBarItem>(
-        find.byType(miuix.MiuixNavigationBarItem).last,
+      final more = tester.widget<miuix.MiuixGlassNavigationBar>(
+        find.byType(miuix.MiuixGlassNavigationBar),
       );
-      expect(more.selected, isTrue);
-      expect(more.label, tab.label);
+      expect(more.selectedIndex, 4);
+      expect(more.items.last.label, tab.label);
     }
-    expect(visits, AppTab.values);
+    expect(visits, AppTab.values.skip(1));
     expect(tester.takeException(), isNull);
   });
 
@@ -176,7 +187,7 @@ void main() {
   );
 
   for (final width in [360.0, 1280.0]) {
-    testWidgets('adaptive shell uses the expected Miuix navigation at $width', (
+    testWidgets('shell keeps the floating Miuix navigation at $width', (
       tester,
     ) async {
       tester.view.devicePixelRatio = 1;
@@ -192,12 +203,6 @@ void main() {
                   unread: 0,
                   onSelect: (_) {},
                 ),
-                rail: MiuixShellNavigation(
-                  current: AppTab.home,
-                  unread: 0,
-                  rail: true,
-                  onSelect: (_) {},
-                ),
               ).build(
                 context: context,
                 current: AppTab.home,
@@ -211,14 +216,8 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byType(miuix.MiuixScaffold), findsOneWidget);
-      expect(
-        find.byType(miuix.MiuixNavigationRail),
-        width >= 900 ? findsOneWidget : findsNothing,
-      );
-      expect(
-        find.byType(miuix.MiuixNavigationBar),
-        width < 900 ? findsOneWidget : findsNothing,
-      );
+      expect(find.byType(miuix.MiuixNavigationRail), findsNothing);
+      expect(find.byType(miuix.MiuixGlassNavigationBar), findsOneWidget);
       expect(find.text('Page content'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });

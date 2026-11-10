@@ -1,3 +1,5 @@
+import 'support/miuix_finders.dart';
+
 // Protect the original white-on-white regression at the rendered components.
 // The old glass gradient constants were retired by the Miuix migration.
 import 'dart:io';
@@ -38,22 +40,6 @@ Color _textColor(WidgetTester tester, Finder root, String label) {
     reason: 'Read the resolved text paint, not a token declaration.',
   );
   return color!;
-}
-
-Color _shapeColor(WidgetTester tester, Finder root) {
-  final shape = find.descendant(
-    of: root,
-    matching: find.byWidgetPredicate(
-      (widget) =>
-          widget is DecoratedBox && widget.decoration is ShapeDecoration,
-    ),
-  );
-  expect(shape, findsWidgets);
-  final decoration =
-      tester.renderObject<RenderDecoratedBox>(shape.first).decoration
-          as ShapeDecoration;
-  expect(decoration.color, isNotNull);
-  return decoration.color!;
 }
 
 const _favorites = <Favorite>[
@@ -144,8 +130,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      final bar = find.byType(miuix.MiuixNavigationBar);
-      final tabs = find.byType(miuix.MiuixTabRow);
+      final bar = find.byType(miuix.MiuixGlassNavigationBar);
+      final tabs = find.byType(miuix.MiuixGlassSegmentedTabRow);
       final source = find.byType(SourcePill);
       expect(bar, findsOneWidget);
       expect(tabs, findsOneWidget);
@@ -166,44 +152,68 @@ void main() {
           reason: 'Changing appearance must update the mounted shelf, retaining its state.',
         );
         final colors = miuix.MiuixTheme.of(tester.element(bar)).colors;
-        final barPaint = find
-            .descendant(of: bar, matching: find.byType(ColoredBox))
-            .first;
-        final barColor = tester.widget<ColoredBox>(barPaint).color;
-        expect(barColor, colors.surface);
+        // Read the library's rendered label/icon paint and the navigation
+        // indicator. Its opaque fallback is white / #2c2c2c without a backdrop.
+        final panel = tester.widget<miuix.MiuixGlassPanel>(
+          find
+              .descendant(of: bar, matching: find.byType(miuix.MiuixGlassPanel))
+              .first,
+        );
+        final barColor =
+            panel.fill ??
+            (mode == Brightness.dark
+                ? const Color(0xff2c2c2c)
+                : const Color(0xffffffff));
         surfaces[mode] = barColor;
 
         for (final tab in [AppTab.home, AppTab.search]) {
-          await tester.tap(find.byKey(ValueKey('shell-nav-${tab.name}')));
+          await tester.tap(miuixNavigationItem(tab.label));
           await tester.pumpAndSettle();
-          final selected = find.descendant(
-            of: find.byKey(ValueKey('shell-nav-${tab.name}')),
-            matching: find.byType(miuix.MiuixNavigationBarItem),
-          );
-          expect(
-            tester.widget<miuix.MiuixNavigationBarItem>(selected).selected,
-            isTrue,
-          );
+          final navigation = tester.widget<miuix.MiuixGlassNavigationBar>(bar);
+          expect(navigation.items[navigation.selectedIndex].label, tab.label);
+          final selected = miuixNavigationItem(tab.label);
           final text = _textColor(tester, selected, tab.label);
-          expect(text, colors.onSurfaceContainer);
+          expect(text, colors.onSurface);
+          final selectionColor = Color.alphaBlend(
+            navigation.indicatorColor!,
+            barColor,
+          );
           expect(
-            _contrast(text, barColor),
+            _contrast(text, selectionColor),
             greaterThanOrEqualTo(4.5),
-            reason: 'The active destination must never become white-on-white.',
+            reason: 'The active destination label must remain readable.',
           );
         }
 
-        for (final (label, index) in [('最近追更 1', 0), ('最近收藏 1', 1)]) {
-          await tester.tap(find.text(label));
+        for (final (label, index) in [('追更 1', 0), ('收藏 1', 1)]) {
+          await tester.tap(
+            find.descendant(of: tabs, matching: find.text(label)),
+          );
           await tester.pumpAndSettle();
           expect(
-            tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex,
+            tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
             index,
           );
-          final surface = _shapeColor(tester, tabs);
+          final context = tester.element(tabs);
+          final panel = tester.widget<miuix.MiuixGlassPanel>(
+            find
+                .descendant(
+                  of: tabs,
+                  matching: find.byType(miuix.MiuixGlassPanel),
+                )
+                .first,
+          );
+          final fill =
+              panel.fill ??
+              (mode == Brightness.dark
+                  ? const Color(0xff2c2c2c)
+                  : const Color(0xffffffff));
+          final surface = Color.alphaBlend(
+            miuix.MiuixGlassSegmentedTabRowDefaults.indicatorColor(context),
+            fill,
+          );
           final text = _textColor(tester, tabs, label);
-          expect(surface, colors.surfaceContainer);
-          expect(text, colors.onBackground);
+          expect(text, Theme.of(context).colorScheme.onSurface);
           expect(_contrast(text, surface), greaterThanOrEqualTo(4.5));
         }
 
@@ -218,10 +228,39 @@ void main() {
             matching: find.byType(miuix.MiuixButton),
           );
           expect(button, findsOneWidget);
-          final surface = _shapeColor(tester, button);
+          final panel = tester.widget<miuix.MiuixGlassPanel>(
+            find.descendant(
+              of: source,
+              matching: find.byType(miuix.MiuixGlassPanel),
+            ),
+          );
+          final surface = Color.alphaBlend(panel.fill!, colors.background);
           final text = _textColor(tester, button, '测试来源');
-          expect(surface, active ? colors.primary : colors.secondaryVariant);
-          expect(text, active ? colors.onPrimary : colors.onSecondaryVariant);
+          expect(
+            surface,
+            active
+                ? Color.alphaBlend(
+                    colors.primary.withValues(
+                      alpha: mode == Brightness.dark ? .20 : .09,
+                    ),
+                    colors.surface,
+                  )
+                : Color.alphaBlend(
+                    colors.surface.withValues(alpha: .72),
+                    colors.background,
+                  ),
+          );
+          expect(
+            text,
+            active
+                ? (mode == Brightness.dark
+                      ? const Color(0xff9dbfff)
+                      : Color.alphaBlend(
+                          const Color(0x1f000000),
+                          colors.primary,
+                        ))
+                : colors.onSurfaceSecondary,
+          );
           expect(_contrast(text, surface), greaterThanOrEqualTo(4.5));
         }
         expect(tester.takeException(), isNull);

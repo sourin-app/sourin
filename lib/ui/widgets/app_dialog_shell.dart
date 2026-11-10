@@ -154,12 +154,14 @@ class AppDialogShell extends StatelessWidget {
           )
         : overlay;
     shell = AppMiuixDialogHost(child: FocusTraversalGroup(child: shell));
-    if (onClose == null) return shell;
+    // Keep the host mounted when a submission temporarily disables dismissal.
+    // Removing this wrapper would dispose its popup, draft and focus scope.
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): () {
-          if (closeEnabled) onClose!();
-        },
+        if (onClose != null)
+          const SingleActivator(LogicalKeyboardKey.escape): () {
+            if (closeEnabled) onClose!();
+          },
       },
       child: shell,
     );
@@ -233,7 +235,10 @@ class _Header extends StatelessWidget {
               onPressed: closeEnabled ? onClose : null,
               icon: Icon(AppIcons.close, color: colors.onSurface),
               tooltip: '关闭',
-            ),
+            )
+          else
+            // Retain the close control's slot while submission is pending.
+            const SizedBox.square(dimension: Sp.x10),
         ],
       ),
     );

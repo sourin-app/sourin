@@ -62,7 +62,8 @@ void main() {
       expect(
         initBody.contains('titleBarVisible.value = false;'),
         isFalse,
-        reason: '★ `initState` 里**不得**隐藏标题栏 —— '
+        reason:
+            '★ `initState` 里**不得**隐藏标题栏 —— '
             '播放页在窗口模式下必须留可拖动区。'
             '用户明确反馈过「在桌面端播放页面 无法拖动窗口」。',
       );
@@ -70,9 +71,10 @@ void main() {
 
     test('★ 全屏时**必须**隐藏标题栏', () {
       expect(
-        player.contains('titleBarVisible.value = !next;'),
+        player.contains('_titleBarSession.setFullscreen(next);'),
         isTrue,
-        reason: '`_toggleFullscreen` 里必须按全屏状态同步标题栏 —— '
+        reason:
+            '`_toggleFullscreen` 里必须按全屏状态同步标题栏 —— '
             '全屏(true) → 隐藏(false)；退出全屏(false) → 显示(true)。'
             '用户明确说过「全屏的时候不能显示哪个顶部的操作条啊」。',
       );
@@ -82,7 +84,8 @@ void main() {
       expect(
         player.contains('windowManager.setFullScreen('),
         isTrue,
-        reason: '桌面全屏必须调 `windowManager.setFullScreen()` —— '
+        reason:
+            '桌面全屏必须调 `windowManager.setFullScreen()` —— '
             '只 `setState` 改标志位的话窗口纹丝不动'
             '（原版用浏览器 Fullscreen API 是页内全屏，Flutter 没等价物）。',
       );
@@ -119,7 +122,8 @@ void main() {
       expect(
         player.contains('if (_fullscreen) {\n      await _toggleFullscreen('),
         isTrue,
-        reason: '`_exitPlayer` 必须**先 await 退出全屏**再 pop —— '
+        reason:
+            '`_exitPlayer` 必须**先 await 退出全屏**再 pop —— '
             'fire-and-forget 会在页面销毁后才生效，中间用户看到全屏的详情页。'
             '（匹配串刻意保留 `await ` 前缀：`unawaited(` 不许通过）',
       );
@@ -136,7 +140,9 @@ void main() {
           .split('\n')
           .where((l) {
             final t = l.trimLeft();
-            return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+            return !t.startsWith('//') &&
+                !t.startsWith('*') &&
+                !t.startsWith('/*');
           })
           .join('\n');
 
@@ -188,7 +194,9 @@ void main() {
        */
 
       // ★ pop 系列（含带回传值的泛型写法 `pop<bool>(...)`）
-      final popRe = RegExp(r'Navigator\.of\(context\)\.(maybePop|pop)(<[^>]*>)?\(');
+      final popRe = RegExp(
+        r'Navigator\.of\(context\)\.(maybePop|pop)(<[^>]*>)?\(',
+      );
 
       // ── 先切出 _exitPlayer 方法体 ──
       /*
@@ -236,7 +244,8 @@ void main() {
       expect(
         exitEndIdx,
         greaterThan(exitIdx),
-        reason: '★★ 无法用花括号配平求出 `_exitPlayer` 的方法体边界 —— '
+        reason:
+            '★★ 无法用花括号配平求出 `_exitPlayer` 的方法体边界 —— '
             '说明该方法的括号不配对（或签名变了）。'
             '**不要**退回固定长度窗口或"下一个成员"标记（两者都会产生假判）',
       );
@@ -249,7 +258,8 @@ void main() {
       expect(
         exitBody.trimRight().endsWith('}'),
         isTrue,
-        reason: '★★ 切出的 `_exitPlayer` 方法体不以 `}` 结尾 ⇒ 边界算错了。'
+        reason:
+            '★★ 切出的 `_exitPlayer` 方法体不以 `}` 结尾 ⇒ 边界算错了。'
             '这会让下面两条断言的结论全部不可信',
       );
       /*
@@ -275,7 +285,8 @@ void main() {
       expect(
         outsideHits,
         isEmpty,
-        reason: '★★ `_exitPlayer` **之外**不许有 Navigator pop/maybePop —— '
+        reason:
+            '★★ `_exitPlayer` **之外**不许有 Navigator pop/maybePop —— '
             '每多一处就是一条绕过"先退全屏"的退出路径'
             '（实测历史上有 3 条：返回按钮 / 错误浮层 / 键盘返回键）。'
             '当前发现 ${outsideHits.length} 处。',
@@ -286,7 +297,8 @@ void main() {
       expect(
         insideHits.length,
         1,
-        reason: '★★ `_exitPlayer` 内必须**恰好一处** Navigator pop/maybePop。'
+        reason:
+            '★★ `_exitPlayer` 内必须**恰好一处** Navigator pop/maybePop。'
             '当前发现 ${insideHits.length} 处。'
             '（0 处 ⇒ 出口丢了；>1 处 ⇒ 该方法里有多条退出分支）',
       );
@@ -327,20 +339,25 @@ void main() {
       // ★ 结束标记：`dispose` 之后的下一个成员 `build`
       final endMarker = '\n  @override\n  Widget build(BuildContext context) {';
       final endIdx = player.indexOf(endMarker, disposeIdx);
-      expect(endIdx, greaterThan(disposeIdx),
-          reason: '★★ 找不到 `dispose` 的结束标记（`build`）—— '
-              '说明该方法的后续成员变了。**不要**退回固定长度窗口，'
-              '请更新这个标记（见本用例上方长注释）');
+      expect(
+        endIdx,
+        greaterThan(disposeIdx),
+        reason:
+            '★★ 找不到 `dispose` 的结束标记（`build`）—— '
+            '说明该方法的后续成员变了。**不要**退回固定长度窗口，'
+            '请更新这个标记（见本用例上方长注释）',
+      );
       final disposeBody = player.substring(disposeIdx, endIdx);
 
       expect(
         disposeBody.contains('windowManager.setFullScreen(false)'),
         isTrue,
-        reason: '`dispose` 要兜底退全屏 —— 万一将来加了新 pop 路径'
+        reason:
+            '`dispose` 要兜底退全屏 —— 万一将来加了新 pop 路径'
             '忘了走 `_exitPlayer`，至少不会留下困住用户的窗口。',
       );
       expect(
-        disposeBody.contains('titleBarVisible.value = true;'),
+        disposeBody.contains('_titleBarSession.release();'),
         isTrue,
         reason: '`dispose` 必须恢复标题栏（幂等）',
       );
@@ -350,7 +367,8 @@ void main() {
       expect(
         player.contains('} else if (_fullscreen) {'),
         isTrue,
-        reason: '返回键分支里必须先判断全屏 —— '
+        reason:
+            '返回键分支里必须先判断全屏 —— '
             '否则「全屏 → Esc → 回详情页但窗口还是全屏的」用户会被困住。'
             '这是所有播放器的通行约定（浏览器 Fullscreen API 同款）。',
       );

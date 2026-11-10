@@ -26,6 +26,7 @@ import 'miuix_controls.dart' as ui;
 
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
@@ -84,6 +85,25 @@ bool sourceIsUsable(ProviderManifest p) => p.working && p.enabled != false;
 List<ProviderManifest> visibleSourceList(List<ProviderManifest> all) =>
     all.where(sourceIsUsable).toList();
 
+/// Compare the ordered inputs used by the source pills, including availability.
+/// Provider refreshes return new model instances even when nothing has changed.
+bool sourceBarSourcesEqual(List<ProviderManifest> a, List<ProviderManifest> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    final left = a[i], right = b[i];
+    if (left.id != right.id ||
+        left.name != right.name ||
+        left.icon != right.icon ||
+        left.enabled != right.enabled ||
+        left.working != right.working ||
+        left.brokenReason != right.brokenReason) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// 源切换条
 class SourceBar extends StatefulWidget {
   const SourceBar({
@@ -110,15 +130,31 @@ class SourceBar extends StatefulWidget {
   /// TV 遥控：当前聚焦的下标（-1 = 无）
   final int focusedIndex;
 
+  bool hasSameConfiguration(SourceBar other) =>
+      key == other.key &&
+      current == other.current &&
+      focusedIndex == other.focusedIndex &&
+      onSelect == other.onSelect &&
+      sourceBarSourcesEqual(sources, other.sources);
+
   @override
   State<SourceBar> createState() => _SourceBarState();
 }
 
 class _SourceBarState extends State<SourceBar> {
   final _controller = ScrollController();
+  final _pillKeys = <String, GlobalKey>{};
+  int _revealRevision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollToCurrent();
+  }
 
   @override
   void dispose() {
+    _revealRevision++;
     _controller.dispose();
     super.dispose();
   }
@@ -126,33 +162,90 @@ class _SourceBarState extends State<SourceBar> {
   @override
   void didUpdateWidget(SourceBar old) {
     super.didUpdateWidget(old);
-    // 选中项变化时让它滚进可视区（否则用户在 20 个源里点了最后一个，
-    // 选中的那个可能在屏幕外，看起来像"没反应"）
-    if (old.current != widget.current) {
+    if (old.current != widget.current ||
+        old.focusedIndex != widget.focusedIndex ||
+        !sourceBarSourcesEqual(old.sources, widget.sources)) {
       _scrollToCurrent();
     }
   }
 
+  // Note: .agents/notes/implemented/bug-fix/2026-11-10-source-selection-reveal.md
+  // Use real pill geometry. A fixed width estimate can move a clicked source
+  // offscreen, and does not reveal a restored selection in a lazy list.
   void _scrollToCurrent() {
-    /*
-     * ⚠️ 下标必须算在**过滤后**的列表上（任务 AE）
-     *
-     * 渲染用的是 `_visible`，所以"第几个药丸"也得按 `_visible` 数。
-     * 用 `widget.sources` 数的话，只要前面有被停用的源，
-     * 下标就会**偏大** —— 选中项被滚过头（实测：停用 3 个后偏 3 个位置）。
-     */
-    final i = _visible.indexWhere((s) => s.id == widget.current);
-    if (i < 0) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_controller.hasClients) return;
-      // 每个 chip 估算宽度（原版是自适应宽度，这里按内容估）
-      const approx = 108.0;
-      final target = (i * approx) - 120;
-      _controller.animateTo(
-        target.clamp(0, _controller.position.maxScrollExtent),
-        duration: Motion.base,
-        curve: Motion.easeOut,
-      );
+    final revision = ++_revealRevision;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || revision != _revealRevision || !_controller.hasClients) {
+        return;
+      }
+      // A newer, already-visible choice must also stop an older driven scroll.
+      if (_controller.position.isScrollingNotifier.value) {
+        _controller.jumpTo(_controller.position.pixels);
+      }
+      final sources = _visible;
+      final focused = widget.focusedIndex;
+      final index = focused >= 0 && focused < sources.length
+          ? focused
+          : sources.indexWhere((s) => s.id == widget.current);
+      if (index < 0) return;
+      for (var pass = 0; pass <= sources.length; pass++) {
+        if (!mounted ||
+            revision != _revealRevision ||
+            !_controller.hasClients) {
+          return;
+        }
+        final position = _controller.position;
+        final selected = _pillKeys[sources[index].id]?.currentContext
+            ?.findRenderObject();
+        if (selected is RenderBox && selected.attached && selected.hasSize) {
+          final viewport = RenderAbstractViewport.of(selected);
+          final start = viewport.getOffsetToReveal(selected, 0).offset;
+          final end = viewport.getOffsetToReveal(selected, 1).offset;
+          final target =
+              (end <= start ? position.pixels.clamp(end, start) : start).clamp(
+                position.minScrollExtent,
+                position.maxScrollExtent,
+              );
+          // A fully visible selection stays put, including after a mouse click.
+          if ((target - position.pixels).abs() > .5) {
+            await position.animateTo(
+              target,
+              duration: Motion.base,
+              curve: Motion.easeOut,
+            );
+          }
+          return;
+        }
+
+        // Only nearby lazy children have geometry. Use them to approach an
+        // unmounted selection, then correct using its actual bounds. No eager
+        // Row of every Miuix surface and no duplicated text-width calculation.
+        final laidOut = <({int index, double offset, double width})>[];
+        for (var i = 0; i < sources.length; i++) {
+          final box = _pillKeys[sources[i].id]?.currentContext
+              ?.findRenderObject();
+          if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+          final viewport = RenderAbstractViewport.of(box);
+          laidOut.add((
+            index: i,
+            offset: viewport.getOffsetToReveal(box, 0).offset,
+            width: box.size.width,
+          ));
+        }
+        if (laidOut.isEmpty) return;
+        final first = laidOut.first, last = laidOut.last;
+        final mean = last.index > first.index
+            ? (last.offset - first.offset) / (last.index - first.index)
+            : first.width + Sp.x2;
+        var target = first.offset + (index - first.index) * mean;
+        target = target.clamp(
+          position.minScrollExtent,
+          position.maxScrollExtent,
+        );
+        if ((target - position.pixels).abs() <= .5) return;
+        position.jumpTo(target);
+        await WidgetsBinding.instance.endOfFrame;
+      }
     });
   }
 
@@ -180,6 +273,12 @@ class _SourceBarState extends State<SourceBar> {
   @override
   Widget build(BuildContext context) {
     final sources = _visible;
+    final indexes = <Key, int>{};
+    final ids = sources.map((source) => source.id).toSet();
+    _pillKeys.removeWhere((id, _) => !ids.contains(id));
+    for (var i = 0; i < sources.length; i++) {
+      indexes[_pillKeys.putIfAbsent(sources[i].id, GlobalKey.new)] = i;
+    }
 
     /*
      * ★ 单源**也渲染**（2026-10-31 Owner 改判，见文件头说明）
@@ -193,55 +292,23 @@ class _SourceBarState extends State<SourceBar> {
 
     final colors = Theme.of(context).colorScheme;
 
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★★★ 源条 = **一个悬浮胶囊容器**（2026-09-24 第二次修正）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * 用户原话：
-     * > 上面那两个液态玻璃,跟底部的液态玻璃样式根本就不一样
-     *
-     * # 我第一版错在哪（结构错，不是参数错）
-     *
-     * 给**每个源 pill** 各套一块 `GlassContainer` ——
-     * 于是 25 个源 = 25 块独立玻璃，看起来像一排小胶囊，
-     * 而底栏是"一条大玻璃"。
-     *
-     * 原版 `SourceBar.vue` 的注释把这件事讲得很明白：
-     * > ★★ 方案 A：悬浮胶囊（与底部 tab 栏同款造型）
-     * > 之前是"满宽矩形横板"（1224px × 45px、border-radius: 0、
-     * > 带硬底边线），与软件里其它同类控件（底部 tab 栏、「我的」
-     * > 分段控件）完全不是一套语言。
-     * > 现在改成：**内容宽度 + 居中 + 全圆角 + 玻璃**。
-     * > 好处是**用户不用学新东西** —— 底部那条 tab 栏就在它正下方，
-     * > 两个胶囊上下呼应。
-     *
-     * 所以结构是（与 `.mine__tabs` 完全同构）：
-     * ```text
-     * GlassContainer        ← 内容宽度 + 居中 + 全圆角 + 玻璃 + padding 5
-     *   └ 横向滚动列表
-     *       └ pill × 25     ← transparent；只有选中那个有"更亮一层"的底
-     * ```
-     *
-     * ★ 教训（连续踩两次）：**"看起来不像"时先怀疑结构，不要先调参数**。
-     */
-    return Center(
-      child: miuix.MiuixCard(
-        cornerRadius: Radii.lg,
-        child: ConstrainedBox(
-          // `max-width: 100%` —— 源很多时不要把屏幕撑破
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width - Sp.x8,
-          ),
-          child: SizedBox(
-            height: 44,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // ── 可横向滚动的 pill 列表 ──
-                Flexible(
-                  child: ScrollConfiguration(
-                    /*
+    // A single source should occupy only its label, not a page-wide white card.
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        // `max-width: 100%` —— 源很多时不要把屏幕撑破
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width - Sp.x8,
+        ),
+        child: SizedBox(
+          height: 44,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ── 可横向滚动的 pill 列表 ──
+              Flexible(
+                child: ScrollConfiguration(
+                  /*
                      * ══════════════════════════════════════════════════
                      * ★★★ 允许**鼠标拖拽**横滑（2026-09-24 用户要求）
                      * ══════════════════════════════════════════════════
@@ -265,49 +332,52 @@ class _SourceBarState extends State<SourceBar> {
                      *    ```
                      *    这正是用户直觉（点=选源，拖=滚动）。
                      */
-                    behavior: const MaterialScrollBehavior().copyWith(
-                      dragDevices: {
-                        PointerDeviceKind.touch,
-                        PointerDeviceKind.mouse,
-                        PointerDeviceKind.stylus,
-                        PointerDeviceKind.trackpad,
-                      },
-                    ),
-                    child: ListView.separated(
-                      clipBehavior: Clip.antiAlias,
-                      controller: _controller,
-                      scrollDirection: Axis.horizontal,
-                      // 原版 `.srcbar { padding: 5px }` + 内层 `padding: 0 var(--sp-2)`
-                      padding: const EdgeInsets.symmetric(horizontal: Sp.x2),
-                      itemCount: sources.length,
-                      separatorBuilder: (_, __) => const SizedBox(width: Sp.x1),
-                      itemBuilder: (context, i) {
-                        // ⚠️ 用**过滤后**的 `sources`（任务 AE）——
-                        //    用 `widget.sources` 会把停用的源渲染回药丸里
-                        final s = sources[i];
-                        final active = s.id == widget.current;
-                        final focused = i == widget.focusedIndex;
-                        final working = s.working;
+                  behavior: const MaterialScrollBehavior().copyWith(
+                    dragDevices: {
+                      PointerDeviceKind.touch,
+                      PointerDeviceKind.mouse,
+                      PointerDeviceKind.stylus,
+                      PointerDeviceKind.trackpad,
+                    },
+                  ),
+                  child: ListView.separated(
+                    clipBehavior: Clip.antiAlias,
+                    controller: _controller,
+                    shrinkWrap: true,
+                    scrollDirection: Axis.horizontal,
+                    // 原版 `.srcbar { padding: 5px }` + 内层 `padding: 0 var(--sp-2)`
+                    padding: EdgeInsets.zero,
+                    itemCount: sources.length,
+                    findItemIndexCallback: (key) => indexes[key],
+                    separatorBuilder: (_, __) => const SizedBox(width: Sp.x2),
+                    itemBuilder: (context, i) {
+                      // ⚠️ 用**过滤后**的 `sources`（任务 AE）——
+                      //    用 `widget.sources` 会把停用的源渲染回药丸里
+                      final s = sources[i];
+                      final active = s.id == widget.current;
+                      final focused = i == widget.focusedIndex;
+                      final working = s.working;
 
-                        return Center(
-                          child: SourcePill(
-                            label: s.name,
-                            icon: s.icon,
-                            active: active,
-                            focused: focused,
-                            // 源探测失败 ⇒ 药丸上画感叹号（tooltip 给原因）
-                            errorTooltip: working
-                                ? null
-                                : (s.brokenReason ?? '该源当前不可用'),
-                            onTap: () => widget.onSelect(s.id),
-                          ),
-                        );
-                      },
-                    ),
+                      return Center(
+                        key: _pillKeys[s.id],
+                        child: SourcePill(
+                          label: s.name,
+                          icon: s.icon,
+                          active: active,
+                          focused: focused,
+                          // 源探测失败 ⇒ 药丸上画感叹号（tooltip 给原因）
+                          errorTooltip: working
+                              ? null
+                              : (s.brokenReason ?? '该源当前不可用'),
+                          onTap: () => widget.onSelect(s.id),
+                        ),
+                      );
+                    },
                   ),
                 ),
+              ),
 
-                /*
+              /*
                  * ── 数量显示（原版 `showCount`）──
                  *
                  * 原版：
@@ -328,39 +398,38 @@ class _SourceBarState extends State<SourceBar> {
                  * 注意它在**滚动区之外**（`flex: none`）——
                  * 滚到第 20 个源时数量仍然可见。
                  */
-                if (_showCount) ...[
-                  const SizedBox(width: Sp.x2),
-                  Container(height: 18, width: 1, color: colors.outlineVariant),
-                  Padding(
-                    padding: const EdgeInsets.only(left: Sp.x3, right: Sp.x4),
-                    child: Text.rich(
-                      TextSpan(
-                        children: [
-                          TextSpan(
-                            // ⚠️ 过滤后的数量（任务 AE）—— 见 `_showCount` 的说明
-                            text: '${sources.length}',
-                            style: TextStyle(
-                              fontSize: FontSizes.cap,
-                              fontWeight: FontWeight.w600,
-                              color: colors.onSurfaceVariant,
+              if (_showCount) ...[
+                const SizedBox(width: Sp.x2),
+                Container(height: 18, width: 1, color: colors.outlineVariant),
+                Padding(
+                  padding: const EdgeInsets.only(left: Sp.x3, right: Sp.x4),
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          // ⚠️ 过滤后的数量（任务 AE）—— 见 `_showCount` 的说明
+                          text: '${sources.length}',
+                          style: TextStyle(
+                            fontSize: FontSizes.cap,
+                            fontWeight: FontWeight.w600,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                        TextSpan(
+                          text: ' 个源',
+                          style: TextStyle(
+                            fontSize: FontSizes.cap,
+                            color: colors.onSurfaceVariant.withValues(
+                              alpha: 0.7,
                             ),
                           ),
-                          TextSpan(
-                            text: ' 个源',
-                            style: TextStyle(
-                              fontSize: FontSizes.cap,
-                              color: colors.onSurfaceVariant.withValues(
-                                alpha: 0.7,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
+                ),
               ],
-            ),
+            ],
           ),
         ),
       ),
@@ -386,8 +455,7 @@ class _SourceBarState extends State<SourceBar> {
 /// .srcbar__pill            { background: transparent; color: var(--text-secondary); }
 /// .srcbar__pill.is-active  { background: var(--surface-4); box-shadow: var(--shadow-sm); }
 /// ```
-/// ⚠️ **不是玻璃** —— 玻璃在消费方的外层容器上（两个消费方都已各自挂了
-///     同款 `GlassContainer(superellipse 999)`，材质只落一层，N7 裁定）。
+/// Each pill owns one Miuix glass surface, shared by source and channel rails.
 class SourcePill extends StatelessWidget {
   const SourcePill({
     super.key,
@@ -396,6 +464,7 @@ class SourcePill extends StatelessWidget {
     required this.active,
     this.focused = false,
     this.errorTooltip,
+    this.secondary = false,
     required this.onTap,
   });
 
@@ -415,6 +484,7 @@ class SourcePill extends StatelessWidget {
   final String? errorTooltip;
 
   final VoidCallback onTap;
+  final bool secondary;
 
   /// 短文本图标（emoji/单字才画）；null / 空串 / >4 字符 / http 开头 ⇒ null
   ///
@@ -430,19 +500,55 @@ class SourcePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = miuix.MiuixTheme.of(context).colors;
     final iconText = _shortIconText;
+    final dark = colors.background.computeLuminance() < .5;
+    final selectedText = dark
+        ? const Color(0xff9dbfff)
+        : Color.alphaBlend(const Color(0x1f000000), colors.primary);
+    final selectedFill = Color.alphaBlend(
+      colors.primary.withValues(alpha: dark ? .20 : .09),
+      colors.surface,
+    );
     final button = ui.ChoiceChip(
       selected: active,
       onSelected: (_) => onTap(),
+      backgroundColor: Colors.transparent,
+      selectedColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+      padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: Sp.x2),
+      labelStyle: TextStyle(
+        color: active ? selectedText : colors.onSurfaceSecondary,
+        fontSize: FontSizes.sm,
+        fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+        height: 1.25,
+      ),
       avatar: iconText == null ? null : Text(iconText),
-      label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+      label: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 168),
+        child: Text(
+          sourceDisplayLabel(label),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
     );
     return DecoratedBox(
       decoration: BoxDecoration(
-        borderRadius: Radii.rMd,
+        borderRadius: BorderRadius.circular(999),
         border: focused ? Border.all(color: colors.primary, width: 2) : null,
       ),
       child: errorTooltip == null
-          ? button
+          ? miuix.MiuixGlassPanel(
+              shape: const miuix.MiuixGlassShape(
+                cornerRadius: 999,
+                smoothing: 0,
+              ),
+              fill: active
+                  ? selectedFill
+                  : colors.surface.withValues(alpha: .72),
+              stroke: miuix.MiuixGlassStrokes.small(dark),
+              shadow: miuix.MiuixGlassShadows.floating,
+              child: button,
+            )
           : ui.Tooltip(
               message: errorTooltip!,
               child: Row(
@@ -459,4 +565,14 @@ class SourcePill extends StatelessWidget {
             ),
     );
   }
+}
+
+/// Channel providers often decorate names with repeated emoji and full-width
+/// separators. Keep identifiers and stored names intact; simplify only display.
+String sourceDisplayLabel(String label) {
+  final display = label
+      .replaceFirst(RegExp(r'^[^\p{L}\p{N}]+', unicode: true), '')
+      .replaceAll(RegExp(r'\s*[丨|｜]\s*'), ' · ')
+      .trim();
+  return display.isEmpty ? label.trim() : display;
 }

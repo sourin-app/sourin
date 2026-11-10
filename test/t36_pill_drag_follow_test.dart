@@ -1,6 +1,7 @@
-// The glass drag-to-select pill was intentionally replaced by Miuix navigation.
-// Test the production widget: a drag cancels, a released tap activates once,
-// and keyboard/remote activation reaches pages.
+import 'support/miuix_finders.dart';
+
+// Test the actual Miuix glass dock: pointer cancellation preserves selection,
+// release commits once, and keyboard/remote activation reaches pages.
 import 'package:flutter/services.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter_test/flutter_test.dart';
@@ -41,35 +42,34 @@ Future<void> _mount(WidgetTester tester, List<AppTab> visits) async {
   await tester.pumpAndSettle();
 }
 
-miuix.MiuixNavigationBarItem _item(WidgetTester tester, AppTab tab) =>
-    tester.widget<miuix.MiuixNavigationBarItem>(
-      find.descendant(
-        of: find.byKey(ValueKey('shell-nav-${tab.name}')),
-        matching: find.byType(miuix.MiuixNavigationBarItem),
-      ),
-    );
+bool _selected(WidgetTester tester, AppTab tab) {
+  final bar = tester.widget<miuix.MiuixGlassNavigationBar>(
+    find.byType(miuix.MiuixGlassNavigationBar),
+  );
+  return bar.items[bar.selectedIndex].label == tab.label;
+}
 
 void main() {
   setUp(UiPrefs.debugResetForTest);
   tearDown(UiPrefs.debugResetForTest);
 
-  testWidgets('drag cancels navigation without changing the selected page', (
+  testWidgets('cancelling a dock drag preserves the selected page', (
     tester,
   ) async {
     final visits = <AppTab>[];
     await _mount(tester, visits);
     final gesture = await tester.startGesture(
-      tester.getCenter(find.byKey(const ValueKey('shell-nav-live'))),
+      tester.getCenter(miuixNavigationItem(AppTab.live.label)),
     );
     await tester.pump();
     await gesture.moveBy(const Offset(80, 0));
     await tester.pump();
-    expect(_item(tester, AppTab.home).selected, isTrue);
+    expect(_selected(tester, AppTab.home), isTrue);
     expect(visits, isEmpty);
-    await gesture.up();
+    await gesture.cancel();
     await tester.pumpAndSettle();
     expect(visits, isEmpty);
-    expect(_item(tester, AppTab.live).selected, isFalse);
+    expect(_selected(tester, AppTab.live), isFalse);
     expect(tester.takeException(), isNull);
   });
 
@@ -79,16 +79,16 @@ void main() {
       final visits = <AppTab>[];
       await _mount(tester, visits);
       final gesture = await tester.startGesture(
-        tester.getCenter(find.byKey(const ValueKey('shell-nav-search'))),
+        tester.getCenter(miuixNavigationItem(AppTab.search.label)),
       );
       await tester.pump(const Duration(milliseconds: 100));
       expect(visits, isEmpty);
-      expect(_item(tester, AppTab.home).selected, isTrue);
+      expect(_selected(tester, AppTab.home), isTrue);
       await gesture.up();
       await tester.pumpAndSettle();
       expect(visits, [AppTab.search]);
-      expect(_item(tester, AppTab.search).selected, isTrue);
-      expect(_item(tester, AppTab.home).selected, isFalse);
+      expect(_selected(tester, AppTab.search), isTrue);
+      expect(_selected(tester, AppTab.home), isFalse);
       expect(tester.takeException(), isNull);
     },
   );
@@ -98,6 +98,15 @@ void main() {
   ) async {
     final visits = <AppTab>[];
     await _mount(tester, visits);
+    Focus.of(
+      tester.element(
+        find.descendant(
+          of: miuixNavigationItem(AppTab.live.label),
+          matching: find.text(AppTab.live.label),
+        ),
+      ),
+    ).requestFocus();
+    await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.tab);
@@ -108,8 +117,8 @@ void main() {
     await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.select);
     await tester.pumpAndSettle();
-    expect(visits, [AppTab.home, AppTab.live, AppTab.follow]);
-    expect(_item(tester, AppTab.follow).selected, isTrue);
+    expect(visits, [AppTab.live, AppTab.follow, AppTab.search]);
+    expect(_selected(tester, AppTab.search), isTrue);
     expect(tester.takeException(), isNull);
   });
 }

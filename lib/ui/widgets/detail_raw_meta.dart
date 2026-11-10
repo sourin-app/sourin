@@ -40,9 +40,11 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/models.dart';
-import '../../design/widgets/app_ink_well.dart';
+
+import 'package:flutter_miuix/miuix.dart' as miuix;
+
+import 'miuix_controls.dart' as ui;
 import '../tokens.dart';
-import 'motion_prefs.dart';
 
 /// 线路选择器（支持任意深度嵌套）
 class DetailSourcePicker extends StatelessWidget {
@@ -64,12 +66,7 @@ class DetailSourcePicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _Level(
-      sources: sources,
-      active: active,
-      depth: 0,
-      onPick: onPick,
-    );
+    return _Level(sources: sources, active: active, depth: 0, onPick: onPick);
   }
 }
 
@@ -91,9 +88,7 @@ class _Level extends StatelessWidget {
   bool get _show => sources.length > 1;
 
   /// 收集所有子线路，合并成下一层（原版 `:38-44`）
-  List<PlaySource> get _children => [
-        for (final s in sources) ...s.nested,
-      ];
+  List<PlaySource> get _children => [for (final s in sources) ...s.nested];
 
   /// 该项自己或其子树里含选中项（原版 `:49-52`）
   bool _containsActive(PlaySource s) {
@@ -144,14 +139,7 @@ class _Level extends StatelessWidget {
   }
 }
 
-/// 一条线路的按钮
-///
-/// ⚠️ 这里**必须**用 `Material` 包一层
-///
-/// `InkWell` 需要一个 `Material` 祖先来画水波纹。详情页是
-/// `Scaffold(body: ...)`，本身有 `Material`，但换源弹层之类的宿主
-/// 不一定有 —— 缺了会抛 `No Material widget found`。
-/// 自己包一层最稳，代价只是一个透明的 `Material`。
+/// A source option uses the shared Miuix choice control, including TV focus.
 class _SourceButton extends StatelessWidget {
   const _SourceButton({
     required this.label,
@@ -167,106 +155,37 @@ class _SourceButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    /*
-     * ★ 去 Material（Owner 第 4/8/9 条，2026-10-17）
-     *
-     * 原来这里是 Material(color: Colors.transparent) + InkWell ——
-     * 那层 Material 只为给水波提供绘制面，本身完全透明、无形状、无阴影。
-     * 换成 AppInkWell 后高亮自绘 ⇒ 整层删除，行为不变。
-     *
-     * ⚠️ 分类脚本把它归成"B 类（真当卡片用）"，因为它看到 color: ——
-     *    但那是 Colors.transparent。脚本判据不精确，此处按人工判断处理。
-     */
-    return AppInkWell(
-      onTap: onTap,
-      borderRadius: Radii.rMd,
-        /*
-         * ★ task-50 候选 C3：选中态用**隐式动画**过渡（原来是硬切）
-         *
-         * # 为什么这一处值得加（判据①）
-         * ```text
-         * 换源是详情页的**高频动作**，而"点一下"的反馈就是这条按钮本身：
-         * 底色（透明 → 品牌色 18%）、描边（outlineVariant → 品牌色）
-         * 与字重同时变化。硬切时用户会觉得"没点上"，从而**重复点击**。
-         * ⇒ 目的 = **反馈操作**（不是"为了好看"）。
-         * ```
-         *
-         * # 为什么是 `AnimatedContainer` 而不是 `AnimatedScale`（判据⑤）
-         * ```text
-         * 这里变的是**装饰**（颜色/描边），`AnimatedContainer` 正是
-         * 为"装饰补间"设计的专用组件 ⇒ 最贴切的惯用法。
-         * ★ 且它**不插 `Transform`**（`AnimatedScale` 会）⇒ 不会影响
-         *   任何按 `Transform` 做断言的既有测试。
-         * ```
-         *
-         * # 时长 150ms（判据②③④）
-         * ```text
-         * `Motion.fast` = 150ms —— 换源是高频操作，走最低档。
-         * 隐式动画**天然可打断**（判据③）：连点两条线路，第二次会从
-         * **当前中间值**继续补间，不会"排队播完"。
-         * `MotionPrefs` 包一层 ⇒ 系统开「减少动态效果」时
-         * `Duration.zero`（判据④）—— 状态仍在，只是无过渡。
-         * ```
-         */
-        child: AnimatedContainer(
-          duration: MotionPrefs.duration(context, Motion.fast),
-          curve: MotionPrefs.curve(context, Motion.easeOut),
-          constraints: const BoxConstraints(maxWidth: 260),
-          padding: const EdgeInsets.symmetric(
-            horizontal: Sp.x4,
-            vertical: 9,
-          ),
-          decoration: BoxDecoration(
-            color: active ? colors.primary.withValues(alpha: 0.18) : null,
-            borderRadius: Radii.rMd,
-            border: Border.all(
-              color: active ? colors.primary : colors.outlineVariant,
+    final colors = miuix.MiuixTheme.of(context).colors;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 260),
+      child: ui.ChoiceChip(
+        selected: active,
+        onSelected: (_) => onTap(),
+        label: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
             ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Flexible(
+            if (count > 0) ...[
+              const SizedBox(width: Sp.x2),
+              miuix.MiuixBadge(
+                containerColor: active
+                    ? colors.onPrimary.withValues(alpha: 0.18)
+                    : colors.surfaceContainer,
+                contentColor: active ? colors.onPrimary : colors.onSurface,
                 child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  '$count',
                   style: TextStyle(
-                    fontSize: FontSizes.sm,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                    color:
-                        active ? colors.primary : colors.onSurfaceVariant,
+                    fontSize: FontSizes.cap,
+                    color: active ? colors.onPrimary : colors.onSurface,
                   ),
                 ),
               ),
-              // ★ 集数角标 —— 原版 `v-if="s.count"`，0 就**不显示**
-              //   （0 的语义是"该源没报集数"，不是"有 0 集"）
-              if (count > 0) ...[
-                const SizedBox(width: Sp.x2),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 1,
-                  ),
-                  decoration: BoxDecoration(
-                    color: colors.surfaceContainerHighest.withValues(
-                      alpha: 0.6,
-                    ),
-                    borderRadius: Radii.rFull,
-                  ),
-                  child: Text(
-                    '$count',
-                    style: TextStyle(
-                      fontSize: FontSizes.cap,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ],
             ],
-          ),
+          ],
         ),
+      ),
     );
   }
 }

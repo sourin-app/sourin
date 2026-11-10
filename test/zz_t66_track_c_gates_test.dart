@@ -99,93 +99,39 @@ String stripComments(String src) {
 String read(String rel) => stripComments(File(rel).readAsStringSync());
 
 void main() {
-  // ═══════════════════════════════════════════════════════════════════
-  //  N7 —— 「配置」入口必须能到可视化编排，且带初值
-  // ═══════════════════════════════════════════════════════════════════
-  group('N7 可视化编排入口', () {
+  group('N7 声明式入口退役与 JS 覆盖层保留', () {
     late String settings;
-    late String dialog;
-    late String importDlg;
+    late String importDialog;
 
     setUpAll(() {
       settings = read('lib/ui/settings_page.dart');
-      dialog = read('lib/ui/widgets/source_composer_dialog.dart');
-      importDlg = read('lib/ui/widgets/provider_import_dialog.dart');
+      importDialog = read('lib/ui/widgets/provider_import_dialog.dart');
     });
 
-    test('★ 「配置」按钮对 declarative 源必须分派到编排器（不是 config 表单）', () {
-      /*
-       * 判据：`_configOf` 里**先**判 declarative 并调 `_editDeclarativeViaComposer`，
-       * **后**才 `_pluginOf` 判空。
-       *
-       * ⚠️ 顺序是这个门禁的核心：改前是 `if (e == null) return null`
-       * 在最前面，声明式源直接拿不到按钮 ⇒ 用户永远到不了编排器。
-       * 只断言「两者都出现」会漏掉顺序错（那一刻 declarative 仍拿不到按钮）。
-       */
-      final start = settings.indexOf('VoidCallback? _configOf(String id) {');
-      expect(start, greaterThan(0), reason: '找不到 _configOf —— 结构变了');
-      final end = settings.indexOf('\n  }', start);
-      final body = settings.substring(start, end);
-
-      final iDecl = body.indexOf("p.kind == 'declarative'");
-      final iComposer = body.indexOf('_editDeclarativeViaComposer(p)');
-      final iPlugin = body.indexOf('_pluginOf(id)');
-
-      expect(iDecl, greaterThan(0), reason: '★ _configOf 必须按 kind 判 declarative');
-      expect(iComposer, greaterThan(iDecl),
-          reason: '★ 判到 declarative 后必须直达编排器，不是弹 config 表单');
-      expect(iPlugin, greaterThan(iComposer),
-          reason: '★★ `_pluginOf` 判空必须在 declarative 分派**之后** —— '
-              '改前它在最前面，声明式源因此永远拿不到「配置」按钮（本条会红）');
+    test('无调用的配置分派和声明式编辑回退已删除', () {
+      expect(settings, isNot(contains('_configOf(')));
+      expect(settings, isNot(contains('_editDeclarativeViaComposer(')));
+      expect(settings, isNot(contains('_openDeclarativeTextFallback(')));
+      expect(settings, isNot(contains('importDeclarativeProvider(')));
     });
 
-    test('★ 编排器必须带初值（initial 非空），否则打开是空白的', () {
-      /*
-       * 判据取 `_editDeclarativeViaComposer` 的函数体：
-       * 必须传 `initial:` 且该实参不是 `null`。
-       *
-       * 改前 `provider_import_dialog.dart:644` 调 SourceComposerDialog 时
-       * **没传 initial** ⇒ 编辑已有源等于从零重填（settings_page 的
-       * :1117 注释逐字记着这个缺陷）。
-       */
-      final start = settings.indexOf('Future<void> _editDeclarativeViaComposer(');
-      expect(start, greaterThan(0), reason: '找不到 _editDeclarativeViaComposer');
-      final body = settings.substring(start, settings.indexOf('\n  }', start));
-
-      expect(body.contains('SourceComposerDialog('), isTrue,
-          reason: '★ 必须真的构造编排器');
-      expect(body.contains('initial:'), isTrue,
-          reason: '★★ 必须传 initial —— 不传就是空白编排器（改前的缺陷）');
-      expect(
-        RegExp(r'initial:\s*null').hasMatch(body),
-        isFalse,
-        reason: '★★ initial 不许是 null（那等于没传）',
-      );
-      // 初值必须来自**当前源**（不是空 ComposerDraft()）
-      expect(body.contains('composerDraftFromJson'), isTrue,
-          reason: '★★ 初值必须由当前源的 JSON 还原（「带当前源的内容」的判据）');
+    test('JS 空 config 仍进入当前源的个性化覆盖层', () {
+      final start = settings.indexOf('Future<void> _configPlugin(');
+      expect(start, greaterThan(0));
+      final body = settings.substring(start, settings.indexOf('int get _enabledCount', start));
+      expect(body, contains('if (cfg.fields.isEmpty)'));
+      expect(body, contains('SourceComposerDialog('));
+      expect(body, contains('overridesTargetId: e.id'));
+      expect(body, contains('overridesOnly: true'));
     });
 
-    test('★ 编排器入口的按钮文案/标题仍在（用户找得到）', () {
-      expect(dialog.contains("'可视化编排'"), isTrue,
-          reason: '编排器自己的标题丢了用户就认不出这个弹窗');
-      expect(importDlg.contains('可视化编排'), isTrue,
-          reason: '导入弹窗里的编排入口不能丢');
-    });
-
-    test('★ 空 config 的提示必须区分「没声明」而不是谎称「没有可配置项」', () {
-      /*
-       * 取证读数（真核心 + 32 个本机插件）：
-       *   plugin_config_get 对 32 个源全部返回空 fields；
-       *   造一个真声明 config 的插件则返回 3 项 ⇒ 解析链路完好，
-       *   空是因为**插件没声明**。
-       * ⇒ 文案要说清"没声明"，并指向可视化编排（声明式源的入口），
-       *   否则用户会以为编排功能没做（那正是 Owner 的原话）。
-       */
-      expect(settings.contains('没有声明可配置项'), isTrue,
-          reason: '★ 文案必须说"没声明"（如实），而不是笼统的"没有可配置项"');
-      expect(settings.contains('可视化编排用于声明式源'), isTrue,
-          reason: '★ 必须告诉用户编排器在哪（否则他仍然找不到）');
+    test('导入弹窗没有声明式表单、模板与编排入口', () {
+      expect(importDialog, isNot(contains('ImportMode.declarative')));
+      expect(importDialog, isNot(contains('kDeclarativeTemplate')));
+      expect(importDialog, isNot(contains('SourceComposerDialog(')));
+      expect(importDialog, contains('声明式源已停止支持'));
+      expect(importDialog, contains('SourinApi.installHttpProvider('));
+      expect(importDialog, contains('SourinApi.importTvboxConfig('));
     });
   });
 

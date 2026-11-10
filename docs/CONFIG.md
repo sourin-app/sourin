@@ -47,7 +47,7 @@
 | `dsh.playprefs.endAction` | `none` / `next` / `loop` | — | 播完之后干什么 |
 | `dsh.playprefs.episodeStartAction` | `fromStart` / `prompt` | `fromStart` | 切集时从头播放或显示提示 |
 | `dsh.playprefs.countdownBeforeNext` | 秒 | — | 「下一集」倒计时秒数 |
-| `dsh.playprefs.keepSourceOnNext` | `0` / `1` | — | 连播时保持当前源（不自动换源） |
+| `dsh.playprefs.keepSourceOnNext` | 历史值 `0` / `1` | 不读取 | 遗留字段，不影响播放；界面没有对应开关 |
 | `dsh.playprefs.autoSkip` | `0` / `1` | — | 自动跳过片头片尾 |
 | `dsh.playprefs.hwdecMode` | `auto` / `auto-safe` / `no` / … | `auto` | 硬解模式，直接透传给 mpv 的 `hwdec` |
 | `dsh.playprefs.videoZoom` | 50 ~ 200 | 100 | 画面缩放百分比 |
@@ -98,6 +98,14 @@
 | `dsh.srcpref.<provider>:<id>` | 源 id | 每部剧**单独记住**上次用的源。换源之后下次打开还是那个源 |
 | `dsh.bili.*` | — | 外部视频站相关（登录态、自动更新开关与间隔、上次同步时间） |
 
+### 来源与备用地址（2026-11-09）
+
+在「设置 → 源」统一管理源开关、类型、聚合来源和地址。首页直接展示各个可用源；「调整顺序」单独保存首页顺序，并显示各源来自哪个聚合订阅。相同站点有多个提供方时，可以选择其中一个或多个，也可以全部关闭。
+
+TVBox 订阅、直播订阅和远程 JS 插件各有一个主地址，最多八个备用地址，每行一个。备用地址应提供同一份订阅或同一个插件。主地址请求失败、拒绝访问或内容无效时依次尝试备用；成功的地址会短期优先使用，五分钟后重新尝试主地址。插件身份不匹配会终止本次下载，避免更新成其它插件。所有备用尝试保留同一代理策略。多地址只负责订阅、插件下载与刷新，不保证其中每个站点都能播放。
+
+地址设置和源开关分别保存，刷新订阅不会自动启用手动关闭的源。声明式源停止新增和运行，旧配置与历史继续保留。代理地址统一在「全局代理」设置；历史 TVBox 引擎的接入仍在逐项验证，不能把订阅下载遵守代理等同于全部引擎已经覆盖。
+
 ## ② 数据目录文件
 
 | 文件 | 内容 | 能否手改 |
@@ -107,6 +115,9 @@
 | `disabled-providers.json` | 被停用的源 id | ✅ |
 | `third-party-providers.json` | 第三方源持久化 | ⚠️ 一般别手改 |
 | `tvbox-sources.json` | TVBox 订阅来源（每个源从哪个配置来的） | ✅ 可手填链接 |
+| `source-catalog.json` | 来源身份、主备地址、提供方选择与近期成功地址 | ⚠️ 使用「设置 → 源」修改 |
+| `global-proxy.json` | 统一代理模式、地址与认证配置 | ⚠️ 使用「全局代理」修改，可能含凭据 |
+| `github-discovery.json` | GitHub 发现设置、候选、检查时间与通知 | ⚠️ 使用发现页面修改；候选需手动启用 |
 | `remote-pref.json` | 手机遥控的开关与端口 | ✅ |
 | `sync-settings.json` | WebDAV 云同步配置 | ⚠️ **密码不在这个文件里**（走系统凭据存储） |
 | `dsh-media.db` | SQLite：收藏 / 历史 / 进度 / 片头片尾 | ⚠️ 建议只读 |
@@ -160,6 +171,7 @@ README、源码、issue 或截图。
 
 | 变量 | 取值 | 说明 |
 |---|---|---|
+| `SOURIN_RENDERER` | `impeller` | Windows 默认使用 Skia 渲染；遇到显卡兼容问题时，设为 `impeller` 并重启可切回原后端。仅影响渲染，不改数据或界面偏好；Flutter 显式引擎开关优先。 |
 | `SOURIN_DRAG_SELFTEST` | `1` | 启动时跑一次「标题栏拖拽」自检然后退出。结果写到 `%TEMP%\sourin_drag_selftest.txt` |
 | `SOURIN_WF_DEPENDS_ON_SIZE` | `0` | 让窗口边框**不**注册尺寸依赖（模拟修复前的行为，用来复现「白角」）。**只用于验证** |
 | `SOURIN_NO_REMOTE_AUTOSTART` | 任意 | 不自动启动手机遥控服务 |

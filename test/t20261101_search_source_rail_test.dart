@@ -53,31 +53,37 @@ Future<SearchPageState> seeded(
   bool withHits = true,
 }) async {
   await sizeView(t, size);
-  await t.pumpWidget(AppTestHost(
-    brightness: Brightness.light,
-    child: MediaQuery(
-      data: MediaQueryData(size: size),
-      child: Directionality(
-        textDirection: TextDirection.ltr,
-        child: const SearchPage(),
+  await t.pumpWidget(
+    AppTestHost(
+      brightness: Brightness.light,
+      child: MediaQuery(
+        data: MediaQueryData(size: size),
+        child: Directionality(
+          textDirection: TextDirection.ltr,
+          child: const SearchPage(),
+        ),
       ),
     ),
-  ));
+  );
   await t.pump();
   final st = t.state<SearchPageState>(find.byType(SearchPage));
   st.debugSetProviderCount(9);
   st.debugBeginSearch('老舅');
   await t.pump();
   if (withHits) {
-    st.debugFeedHit(hit('source-a', [
-      item('老舅甲一', 'source-a::1'),
-      item('老舅甲二', 'source-a::2'),
-      item('老舅甲三', 'source-a::3'),
-    ]));
-    st.debugFeedHit(hit('source-b', [
-      item('老舅乙一', 'source-b::1'),
-      item('老舅乙二', 'source-b::2'),
-    ]));
+    st.debugFeedHit(
+      hit('source-a', [
+        item('老舅甲一', 'source-a::1'),
+        item('老舅甲二', 'source-a::2'),
+        item('老舅甲三', 'source-a::3'),
+      ]),
+    );
+    st.debugFeedHit(
+      hit('source-b', [
+        item('老舅乙一', 'source-b::1'),
+        item('老舅乙二', 'source-b::2'),
+      ]),
+    );
     st.debugFeedHit(hit('source-c', [item('老舅丙一', 'source-c::1')]));
   }
   st.debugEndSearch();
@@ -104,8 +110,7 @@ Future<void> scrollToGroup(WidgetTester t, String title) async {
 }
 
 void main() {
-  testWidgets('① 宽窗口：三源命中 ⇒ 左栏三行带条数；点乙 ⇒ 只剩乙；点全部 ⇒ 还原',
-      (t) async {
+  testWidgets('① 宽窗口：三源命中 ⇒ 左栏三行带条数；点乙 ⇒ 只剩乙；点全部 ⇒ 还原', (t) async {
     await seeded(t, const Size(1400, 900));
 
     // 左栏在场：全部 + 三源
@@ -114,14 +119,17 @@ void main() {
     expect(find.byKey(chipsKey), findsNothing);
     expect(find.byKey(allKey), findsOneWidget);
     expect(
-        find.descendant(of: find.byKey(railKey), matching: find.text('source-a')),
-        findsOneWidget);
+      find.descendant(of: find.byKey(railKey), matching: find.text('source-a')),
+      findsOneWidget,
+    );
     expect(
-        find.descendant(of: find.byKey(railKey), matching: find.text('source-b')),
-        findsOneWidget);
+      find.descendant(of: find.byKey(railKey), matching: find.text('source-b')),
+      findsOneWidget,
+    );
     expect(
-        find.descendant(of: find.byKey(railKey), matching: find.text('source-c')),
-        findsOneWidget);
+      find.descendant(of: find.byKey(railKey), matching: find.text('source-c')),
+      findsOneWidget,
+    );
     // 条数标注：乙 = 2（铁律 149：先证明卡片渲染了，再谈行为）
     expect(
       find.descendant(of: find.byKey(railKey), matching: find.text('2')),
@@ -156,14 +164,19 @@ void main() {
 
     expect(find.byKey(railKey), findsNothing);
     expect(find.byKey(chipsKey), findsOneWidget);
-    expect(find.byKey(allKey), findsOneWidget);
+    expect(
+      find.descendant(of: find.byKey(chipsKey), matching: find.text('全部')),
+      findsOneWidget,
+    );
 
     // ⚠️ chip 文本是「源名 条数」——用 find.text('source-b') 会命中**结果组标题**
     //   （点它不触发过滤，恰好是"点了没反应"的假阴性），必须限定在 chips 内
-    await t.tap(find.descendant(
-      of: find.byKey(chipsKey),
-      matching: find.text('source-b 2'),
-    ));
+    await t.tap(
+      find.descendant(
+        of: find.byKey(chipsKey),
+        matching: find.text('source-b 2'),
+      ),
+    );
     await t.pump();
     expect(find.text('老舅乙一'), findsOneWidget);
     expect(find.text('老舅甲一'), findsNothing);
@@ -189,16 +202,27 @@ void main() {
         .map((l) => l.contains('//') ? l.substring(0, l.indexOf('//')) : l)
         .join('\n');
     // ★ 渲染循环必须用 _visibleHits（改回 _hits ⇒ 注入证红：切换失效又变回全量）
-    expect(body.contains('for (final h in _visibleHits)'), isTrue,
-        reason: '★★ 结果渲染必须走过滤后的组（注入证红：改回 `_hits` ⇒ 本条红）');
-    expect(body.contains('for (final h in _hits) _ResultGroup'), isFalse,
-        reason: '★ 不许残留未过滤的渲染循环');
+    expect(
+      body.contains('for (final h in _visibleHits)'),
+      isTrue,
+      reason: '★★ 结果渲染必须走过滤后的组（注入证红：改回 `_hits` ⇒ 本条红）',
+    );
+    expect(
+      body.contains('for (final h in _hits) _ResultGroup'),
+      isFalse,
+      reason: '★ 不许残留未过滤的渲染循环',
+    );
     // ★ 换词/清空必须复位（否则旧词的选中源污染新词视图）
     final resets = '_selectedSource = null;'.allMatches(body).length;
-    expect(resets, greaterThanOrEqualTo(3),
-        reason: '★ _doSearch/_clear/debugBeginSearch 三处都要复位（实测 $resets 处）');
+    expect(
+      resets,
+      greaterThanOrEqualTo(3),
+      reason: '★ _doSearch/_clear/debugBeginSearch 三处都要复位（实测 $resets 处）',
+    );
     // ★ 左栏数据来自 _hits 本体（不发新请求、不复制第二份名单）
-    expect(body.contains('List<({String name, int count})>? get _sourceRailData'),
-        isTrue);
+    expect(
+      body.contains('List<({String name, int count})>? get _sourceRailData'),
+      isTrue,
+    );
   });
 }

@@ -38,6 +38,13 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/core/ffi.dart';
+import 'package:sourin_spike/core/device.dart';
+import 'package:sourin_spike/core/source_discovery.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/settings/source_manager_page.dart';
 
 /// 按**大括号配对**取某个方法/函数的完整函数体（含最外层 `{}`）。
 ///
@@ -320,27 +327,80 @@ void main() {
       );
     });
 
-    test('★ 有"调整顺序"入口（原有功能不回归）', () {
-      /*
-       * ★ 2026-10-10：入口从「块头的一枚描边按钮」搬进了 ⋮ 菜单，
-       *   断言从"存在 `label: const Text('调整顺序')`"改成
-       *   「菜单里有这一项，且它调的仍是 `_openOrderDialog`」。
-       *   —— 行为不变（用户仍然点得到排序面板），只是位置换了。
-       */
-      /*
-       * ⚠️ 2026-10-18（round-65 E2）：断言里的图标名从 `Icons.reorder`
-       *    改成了 `AppIcons.reorder` —— E2 把全仓 163 处 `Icons.*`
-       *    换成了自建的 `AppIcons.*`（为了摘掉 material_ui 依赖）。
-       *    图标 codePoint 与字体族逐字相同（AppIcons 就是从 material_ui
-       *    抄出来的常量表），所以**观感零变化**，只是字面名变了。
-       *
-       * ★ 判据强度未降低：仍钉住「菜单里有这一项，且它调的仍是
-       *   `_openOrderDialog`」—— 换图标表不影响这两条语义。
-       */
-      expect(src.contains("_menuRow(AppIcons.reorder, '调整顺序')"), isTrue,
-          reason: '排序面板入口必须保留（现在在 ⋮ 菜单里）');
-      expect(src.contains('_openOrderDialog'), isTrue,
-          reason: '_openOrderDialog 还在用');
+    testWidgets('排序页显示全部源，保存后返回原筛选', (tester) async {
+      Device.overrideKind(DeviceKind.desktop);
+      var providers = <Map<String, Object?>>[
+        {'id': 'tv-a', 'name': '聚合子站', 'kind': 'tvbox', 'enabled': true},
+        {'id': 'js-a', 'name': '本地脚本', 'kind': 'js', 'enabled': true},
+      ];
+      List<String>? saved;
+      var changes = 0;
+      SourinCore.debugCallAsyncTransport = (command, args) async {
+        switch (command) {
+          case 'list_providers':
+            return providers;
+          case 'source_catalog_get':
+          case 'source_discovery_status':
+            return <String, dynamic>{};
+          case 'set_provider_order':
+            saved = (args!['ids'] as List).cast<String>();
+            providers = [
+              for (final id in saved!)
+                providers.singleWhere((p) => p['id'] == id),
+            ];
+            return saved;
+          default:
+            throw StateError(command);
+        }
+      };
+      addTearDown(() {
+        SourinCore.debugCallAsyncTransport = null;
+        SourceDiscoveryService.current.value = null;
+        Device.overrideKind(null);
+        tester.view.reset();
+      });
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 900);
+      final theme = AppTheme.themeFor(Brightness.light);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          builder: (_, child) => AppThemeHost(data: theme, child: child!),
+          home: AppScaffold(
+            child: SourceManagerPage(
+              initialType: ManagedSourceType.js,
+              onSourcesChanged: () => changes++,
+              onImportTvbox: () async {},
+              onPasteJs: () async {},
+              onEditProvider: (_) async {},
+              onConfigureProvider: (_) async {},
+              onRemoveProvider: (_) async {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('managed-source-js-a')), findsOneWidget);
+      expect(find.byKey(const ValueKey('managed-source-tv-a')), findsNothing);
+      await tester.tap(find.text('调整顺序'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SourceOrderPage), findsOneWidget);
+      expect(find.byKey(const ValueKey('tv-a')), findsOneWidget);
+      expect(find.byKey(const ValueKey('js-a')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('source-order-up-js-a')));
+      await tester.pumpAndSettle();
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('js-a'))).dy,
+        lessThan(tester.getTopLeft(find.byKey(const ValueKey('tv-a'))).dy),
+      );
+      await tester.tap(find.text('保存顺序'));
+      await tester.pumpAndSettle();
+      expect(saved, ['js-a', 'tv-a']);
+      expect(changes, 1);
+      expect(find.byType(SourceOrderPage), findsNothing);
+      expect(find.byKey(const ValueKey('managed-source-js-a')), findsOneWidget);
+      expect(find.byKey(const ValueKey('managed-source-tv-a')), findsNothing);
+      expect(tester.takeException(), isNull);
     });
 
     test('★★ 禁止 import flutter/material.dart（两套 Theme 串台）', () {

@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include <cwchar>
 
 #include "flutter_window.h"
 #include "utils.h"
@@ -247,6 +248,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   flutter::DartProject project(L"data");
+
+  // Windows page transitions and Miuix glass are smoother with the Skia
+  // compositor on the current desktop GPU. Keep a reversible escape hatch for
+  // driver-specific machines: SOURIN_RENDERER=impeller restores the old path.
+  // Explicit Flutter engine switches still take precedence over this default.
+  wchar_t renderer[32] = {};
+  const DWORD renderer_length = ::GetEnvironmentVariableW(
+      L"SOURIN_RENDERER", renderer, ARRAYSIZE(renderer));
+  if (renderer_length > 0 && renderer_length < ARRAYSIZE(renderer) &&
+      _wcsicmp(renderer, L"impeller") == 0) {
+    project.set_impeller_switch(flutter::ImpellerSwitch::Enabled);
+  } else {
+    project.set_impeller_switch(flutter::ImpellerSwitch::Disabled);
+  }
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();

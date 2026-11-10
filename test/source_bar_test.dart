@@ -60,21 +60,11 @@ Widget _host(Widget child, {ThemeData? theme}) {
 }
 
 Color _surfaceColor(WidgetTester tester, Finder pill) {
-  final button = find.descendant(
-    of: pill,
-    matching: find.byType(miuix.MiuixButton),
+  final panel = tester.widget<miuix.MiuixGlassPanel>(
+    find.descendant(of: pill, matching: find.byType(miuix.MiuixGlassPanel)),
   );
-  expect(button, findsOneWidget);
-  final paints = find.descendant(
-    of: button,
-    matching: find.byWidgetPredicate(
-      (widget) =>
-          widget is DecoratedBox && widget.decoration is ShapeDecoration,
-    ),
-  );
-  expect(paints, findsOneWidget);
-  final paint = tester.renderObject<RenderDecoratedBox>(paints);
-  return (paint.decoration as ShapeDecoration).color!;
+  final colors = miuix.MiuixTheme.of(tester.element(pill)).colors;
+  return Color.alphaBlend(panel.fill!, colors.background);
 }
 
 Color _textColor(WidgetTester tester, String label) {
@@ -551,15 +541,38 @@ void main() {
           ),
         );
         await t.pumpAndSettle();
-        expect(find.byType(miuix.MiuixCard), findsOneWidget);
+        expect(find.byType(miuix.MiuixCard), findsNothing);
         expect(find.byType(miuix.MiuixButton), findsNWidgets(4));
         final colors = miuix.MiuixTheme.of(t.element(_pill('源1'))).colors;
         for (final label in ['源0', '源1']) {
           final selected = label == '源1';
           final surface = _surfaceColor(t, _pill(label));
           final text = _textColor(t, label);
-          expect(surface, selected ? colors.primary : colors.secondaryVariant);
-          expect(text, selected ? colors.onPrimary : colors.onSecondaryVariant);
+          expect(
+            surface,
+            selected
+                ? Color.alphaBlend(
+                    colors.primary.withValues(
+                      alpha: brightness == Brightness.dark ? .20 : .09,
+                    ),
+                    colors.surface,
+                  )
+                : Color.alphaBlend(
+                    colors.surface.withValues(alpha: .72),
+                    colors.background,
+                  ),
+          );
+          expect(
+            text,
+            selected
+                ? (brightness == Brightness.dark
+                      ? const Color(0xff9dbfff)
+                      : Color.alphaBlend(
+                          const Color(0x1f000000),
+                          colors.primary,
+                        ))
+                : colors.onSurfaceSecondary,
+          );
           expect(_contrast(text, surface), greaterThanOrEqualTo(4.5));
         }
         expect(t.takeException(), isNull);
@@ -618,11 +631,30 @@ void main() {
         expect(scroll.pixels, closeTo(offset, .01));
         expect(FocusManager.instance.primaryFocus, same(focus));
         final colors = miuix.MiuixTheme.of(t.element(_pill('源1'))).colors;
-        expect(_surfaceColor(t, _pill('源1')), colors.primary);
-        expect(_textColor(t, '源1'), colors.onPrimary);
+        expect(
+          _surfaceColor(t, _pill('源1')),
+          Color.alphaBlend(
+            colors.primary.withValues(
+              alpha: mode == Brightness.dark ? .20 : .09,
+            ),
+            colors.surface,
+          ),
+        );
+        expect(
+          _textColor(t, '源1'),
+          mode == Brightness.dark
+              ? const Color(0xff9dbfff)
+              : Color.alphaBlend(const Color(0x1f000000), colors.primary),
+        );
         final surface = _surfaceColor(t, _pill('源0'));
         unselectedPaint[mode] = surface;
-        expect(surface, colors.secondaryVariant);
+        expect(
+          surface,
+          Color.alphaBlend(
+            colors.surface.withValues(alpha: .72),
+            colors.background,
+          ),
+        );
         expect(
           _contrast(_textColor(t, '源0'), surface),
           greaterThanOrEqualTo(4.5),

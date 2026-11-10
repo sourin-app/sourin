@@ -50,6 +50,10 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/ui/widgets/player_settings_sheet.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/titlebar_visibility.dart'
+    show PlayerTitleBarSession, titleBarVisible;
+
+import 'support/source_block.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  注释剥离器
@@ -156,7 +160,6 @@ PlayerSettingsSheet _sheet({
   },
   PlayEndAction endAction = PlayEndAction.autoNext,
   bool countdownBeforeNext = true,
-  bool keepSourceOnNext = true,
   bool autoSkip = true,
   // ── task-21 P1-8（面板倍速）──
   double rate = 1.0,
@@ -174,7 +177,6 @@ PlayerSettingsSheet _sheet({
   void Function(String, String)? onSetMpvProperty,
   ValueChanged<PlayEndAction>? onSetEndAction,
   ValueChanged<bool>? onSetCountdown,
-  ValueChanged<bool>? onSetKeepSource,
   ValueChanged<bool>? onSetAutoSkip,
   ValueChanged<double>? onSetRate,
   VoidCallback? onClose,
@@ -189,7 +191,6 @@ PlayerSettingsSheet _sheet({
     mpvStyle: mpvStyle,
     endAction: endAction,
     countdownBeforeNext: countdownBeforeNext,
-    keepSourceOnNext: keepSourceOnNext,
     autoSkip: autoSkip,
     rate: rate,
     isPlaying: isPlaying,
@@ -205,7 +206,6 @@ PlayerSettingsSheet _sheet({
     onSetMpvProperty: onSetMpvProperty ?? (_, __) {},
     onSetEndAction: onSetEndAction ?? (_) {},
     onSetCountdown: onSetCountdown ?? (_) {},
-    onSetKeepSource: onSetKeepSource ?? (_) {},
     onSetAutoSkip: onSetAutoSkip ?? (_) {},
     onSetRate: onSetRate ?? (_) {},
     onClose: onClose ?? () {},
@@ -224,6 +224,22 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
 
   group('0. 注释剥离器（防假通过）', () {
+    test('函数切片保留嵌套语句，排除相邻函数与字符串里的括号', () {
+      const source = r'''
+void first({bool enabled = true}) {
+  if (enabled) { record(') }'); }
+}
+void second() { _settingsOpen = true; }
+''';
+      final body = sourceBlock(
+        source,
+        'void first({bool enabled = true}) {',
+      );
+      expect(body, contains("record(') }');"));
+      expect(body, isNot(contains('_settingsOpen')));
+      expect(sourceBlock(body, 'if ('), 'enabled');
+    });
+
     test('★ 行注释 / 文档注释 / 块注释都被剥掉', () {
       const src = '''
 // 这是行注释，里面有 Navigator.of(context).maybePop()
@@ -675,7 +691,7 @@ void real() {}
       expect(
         page.contains('Future<void> _readMpvStyle() async {'),
         isTrue,
-        reason: '★★ 必须有 _readMpvStyle —— 打开面板前先从 mpv 读当前值',
+        reason: '★★ 必须有 _readMpvStyle —— 面板值来自 mpv 当前值',
       );
       /*
        * ★★★ 2026-10-07 改（桌面端第 3 条）：
@@ -690,12 +706,10 @@ void real() {}
        * 现在改成守**真正该守的顺序**：打开面板的纯 UI 动作必须排在 mpv
        * 回读之前（回读降级为 unawaited 的后台刷新，读到了自己 setState）。
        */
-      final i = page.indexOf('Future<void> _openSettings() async {');
-      expect(i, greaterThan(-1), reason: '★ 找不到 _openSettings');
-      final body = page.substring(i, i + 700);
-      final openAt = body.indexOf('_settingsOpen = true');
+      final body = sourceBlock(page, 'Future<void> _openSettings() async {');
+      final openAt = body.indexOf('_showSettingsPortal();');
       final readAt = body.indexOf('_readMpvStyle()');
-      expect(openAt, greaterThan(-1), reason: '★ 打开面板要置 _settingsOpen');
+      expect(openAt, greaterThan(-1), reason: '★ 打开面板必须调用实际显隐入口');
       expect(readAt, greaterThan(-1), reason: '★ 打开面板要回读样式');
       expect(openAt, lessThan(readAt),
           reason: '★★★ 打开面板必须排在 mpv 回读**之前** —— '
@@ -703,6 +717,16 @@ void real() {}
       expect(body.contains('unawaited(_readMpvStyle());'), isTrue,
           reason: '★ 回读必须是后台刷新（unawaited），不能 await —— '
               'await 会把面板钉在 mpv 往返之后');
+      expect(RegExp(r'\bawait\b').hasMatch(body.substring(0, openAt)), isFalse,
+          reason: '打开设置的同步路径不能先等待任何异步往返');
+      final show = sourceBlock(page, 'void _showSettingsPortal() {');
+      expect(show.contains('setState(() => _settingsOpen = true);'), isTrue,
+          reason: '显隐入口必须真正更新传给 portal 的状态');
+      final read = sourceBlock(page, 'Future<void> _readMpvStyle() async {');
+      expect(read.contains('for (final k in _styleKeys)'), isTrue);
+      expect(read.contains('await native.getProperty(k)'), isTrue);
+      expect(read.contains('setState(() => _mpvStyle = out)'), isTrue,
+          reason: '实际回读结果必须回填面板状态');
     });
 
     test('★ 面板对"读不到"的项要禁用，不能假装有默认值', () {
@@ -870,7 +894,7 @@ void real() {}
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  //  5. ★ 连播策略（原版 ArtPlayer settings 的四项）
+  //  5. ★ 连播策略
   // ═══════════════════════════════════════════════════════════════════
 
   group('5. 连播策略 —— 照抄原版 stores/player.ts', () {
@@ -948,7 +972,7 @@ void real() {}
       /*
        * 原版 `stores/player.ts:80-92`：
        * ```ts
-       * endAction: "autoNext", keepSourceOnNext: true,
+       * endAction: "autoNext",
        * countdownBeforeNext: true, autoSkip: true,
        * lastSpeed: 1, lastVolume: 1,
        * ```
@@ -956,7 +980,6 @@ void real() {}
       expect(page.contains('PlayEndAction _endAction = PlayEndAction.autoNext;'),
           isTrue, reason: '★ 默认「自动连播」（原版默认）');
       expect(page.contains('bool _countdownBeforeNext = true;'), isTrue);
-      expect(page.contains('bool _keepSourceOnNext = true;'), isTrue);
       expect(page.contains('bool _autoSkip = true;'), isTrue);
     });
 
@@ -1065,11 +1088,46 @@ void real() {}
           reason: '★ 不支持的平台**不显示**入口（灰按钮会让人以为坏了）');
     });
 
-    test('★ F 键全屏 + 真的调 OS 全屏 + 退出走统一出口', () {
-      expect(page.contains('if (k == LogicalKeyboardKey.keyF)'), isTrue);
-      expect(page.contains('windowManager.setFullScreen('), isTrue,
+    testWidgets('★ F 键全屏 + 真的调 OS 全屏 + 退出走统一出口', (t) async {
+      final key = sourceBlock(page, 'if (k == LogicalKeyboardKey.keyF) {');
+      expect(key.contains('_toggleFullscreen();'), isTrue);
+      final toggle = sourceBlock(
+        page,
+        'Future<void> _toggleFullscreen({bool awaitOs = true}) async {',
+      );
+      expect(toggle.contains('final next = !_fullscreen;'), isTrue);
+      expect(toggle.contains('setState(() => _fullscreen = next);'), isTrue);
+      expect(toggle.contains('_titleBarSession.setFullscreen(next);'), isTrue);
+      expect(toggle.contains('windowManager.setFullScreen(next)'), isTrue,
           reason: '★ 只改标志位的话窗口纹丝不动（已验收，不能改坏）');
-      expect(page.contains('titleBarVisible.value = !next;'), isTrue);
+      final exit = sourceBlock(page, 'Future<void> _exitPlayer() async {');
+      final leaveFullscreen = sourceBlock(exit, 'if (_fullscreen) {');
+      expect(leaveFullscreen.contains('await _toggleFullscreen(awaitOs: false);'),
+          isTrue, reason: '退出必须复用同一条全屏状态与 OS 调用路径');
+      final leaveAt = exit.indexOf('await _toggleFullscreen(awaitOs: false);');
+      final popAt = exit.indexOf('Navigator.of(context).pop<bool>');
+      expect(popAt, greaterThan(leaveAt), reason: '先退出全屏，再离开页面');
+      expect(exit.contains('_scheduleTitleBarDarkReset();'), isTrue);
+      final release = sourceBlock(page, 'void _scheduleTitleBarDarkReset() {');
+      expect(release.contains('_titleBarSession.release();'), isTrue,
+          reason: '统一退出路径必须释放当前页面的标题栏会话');
+
+      final session = PlayerTitleBarSession();
+      try {
+        await t.pump();
+        expect(titleBarVisible.value, isTrue);
+        session.setFullscreen(true);
+        await t.pump();
+        expect(titleBarVisible.value, isFalse,
+            reason: '真实标题栏会话收到全屏状态后必须收起标题栏');
+        session.setFullscreen(false);
+        await t.pump();
+        expect(titleBarVisible.value, isTrue,
+            reason: '退出全屏必须恢复可拖动标题栏');
+      } finally {
+        session.release();
+        await t.pump();
+      }
     });
 
     test('★ 直播禁用进度条', () {
@@ -1187,6 +1245,17 @@ void real() {}
   // ═══════════════════════════════════════════════════════════════════
 
   group('8. 设置面板 —— 真渲染与真点击', () {
+    testWidgets('连播面板不展示没有播放行为的线路开关', (t) async {
+      await t.pumpWidget(_host(_sheet()));
+      await t.pumpAndSettle();
+
+      expect(find.text('连播'), findsOneWidget);
+      expect(find.text('连播倒计时'), findsOneWidget);
+      expect(find.text('自动跳过片头'), findsOneWidget);
+      expect(find.text('连播沿用线路'), findsNothing);
+      expect(find.text('原版同样未接入播放逻辑'), findsNothing);
+    });
+
     testWidgets('★ 三段都在（字幕 / 音轨 / 连播）', (t) async {
       await t.pumpWidget(_host(_sheet()));
       await t.pumpAndSettle();

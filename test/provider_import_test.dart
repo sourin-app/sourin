@@ -36,20 +36,36 @@
 //
 // ```text
 // 静态接线断言  → 本文件（不需要真核心）
-// 纯函数行为断言 → 本文件（prettyJson / parseHeaders / fromJson / toast）
+// 纯函数行为断言 → 本文件（parseHeaders / fromJson / toast）
 // 真实观感与网络 → 真机截图 + 真实健康检测（单测做不到，需要 FFI）
 // ```
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/services.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/widgets/provider_import_dialog.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
+import 'package:sourin_spike/core/ffi.dart';
+import 'package:sourin_spike/core/device.dart';
+import 'package:sourin_spike/core/source_discovery.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/settings_page.dart';
+import 'package:sourin_spike/ui/settings/source_manager_page.dart';
+import 'package:sourin_spike/ui/widgets/app_dialog_shell.dart';
+import 'package:sourin_spike/ui/widgets/app_toast.dart';
+import 'package:sourin_spike/ui/widgets/plugin_edit_dialog.dart';
+
+import 'support/miuix_finders.dart';
 
 /// 剥掉注释 —— 静态断言里做文本匹配**必须先剥**
 ///
@@ -66,6 +82,137 @@ import 'package:sourin_spike/ui/app_theme.dart';
 String _code(String src) => src
     .replaceAll(RegExp(r'/\*[\s\S]*?\*/'), '')
     .replaceAll(RegExp(r'//[^\n]*'), '');
+
+Widget _providerTestHost(Widget child, {Brightness brightness = Brightness.light}) {
+  final theme = AppTheme.themeFor(brightness);
+  return MaterialApp(
+    theme: theme,
+    builder: (_, child) => AppThemeHost(
+      data: theme,
+      child: ToastHost(child: child!),
+    ),
+    home: child,
+  );
+}
+
+// Pending source actions keep progress animations active. Wait for the actual
+// content with a finite bound instead of waiting for every animation to stop.
+Future<void> _pumpUntilFound(
+  WidgetTester tester,
+  Finder finder, {
+  required String reason,
+}) async {
+  for (var frame = 0; frame < 30; frame++) {
+    await tester.pump(const Duration(milliseconds: 50));
+    if (finder.evaluate().length == 1) return;
+  }
+  expect(finder, findsOneWidget, reason: reason);
+}
+
+/// Only native transport is replaced; settings, callbacks, menus and dialogs are real.
+class _SourceActionFixture {
+  final commands = <String>[];
+  final unexpected = <String>[];
+  Completer<int>? reloadCompletion;
+  int changes = 0;
+
+  Future<dynamic> call(String command, Map<String, dynamic>? args) async {
+    commands.add(command);
+    switch (command) {
+      case 'list_providers':
+        return [
+          {
+            'id': 'tvbox-test',
+            'name': 'TVBox 测试源',
+            'kind': 'tvbox',
+            'enabled': true,
+            'capabilities': {'vod': true, 'search': true},
+          },
+          {
+            'id': 'http-disabled',
+            'name': 'HTTP 历史源',
+            'kind': 'http',
+            'enabled': false,
+            'capabilities': {'vod': true, 'search': true},
+          },
+          {
+            'id': 'js-disabled',
+            'name': '禁用 JS',
+            'kind': 'js',
+            'enabled': false,
+            'capabilities': {'vod': true, 'search': true},
+          },
+        ];
+      case 'source_catalog_get':
+        return {'origins': <dynamic>[], 'groups': <dynamic>[]};
+      case 'list_tvbox_sources':
+        return {'sources': <dynamic>[]};
+      case 'list_plugins':
+        return {'plugins': <dynamic>[], 'failed': <dynamic>[]};
+      case 'global_proxy_migration_choices':
+      case 'list_skip_markers':
+      case 'restore_failures':
+        return <dynamic>[];
+      case 'remote_auto_start':
+        return false;
+      case 'remote_status_cmd':
+      case 'list_plugin_sources':
+      case 'list_proxy_configs':
+      case 'source_discovery_status':
+      case 'tvbox_update_schedule_get':
+        return <String, dynamic>{};
+      case 'reload_plugins':
+        return reloadCompletion == null ? 2 : await reloadCompletion!.future;
+      default:
+        unexpected.add(command);
+        throw StateError('Unexpected native command: $command');
+    }
+  }
+}
+
+Future<void> _openSourcesForTest(
+  WidgetTester tester,
+  _SourceActionFixture fixture,
+) async {
+  UiPrefs.debugResetForTest();
+  Device.overrideKind(DeviceKind.desktop);
+  ProxyCache.invalidate();
+  SourceDiscoveryService.current.value = null;
+  SourinCore.debugCallAsyncTransport = fixture.call;
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(1280, 1100);
+  addTearDown(() {
+    SourinCore.debugCallAsyncTransport = null;
+    Device.overrideKind(null);
+    ProxyCache.invalidate();
+    SourceDiscoveryService.current.value = null;
+    UiPrefs.debugResetForTest();
+    tester.view.reset();
+  });
+  await tester.pumpWidget(
+    _providerTestHost(
+      AppScaffold(child: SettingsPage(onProvidersChanged: () => fixture.changes++)),
+    ),
+  );
+  await tester.pumpAndSettle();
+  await tester.ensureVisible(find.text('源'));
+  await tester.tap(find.text('源'));
+  await tester.pumpAndSettle();
+  expect(find.byType(SourceManagerPage), findsOneWidget);
+}
+
+void _expectSourceEnabledStates(WidgetTester tester) {
+  for (final entry in const {
+    'tvbox-test': true,
+    'http-disabled': false,
+    'js-disabled': false,
+  }.entries) {
+    expect(
+      tester.widget<ui.Switch>(find.byKey(ValueKey('source-enabled-${entry.key}'))).value,
+      entry.value,
+    );
+  }
+}
 
 void main() {
   // ═══════════════════════════════════════════════════════════════════
@@ -207,112 +354,196 @@ void main() {
       );
     });
 
-    test('★★ 导入源：按钮存在 + 打开导入弹窗', () {
-      /*
-       * 原版 `SettingsView.vue:1719`：`<button ... @click="openAdd">导入源</button>`
-       *
-       * ⚠️ 原版注释特意强调过这是**唯一界面入口**：
-       * > 「导入源」是声明式 JSON / HTTP 接入的唯一界面入口，
-       * > 删掉就再也加不了（后端能力还在，但用户点不到）。
-       */
-      expect(code.contains('导入源'), isTrue, reason: '按钮文案必须是「导入源」');
-      expect(
-        code.contains('ProviderImportDialog.showAdd('),
-        isTrue,
-        reason: '★ 必须真的打开弹窗（`showAdd` = 原版 openAdd）',
+    testWidgets('导入 TVBox 从设置页真实入口打开，空表单禁用且取消不导入', (tester) async {
+      final fixture = _SourceActionFixture();
+      await _openSourcesForTest(tester, fixture);
+      _expectSourceEnabledStates(tester);
+      final entry = find.widgetWithText(ui.FilledButton, '导入 TVBox');
+      expect(tester.widget<ui.FilledButton>(entry).onPressed, isNotNull);
+      await tester.tap(entry);
+      await _pumpUntilFound(
+        tester,
+        find.descendant(
+          of: find.byType(ProviderImportDialog),
+          matching: find.widgetWithText(ui.TextButton, '取消'),
+        ).hitTestable(),
+        reason: 'TVBox 弹窗必须在 1.5 秒内出现可点击的取消按钮',
       );
+      // The covered source page must stop its indeterminate progress ticker.
+      await tester.pumpAndSettle(
+        const Duration(milliseconds: 50),
+        EnginePhase.sendSemanticsUpdate,
+        const Duration(seconds: 2),
+      );
+
+      expect(find.byType(ProviderImportDialog), findsOneWidget);
+      expect(find.text('导入 TVBox 配置'), findsOneWidget);
+      expect(find.text('TVBox 配置'), findsOneWidget);
+      expect(find.text('填入模板'), findsNothing);
+      expect(find.text('可视化编排'), findsNothing);
+      expect(find.textContaining('声明式'), findsNothing);
+      for (final key in ['source-address-name', 'source-address-primary', 'source-address-backups']) {
+        final field = tester.widget<ui.TextField>(find.byKey(ValueKey(key)));
+        expect(field.controller!.text, isEmpty);
+        expect(field.enabled, isTrue);
+      }
+      expect(
+        tester.widget<ui.FilledButton>(find.widgetWithText(ui.FilledButton, '导入并探测')).onPressed,
+        isNull,
+      );
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProviderImportDialog), findsNothing);
+      expect(fixture.commands, isNot(contains('import_tvbox_config')));
+      expect(fixture.commands, isNot(contains('install_http_provider')));
+      expect(fixture.unexpected, isEmpty);
+      _expectSourceEnabledStates(tester);
+      expect(tester.takeException(), isNull);
     });
 
-    test('★★ 重新加载：按钮存在 + 真的调了 reloadPlugins()', () {
-      /*
-       * 原版 `SettingsView.vue:1725`：
-       * ```html
-       * <button class="btn btn--ghost" :disabled="pluginBusy" @click="reloadPlugins">
-       *   {{ pluginBusy ? "处理中…" : "重新加载" }}
-       * </button>
-       * ```
-       *
-       * 这个按钮的价值：用户手工把 `.js` 放进 `plugins/` 目录后，
-       * 界面不会自己发现 —— 没有它就只能重启程序。
-       */
-      expect(code.contains('重新加载'), isTrue, reason: '按钮文案必须是「重新加载」');
+    testWidgets('重新加载 JS 调用真实命令，等待期间禁用动作并在完成后恢复', (tester) async {
+      final fixture = _SourceActionFixture()..reloadCompletion = Completer<int>();
+      await _openSourcesForTest(tester, fixture);
+      final providerReads = fixture.commands.where((command) => command == 'list_providers').length;
+      final pluginReads = fixture.commands.where((command) => command == 'list_plugins').length;
+      await tester.tap(miuixTooltip('更多操作'));
+      await tester.pumpAndSettle();
+      expect(find.text('重新加载 JS'), findsOneWidget);
+      await tester.tap(find.text('重新加载 JS'));
+      for (var i = 0; i < 30 && !fixture.commands.contains('reload_plugins'); i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(fixture.commands.where((command) => command == 'reload_plugins'), hasLength(1));
+      await tester.pump();
+      expect(find.byType(miuix.MiuixLinearProgressIndicator), findsOneWidget);
       expect(
-        code.contains('SourinApi.reloadPlugins()'),
-        isTrue,
-        reason: '★ 必须真调 reloadPlugins() —— 包装在 :780 一直存在但零调用',
+        tester.widget<ui.FilledButton>(find.widgetWithText(ui.FilledButton, '导入 TVBox')).onPressed,
+        isNull,
       );
-      expect(code.contains('_pluginBusy'), isTrue, reason: '必须有 _pluginBusy 状态位');
-      expect(code.contains('处理中…'), isTrue, reason: '忙碌时文案变「处理中…」');
-    });
-
-    test('★★ 5 个按钮必须用 Wrap（原版明确要求的折行语义）', () {
-      /*
-       * ★ 2026-10-10：这条断言跟着结构改动一起改了判据，**没删功能**
-       *
-       * 改前：块头是 `Wrap` 里 8 个描边按钮
-       * ```text
-       * [调整顺序][健康检测][测速][导入源] │ [重新加载][从网址安装][粘贴源码安装]
-       * ```
-       * 改后（Owner：「js插件的ui不好看」）：
-       * ```text
-       * Wrap { [从网址安装]  [⋮ PopupMenuButton]  [测速按钮] }
-       * ```
-       * 菜单项里：`调整顺序 / 健康检测 / 导入源 / 重新加载 / 粘贴源码安装`
-       *
-       * ⇒ 判据从「都在同一个 Wrap 里」改成**逐个断言入口仍在**
-       *   （菜单项也算入口 —— 用户点得到，就是入口）。
-       */
-      // ── 入口仍可点：常驻按钮 or ⋮ 菜单项（菜单项同样是入口）──
-      for (final label in [
-        '健康检测',
-        '导入源',
-        '重新加载',
-        '从网址安装',
-        '粘贴源码安装',
-        '调整顺序',
-      ]) {
-        expect(code.contains(label), isTrue,
-            reason: '插件区块缺入口「$label」（常驻按钮或菜单项都没有）');
+      for (final label in ['安装 JS', '添加直播', '调整顺序']) {
+        expect(tester.widget<ui.OutlinedButton>(find.widgetWithText(ui.OutlinedButton, label)).onPressed, isNull);
       }
 
-      /*
-       * ★ 反向对照：菜单确实被用上了（否则上面那些字符串可能只是注释）
-       *
-       * ⚠️ 2026-10-16（Owner 第 8 条）判据从**承载件**改成**语义**：
-       * ```text
-       * 改前：断言字面量 `PopupMenuButton<String>`
-       * 改后：断言「收进了统一的菜单件」—— `AppMenuButton` 或 `PopupMenuButton` 都算
-       * ```
-       * 为什么这不是「放松门禁」：
-       *   这条判据的**语义**是「低频入口必须收进 ⋮ 菜单，不许摊成一排描边按钮」，
-       *   `PopupMenuButton` 只是当时的**实现手段**。
-       *   Owner 要求换掉 Material 默认菜单外观 ⇒ 手段换成 `AppMenuButton`，
-       *   而 `AppMenuButton` **内部仍然**是 `PopupMenuButton`（见 app_menu.dart），
-       *   语义一字未变。
-       * ★ 仍然会变红的情形：把它换回一排 `OutlinedButton`（判据照红）。
-       */
-      expect(
-          code.contains('AppMenuButton<String>') ||
-              code.contains('PopupMenuButton<String>'),
-          isTrue,
-          reason: '★ 低频入口必须收进统一的 ⋮ 菜单件（AppMenuButton / PopupMenuButton），'
-              '否则又变回一排描边按钮');
-      expect(code.contains("_menuRow("), isTrue,
-          reason: '★ 菜单项要用共用的 _menuRow（图标+文案），不是裸 Text');
+      await tester.tap(miuixTooltip('更多操作'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      for (final label in ['重新加载 JS', '健康检测']) {
+        final item = tester.widget<miuix.MiuixBasicComponent>(
+          find.ancestor(of: find.text(label), matching: find.byType(miuix.MiuixBasicComponent)),
+        );
+        expect(item.enabled, isFalse);
+        expect(item.onClick, isNull);
+      }
+      await tester.tap(find.text('重新加载 JS'), warnIfMissed: false);
+      await tester.pump();
+      expect(fixture.commands.where((command) => command == 'reload_plugins'), hasLength(1));
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
 
-      // ★ 常驻区只留 2 个：主操作 + 测速（它自带进度/结果态）
-      //   —— 判据是「从网址安装」走的是 FilledButton（主操作），
-      //   而不是又变回 OutlinedButton.icon 挤在 Wrap 里。
+      fixture.reloadCompletion!.complete(2);
+      await tester.pumpAndSettle();
+      expect(find.byType(miuix.MiuixLinearProgressIndicator), findsNothing);
+      expect(find.text('已重新加载 2 个插件'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
+      expect(fixture.commands.where((command) => command == 'list_providers').length, greaterThan(providerReads));
+      expect(fixture.commands.where((command) => command == 'list_plugins').length, greaterThan(pluginReads));
+      expect(fixture.changes, greaterThan(0));
       expect(
-        RegExp(r'FilledButton\.icon\(\s*onPressed: _installPlugin')
-            .hasMatch(code),
-        isTrue,
-        reason: '★「从网址安装」应是实心主按钮（这一页的主要入口）',
+        tester.widget<ui.FilledButton>(find.widgetWithText(ui.FilledButton, '导入 TVBox')).onPressed,
+        isNotNull,
       );
+      await tester.tap(miuixTooltip('更多操作'));
+      await tester.pumpAndSettle();
+      final reload = tester.widget<miuix.MiuixBasicComponent>(
+        find.ancestor(of: find.text('重新加载 JS'), matching: find.byType(miuix.MiuixBasicComponent)),
+      );
+      expect(reload.enabled, isTrue);
+      expect(reload.onClick, isNotNull);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      _expectSourceEnabledStates(tester);
+      expect(fixture.unexpected, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
 
-      // ★ 折叠语义仍在（否则窄屏上 6 个入口会重新撑破卡片）
-      expect(code.contains('Wrap('), isTrue,
-          reason: '★ 按钮行仍要用 Wrap（窄屏要能折行，Row 会溢出）');
+    testWidgets('源操作在窄屏实际折行，低频菜单与 JS 安装编辑和排序仍可达', (tester) async {
+      final fixture = _SourceActionFixture();
+      await _openSourcesForTest(tester, fixture);
+      tester.view.physicalSize = const Size(411, 1100);
+      await tester.pumpAndSettle();
+      final controls = [
+        find.widgetWithText(ui.FilledButton, '导入 TVBox'),
+        find.widgetWithText(ui.OutlinedButton, '安装 JS'),
+        find.widgetWithText(ui.OutlinedButton, '添加直播'),
+        find.widgetWithText(ui.OutlinedButton, '调整顺序'),
+        miuixTooltip('更多操作'),
+      ];
+      final rects = [for (final control in controls) tester.getRect(control)];
+      for (final rect in rects) {
+        expect(rect.left, greaterThanOrEqualTo(0));
+        expect(rect.right, lessThanOrEqualTo(411));
+        expect(rect.height, greaterThan(0));
+      }
+      expect(rects.map((rect) => rect.top).reduce(math.max), greaterThan(rects.first.top),
+          reason: '窄屏操作必须实际排成多行，单行溢出或裁剪不能通过');
+      expect(find.text('健康检测'), findsNothing);
+      expect(find.text('重新加载 JS'), findsNothing);
+      expect(find.text('粘贴 JS 源码'), findsNothing);
+      await tester.tap(miuixTooltip('更多操作'));
+      await tester.pumpAndSettle();
+      for (final label in ['健康检测', '重新加载 JS', '粘贴 JS 源码']) {
+        expect(find.text(label), findsOneWidget);
+        final item = tester.widget<miuix.MiuixBasicComponent>(
+          find.ancestor(of: find.text(label), matching: find.byType(miuix.MiuixBasicComponent)),
+        );
+        expect(item.enabled, isTrue);
+        expect(item.onClick, isNotNull);
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      tester.view.physicalSize = const Size(1280, 1100);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('安装 JS'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SourceAddressDialog), findsOneWidget);
+      expect(tester.widget<SourceAddressDialog>(find.byType(SourceAddressDialog)).origin.kind, 'js');
+      expect(find.byKey(const ValueKey('source-address-primary')), findsOneWidget);
+      expect(find.byKey(const ValueKey('source-address-backups')), findsOneWidget);
+      await tester.tap(miuixTooltip('关闭'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('调整顺序'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SourceOrderPage), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('page-header-back')));
+      await tester.pumpAndSettle();
+      await tester.tap(miuixTooltip('更多操作'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('粘贴 JS 源码'));
+      await _pumpUntilFound(
+        tester,
+        find.descendant(
+          of: find.byType(PluginEditDialogBody),
+          matching: find.widgetWithText(ui.TextButton, '取消'),
+        ).hitTestable(),
+        reason: 'JS 源码弹窗必须在 1.5 秒内出现可点击的取消按钮',
+      );
+      await tester.pumpAndSettle(
+        const Duration(milliseconds: 50),
+        EnginePhase.sendSemanticsUpdate,
+        const Duration(seconds: 2),
+      );
+      expect(find.byType(PluginEditDialogBody), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(fixture.commands, isNot(contains('install_plugin')));
+      expect(fixture.commands, isNot(contains('install_plugin_source')));
+      expect(fixture.unexpected, isEmpty);
+      _expectSourceEnabledStates(tester);
+      expect(tester.takeException(), isNull);
     });
   });
 
@@ -404,10 +635,12 @@ void main() {
        * `!= 'builtin'` 会立刻放行，用户点进去才发现没配置可改。
        */
       expect(code.contains('bool get _canEdit'), isTrue, reason: '缺 _canEdit 判据');
-      // 三种形态都要放行
-      for (final k in ["'declarative'", "'http'", "'js'"]) {
-        expect(code.contains(k), isTrue, reason: '_canEdit 必须放行 kind == $k');
-      }
+      final canEdit = RegExp(r'bool get _canEdit\s*=>[^;]+;')
+          .firstMatch(code)!
+          .group(0)!;
+      expect(canEdit, contains("provider.kind == 'http'"));
+      expect(canEdit, contains("provider.kind == 'js'"));
+      expect(canEdit, isNot(contains('declarative')));
       // ⚠️ 不能写成「不等于 builtin」
       expect(
         code.contains("provider.kind != 'builtin'"),
@@ -441,7 +674,7 @@ void main() {
       );
       // 声明了还必须**用**上，否则按钮是死的
       expect(
-        code.contains('onPressed: onEdit'),
+        code.contains("if (v == 'edit') onEdit()"),
         isTrue,
         reason: '★ 光声明不够 —— 编辑按钮必须真的调用 onEdit',
       );
@@ -562,51 +795,6 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
   //  纯函数行为（不碰 FFI，可真跑）
   // ═══════════════════════════════════════════════════════════════════
-  group('prettyJson（原版 :1431）', () {
-    test('★ 合法 JSON 会被格式化（缩进 2 空格）', () {
-      /*
-       * 原版：
-       * ```ts
-       * try { return JSON.stringify(JSON.parse(raw), null, 2); }
-       * catch { return raw; }
-       * ```
-       * 原版注释：`// 格式化后再填：用户改起来比压缩成一行的 JSON 容易得多`
-       */
-      expect(
-        prettyJson('{"a":1}'),
-        '{\n  "a": 1\n}',
-      );
-    });
-
-    test('★★★ 解析失败必须**原样返回**，不能抛异常', () {
-      /*
-       * 原版注释（照抄）：
-       * > 尽量美化 JSON；解析失败就原样返回（用户手改坏了也能看到原文）
-       *
-       * ⚠️ 这条很关键：如果抛异常，用户**打开编辑弹窗的瞬间**就报错，
-       *    他连自己错在哪都看不到（而错的那份 JSON 就在他面前）。
-       *    这是"编辑功能比重新导入更好用"的核心 —— 半坏的配置能救。
-       */
-      const broken = '{"a": 1,,}';
-      expect(
-        () => prettyJson(broken),
-        returnsNormally,
-        reason: '★ 坏 JSON 不能抛异常（弹窗会打不开）',
-      );
-      expect(prettyJson(broken), broken, reason: '★ 必须原样返回，用户才能看到错在哪');
-    });
-
-    test('空串/空白原样返回（不是崩溃）', () {
-      expect(prettyJson(''), '');
-      expect(prettyJson('   '), '   ');
-    });
-
-    test('已经是格式化的 JSON 保持语义不变', () {
-      const src = '{\n  "a": 1\n}';
-      expect(jsonDecode(prettyJson(src)), jsonDecode(src));
-    });
-  });
-
   group('parseHeaders（原版 :1440）', () {
     test('空 / 纯空白 → null（= 无自定义头）', () {
       /*
@@ -664,59 +852,6 @@ void main() {
       );
       expect(() => parseHeaders('123'), throwsA(isA<FormatException>()));
       expect(() => parseHeaders('"str"'), throwsA(isA<FormatException>()));
-    });
-  });
-
-  group('导入模板（原版 :837 TEMPLATE）', () {
-    test('★★★ 模板必须是**合法 JSON**（用户点「填入模板」后要能导入）', () {
-      /*
-       * 这是模板唯一的硬要求 —— 它在原版是个 JS 模板字符串，
-       * 搬到 Dart 要转义 `$`（Dart 的字符串插值符），
-       * 转义漏一个就变成非法 JSON，而**用户点一下才发现**。
-       */
-      expect(
-        () => jsonDecode(kDeclarativeTemplate),
-        returnsNormally,
-        reason: '★ 模板必须是合法 JSON —— 否则「填入模板」直接导入失败',
-      );
-    });
-
-    test('★★ 模板的 JSONPath 必须是字面 `\$.xxx`（\$ 没被 Dart 吃掉）', () {
-      /*
-       * ⚠️ 踩坑记录：Dart 单引号字符串里 `$` 是插值符。
-       * 写 `"items": "$.class"` 会被当成插值 → 编译错误或变量未定义。
-       * 必须写 `"\$.class"`。
-       *
-       * 而**如果**有人为了省事写成 `\${...}` 或漏了转义，
-       * 解析出来就不是 `$.class` —— 用户照抄的源会解析失败。
-       */
-      final m = jsonDecode(kDeclarativeTemplate) as Map<String, dynamic>;
-      final endpoints = m['endpoints'] as Map<String, dynamic>;
-      final list = endpoints['list'] as Map<String, dynamic>;
-      final map = list['map'] as Map<String, dynamic>;
-
-      expect(map['items'], '\$.list', reason: '★ JSONPath 的 \$ 必须保留字面量');
-      expect(map['id'], '\$.vod_id');
-    });
-
-    test('模板的占位符写法与原版一致（{category}/{page}/{id}/{keyword}）', () {
-      /*
-       * 这些占位符就是声明式源的**参数契约** —— 用户照着改。
-       * 改错一个词，用户填的源会静默解析失败。
-       */
-      for (final ph in ['{category}', '{page}', '{id}', '{keyword}']) {
-        expect(
-          kDeclarativeTemplate.contains(ph),
-          isTrue,
-          reason: '模板缺占位符 $ph（原版如此）',
-        );
-      }
-    });
-
-    test('模板含原版的四个端点（categories/list/detail/search）', () {
-      final m = jsonDecode(kDeclarativeTemplate) as Map<String, dynamic>;
-      final endpoints = (m['endpoints'] as Map).keys.toSet();
-      expect(endpoints, containsAll(['categories', 'list', 'detail', 'search']));
     });
   });
 
@@ -854,225 +989,196 @@ void main() {
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════════
-  //  ★★ 真渲染测试：编辑回填（不碰 FFI，却能证明"看到的就是原配置"）
-  // ═══════════════════════════════════════════════════════════════════
-  //
-  // # 为什么这一段必须用**真 widget 渲染**而不是静态断言
-  //
-  // 「编辑」的全部价值就是**回填**：用户能看到自己原来的 JSON / URL / 头。
-  // 静态断言只能证明"代码里调了 prettyJson"，**证明不了它显示出来**。
-  // 而回填的失败方式恰恰是静默的：
-  // ```text
-  // 忘了 prefill      → 弹窗是空的，用户以为配置丢了（其实后端有）
-  // 忘了 prettyJson   → 一行压缩 JSON，用户没法改（这正是加编辑的起因）
-  // 忘了格式化 headers → 用户看到 "{}" 以为"这里有配置"
-  // ```
-  // 这三种都不会报错，只能靠"渲染出来的文本对不对"来抓。
-  //
-  // ⚠️ 弹窗本身**不依赖 FFI** —— `initState` 只做纯文本预处理
-  //    （`prettyJson` / `_formatHeaders`），API 调用只发生在点提交时。
-  //    所以能安全地 `pumpWidget` 它（这一点值得记：把 I/O 挡在构造之外，
-  //    测试才可能不依赖真核心）。
-  group('编辑回填（真渲染）', () {
-    /// 把弹窗挂起来（外面必须有 MaterialApp —— 否则 Theme/Navigator 都没有）
+  // 直接构造旧 seed 也必须关闭声明式提交；HTTP 回填和 TVBox 新增仍可用。
+  group('导入入口与历史配置兼容（真渲染）', () {
+    late List<String> commands;
+
+    setUp(() {
+      commands = [];
+      SourinCore.debugCallAsyncTransport = (command, args) async {
+        commands.add(command);
+        throw StateError('Unexpected command: $command');
+      };
+    });
+
+    tearDown(() {
+      SourinCore.debugCallAsyncTransport = null;
+    });
+
+    Widget host(Widget child) {
+      final theme = AppTheme.themeFor(Brightness.light);
+      return MaterialApp(
+        theme: theme,
+        builder: (_, child) => AppThemeHost(data: theme, child: child!),
+        home: child,
+      );
+    }
+
     Future<void> pumpDialog(
       WidgetTester tester, {
       ProviderImportSeed? seed,
       String? name,
     }) async {
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: ProviderImportDialog(seed: seed, editingName: name),
+        host(
+          Scaffold(
+            body: Stack(
+              children: [
+                ProviderImportDialog(seed: seed, editingName: name),
+              ],
+            ),
           ),
         ),
       );
       await tester.pumpAndSettle();
     }
 
-    testWidgets('★★★ 编辑声明式源：标题/模式锁/回填的 JSON 都要对', (tester) async {
-      /*
-       * 原版 `edit()`（:1365）的声明式分支：
-       * ```ts
-       * editing.value = p;
-       * importMode.value = "declarative";
-       * importJson.value = prettyJson(cfg.json);   // ← 格式化后再填
-       * showImport.value = true;
-       * ```
-       */
-      const rawJson =
-          '{"id":"demo","name":"示例站","base":"https://api.example.com"}';
-      final seed = ProviderImportSeed.fromJson({
-        'kind': 'declarative',
-        'id': 'demo',
-        'json': rawJson,
-      })!;
-
-      await pumpDialog(tester, seed: seed, name: '示例站');
-
-      // ① 标题带源名（用户要知道在编辑哪个）
-      expect(find.text('编辑「示例站」'), findsOneWidget);
-
-      // ② 编辑态**锁住**接入方式切换 —— 原版 :2746 的注释：
-      //    「源的类型是它的身份，改类型等于换一个源，不是「编辑」」
-      expect(
-        find.text('HTTP Provider'),
-        findsNothing,
-        reason: '★ 编辑态不能出现接入方式切换（原版明确锁住）',
+    testWidgets('直接传入旧声明式 seed 只显示停止支持提示且不可提交', (tester) async {
+      const raw = '{"id":"old","base":"https://legacy.test"}';
+      const seed = ProviderImportSeed(
+        kind: 'declarative',
+        id: 'old',
+        json: raw,
       );
-      expect(find.textContaining('正在编辑声明式源'), findsOneWidget);
+      await pumpDialog(tester, seed: seed, name: '旧源');
 
-      // ③ ★ 回填且**已格式化**（不是压缩成一行）
-      final field = tester.widget<TextField>(find.byType(TextField));
-      final shown = field.controller!.text;
-      expect(shown, contains('"id": "demo"'), reason: '★ 回填的必须是原始 JSON');
-      expect(shown, contains('\n'), reason: '★ 必须格式化过（压缩成一行没法改）');
-      expect(
-        jsonDecode(shown),
-        jsonDecode(rawJson),
-        reason: '★ 格式化不能改变语义',
-      );
-
-      // ④ 编辑态的按钮是「保存」，且**没有**「填入模板」
-      //    （原版 :2788 `v-if="!isEditing"`）
-      expect(find.text('保存'), findsOneWidget);
+      expect(find.text('声明式源已停止支持'), findsOneWidget);
+      expect(find.text('关闭'), findsOneWidget);
+      expect(find.byType(ui.TextField), findsNothing);
+      expect(find.byType(ui.FilledButton), findsNothing);
+      expect(find.text('保存'), findsNothing);
+      expect(find.text('导入并探测'), findsNothing);
+      expect(find.text('可视化编排'), findsNothing);
       expect(find.text('填入模板'), findsNothing);
-      expect(find.text('导入'), findsNothing);
+      expect(seed.json, raw);
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
     });
 
-    testWidgets('★★★ 编辑 HTTP 源：base_url + 格式化后的 headers 回填', (tester) async {
-      /*
-       * 原版 `edit()` 的 else 分支：
-       * ```ts
-       * importMode.value = "http";
-       * httpBase.value = cfg.base_url;
-       * httpHeadersJson.value = Object.keys(cfg.headers || {}).length
-       *   ? JSON.stringify(cfg.headers, null, 2) : "";
-       * ```
-       * 原版注释说明**为什么自定义头必须可改**：
-       * > 原实现只能装不能改，用户换了令牌就得删源重建 ——
-       * > 而 base_url 与其它头会一起丢掉（这正是加编辑功能的起因之一）。
-       */
-      final seed = ProviderImportSeed.fromJson({
-        'kind': 'http',
-        'id': 'x',
-        'base_url': 'http://127.0.0.1:8787',
-        'headers': {'Authorization': 'Bearer TOKEN123'},
-      })!;
-
-      await pumpDialog(tester, seed: seed, name: '我的服务');
-
-      expect(find.text('编辑「我的服务」'), findsOneWidget);
-      expect(find.textContaining('正在编辑HTTP 插件'), findsOneWidget);
-
-      // 两个输入框：base_url 在前、headers 在后
-      final fields = tester.widgetList<TextField>(find.byType(TextField)).toList();
-      expect(fields.length, 2, reason: 'HTTP 表单应有 URL + headers 两个输入框');
-      expect(fields[0].controller!.text, 'http://127.0.0.1:8787');
-      expect(
-        fields[1].controller!.text,
-        contains('Bearer TOKEN123'),
-        reason: '★ 头必须回填 —— 否则用户改令牌还得重建源',
+    testWidgets('未知 seed 不得回退成可提交的 TVBox 表单', (tester) async {
+      await pumpDialog(
+        tester,
+        seed: const ProviderImportSeed(kind: 'future', id: 'unknown'),
       );
-      // 格式化过（不是挤成一行）
-      expect(fields[1].controller!.text, contains('\n'));
+      expect(find.text('该源没有可编辑的配置'), findsOneWidget);
+      expect(find.byType(ui.TextField), findsNothing);
+      expect(find.byType(ui.FilledButton), findsNothing);
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
     });
 
-    testWidgets('★★★ HTTP 源 headers 为空 → 输入框留空（不是 "{}"）', (tester) async {
-      /*
-       * 原版：`Object.keys(cfg.headers || {}).length ? ... : ""`
-       *
-       * ⚠️ 给 `{}` 会让用户以为"这里有配置"，其实什么都没有；
-       *    留空才符合"没填就是没有"的语义。
-       */
-      final seed = ProviderImportSeed.fromJson({
-        'kind': 'http',
-        'id': 'x',
-        'base_url': 'http://a',
-        'headers': <String, String>{},
-      })!;
-
-      await pumpDialog(tester, seed: seed, name: 'x');
-      final fields = tester.widgetList<TextField>(find.byType(TextField)).toList();
-      expect(fields[1].controller!.text, isEmpty,
-          reason: '★ 空头要留空，不能显示成 "{}"');
-    });
-
-    testWidgets('★★ 新增态：接入方式可切 + 有「填入模板」+ 按钮是「导入」', (tester) async {
-      /*
-       * 原版 `openAdd()`（:1413）—— 与编辑态**恰好相反**：
-       * ```text
-       * 显示 tabs      （编辑态锁住）
-       * 有「填入模板」  （编辑态没有）
-       * 按钮「导入」    （编辑态是「保存」）
-       * 输入框全空      （编辑态回填）
-       * ```
-       * 这条与上面两条**成对**：任何一条挂了都说明"编辑/新增"被搞混了。
-       */
-      await pumpDialog(tester);
-
-      expect(find.text('导入声明式源'), findsOneWidget);
-      // 两种接入方式都在
-      expect(find.text('声明式 JSON'), findsOneWidget);
-      expect(find.text('HTTP Provider'), findsOneWidget);
-      // 新增态专属
-      expect(find.text('填入模板'), findsOneWidget);
-      expect(find.text('导入'), findsOneWidget);
-      expect(find.textContaining('正在编辑'), findsNothing);
-
-      // ★ 输入框必须是**空的**（原版 `openAdd` 的显式清空）
-      final field = tester.widget<TextField>(find.byType(TextField));
-      expect(field.controller!.text, isEmpty,
-          reason: '★ 新增态不能带上一次编辑的内容（否则会覆盖掉同 id 的源）');
-    });
-
-    testWidgets('★★★ 「编辑 A → 关闭 → 点新增」不能把 A 的配置带进来', (tester) async {
-      /*
-       * 原版 `openAdd()` 的注释（照抄）：
-       * > ⚠️ 必须显式清空：否则「编辑 A → 关闭 → 点添加」会把 A 的配置
-       * >    带进来，用户以为在新建，实际会覆盖掉 A（同 id 覆盖语义）。
-       *
-       * 这条是**真 bug 的回归测试** —— 它会静默覆盖用户已有的源。
-       *
-       * # ⚠️ 必须走**真实的 showDialog 路径**（我第一版写错了，记下来）
-       *
-       * 我第一版用两次 `pumpWidget(ProviderImportDialog(seed: ...))` 模拟
-       * "先编辑再新增"，结果**假失败**：
-       * ```text
-       * 第二次 pumpWidget 传的是同一个 widget 类型且没换 key
-       * → Flutter **复用同一个 Element/State**
-       * → initState 不会重跑 → controller 还是 A 的内容
-       * ```
-       * 但生产路径上每次 `showDialog` 都 **push 一个新路由**，
-       * Element 是全新的，`initState` 必然执行。
-       *
-       * 所以这个测试用了 `showAdd` / `showEdit`（真路由），
-       * 而不是自己拼 widget —— 测的是**用户实际走的那条路**。
-       */
-      final seed = ProviderImportSeed.fromJson({
-        'kind': 'declarative',
-        'id': 'A',
-        'json': '{"id":"A","name":"源A"}',
-      })!;
-
-      // 宿主：两个按钮，分别触发真实的 showEdit / showAdd（与设置页一致）
+    testWidgets('旧声明式 showEdit 可以关闭并返回纯取消', (tester) async {
+      ProviderImportResult? result;
       await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
+        host(
+          Scaffold(
             body: Builder(
-              builder: (ctx) => Column(
-                children: [
-                  ElevatedButton(
-                    onPressed: () => ProviderImportDialog.showEdit(
-                      ctx,
-                      seed: seed,
-                      name: '源A',
+              builder: (context) => ui.TextButton(
+                onPressed: () async {
+                  result = await ProviderImportDialog.showEdit(
+                    context,
+                    seed: const ProviderImportSeed(
+                      kind: 'declarative',
+                      id: 'old',
+                      json: '{broken json',
                     ),
-                    child: const Text('EDIT_A'),
+                    name: '旧源',
+                  );
+                },
+                child: const Text('EDIT'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('EDIT'));
+      await tester.pumpAndSettle();
+      expect(find.text('声明式源已停止支持'), findsOneWidget);
+      await tester.tap(find.text('关闭'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProviderImportDialog), findsNothing);
+      expect(result, isA<ProviderImportCancelled>());
+      expect((result as ProviderImportCancelled).done, isNull);
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('HTTP 编辑保留 URL 和请求头回填及保存入口', (tester) async {
+      await pumpDialog(
+        tester,
+        seed: const ProviderImportSeed(
+          kind: 'http',
+          id: 'http-old',
+          baseUrl: 'http://127.0.0.1:8787',
+          headers: {'Authorization': 'Bearer test'},
+        ),
+        name: 'HTTP 源',
+      );
+      final fields = tester.widgetList<ui.TextField>(find.byType(ui.TextField)).toList();
+      expect(fields, hasLength(2));
+      expect(fields[0].controller!.text, 'http://127.0.0.1:8787');
+      expect(jsonDecode(fields[1].controller!.text), {'Authorization': 'Bearer test'});
+      expect(find.text('编辑「HTTP 源」'), findsOneWidget);
+      expect(find.text('TVBox 配置'), findsNothing);
+      final save = tester.widget<ui.FilledButton>(
+        find.widgetWithText(ui.FilledButton, '保存'),
+      );
+      expect(save.onPressed, isNotNull);
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('HTTP 空请求头保持空输入', (tester) async {
+      await pumpDialog(
+        tester,
+        seed: const ProviderImportSeed(
+          kind: 'http',
+          id: 'http-old',
+          baseUrl: 'http://127.0.0.1:8787',
+        ),
+      );
+      final fields = tester.widgetList<ui.TextField>(find.byType(ui.TextField)).toList();
+      expect(fields[1].controller!.text, isEmpty);
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('新增仅有 TVBox，主地址和备用地址初始为空', (tester) async {
+      await pumpDialog(tester);
+      expect(find.text('导入 TVBox 配置'), findsOneWidget);
+      expect(find.text('TVBox 配置'), findsOneWidget);
+      expect(find.textContaining('声明式'), findsNothing);
+      expect(find.text('可视化编排'), findsNothing);
+      expect(find.text('填入模板'), findsNothing);
+      final fields = tester.widgetList<ui.TextField>(find.byType(ui.TextField));
+      expect(fields, hasLength(3));
+      expect(fields.every((field) => field.controller!.text.isEmpty), isTrue);
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('关闭 HTTP 编辑后新增不携带旧配置', (tester) async {
+      await tester.pumpWidget(
+        host(
+          Scaffold(
+            body: Builder(
+              builder: (context) => Column(
+                children: [
+                  ui.TextButton(
+                    onPressed: () => ProviderImportDialog.showEdit(
+                      context,
+                      seed: const ProviderImportSeed(
+                        kind: 'http',
+                        id: 'a',
+                        baseUrl: 'http://127.0.0.1:8787',
+                        headers: {'X-Test': 'old'},
+                      ),
+                      name: '源 A',
+                    ),
+                    child: const Text('EDIT'),
                   ),
-                  ElevatedButton(
-                    onPressed: () => ProviderImportDialog.showAdd(ctx),
+                  ui.TextButton(
+                    onPressed: () => ProviderImportDialog.showAdd(context),
                     child: const Text('ADD'),
                   ),
                 ],
@@ -1081,56 +1187,43 @@ void main() {
           ),
         ),
       );
-
-      // ── ① 先「编辑 A」→ 应回填 ──
-      await tester.tap(find.text('EDIT_A'));
+      await tester.tap(find.text('EDIT'));
       await tester.pumpAndSettle();
       expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        contains('源A'),
-        reason: '编辑态必须回填 A 的配置',
+        tester.widget<ui.TextField>(find.byType(ui.TextField).first).controller!.text,
+        'http://127.0.0.1:8787',
       );
-
-      // ── ② 关闭弹窗（点「取消」—— 原版 closeImport）──
       await tester.tap(find.text('取消'));
       await tester.pumpAndSettle();
-      expect(find.byType(ProviderImportDialog), findsNothing,
-          reason: '取消后弹窗应关闭');
-
-      // ── ③ 再点「新增」→ ★ 必须是空的 ──
       await tester.tap(find.text('ADD'));
       await tester.pumpAndSettle();
-
-      expect(find.byType(ProviderImportDialog), findsOneWidget);
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        isEmpty,
-        reason: '★★★ A 的配置不能被带进新增流程（会静默覆盖 A）',
-      );
-      expect(find.text('源A'), findsNothing,
-          reason: '★★★ 新增态的标题里不该出现 A 的名字');
-      expect(find.text('导入声明式源'), findsOneWidget);
+      expect(find.text('导入 TVBox 配置'), findsOneWidget);
+      final fields = tester.widgetList<ui.TextField>(find.byType(ui.TextField));
+      expect(fields, hasLength(3));
+      expect(fields.every((field) => field.controller!.text.isEmpty), isTrue);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
     });
 
-    testWidgets('★★ 导入按钮的可用性跟随输入（空 → 禁用）', (tester) async {
-      /*
-       * 原版：`:disabled="!importJson.trim()"` / `":disabled="!httpBase.trim()"`
-       *
-       * 空输入时按钮必须**禁用**（不是"点了报错"）——
-       * 让用户一眼看出"还差点东西"。
-       */
+    testWidgets('TVBox 提交可用性跟随主地址输入', (tester) async {
       await pumpDialog(tester);
-
-      FilledButton submitBtn() => tester.widget<FilledButton>(
-            find.widgetWithText(FilledButton, '导入'),
-          );
-      expect(submitBtn().onPressed, isNull, reason: '★ 空输入时「导入」必须禁用');
-
-      // 填入模板后应该可点
-      await tester.tap(find.text('填入模板'));
+      ui.FilledButton submitButton() => tester.widget<ui.FilledButton>(
+        find.widgetWithText(ui.FilledButton, '导入并探测'),
+      );
+      expect(submitButton().onPressed, isNull);
+      await tester.enterText(
+        find.byKey(const ValueKey('source-address-primary')),
+        'https://config.test/tvbox.json',
+      );
       await tester.pumpAndSettle();
-      expect(submitBtn().onPressed, isNotNull,
-          reason: '★ 填入模板后「导入」应可用（模板本身是合法 JSON）');
+      expect(submitButton().onPressed, isNotNull);
+      await tester.enterText(find.byKey(const ValueKey('source-address-primary')), '  ');
+      await tester.pumpAndSettle();
+      expect(submitButton().onPressed, isNull);
+      expect(commands, isEmpty);
+      expect(tester.takeException(), isNull);
     });
   });
 
@@ -1276,16 +1369,89 @@ void main() {
       }
     });
 
-    test('★ 接线契约：指示器取色**就是** onPrimary（防手滑改成 onSurface）', () {
-      final src = File('lib/ui/widgets/provider_import_dialog.dart')
-          .readAsStringSync();
-      expect(
-        src.contains('CircularProgressIndicator(color: colors.onPrimary'),
-        isTrue,
-        reason: '★ FilledButton 内的指示器必须与按钮前景同为 onPrimary —— '
-            '它=primaryForeground，正是主色之上的前景；改成 onSurface 会在'
-            '深色主题掉到 1.21:1（实测）',
-      );
-    });
+    for (final brightness in Brightness.values) {
+      for (final isHttp in [false, true]) {
+        testWidgets('${brightness.name} ${isHttp ? 'HTTP 保存' : 'TVBox 导入'}的真实加载指示器使用 onPrimary', (tester) async {
+          final pending = Completer<dynamic>();
+          final commands = <String>[];
+          final expectedCommand = isHttp ? 'install_http_provider' : 'import_tvbox_config';
+          SourinCore.debugCallAsyncTransport = (command, args) {
+            commands.add(command);
+            expect(command, expectedCommand);
+            return pending.future;
+          };
+          addTearDown(() => SourinCore.debugCallAsyncTransport = null);
+          final theme = AppTheme.themeFor(brightness);
+          await tester.pumpWidget(
+            _providerTestHost(
+              Scaffold(
+                body: Builder(
+                  builder: (context) => ui.TextButton(
+                    onPressed: () => isHttp
+                        ? ProviderImportDialog.showEdit(
+                            context,
+                            seed: const ProviderImportSeed(
+                              kind: 'http',
+                              id: 'http-test',
+                              baseUrl: 'http://127.0.0.1:8787',
+                              headers: {'X-Test': 'value'},
+                            ),
+                            name: 'HTTP 测试源',
+                          )
+                        : ProviderImportDialog.showAdd(context),
+                    child: const Text('OPEN'),
+                  ),
+                ),
+              ),
+              brightness: brightness,
+            ),
+          );
+          await tester.tap(find.text('OPEN'));
+          await tester.pumpAndSettle();
+          if (!isHttp) {
+            await tester.enterText(
+              find.byKey(const ValueKey('source-address-primary')),
+              'https://configuration.invalid/tvbox.json',
+            );
+            await tester.pump();
+          }
+          final dialog = find.byType(ProviderImportDialog);
+          final submit = find.descendant(of: dialog, matching: find.byType(ui.FilledButton));
+          expect(tester.widget<ui.FilledButton>(submit).onPressed, isNotNull);
+          await tester.tap(submit);
+          await tester.pump();
+          expect(commands, [expectedCommand]);
+          final spinner = find.descendant(of: submit, matching: find.byType(ui.CircularProgressIndicator));
+          await _pumpUntilFound(
+            tester,
+            spinner,
+            reason: '请求未完成时，提交按钮必须在 1.5 秒内显示加载指示器',
+          );
+          expect(tester.widget<ui.FilledButton>(submit).onPressed, isNull);
+          expect(spinner, findsOneWidget);
+          expect(tester.widget<ui.CircularProgressIndicator>(spinner).color, theme.colorScheme.onPrimary);
+          final nativeSpinner = tester.widget<miuix.MiuixCircularProgressIndicator>(
+            find.descendant(of: submit, matching: find.byType(miuix.MiuixCircularProgressIndicator)),
+          );
+          expect(nativeSpinner.colors!.foregroundColor, theme.colorScheme.onPrimary);
+          for (final field in tester.widgetList<ui.TextField>(find.descendant(of: dialog, matching: find.byType(ui.TextField)))) {
+            expect(field.enabled, isFalse);
+          }
+          expect(
+            tester.widget<ui.TextButton>(find.widgetWithText(ui.TextButton, '取消')).onPressed,
+            isNull,
+          );
+          expect(tester.widget<AppDialogShell>(find.descendant(of: dialog, matching: find.byType(AppDialogShell))).onClose, isNull);
+          pending.completeError(StateError('结束模拟请求'));
+          await tester.pumpAndSettle();
+          expect(spinner, findsNothing);
+          expect(tester.widget<ui.FilledButton>(submit).onPressed, isNotNull);
+          await tester.tap(find.text('取消'));
+          await tester.pumpAndSettle();
+          expect(find.byType(ProviderImportDialog), findsNothing);
+          expect(tester.takeException(), isNull);
+        });
+      }
+    }
   });
 }

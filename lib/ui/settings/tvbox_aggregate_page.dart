@@ -6,7 +6,7 @@
 // ```text
 // ① 源列表多选启用   每行 name / kindTag / implemented；未实现的**灰掉 + 逐字 reason**，
 //                    不许勾（勾了也播不了 = 假入口）
-// ② 网盘与凭据       复用 ProviderLoginPanel / ProxyPanel / PanShareBody
+// ② 网盘与凭据       复用 ProviderLoginPanel / PanShareBody，全局代理入口
 // ③ 导入 / 更新      复用宿主的 _openImportDialog / 订阅更新
 // ```
 //
@@ -26,6 +26,7 @@
 //   **对话框暂不重构**，待这轮 UI 稳定后统一（已记在交付说明里）。
 // ```
 import 'source_discovery_page.dart';
+import 'global_proxy_settings_page.dart';
 
 import 'dart:async' show unawaited;
 
@@ -44,7 +45,6 @@ import '../tokens.dart';
 import '../widgets/overlay_motion.dart';
 import '../widgets/pan_share_dialog.dart' show PanShareListingSection;
 import '../widgets/provider_login_panel.dart';
-import '../widgets/proxy_panel.dart';
 // ★ N8b-2：聚合源管理面板（链接可改 / 测试连通 / 立即更新）
 import '../widgets/tvbox_source_panel.dart'
     show TvboxSourceManagePanel, tvboxLastUpdateFailed, tvboxLastUpdateText;
@@ -431,20 +431,6 @@ class _TvboxAggregatePageState extends State<TvboxAggregatePage> {
       ),
     );
   }
-}
-
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.text);
-  final String text;
-  @override
-  Widget build(BuildContext context) => Text(
-    text,
-    style: TextStyle(
-      fontSize: FontSizes.sm,
-      fontWeight: FontWeight.w600,
-      color: Theme.of(context).colorScheme.onSurface,
-    ),
-  );
 }
 
 /// 「这个聚合源是谁」—— 备注（Owner 说的"自己起名字"）+ 子源统计
@@ -890,6 +876,8 @@ class _TvboxAggregateSitesDialogState extends State<TvboxAggregateSitesDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
+              const Text('勾选需要使用的子源。保存后，未勾选的子源将从首页渠道和聚合搜索中排除。'),
+              const SizedBox(height: Sp.x2),
               ui.TextField(
                 key: const ValueKey<String>('agg-sites-search'),
                 onChanged: (query) => setState(() => _siteQuery = query),
@@ -1445,7 +1433,7 @@ class _PanShareBodyState extends State<PanShareBody> {
 /// ```text
 /// 网盘分享   → PanShareBody（本文件内，识别 + 列目录 + "可列不可播"）
 /// 登录凭据   → ProviderLoginPanel（provider_login_panel.dart:203）
-/// 代理       → ProxyPanel（proxy_panel.dart:101）
+/// 代理       → 全局代理设置页
 /// ```
 /// # 未登录时的出口
 /// ```text
@@ -1509,15 +1497,27 @@ class TvboxAggregateCredentialsSection extends StatelessWidget {
           ],
         ),
         const SizedBox(height: Sp.x3),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: ui.OutlinedButton.icon(
+            key: const ValueKey<String>('agg-global-proxy-settings'),
+            onPressed: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => const GlobalProxySettingsPage(),
+              ),
+            ),
+            icon: const Icon(AppIcons.settings_outlined),
+            label: const Text('全局代理设置'),
+          ),
+        ),
+        const SizedBox(height: Sp.x1),
         Text(
-          '代理',
+          '所有内容源、直播源与弹幕服务共用',
           style: TextStyle(
             fontSize: FontSizes.cap,
             color: colors.onSurfaceVariant,
           ),
         ),
-        const SizedBox(height: Sp.x1),
-        ProxyPanel(providerId: aggregateId, providerName: 'TVBox 聚合'),
       ],
     );
   }

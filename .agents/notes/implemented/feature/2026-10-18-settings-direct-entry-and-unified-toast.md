@@ -54,6 +54,12 @@ The [Miuix feedback contract](2026-11-08-miuix-feedback-controls.md) defines the
 · 时长不逐处传，单点定义 —— 否则 5 处各传不同值，又变成"五份样式"
 ```
 
+设置页 `_flash` 直接使用 shell 层 ToastHost；源管理路由没有第二套恒空的
+提示 notifier。数据活动区仍订阅 `_dataRev`，两条通道分别承担反馈和数据刷新。
+[源管理入口](2026-11-08-miuix-source-discovery-and-search-controls.md)说明当前路由
+与异步重载的生命周期边界。行为测试点击真实重载菜单，检查成功/失败消息在
+活跃路由上可见；撤去 `_flash` 发射或数据通知分别会使对应断言失败。
+
 ## Alternatives considered
 
 - **保留 SnackBar，只统一样式** —— 它最强的论据是改动面小，

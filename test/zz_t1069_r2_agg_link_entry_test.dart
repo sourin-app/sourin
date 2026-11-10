@@ -1,31 +1,10 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  R2-#2 聚合源「编辑链接」入口可达性（**Owner 第二次反馈后补的判据**）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// 跑法：flutter test --concurrency=1 test/zz_t1069_r2_agg_link_entry_test.dart
-//
-// # ★★★ 为什么要有这条（前一次的门禁 +26 全绿，而 Owner 说"还是编辑不了"）
-// ```text
-// R1 的修法只给**聚合源那类的组头**加了入口，门禁也钉了那条 ⇒ 全绿。
-// 但 Owner **第二次**反馈 ⇒ 他点的是**卡片自己的操作菜单**：
-//   菜单里只有「个性化覆盖层…」+「移除这个源」两项。
-//
-// 顺着那张截图查菜单项的门控，发现**三处门控同时把聚合源排除在外**：
-//   ① 「编辑」   ← `_canEdit`（只认 declarative / http / js）
-//   ② 「配置」   ← `onConfig` = `_configOf(id)`，而它对 `tvbox_agg` **返回 null**
-//        （它既不是 declarative，也没有插件条目 ⇒ 走到 `_pluginOf(id) == null`）
-//   ③ 外层菜单门 ← `_canEdit || _isThirdParty || onOverride != null`
-//        （聚合源三项全不满足 ⇒ **整个菜单都不画**）
-// ⇒ 而聚合源是**内置 Rust 实现**（`kind` 空）⇒ ①③ 天然不成立。
-//
-// ★ 教训（本批母题第 N 例）：**"入口存在"与"入口可达"是两件事**。
-//   R1 的门禁验的是"那个入口画得出来"（它确实画得出来 —— 在**组头**上），
-//   而 Owner 的操作路径是**卡片菜单** ⇒ 门禁**打在了另一个对象上**。
-//   ⇒ 本条的判据必须钉"**卡片菜单那一项在聚合源上是否可用**"。
-// ```
+// 旧聚合卡片组件的菜单结构。正常源管理页已过滤旧聚合入口，
+// 本文件不把组件中的菜单定义等同于产品入口可达性。
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/flat_source_address_entry.dart';
 
 String _src() => File('lib/ui/settings_page.dart').readAsStringSync();
 
@@ -66,7 +45,7 @@ String _codeOnly(String src) {
 }
 
 void main() {
-  group('R2-#2 · 聚合源「编辑链接」入口在三处门控上都必须可达', () {
+  group('R2-#2 · 旧聚合卡片组件的菜单结构', () {
     late final String raw;
     late final String code;
     setUpAll(() {
@@ -74,28 +53,9 @@ void main() {
       code = _codeOnly(raw);
     });
 
-    test('★★★ ① `_configOf` 对聚合源必须**返回非 null**（不是走到 _pluginOf==null）', () {
-      /*
-       * 判据形态：取 `_configOf` 的函数体，断言它在 "declarative 分派" **之前**
-       * 有一条针对 `kTvboxAggregateId` 的分派。
-       * ⚠️ 顺序也判 —— 因为放到声明式分支之后就等于没有（聚合源不是 declarative）。
-       */
-      final start = code.indexOf('VoidCallback? _configOf(');
-      expect(start >= 0, isTrue, reason: '★ 找不到 `_configOf`');
-      final body = code.substring(start, start + 1200);
-      final aggIdx = body.indexOf('kTvboxAggregateId');
-      final declIdx = body.indexOf("kind == 'declarative'");
-      expect(
-        aggIdx >= 0,
-        isTrue,
-        reason: '★★★ `_configOf` 必须**显式分派聚合源** —— '
-            '否则它走到 `_pluginOf(id) == null` 返回 null ⇒ 「配置」与「编辑链接…」都不可用',
-      );
-      expect(
-        aggIdx < declIdx,
-        isTrue,
-        reason: '★ 该分派必须在 `declarative` 分支**之前**（聚合源不是 declarative，放后面等于没有）',
-      );
+    testWidgets('① 平铺源行编辑所属订阅，取消不写，保存主备地址', (tester) async {
+      expect(code, isNot(contains('VoidCallback? _configOf(')));
+      await exerciseFlatSourceAddressEntry(tester, filtered: false);
     });
 
     test('★★★ ② 卡片菜单必须有「编辑链接…」项，且**不受 `_canEdit` 门控**', () {
@@ -107,7 +67,8 @@ void main() {
       expect(
         ctx.contains('kTvboxAggregateId'),
         isTrue,
-        reason: '★ 该项的**门控**必须是 `provider.id == kTvboxAggregateId`（正向列举，按 id）—— '
+        reason:
+            '★ 该项的**门控**必须是 `provider.id == kTvboxAggregateId`（正向列举，按 id）—— '
             '不许写成 `_canEdit`（那会把它也一起关掉：聚合源的 kind 为空）',
       );
     });
@@ -131,26 +92,30 @@ void main() {
       expect(itemIdx >= 0, isTrue, reason: '★ 找不到该项（见 ② 的失败信息）');
 
       // 包含本项的那个 AppMenuButton（往前找最近的一个）
-      final menuIdx = code.substring(0, itemIdx).lastIndexOf('AppMenuButton<String>');
+      final menuIdx = code
+          .substring(0, itemIdx)
+          .lastIndexOf('AppMenuButton<String>');
       expect(menuIdx >= 0, isTrue, reason: '★ 找不到本项所在的 AppMenuButton');
 
       // 外层门控：从 AppMenuButton **之前**再往前找最近的 `if (_canEdit`
       final beforeMenu = code.substring(0, menuIdx);
       final gateIdx = beforeMenu.lastIndexOf('if (_canEdit');
       expect(gateIdx >= 0, isTrue, reason: '★ 找不到外层门控那一行');
-      final gateLine = beforeMenu.substring(gateIdx).split('\n').first;
+      final gate = beforeMenu.substring(gateIdx);
       expect(
-        gateLine.contains('kTvboxAggregateId'),
+        gate.contains('kTvboxAggregateId'),
         isTrue,
-        reason: '★★★ 外层门控必须含 `|| provider.id == kTvboxAggregateId` —— '
+        reason:
+            '★★★ 外层门控必须含 `|| provider.id == kTvboxAggregateId` —— '
             '聚合源的 `_canEdit`/`_isThirdParty` 都是 false ⇒ 不改这行，菜单整个不画。'
-            '实际那一行是：$gateLine',
+            '实际门控是：$gate',
       );
       // 反空真：确认它确实是"外层"那道（AppMenuButton 与它之间没有别的 AppMenuButton）
       expect(
         beforeMenu.substring(gateIdx).contains('AppMenuButton'),
         isFalse,
-        reason: '★ 取到的门控与 AppMenuButton 之间**不该**再夹一个 AppMenuButton '
+        reason:
+            '★ 取到的门控与 AppMenuButton 之间**不该**再夹一个 AppMenuButton '
             '（否则说明取到的是内层/别处的门控）',
       );
     });
@@ -160,7 +125,9 @@ void main() {
       // ⇒ 从本项所在的那个 AppMenuButton 往后找它**自己**的 onSelected。
       final itemIdx = code.indexOf("label: '编辑链接…'");
       expect(itemIdx >= 0, isTrue, reason: '★ 找不到该项');
-      final menuIdx = code.substring(0, itemIdx).lastIndexOf('AppMenuButton<String>');
+      final menuIdx = code
+          .substring(0, itemIdx)
+          .lastIndexOf('AppMenuButton<String>');
       // 取到该 AppMenuButton 的结尾（下一个 `AppMenuButton<String>` 或文件尾）
       final nextMenu = code.indexOf('AppMenuButton<String>', menuIdx + 1);
       final blockEnd = nextMenu > 0 ? nextMenu : code.length;
@@ -168,7 +135,8 @@ void main() {
       expect(
         block.contains("v == 'aggregateLink'"),
         isTrue,
-        reason: '★★ 本项所在的 AppMenuButton 的 `onSelected` 必须处理 `aggregateLink` —— '
+        reason:
+            '★★ 本项所在的 AppMenuButton 的 `onSelected` 必须处理 `aggregateLink` —— '
             '否则菜单项点了**什么都不发生**（"看起来有入口"的第二种形态）',
       );
       expect(
@@ -178,35 +146,32 @@ void main() {
       );
     });
 
-    test('★★ ⑤ 判据卡"三处门控"不是"某一处"（反部分修复）', () {
-      // 汇总：三处必须**同时**成立 —— 少一处就不可达（这正是 R1 只修一处失效的原因）。
-      final i = code.indexOf('VoidCallback? _configOf(');
-      final cfgBody = code.substring(i, i + 1200);
-      final hasCfg = cfgBody.contains('kTvboxAggregateId') &&
-          cfgBody.indexOf('kTvboxAggregateId') < cfgBody.indexOf("kind == 'declarative'");
+    test('⑤ 菜单项、外层门控与回调结构同时保留', () {
       final itemIdx = code.indexOf("label: '编辑链接…'");
       final hasItem = itemIdx >= 0;
-      final menuIdx =
-          hasItem ? code.substring(0, itemIdx).lastIndexOf('AppMenuButton<String>') : -1;
+      final menuIdx = hasItem
+          ? code.substring(0, itemIdx).lastIndexOf('AppMenuButton<String>')
+          : -1;
       final beforeMenu = menuIdx > 0 ? code.substring(0, menuIdx) : '';
       final g = beforeMenu.lastIndexOf('if (_canEdit');
-      final hasGate = g >= 0 &&
-          beforeMenu.substring(g).split('\n').first.contains('kTvboxAggregateId');
-      final hasWire = hasItem &&
-          code.substring(menuIdx).contains("v == 'aggregateLink'") &&
-          code.indexOf("v == 'aggregateLink'") < code.indexOf("v == 'aggregateLink'") + 1;
+      final hasGate =
+          g >= 0 && beforeMenu.substring(g).contains('kTvboxAggregateId');
       // 精确判 wire：在**本项所在块**里找
-      final nextMenu = hasItem ? code.indexOf('AppMenuButton<String>', menuIdx + 1) : -1;
+      final nextMenu = hasItem
+          ? code.indexOf('AppMenuButton<String>', menuIdx + 1)
+          : -1;
       final block = hasItem
           ? code.substring(menuIdx, nextMenu > 0 ? nextMenu : code.length)
           : '';
-      final wireOk = block.contains("v == 'aggregateLink'") && block.contains('onConfig?.call()');
+      final wireOk =
+          block.contains("v == 'aggregateLink'") &&
+          block.contains('onConfig?.call()');
       expect(
-        hasCfg && hasItem && hasGate && wireOk,
+        hasItem && hasGate && wireOk,
         isTrue,
-        reason: '★★★ **三处门控 + 接线必须同时成立**（R1 只修一处 ⇒ 全绿但不可达）：'
-            'configOf=$hasCfg item=$hasItem outerGate=$hasGate wire=$wireOk '
-            '（辅助 hasWire=$hasWire）',
+        reason:
+            '旧组件的菜单项、外层门控与回调结构应同时保留：'
+            'item=$hasItem outerGate=$hasGate wire=$wireOk',
       );
     });
   });

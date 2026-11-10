@@ -66,7 +66,6 @@ import 'package:material_ui/material_ui.dart';
  */
 import 'package:flutter_localizations/flutter_localizations.dart'
     show GlobalWidgetsLocalizations, GlobalCupertinoLocalizations;
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -96,8 +95,7 @@ import 'core/sourin_api.dart' show SectionSource, SourinApi;
  * 无差别引入 `models.dart` 的全部类型会埋下与页面同名符号冲突的隐患
  * （本项目已因"两套 Material"吃过一次命名冲突的苦）。
  */
-import 'core/models.dart'
-    show Episode, Favorite, Progress, followRemainingByKey;
+import 'core/models.dart' show Episode, followRemainingByKey;
 import 'ui/browse_page.dart';
 import 'ui/spatial_nav.dart';
 import 'ui/app_theme.dart';
@@ -143,6 +141,7 @@ import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import 'ui/widgets/miuix_controls.dart' as controls;
 import 'ui/widgets/settings_tabs.dart';
+import 'ui/widgets/shelf_tabs.dart';
 import './design/icons/app_icons.dart';
 
 /// ★ 是否桌面平台（Windows / macOS / Linux）
@@ -811,21 +810,7 @@ Future<void> main() async {
     } catch (e) {
       debugPrint('[SHELL] ★ 手机端关闭遥控失败（不影响使用）: $e');
     }
-  } /*
-   * ★ Step 1：预编译液态玻璃的 shader（`liquid_glass_widgets` 要求）
-   *
-   * 包文档：
-   * > `initialize()` performs **100% non-blocking async disk-to-RAM I/O**
-   * > —— zero GPU draw calls, zero rasterization ——
-   * > so the OS window always presents immediately.
-   *
-   * 不调的话第一帧的玻璃会**编译 shader 而卡一下**（Windows 上是
-   * ANGLE 运行时编译 GLSL）—— 包文档明确说这是为了"首帧就是玻璃"。
-   *
-   * ⚠️ 必须 `await`（它是 async）—— 但因为它只做磁盘 I/O，
-   *    不会阻塞首帧的呈现。
-   */
-  await LiquidGlassWidgets.initialize();
+  }
 
   /*
    * ══════════════════════════════════════════════════════════════════
@@ -878,25 +863,6 @@ Future<void> main() async {
   ThemePackStore.debugSetDataDir(coreDataDir);
 
   /*
-   * ⚠️ task-98 对照开关：`SOURIN_NO_GLASS=1` ⇒ 关掉液态玻璃的模糊
-   *    （`GlassAccessibilityScope(reduceTransparency: true)`）。
-   *
-   * # 为什么加这个（**判定那 ~15ms 的 raster 是不是玻璃**）
-   * ```text
-   * 实测（.probe/frame_log.txt，真实客户端 1280x800）：
-   *   build : p50=756us   超预算 1 帧   ← Dart 侧很便宜
-   *   raster: p50=15484us 超预算 11 帧  ← ★ GPU 侧几乎每帧都超
-   * 而 640x400（1/4 面积）实测 raster **没降** ⇒ **不是填充率**
-   *   ⇒ 那就只剩"某个与面积无关的逐帧 GPU 成本"
-   *   ⇒ 头号嫌疑是**液态玻璃的 BackdropFilter**（它每帧要抓 backdrop 再模糊）
-   * ```
-   * ⚠️ 生产**恒不开**（变量没设 ⇒ 走的还是原来的树，逐字不变）。
-   */
-  final noGlass = Platform.environment['SOURIN_NO_GLASS'] == '1';
-  if (noGlass) {
-    debugPrint('[T98] SOURIN_NO_GLASS=1 ⇒ 玻璃模糊关闭（对照实验）');
-  }
-  /*
    * ★★ 2026-10-14：`SOURIN_SHOT=1` 时在根上包一层**有名的 RepaintBoundary**。
    *
    * # 为什么需要它
@@ -908,12 +874,7 @@ Future<void> main() async {
    * ⚠️ 只在环境变量开时才包这一层（生产零开销）。
    */
   final shotMode = Platform.environment['SOURIN_SHOT'] == '1';
-  Widget app = noGlass
-      ? GlassAccessibilityScope(
-          reduceTransparency: true,
-          child: SourinApp(coreError: coreError, coreDataDir: coreDataDir),
-        )
-      : SourinApp(coreError: coreError, coreDataDir: coreDataDir);
+  Widget app = SourinApp(coreError: coreError, coreDataDir: coreDataDir);
   if (shotMode) {
     app = RepaintBoundary(key: _probeShotKey, child: app);
   }
@@ -1131,50 +1092,18 @@ class _KeepAliveTransition extends StatefulWidget {
     required this.leaving,
     required this.child,
     required this.style,
+    required this.cacheContent,
     this.leavingFade,
   });
 
   /// 本页是否是**当前可见**的那一页（只有它播进入动画）
   final bool active;
 
-  /// ★★★ task-14 ⑨ 白屏修复（2026-10-04）：本页是否是**刚被切走**的那一页
-  ///
-  /// # 为什么需要这个标志（白屏的根因）
-  /// ```text
-  /// 改前：切 tab 时
-  ///   ① 新页的 _c.forward(from: 0) ⇒ 过渡层 opacity 从 **0** 开始
-  ///   ② 旧页同时被 Offstage(offstage: true) 移出合成
-  ///   ⇒ 两边**同时**都不画东西 ⇒ 露出底下的 floorColor
-  /// 实测（手机 360x800dp）：76–120ms 的纯色空白（像素级判定过）
-  /// ```
-  /// ⇒ 旧页在**离场窗口内**必须继续参与合成，而且只能画**静态内容**
-  ///   （见 _KeepAliveTransitionState.build：它拿的是恒为 1 的动画）。
-  ///
-  /// ⚠️ 与 [active] 的区别：active 管「进入动画」（forward(from: 0)），
-  ///    leaving 只管「继续画着、别播动画」。两者**互斥**
-  ///    （一次切换里只有一页 active、另一页 leaving）。
+  /// 刚被切走的页面，在离场动画结束前继续参与合成。
   final bool leaving;
 
-  /// ★★★ 2026-10-08（Owner 第 2 条）：离场页的**淡出**动画（1.0 → 0.0）
-  ///
-  /// # 它解决什么（用户报的「拖影」）
-  /// ```text
-  /// 改前离场页拿 `AlwaysStoppedAnimation(1.0)` ⇒ 整段 260ms 都不透明，
-  /// 而新页从 0 淡入 ⇒ 新页半透明时底下那层旧页 100% 透出来
-  ///   ⇒ 「上个页面的元素还没彻底消失、两层叠加」。
-  /// ```
-  ///
-  /// ⚠️ **只有离场那一页**收到非 null（调用方写的是
-  ///    `t == _leavingTab ? _leavingFade : null`）—— 绝不能无条件传：
-  ///    那会让**新页**也带上一条 1→0 的淡出（灾难）。
-  ///
-  /// ⚠️ 控制器在 **shell** 上（`_ShellPageState._leaveC`），不在这里：
-  ///    `TickerMode(enabled: t == _tab)` 会停掉隐藏页的 ticker
-  ///    ⇒ 离场页自己开的控制器**根本不会走**（task-14 ⑨ 的注释记过）。
-  ///
-  /// ★ 与 `leaving`（bool）的分工：`leaving` 决定「进入动画让位」
-  ///   （喂恒 1 的动画），`leavingFade` 决定「怎么消失」。两者只在
-  ///   离场窗口内同时为真 —— 见 build 里的组合。
+  /// Shell 提供的离场进度（1 → 0），同时驱动所选风格的位移、缩放和淡出。
+  /// 离场页的 TickerMode 已关闭，不能依赖自己的控制器反向播放。
   final Animation<double>? leavingFade;
 
   /// 进入方向（+1 = 从右进，-1 = 从左进）
@@ -1187,6 +1116,7 @@ class _KeepAliveTransition extends StatefulWidget {
   ///   ⇒ 用户改设置时**只有调用方重建**，本 State（含 `_c`）**不重建**
   ///   ⇒ ★ 动画控制器不会被重置（否则改设置会打断正在播的过渡）。
   final PageTransitionStyle style;
+  final bool cacheContent;
 
   /// ★ 真正的页面 —— **必须**是稳定实例（来自 `_pages`）
   final Widget child;
@@ -1213,6 +1143,49 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
     value: 1, // 首帧就是"已就位"，不播动画（避免启动时闪一下）
   );
 
+  late final CurvedAnimation _curved = CurvedAnimation(
+    parent: _c,
+    curve: Motion.easeOut,
+    reverseCurve: Motion.easeOut,
+  );
+
+  final _contentSnapshot = SnapshotController();
+  Animation<double>? _contentAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _bindContentAnimation();
+  }
+
+  void _bindContentAnimation() {
+    final next = widget.leaving ? widget.leavingFade : _curved;
+    if (!identical(next, _contentAnimation)) {
+      _contentAnimation?.removeStatusListener(_updateContentSnapshot);
+      _contentAnimation = next;
+      next?.addStatusListener(_updateContentSnapshot);
+      _contentSnapshot.clear();
+    }
+    _updateContentSnapshot(next?.status ?? AnimationStatus.completed);
+  }
+
+  void _updateContentSnapshot(AnimationStatus status) {
+    _contentSnapshot.allowSnapshotting =
+        widget.cacheContent &&
+        (widget.active || widget.leaving) &&
+        widget.style != PageTransitionStyle.none &&
+        (status == AnimationStatus.forward ||
+            status == AnimationStatus.reverse);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final curve = MotionPrefs.curve(context, Motion.easeOut);
+    _curved.curve = curve;
+    _curved.reverseCurve = curve;
+  }
+
   @override
   void didUpdateWidget(covariant _KeepAliveTransition old) {
     super.didUpdateWidget(old);
@@ -1225,10 +1198,14 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
     } else if (widget.active && !old.active) {
       _c.forward(from: 0);
     }
+    _bindContentAnimation();
   }
 
   @override
   void dispose() {
+    _contentAnimation?.removeStatusListener(_updateContentSnapshot);
+    _contentSnapshot.dispose();
+    _curved.dispose();
     _c.dispose();
     super.dispose();
   }
@@ -1257,11 +1234,6 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
      *    ⇒ 原来那行 `Curves.easeInCubic` 是**死分支**，
      *    留着只会让人误以为「反向另有一条曲线」。
      */
-    final curved = CurvedAnimation(
-      parent: _c,
-      curve: MotionPrefs.curve(context, Motion.easeOut),
-      reverseCurve: MotionPrefs.curve(context, Motion.easeOut),
-    );
 
     /*
      * ══════════════════════════════════════════════════════════════
@@ -1294,116 +1266,38 @@ class _KeepAliveTransitionState extends State<_KeepAliveTransition>
      *    所以改设置时**本 State 不重建** ⇒ `_c` 不被重置
      *    ⇒ 不会打断正在播的过渡 ✓
      */
-    /*
-     * ══════════════════════════════════════════════════════════════
-     * ★★★ task-14 ⑨ 白屏修复（2026-10-04）
-     * ══════════════════════════════════════════════════════════════
-     *
-     * # 根因（已像素级证实）
-     * ```text
-     * _switchTo ⇒ 新页 _c.forward(from: 0) ⇒ 过渡层 opacity = 0
-     * 同一帧旧页被 Offstage(offstage: true) 移出合成
-     * ⇒ 两边都不画东西 ⇒ 露出底下 shell 的 floorColor
-     * 实测手机上 76–120ms 的纯色（#EDEDF5 / #EEF0F6）空白
-     * ★ 给「空白」垫个背景色**没用** —— 它本身就是背景色
-     * ```
-     *
-     * # 修法
-     * ```text
-     * 离场页在窗口期内继续参与合成，但喂它一个**恒为 1** 的动画
-     *   ⇒ 它停在「已就位」那一态（不透明度 1、位移 0、缩放 1）
-     *   ⇒ 新页从透明淡入时，底下**始终有东西** ⇒ 不再露白
-     *   ⇒ 而且它**不播任何动画**（零 ticker、零额外绘制路径）
-     * ```
-     *
-     * ⚠️ 为什么不给离场页 _c.reverse()（「淡出」那种写法）：
-     *    那需要它的 ticker 是活的，而 TickerMode(enabled: t == _tab)
-     *    恰好把隐藏页的 ticker 停了 ⇒ 反向根本不会走
-     *    ⇒ 用 AlwaysStoppedAnimation 反而更诚实：**它就是静止的**。
-     *
-     * ⚠️ animation 只影响过渡层，child 仍是**同一个稳定实例**
-     *    （来自 _contentFor）⇒ 页面 State / 滚动位置 / 解码器都不受影响。
-     */
+    // Reuse the shell exit clock; this tab's own ticker is paused.
+    // Only the transition changes, preserving the page and its scroll state.
     final Animation<double> animation = widget.leaving
-        ? const AlwaysStoppedAnimation<double>(1.0)
-        : curved;
+        ? widget.leavingFade ?? const AlwaysStoppedAnimation<double>(1)
+        : _curved;
 
     final Widget transitioned = PageTransition.apply(
       animation: animation,
       style: widget.style,
-      dir: widget.dir,
-      child: widget.child,
+      dir: widget.leaving ? -widget.dir : widget.dir,
+      // Capture content inside every transition layer. The outer transforms and
+      // opacity continue to animate, including after an interrupted tab switch.
+      child: SnapshotWidget(
+        controller: _contentSnapshot,
+        mode: SnapshotMode.permissive,
+        autoresize: true,
+        child: RepaintBoundary(child: widget.child),
+      ),
     );
 
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★★★ 2026-10-08（Owner 第 2 条）：离场页**淡出**（拖影的根治）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * 组合方式是**叠加**，不是替换：
-     * ```text
-     * ① `PageTransition.apply(...)` 照旧 —— 离场页拿恒 1 的动画
-     *    ⇒ 它停在「已就位」（不透明度 1、位移 0、缩放 1）
-     *    ⇒ 继续垫在新页底下挡 floorColor（task-14 ⑨ 白屏修复**不受影响**）
-     * ② 外面再叠一层 `FadeTransition`，只给**离场页**（leavingFade != null）
-     *    ⇒ 1.0 → 0.0 淡出 ⇒ 新页半透明时底下那层也在一起变淡
-     *    ⇒ 不再有「两层内容叠加」的拖影
-     * ```
-     *
-     * ⚠️ 为什么用 `FadeTransition`（而不是 `Opacity`）：
-     *    这一层是**纯内部组合**，没有任何测试/探针读它；
-     *    而 `FadeTransition` 是 `RenderAnimatedOpacity`（单次绘制、
-     *    自动加 `RepaintBoundary`），比每次重建 `Opacity` widget 更省。
-     *    ★ 注意：`test/keepalive_anim_test.dart` 的读数器取的是
-     *      `find.byType(FadeTransition).first`（**从当前页往上找**）——
-     *      本层加在**离场页**那一支上，与它取的那一支不是同一个元素
-     *      （`_geometryOf` 用 `find.ancestor(of: 当前页)` 限定）。
-     *
-     * ⚠️ 只在 `leavingFade != null` 时才加这一层 —— 其余四种情况
-     *    （当前页、隐藏页、未访问页）的 widget 树与改动前**逐层一致**。
-     */
-    final Animation<double>? lf = widget.leavingFade;
-    final Widget wrapped = lf == null
-        ? transitioned
-        : FadeTransition(opacity: lf, child: transitioned);
+    // PageTransition handles the exit fade; keep this outer fade opaque.
+    // Keep this wrapper mounted while entering, leaving and hidden. Changing
+    // the ancestor shape would remount page descendants at every tab switch.
+    final Widget wrapped = FadeTransition(
+      opacity: const AlwaysStoppedAnimation<double>(1),
+      child: transitioned,
+    );
 
-    /*
-     * ══════════════════════════════════════════════════════════════════════
-     * ★★★ 2026-10-14（Owner「死磕每个页面的性能」）：离场页**光栅快照**
-     * ══════════════════════════════════════════════════════════════════════
-     *
-     * ⚠️⚠️ 2026-10-14 **已回退**（Owner 报「页面切换出现这个情况」+ 截图）
-     * ══════════════════════════════════════════════════════════════════════
-     *
-     * # 当初为什么加（性能）
-     * ```text
-     * `SOURIN_TABS=1` 实测：切 tab 那几帧 raster 冲到 20~45ms（超预算），
-     * 而 **build 只有 0.4~1.5ms** ⇒ 全是光栅成本
-     * ⇒ 与"从播放页返回卡顿"同源：过渡期两页各自整页重绘。
-     * ⇒ 试了"离场页光栅快照"（Flutter 官方 Zoom 的 `allowSnapshotting` 那招）。
-     * ```
-     *
-     * # 为什么回退（**视觉坏了**，性能再好也不能要）
-     * ```text
-     * Owner 截图：切页时**两页叠在一起**（首页与直播页同时可见、
-     * 且停在那个状态）。实测复现：
-     *   · 挂快照   ⇒ 叠影
-     *   · 不挂快照 ⇒ 正常（同一驱动、同一时刻）
-     * ⇒ `SnapshotWidget` 与本层的过渡结构**不兼容**：
-     *   它把子树换成一张**光栅图**（引入新的 layer 边界），
-     *   而本层的 `FadeTransition`/`SlideTransition`/离场放大是作用在
-     *   **子树**上的 —— 换成图之后那条变换链与快照层没有正确复合，
-     *   于是离场页以**全不透明、未变换**的形态留在屏幕上。
-     * ```
-     * ★ 教训（值得记）：`SnapshotWidget` 在**路由**那处能用（已验证），
-     *   是因为那条链的形状不同（`page_transition_route.dart` 里
-     *   快照只包**过渡层内部的 child**，且外层没有本处这种
-     *   "同页叠多层 Transform + 兄弟页交叉淡出"的结构）。
-     *   ⇒ **同一个组件换一个组合位置就未必成立** —— 必须**看像素**，
-     *     不能只看"它能编译 + 单测绿 + 读数变好"。
-     * ★ 本文件的 `t1013_tab_snapshot_test.dart` 转为**记录这次回退**
-     *   （断言"这里**不许**再挂快照"），防止有人再按"性能更好"的理由加回来。
-     */
+    // The former tab snapshot froze the transition layer and left old pages
+    // visible. Only page content is cached above; transforms stay outside it.
+    // Native v16 A/B frames and interrupted-switch pixel tests cover that
+    // failure, while the live page continues rendering its native surface.
     final Widget finalWrapped = wrapped;
 
     return IgnorePointer(
@@ -1852,177 +1746,13 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
     );
     final materialTheme = AppTheme.themeFor(brightness);
 
-    /*
-     * ══════════════════════════════════════════════════════════════════
-     * ★★★ 液态玻璃引擎的外壳（2026-09-24 用户要求「参考开源项目」）
-     * ══════════════════════════════════════════════════════════════════
-     *
-     * 用户原话：
-     * > 你可以参考github开源的项目做,不要硬自己实现
-     *
-     * 之前我自己撸了一套 `LiquidGlass`（BackdropFilter + 自绘投影），
-     * 踩了一串坑（投影透过玻璃、tint 用了原版已打回的值、没有氛围层…）
-     * 而且最终**还是不像玻璃** —— 因为真正的液态玻璃需要
-     * **折射（refraction）**，那是 fragment shader 的活，不是
-     * `BackdropFilter` 能做的。
-     *
-     * # 选这个包的理由（对比过 pub.dev 上 6 个同类）
-     *
-     * ```text
-     * ① **Material-free by design** —— 零 flutter/material.dart 引用。
-     *    这条最关键：Flutter 3.47 把 Material 拆成 material_ui 之后，
-     *    任何拖进 flutter/material 的包都会重演"两套 Theme 串台"
-     *    （设置页标题对比度 1.16:1 那个 bug）。
-     * ② 零第三方运行时依赖（纯 Flutter SDK + 自带 GLSL）
-     * ③ Windows(Impeller/ANGLE) 与 Android(Vulkan/GLES) 都在支持列表
-     * ④ 提供 `brightnessResolver` 回调 —— 让宿主桥接**自己的**主题，
-     *    包不耦合任何 Material/Cupertino 主题系统。正合我们的
-     *    `AppTheme`（三态：跟随系统/浅/深）。
-     * ⑤ MIT / 283 likes / 74.9k downloads
-     * ```
-     *
-     * ⚠️ 它要求 Flutter ≥ 3.41.0 —— 我们是 3.47.5 ✓
-     *
-     * # 为什么 `brightnessResolver` 必须给
-     *
-     * 包文档：
-     * > Without this, shadows and borders can disappear when the device
-     * > is in Dark Mode even if your app is set to Light Mode (and vice-versa).
-     *
-     * 这正是我们**已经踩过一次**的那类 bug（主题解析链路不一致）。
-     * 所以显式接上 `AppTheme.resolve` —— 与 `MaterialApp.theme` 同源。
-     */
-    return LiquidGlassWidgets.wrap(
-      brightnessResolver: (ctx) => AppTheme.resolve(
-        systemBrightness: MediaQuery.platformBrightnessOf(ctx),
-      ),
-      /*
-       * ══════════════════════════════════════════════════════════════
-       * ★★★ task-31：让玻璃「看得见」（Owner：UI 丑 / 三层浮起物隐形）
-       * ══════════════════════════════════════════════════════════════
-       *
-       * # 实测病灶（真实窗口 PrintWindow 采样，不是猜）
-       * ```text
-       * 顶部切换条 trough   (250,250,251)  vs 页面底 CR = 1.096
-       * 源条 trough         (232,235,243)  vs 页面底 CR = 1.047
-       * 悬浮底栏 trough     (238,240,246)  vs 页面底 CR = 1.000  ← 完全隐形
-       * ```
-       *
-       * # 根因：包自带的 light 预设 glassColor 只有 12% alpha
-       * ```text
-       * 默认 GlassThemeVariant.light:
-       *   glassColor: Color.fromRGBO(210,220,240, 0.12)
-       * 叠在 #EEF0F6 上 ⇒ (232,235,243)，正是上面量到的 1.047。
-       * ```
-       * 也就是说：**不是我们配错，是包给的默认值在浅色下本来就近乎透明**。
-       * 深色背景上 12% 白还能看出来，浅色背景上就彻底糊掉了。
-       *
-       * # 为什么改这里（而不是逐处改 GlassContainer）
-       * ```text
-       * ① 三个 GlassContainer 分散在 shell.dart / my_shelf.dart / source_bar.dart，
-       *    逐处改要动三份代码、三处易漏；
-       * ② `wrap(theme:)` 是**全局玻璃主题**，一处生效三块都跟；
-       * ③ 与 `brightnessResolver` 同层 —— 它已经按 AppTheme 解析明暗，
-       *    这里跟着它取同一套色，不会出现「明暗不一致」的老坑。
-       * ```
-       *
-       * # 只调三个参数（数值是两次实测迭代后的终值）
-       * ```text
-       * glassColor alpha 0.12 → 0.62（浅色），色相同时压深一档
-       *    这是 CR 的直接来源。第一版取 0.55 ⇒ 实测顶部药丸只到 1.119、
-       *    源条 1.149，**都没过 1.15 线**；提到 0.62 后才达标。
-       * ambientStrength 0.15 → 0.70
-       *    环境光强度，浅色背景上让玻璃有「体积」而不是一层薄雾
-       * lightIntensity 0.85 → 1.05
-       *    边缘高光，给容器一条能看见的「边」
-       * ```
-       *
-       * # 实测终值（真实窗口 PrintWindow，vs page_bg #EEF0F6）
-       * ```text
-       * 区域        BEFORE   AFTER
-       * 顶部切换条  1.034    1.197  ✓
-       * 源条        1.047    1.244  ✓
-       * 悬浮底栏    1.175    1.384  ✓
-       * ```
-       * ⚠️ 底栏 BEFORE 是 1.175 而非 1.000 —— **我最初那次量的采样区
-       *    (400,745)-(460,752) 根本不在底栏上**（底栏实际从 y≈774 才开始）。
-       *    那是我的测量错误；已按实测边界重测，现在两个数都是真的。
-       *
-       * ══════════════════════════════════════════════════════════════
-       * ⚠️ 2026-10-17（dlg-source，Lead 问「胶囊不跟主题色，是预期还是漏改」）
-       * ══════════════════════════════════════════════════════════════
-       *
-       * **是预期的，不是漏改。** 但代价必须说清楚：
-       *
-       * 这里的 glassColor 是**固定色**（浅色 RGBO(196,208,236,0.62)），
-       * 完全不读主题包 ⇒ 换了任何浅色主题，标题栏/源条/底栏永远是这个冷蓝紫。
-       *
-       * 实测证据（真机截图像素采样，同一组区域）：
-       * ```text
-       *   樱粉·浅   页面底 #F2C7CF   三处玻璃 #D4C9DD
-       *   液态玻璃·浅 页面底 #E2DBF6   三处玻璃 #CCD1ED
-       * ```
-       * 三处玻璃内部的**主色一致**，差异只来自背后底色透上来 ——
-       * 即「半透明玻璃」的应有行为，不是没生效。
-       *
-       * # 为什么保持固定色（而不是跟着主题走）
-       * ```text
-       * ① 玻璃的语义是「折射背后内容」，底色已经通过 backdrop 透进来了；
-       *    若再把 glassColor 也染成主题色，等于染两遍 ⇒ 玻璃质感消失，
-       *    退化成「一块带圆角的色块」。
-       * ② 三处 GlassContainer 分散在 shell / my_shelf / source_bar，
-       *    统一固定色才保证「玻璃就是同一个玻璃」，不随主题漂移。
-       * ```
-       *
-       * # 已知观感代价（承认，不掩盖）
-       * ```text
-       * 樱粉·浅(#F2C7CF) 这种暖粉底 + 冷蓝玻璃(#D4C9DD)，
-       * 视觉上是「灰紫胶囊压在粉底上」，略不协调。
-       * ⇒ 这是粉底过于饱和后的**副作用**，不是 bug。
-       *   若 Owner 觉得刺眼，正确解法是**降浅色主题的饱和度**，
-       *   而不是给玻璃染色（那会破坏上面的 ①②）。
-       * ```
-       * ⚠️ 深色预设同样处理（白 8% → 32%）：深色下虽然本来就比浅色可见，
-       *    但既然后果一致，两档一起调才不会「切主题时一侧消失」。
-       * ⚠️ 只动 settings，**不动** quality / borderRadius / glowColors ——
-       *    那几项会改渲染路径或形状，属于「结构」不属「值」。
-       */
-      theme: const GlassThemeData(
-        light: GlassThemeVariant(
-          settings: GlassThemeSettings(
-            thickness: 12.0,
-            blur: 5.0,
-            // 原 12% ⇒ 55%。这是三层浮起物从「隐形」到「可见」的主参数。
-            glassColor: Color.fromRGBO(196, 208, 236, 0.62),
-            lightAngle: 2.356,
-            lightIntensity: 1.05,
-            ambientStrength: 0.70,
-            refractiveIndex: 1.2,
-            saturation: 1.2,
-            chromaticAberration: 0.02,
-          ),
-        ),
-        dark: GlassThemeVariant(
-          settings: GlassThemeSettings(
-            thickness: 10.0,
-            blur: 4.0,
-            // 原 8% ⇒ 32%。深色底本身对比够，不需要提到 55%。
-            glassColor: Color.fromRGBO(255, 255, 255, 0.32),
-            lightAngle: 2.356,
-            lightIntensity: 0.9,
-            ambientStrength: 0.35,
-            refractiveIndex: 1.2,
-            saturation: 1.2,
-            chromaticAberration: 0.01,
-          ),
-        ),
-      ),
-      child: ScrollConfiguration(
-        behavior: const _SourinScrollBehavior(),
-        // ↓ 下面这块有 700 行：不整体缩进，否则本次 diff 会变成「全文件重排」，
-        //   而这里真正的语义只有一句「WidgetsApp 外面多包一层」。
-        child: WidgetsApp(
-          /*
+    // Note: .agents/notes/implemented/feature/2026-11-08-miuix-appearance.md
+    // Product glass belongs to Miuix; legacy glass themes and shader preloading
+    // have no consumers in this widget tree.
+    return ScrollConfiguration(
+      behavior: const _SourinScrollBehavior(),
+      child: WidgetsApp(
+        /*
        * ★★★ 2026-10-18（M4）：`pageRouteBuilder` **必须给**，否则白屏
        *
        * # 真实故障（本轮实测，第一版 M4 就是这么白的）
@@ -2049,24 +1779,24 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        *   （页面切换是 ShellPage 内部的 IndexedStack），所以无差异。
        * ```
        */
-          pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
-            return PageRouteBuilder<T>(
-              settings: settings,
-              pageBuilder: (context, animation, secondaryAnimation) =>
-                  builder(context),
-              transitionDuration: Duration.zero,
-              reverseTransitionDuration: Duration.zero,
-            );
-          },
-          /*
+        pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
+          return PageRouteBuilder<T>(
+            settings: settings,
+            pageBuilder: (context, animation, secondaryAnimation) =>
+                builder(context),
+            transitionDuration: Duration.zero,
+            reverseTransitionDuration: Duration.zero,
+          );
+        },
+        /*
        * ★ WidgetsApp 的 `color` 是**必需参数**（app.dart:351 `required this.color`）。
        *   MaterialApp 把它用作系统 UI 底色（如 Android 任务切换器卡片底）。
        *   取与内容区同源的底色 —— 与下面 `WindowFrame.backdrop` 同一条取法。
        */
-          color: AppTheme.floorColor(brightness),
-          title: '源影',
-          debugShowCheckedModeBanner: false,
-          /*
+        color: AppTheme.floorColor(brightness),
+        title: '源影',
+        debugShowCheckedModeBanner: false,
+        /*
        * ★★★ 2026-10-08（Owner 第 8 条）：把 Navigator 的 key 交给托盘模块
        *
        * # 为什么必须是**这里**的 key
@@ -2078,12 +1808,10 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        * ⚠️ `builder` 里的 context 在 Navigator 外面 ⇒ `Navigator.of(ctx)`
        *    会找到**根**（那是另一个 Navigator），弹窗会盖不住内容区。
        * ```
-       * ⚠️ 与 `_ShellPageState._navKey` 是**两个不同的 key**：
-       *    那个是交付实测用来读当前路由名的（`shell.dart:2932`），
-       *    语义完全不同，不要合并。
+       * 交付路由记录由 NavigatorObserver 观察；此 key 由 AppTray 管理。
        */
-          navigatorKey: AppTray.navigatorKey,
-          /*
+        navigatorKey: AppTray.navigatorKey,
+        /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ arm64 内容区全空白的**根因修复**（2026-10-01）
        * ══════════════════════════════════════════════════════════════════
@@ -2155,7 +1883,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        *    t435 段10 证明 `Overlay.wrap(hardEdge)` 也触发同类现象。
        *    所以这里只是消掉产品里那一处，不是通用解。
        */
-          /*
+        /*
        * ★★★ 2026-10-18（M4）：`scrollBehavior` 从**参数**改成**包裹**
        *
        * # 为什么要改写法
@@ -2174,7 +1902,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        * 会读不到它 ⇒ arm64 修复可能失效。
        * ```
        */
-          /*
+        /*
        * ★★★ 2026-10-21（PR #32 复核线程 1/9）：这段注释**写对了但代码没跟上** ——
        *   M4 那次把 MaterialApp 换成 WidgetsApp 时，`scrollBehavior` 参数被删掉，
        *   `ScrollConfiguration` 却没有补上 ⇒ `_SourinScrollBehavior` 只剩一个
@@ -2185,7 +1913,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        *   ⇒ 现在真的包上（见下面 `child: ScrollConfiguration(`），
        *     门禁也改成「剥掉注释后必须找得到这个绑定」。
        */
-          /*
+        /*
        * ★★ 2026-10-18（M4）：从 MaterialApp 改成 WidgetsApp后，
        *   本来的 `GlobalMaterialLocalizations.delegates` 不再适用。
        *
@@ -2199,12 +1927,12 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        * # ⚠️ 但 material_ui 仍在 pubspec 里（Owner 2026-10-18 拍板：选 A）
        * ```text
        * 目标是「界面不是 Material 风格」，不是「pubspec 字面上不能有 material_ui」。
-       * liquid_glass_widgets 的部分组件（Tooltip 等）会读 MaterialLocalizations
+       * Miuix 内部输入和弹层会读 MaterialLocalizations
        * 的**接口**；自建一套最小实现需 40+ 字段且漏一个就运行时 assert 失败。
        * ⇒ 保留包，但**不用任何 Material 组件**。
        * ```
        */
-          /*
+        /*
        * ★★★ 2026-10-18（M4 真机验证抓到）：delegates 里**必须**有 Material 的
        *   delegate，否则弹窗一开就崩。
        *   （当时挂的是 `DefaultMaterialLocalizations` 的英文版；2026-10-22 换成
@@ -2265,9 +1993,9 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        *   集合本体在文件末尾的 `kAppLocalizationsDelegates`（提成顶层常量是为了
        *   门禁能 import 它去真挂，而不是 grep 类名 —— grep 到 ≠ 树上生效）。
        */
-          localizationsDelegates: kAppLocalizationsDelegates,
-          supportedLocales: [Locale("zh", "CN"), Locale("en", "US")],
-          /*
+        localizationsDelegates: kAppLocalizationsDelegates,
+        supportedLocales: [Locale("zh", "CN"), Locale("en", "US")],
+        /*
        * ★ 两层 theme 都要给（2026-09-22 实测踩到）
        *
        * ```text
@@ -2286,7 +2014,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        *    所以走 `buildMaterialTheme()`（见 ui/theme_bridge.dart）
        *    把角色补全。这是必须的第二步，不是可选优化。
        */
-          /*
+        /*
        * ★★ 2026-10-18（M4）：**删掉了 `theme: materialTheme`**
        *
        * WidgetsApp 没有 `theme` 参数（它不知道什么叫 Material 主题）。
@@ -2296,7 +2024,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        * ⚠️ 若将来要把 `materialTheme` 彻底删掉，
        *   得先把 `theme_bridge.dart` 里那 31 个 Material 子主题全部接管。
        */
-          /*
+        /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ 自绘标题栏必须挂在 **builder 里**（Navigator 之外）
        * ══════════════════════════════════════════════════════════════════
@@ -2345,10 +2073,10 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        * ⚠️ 播放页不在这里隐藏 —— 播放页是全屏视频，标题栏会挡住画面。
        *    用 `_TitleBarHost`（下面）根据"当前是否在播放页"动态收起。
        */
-          builder: (context, child) => _TextScaleHost(
-            child: AppThemeHost(
-              data: materialTheme,
-              /*
+        builder: (context, child) => _TextScaleHost(
+          child: AppThemeHost(
+            data: materialTheme,
+            /*
          * ══════════════════════════════════════════════════════════════
          * ★★★ 2026-10-01：删掉 `FToaster`（原本是 `child: FToaster(`）
          * ══════════════════════════════════════════════════════════════
@@ -2393,7 +2121,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
          *    `Overlay.wrap(clipBehavior: Clip.none, ...)` 自己包，要么先
          *    在那个平台上实测过再说。
          */
-              /*
+            /*
          * ══════════════════════════════════════════════════════════════
          * ★★ 为什么标题栏在这一层（`MaterialApp.builder`）
          * ══════════════════════════════════════════════════════════════
@@ -2433,8 +2161,8 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
          * 所以这里改方向：**让圆角外由我们自己画成主题色**
          * —— `WindowFrame` 现在收一个 `backdrop`。
          */
-              child: WindowFrame(
-                /*
+            child: WindowFrame(
+              /*
            * ★★★ 圆角**外面**那一圈的颜色（2026-09-25 任务 AD）
            *
            * 必须与**内容区同源**，否则又会"与主题相反"。
@@ -2445,8 +2173,8 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
            *    这个 `context` 在 `FTheme` **上面**（见下面那段长注释），
            *    两者都会静默兜底成**浅色**。
            */
-                backdrop: AppTheme.floorColor(brightness),
-                /*
+              backdrop: AppTheme.floorColor(brightness),
+              /*
            * ═══════════════════════════════════════════════════════════════
            * ★★★ 这里【不再传】`shadowColor`（2026-09-25 实测撤销）
            * ═══════════════════════════════════════════════════════════════
@@ -2487,7 +2215,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
            * ⚠️ 若将来要恢复，**必须**先解决"画在窗口外"这个前提
            *    （需要窗口比内容大 + 那块区域真透明）。
            */
-                /*
+              /*
            * ═══════════════════════════════════════════════════════════
            * ★★★ 这里删掉了 `AmbientBackground`，但**保留一层极简底色**
            *     （2026-09-24 实测决定，"理论上应该没问题"是错的）
@@ -2528,8 +2256,8 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
            *    forui 的 `neutral.light.background` 是**纯白 #FFFFFF**，
            *    那正是我早先踩过的坑（整个应用变纯白，玻璃全看不见）。
            */
-                child: ColoredBox(
-                  /*
+              child: ColoredBox(
+                /*
              * ⚠⚠ 不能用 `Theme.of(context)` 判断明暗！
              *    （2026-09-24 真机实测抓到）
              *
@@ -2543,7 +2271,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
              * `MaterialApp` 把 `theme` 注入到**它自己构建的 Navigator 子树**里，
              * 而 `builder` 的 `context` 是 `MaterialApp` **外层**的：
              * ```text
-             * LiquidGlassWidgets.wrap
+             * ScrollConfiguration
              *  └ MaterialApp
              *      ├ builder(context, child)   ← 这个 context 看不到 theme！
              *      │   └ …（标题栏在这里）
@@ -2627,8 +2355,8 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
              * `colors.background`（`scaffold.dart:194`），
              * 深色下正是 `#0A0A0A` —— 与这层地板**同一个值**。
              */
-                  color: AppTheme.floorColor(brightness),
-                  /*
+                color: AppTheme.floorColor(brightness),
+                /*
              * ★ 手机端裁剪遥控（task-6，2026-10-02）
              *
              * Owner 原话：「手机端不需要遥控,需要裁剪掉」。
@@ -2646,21 +2374,21 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
              * TV / 桌面**保留**（TV 靠遥控器操作，见 device.dart 的
              * needsFocusRing；桌面用键盘/鼠标，也不裁）。
              */
-                  child: Device.isTouchOnly
-                      ? SystemUiHost(
-                          brightness: brightness,
-                          // ★ 与桌面分支同一个 toast 宿主（见下面那段注释）：
-                          //   手机端少了这一层 ⇒ showAppToast 在手机端静默失效，
-                          //   设置页的"已保存/保存失败"全部没反应。
-                          child: ToastHost(
-                            child: _TitleBarHost(
-                              child: child ?? const SizedBox(),
-                            ),
+                child: Device.isTouchOnly
+                    ? SystemUiHost(
+                        brightness: brightness,
+                        // ★ 与桌面分支同一个 toast 宿主（见下面那段注释）：
+                        //   手机端少了这一层 ⇒ showAppToast 在手机端静默失效，
+                        //   设置页的"已保存/保存失败"全部没反应。
+                        child: ToastHost(
+                          child: _TitleBarHost(
+                            child: child ?? const SizedBox(),
                           ),
-                        )
-                      : RemoteBridgeHost(
-                          globals: _globals,
-                          /*
+                        ),
+                      )
+                    : RemoteBridgeHost(
+                        globals: _globals,
+                        /*
                * ══════════════════════════════════════════════════════
                * ★★★ 局域网遥控桥的挂载点（集成任务 M2，2026-09-24）
                * ══════════════════════════════════════════════════════
@@ -2700,21 +2428,21 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
                *    `setGlobals`，虽然单例桥能容忍（后注册的覆盖），
                *    但两个 `dispose` 会互相干扰。
                */
-                          /*
+                        /*
                * ★ 统一 toast 宿主 —— 必须在这一层（与自绘标题栏同一层，
                *   Navigator 之外）⇒ 首页/详情页/播放页都能弹到。
                */
-                          child: ToastHost(
-                            child: _TitleBarHost(
-                              child: child ?? const SizedBox(),
-                            ),
+                        child: ToastHost(
+                          child: _TitleBarHost(
+                            child: child ?? const SizedBox(),
                           ),
                         ),
-                ),
+                      ),
               ),
             ),
           ),
-          /*
+        ),
+        /*
        * ★ 交付实测要读「当前路由名」
        *
        * ⚠️ 用 `NavigatorObserver` 而**不是** `onGenerateRoute` ——
@@ -2722,7 +2450,7 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        *    把整个导航废掉（我第一版就是这么写的，幸好没跑）。
        *    observer 只**观察**，不干预路由生成。
        */
-          /*
+        /*
        * ★★★ 进新路由时**主动种焦点**（任务 AI，缺陷② 的本体修复）
        *
        * `FocusPrimingObserver` 是**无条件**注册的（不像下面那个只在
@@ -2733,9 +2461,9 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
        * ⚠️ 放在列表**第一个** —— `didPush` 的调用顺序就是注册顺序，
        *    要保证"种焦点"早于任何观察/记录逻辑。
        */
-          navigatorObservers: <NavigatorObserver>[
-            FocusPrimingObserver(),
-            /*
+        navigatorObservers: <NavigatorObserver>[
+          FocusPrimingObserver(),
+          /*
          * ★★★ 路由遮挡 → shell 可见性（2026-10-13，修「从播放页返回卡顿」）
          *
          * # 缺陷（真根因，已读代码坐实）
@@ -2761,18 +2489,17 @@ class _SourinAppState extends State<SourinApp> with WidgetsBindingObserver {
          * ```
          * ⚠️ 只**观察**，绝不干预路由生成/转场。
          */
-            _occlusion,
-            ...kDeliveryTest
-                ? <NavigatorObserver>[RouteNameObserver()]
-                : const <NavigatorObserver>[],
-          ],
-          home: ShellPage(
-            key: debugShellKey,
-            coreError: widget.coreError,
-            coreDataDir: widget.coreDataDir,
-            liveChannelStep: _liveChannelStep,
-            occlusion: _occlusion.occluders,
-          ),
+          _occlusion,
+          ...kDeliveryTest
+              ? <NavigatorObserver>[RouteNameObserver()]
+              : const <NavigatorObserver>[],
+        ],
+        home: ShellPage(
+          key: debugShellKey,
+          coreError: widget.coreError,
+          coreDataDir: widget.coreDataDir,
+          liveChannelStep: _liveChannelStep,
+          occlusion: _occlusion.occluders,
         ),
       ),
     );
@@ -3091,9 +2818,6 @@ class _ShellPageState extends State<ShellPage>
   /// > 区块内容按需补齐。
   /// 所以这里调的是 `loadAll()`（非 force）。
   final _homeKey = GlobalKey<HomePageState>();
-
-  /// 全局导航 key —— 交付实测要用它读当前路由名
-  final _navKey = GlobalKey<NavigatorState>();
 
   /// 交付实测只跑一次
   bool _deliveryRan = false;
@@ -3415,9 +3139,6 @@ class _ShellPageState extends State<ShellPage>
   /// 离场窗口的收尾定时器（dispose 里必须取消，见那里的注释）
   Timer? _leavingTimer;
 
-  /// 是否最大化（自绘标题栏要自己显示按钮状态）
-  bool _maximized = false;
-
   /// 底部「追更」徽标 = **还需要看多少集**（task-40）
   ///
   /// # ★★★ 这里原来是 `int _unread = 3;` —— 一个**硬编码**的 3
@@ -3485,21 +3206,6 @@ class _ShellPageState extends State<ShellPage>
   @override
   void initState() {
     super.initState();
-    /*
-     * ⚠️ 只在桌面调 windowManager（2026-09-22 实测踩到）
-     *
-     * Android 上直接调会抛：
-     * ```text
-     * MissingPluginException(No implementation found for method isMaximized
-     *   on channel window_manager)
-     * Unhandled Exception ... _syncMaximized (shell.dart:189)
-     * ```
-     * 因为 `window_manager` 的原生端只在桌面平台注册。
-     *
-     * ★ 教训：**每个插件调用点都要问「这个平台有吗」**。
-     *   集中成一个 `kIsDesktop` 常量，比到处写 Platform.isWindows 清晰。
-     */
-    if (kIsDesktop) _syncMaximized();
 
     /*
      * ★ 核心启动失败 → 打一条**可验证**的日志（任务 AM）
@@ -3903,7 +3609,7 @@ class _ShellPageState extends State<ShellPage>
   ///
   /// # 怎么判断
   ///
-  /// 看 `_navKey` 的导航栈顶：播放器是用 `MaterialPageRoute` 推上去的，
+  /// 看 Navigator 的导航栈顶：播放器是用 `MaterialPageRoute` 推上去的，
   /// 所以"栈里有没有路由"就等价于"在不在子页面"。
   ///
   /// ⚠️ 详情页**不在**排除名单里 —— 详情页需要方向键来选剧集/按钮，
@@ -4152,7 +3858,10 @@ class _ShellPageState extends State<ShellPage>
     FocusManager.instance.primaryFocus?.context?.visitAncestorElements((
       element,
     ) {
-      if (element.widget is SettingsTabs || element.widget is controls.Slider) {
+      if (element.widget is SettingsTabs ||
+          element.widget is ShelfTabs ||
+          element.widget is MiuixSegmentedTabs ||
+          element.widget is controls.Slider) {
         handlesHorizontalKeys = true;
         return false;
       }
@@ -4234,15 +3943,25 @@ class _ShellPageState extends State<ShellPage>
     _liveKey.currentState?.cycleChannel(delta);
   }
 
-  /// 桌面平台判定 —— 集中在唯一一处，避免各处写法不一致
+  bool _openingLiveSources = false;
 
-  Future<void> _syncMaximized() async {
-    if (!kIsDesktop) return;
+  Future<void> _openLiveSourceManager() async {
+    if (_openingLiveSources || _tab != AppTab.live) return;
+    _openingLiveSources = true;
     try {
-      final m = await windowManager.isMaximized();
-      if (mounted) setState(() => _maximized = m);
-    } catch (_) {
-      // 插件不可用（极端情况）—— 不该因此让应用崩
+      // Mount the existing settings action owner in its retained slot. Opening
+      // a source route must not replace the Live tab beneath its back button.
+      if (!_visited.contains(AppTab.settings)) {
+        setState(() => _visited.add(AppTab.settings));
+        await WidgetsBinding.instance.endOfFrame;
+      }
+      if (!mounted || _tab != AppTab.live) return;
+      final settings = _settingsKey.currentState;
+      if (settings == null) return;
+      await settings.openLiveSources();
+      if (mounted) await _liveKey.currentState?.loadAll();
+    } finally {
+      _openingLiveSources = false;
     }
   }
 
@@ -5238,10 +4957,7 @@ class _ShellPageState extends State<ShellPage>
                           builder: (context, style, _) => _KeepAliveTransition(
                             // 只有当前页参与进入动画
                             active: t == _tab,
-                            /*
-                                   * ★ 离场页：窗口期内只"画着"，不播动画
-                                   *   （它拿的是恒为 1 的动画，见 build 里的说明）
-                                   */
+                            // 离场页复用 Shell 的动画进度，直到窗口期结束。
                             leaving: t == _leavingTab,
                             /*
                                    * ★ 2026-10-08（Owner 第 2 条）：离场页的不透明度。
@@ -5256,6 +4972,8 @@ class _ShellPageState extends State<ShellPage>
                             dir: _transitionDir,
                             // ★ 用户选的风格（系统要求减少动效时被降级为 none）
                             style: MotionPrefs.resolve(context, style),
+                            // Live keeps its video/native surface rendering normally.
+                            cacheContent: t != AppTab.live,
                             /*
                                    * ★ 惰性保活：没访问过的槽位放**尺寸稳定的占位**。
                                    *
@@ -5295,7 +5013,6 @@ class _ShellPageState extends State<ShellPage>
   ShellLayout _currentLayout(AppPalette colors) {
     return BottomBarShellLayout(
       nav: BottomBarMarker(child: _bottomBar(colors)),
-      rail: _bottomBar(colors, rail: true),
     );
   }
 
@@ -5311,7 +5028,6 @@ class _ShellPageState extends State<ShellPage>
   ///   · _switchTo              切 tab
   ///   · 离场窗口结束的 Timer    每次切 tab 后 260ms 又一次
   ///   · _refreshUnread         徽标数字变了
-  ///   · _syncMaximized         窗口最大化状态变了
   ///   · 空间导航/搜索结果的回调
   /// ⇒ 而底栏里躺着一整块**液态玻璃**（BackdropFilter / saveLayer 一类），
   ///   外加 5 个 `_BottomItem`（各自带 AnimatedContainer + FocusableActionDetector）
@@ -5336,13 +5052,12 @@ class _ShellPageState extends State<ShellPage>
   ///
   /// ⚠️ 底栏的液态玻璃**观感必须逐字不变**（Owner 唯一满意的部分）：
   ///   本改动只改**什么时候重建**，不动 `GlassContainer` 的任何一个参数。
-  Widget _bottomBar(AppPalette colors, {bool rail = false}) {
+  Widget _bottomBar(AppPalette colors) {
     return ValueListenableBuilder<_BottomBarState>(
       valueListenable: _bottomBarState,
       builder: (context, s, _) => MiuixShellNavigation(
         current: s.tab,
         unread: s.unread,
-        rail: rail,
         onSelect: _switchTo,
       ),
     );
@@ -5424,6 +5139,7 @@ class _ShellPageState extends State<ShellPage>
         return LivePage(
           key: _liveKey,
           isTv: Device.isTv,
+          onManageSources: _openLiveSourceManager,
           /*
            * ★ 可见性信号（task-39）——
            *   直播页有内嵌播放器，而 tab 页被保活（切走不销毁）
@@ -5623,6 +5339,7 @@ class _ShellPageState extends State<ShellPage>
           key: _settingsKey,
           isTv: Device.isTv,
           onProvidersChanged: () {
+            _searchKey.currentState?.providersChanged();
             // ★ `reason: 'providers-changed'` —— 第三条 `force=true` 来源
             //   （Lead 发现）。不加标记的话，用户"在设置页停用源 → 回首页"
             //   会让 `force=true` 计数 +1，判据会**误判**成"页面重建了"。

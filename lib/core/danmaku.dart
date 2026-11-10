@@ -96,6 +96,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 
 import 'ui_prefs.dart';
+import 'ffi.dart';
 
 /// 一条弹幕的显示模式
 ///
@@ -271,8 +272,7 @@ class DanmakuComment {
     }
     // time 必须真的存在且可解析——缺失当 0 会把弹幕全钉在片头
     final tRaw = e['time'];
-    final t0 =
-        tRaw is num ? tRaw.toDouble() : double.tryParse('$tRaw'.trim());
+    final t0 = tRaw is num ? tRaw.toDouble() : double.tryParse('$tRaw'.trim());
     if (t0 == null) return null;
     var t = t0;
     if (t < 0) return null;
@@ -290,7 +290,8 @@ class DanmakuComment {
   }
 
   @override
-  String toString() => 'DanmakuComment(#$cid ${time.toStringAsFixed(2)}s '
+  String toString() =>
+      'DanmakuComment(#$cid ${time.toStringAsFixed(2)}s '
       '${mode.label} #${color.toRadixString(16).padLeft(6, "0")} "$text")';
 }
 
@@ -553,22 +554,70 @@ int danmakuTitleScore(String candidate, String original) {
 
 /// SHA-256 的 64 个轮常量（FIPS 180-4 5.4.2）
 const List<int> _k256 = <int>[
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-  0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-  0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-  0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-  0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-  0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-  0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  0x428a2f98,
+  0x71374491,
+  0xb5c0fbcf,
+  0xe9b5dba5,
+  0x3956c25b,
+  0x59f111f1,
+  0x923f82a4,
+  0xab1c5ed5,
+  0xd807aa98,
+  0x12835b01,
+  0x243185be,
+  0x550c7dc3,
+  0x72be5d74,
+  0x80deb1fe,
+  0x9bdc06a7,
+  0xc19bf174,
+  0xe49b69c1,
+  0xefbe4786,
+  0x0fc19dc6,
+  0x240ca1cc,
+  0x2de92c6f,
+  0x4a7484aa,
+  0x5cb0a9dc,
+  0x76f988da,
+  0x983e5152,
+  0xa831c66d,
+  0xb00327c8,
+  0xbf597fc7,
+  0xc6e00bf3,
+  0xd5a79147,
+  0x06ca6351,
+  0x14292967,
+  0x27b70a85,
+  0x2e1b2138,
+  0x4d2c6dfc,
+  0x53380d13,
+  0x650a7354,
+  0x766a0abb,
+  0x81c2c92e,
+  0x92722c85,
+  0xa2bfe8a1,
+  0xa81a664b,
+  0xc24b8b70,
+  0xc76c51a3,
+  0xd192e819,
+  0xd6990624,
+  0xf40e3585,
+  0x106aa070,
+  0x19a4c116,
+  0x1e376c08,
+  0x2748774c,
+  0x34b0bcb5,
+  0x391c0cb3,
+  0x4ed8aa4a,
+  0x5b9cca4f,
+  0x682e6ff3,
+  0x748f82ee,
+  0x78a5636f,
+  0x84c87814,
+  0x8cc70208,
+  0x90befffa,
+  0xa4506ceb,
+  0xbef9a3f7,
+  0xc67178f2,
 ];
 
 int _rotr(int x, int n) => ((x >> n) | (x << (32 - n))) & 0xFFFFFFFF;
@@ -606,7 +655,11 @@ Uint8List sha256Bytes(List<int> input) {
   for (var off = 0; off < total; off += 64) {
     for (var i = 0; i < 16; i++) {
       final b = off + i * 4;
-      w[i] = (data[b] << 24) | (data[b + 1] << 16) | (data[b + 2] << 8) | data[b + 3];
+      w[i] =
+          (data[b] << 24) |
+          (data[b + 1] << 16) |
+          (data[b + 2] << 8) |
+          data[b + 3];
     }
     for (var i = 16; i < 64; i++) {
       final x = w[i - 15];
@@ -721,6 +774,12 @@ enum DanmakuFailureKind {
   protocol,
 }
 
+/// Matching completed successfully, but no library entry matched the title.
+/// Transport and authentication failures retain their original exception type.
+class DanmakuNoMatch extends DanmakuException {
+  DanmakuNoMatch() : super('没有匹配到弹幕库');
+}
+
 class DanmakuException implements Exception {
   DanmakuException(
     this.message, {
@@ -811,7 +870,9 @@ class DanmakuException implements Exception {
   @override
   String toString() {
     final d = detail;
-    return d.isEmpty ? 'DanmakuException($message)' : 'DanmakuException($message)\n$d';
+    return d.isEmpty
+        ? 'DanmakuException($message)'
+        : 'DanmakuException($message)\n$d';
   }
 }
 
@@ -875,10 +936,44 @@ String danmakuProxyForUri(
   Uri uri,
   String? findProxy, {
   Map<String, String>? environment,
-}) => findProxy ?? HttpClient.findProxyFromEnvironment(
-  uri,
-  environment: environment ?? Platform.environment,
-);
+}) =>
+    findProxy ??
+    HttpClient.findProxyFromEnvironment(
+      uri,
+      environment: environment ?? Platform.environment,
+    );
+
+class CoreDanmakuTransport implements DanmakuTransport {
+  CoreDanmakuTransport({this.timeout = const Duration(seconds: 15)});
+  final Duration timeout;
+  bool _closed = false;
+
+  @override
+  Future<DanmakuHttpResponse> send({
+    required String method,
+    required Uri uri,
+    required Map<String, String> headers,
+    String? body,
+  }) async {
+    if (_closed) throw StateError('弹幕连接已关闭');
+    final response = await SourinCore.callAsync('global_proxy_text_request', {
+      'url': uri.toString(),
+      'method': method,
+      'headers': headers,
+      if (body != null) 'body': body,
+      'timeoutMs': timeout.inMilliseconds,
+    });
+    final data = Map<String, dynamic>.from(response as Map);
+    return DanmakuHttpResponse(
+      statusCode: (data['statusCode'] as num).toInt(),
+      body: data['body'] as String? ?? '',
+      headers: Map<String, String>.from(data['headers'] as Map? ?? const {}),
+    );
+  }
+
+  @override
+  void close() => _closed = true;
+}
 
 class IoDanmakuTransport implements DanmakuTransport {
   /// [findProxy] 是 `HttpClient.findProxy` 的**直接值**（如
@@ -902,13 +997,14 @@ class IoDanmakuTransport implements DanmakuTransport {
     HttpClient? client,
     this.timeout = const Duration(seconds: 15),
     String? findProxy,
-  }) : _client = client ??
-            (HttpClient()
-              ..connectionTimeout = const Duration(seconds: 10)
-              ..userAgent = 'sourin-flutter-spike/danmaku'
-              // 无条件赋值（见构造函数文档：null ⇒ 显式 'DIRECT'）
-              ..findProxy = ((String? p) => (Uri uri) =>
-                  danmakuProxyForUri(uri, p))(findProxy));
+  }) : _client =
+           client ??
+           (HttpClient()
+             ..connectionTimeout = const Duration(seconds: 10)
+             ..userAgent = 'sourin-flutter-spike/danmaku'
+             // 无条件赋值（见构造函数文档：null ⇒ 显式 'DIRECT'）
+             ..findProxy = ((String? p) =>
+                 (Uri uri) => danmakuProxyForUri(uri, p))(findProxy));
 
   final HttpClient _client;
   final Duration timeout;
@@ -1053,7 +1149,9 @@ String? resolveDanmakuFindProxy({
 String? _parseProxyHostPort(String raw) {
   final s = raw.trim();
   if (s.isEmpty) return null;
-  final scheme = s.contains('://') ? s.split('://').first.toLowerCase() : 'http';
+  final scheme = s.contains('://')
+      ? s.split('://').first.toLowerCase()
+      : 'http';
   // ★ socks 协议族一律拒绝（理由见上）
   if (scheme.startsWith('socks')) return null;
   // 有 scheme 就交给 Uri 解析；没有就补一个假的（Uri 必须有 scheme 才给 host/port）
@@ -1106,20 +1204,18 @@ String? currentDanmakuFindProxy() {
 /// ★ 存在的理由：`custom` 但地址坏掉时 `resolve` 会退回 `DIRECT`，
 ///   用户看到的是"我配了代理却没生效"。有了这句文案，
 ///   他能在设置页**当场**看到"代理地址无效 ⇒ 当前按直连处理"。
-String diagnoseDanmakuProxy({
-  required DanmakuProxyMode mode,
-  String url = '',
-}) {
+String diagnoseDanmakuProxy({required DanmakuProxyMode mode, String url = ''}) {
   final f = resolveDanmakuFindProxy(mode: mode, url: url);
   return switch (mode) {
     DanmakuProxyMode.direct => '直连（不受系统代理环境变量影响）',
     DanmakuProxyMode.system => '跟随系统代理（读取 HTTP_PROXY / HTTPS_PROXY）',
-    DanmakuProxyMode.custom => f != 'DIRECT'
-        ? '走代理 $f'
-        // ★ socks 要给**专门**的文案：笼统说"无效"会让用户反复改 host/port
-        : isSocksProxyUrl(url)
-            ? '不支持 socks 代理，请填 HTTP 代理地址（如 http://127.0.0.1:7890）'
-            : '代理地址无效，当前按直连处理',
+    DanmakuProxyMode.custom =>
+      f != 'DIRECT'
+          ? '走代理 $f'
+          // ★ socks 要给**专门**的文案：笼统说"无效"会让用户反复改 host/port
+          : isSocksProxyUrl(url)
+          ? '不支持 socks 代理，请填 HTTP 代理地址（如 http://127.0.0.1:7890）'
+          : '代理地址无效，当前按直连处理',
   };
 }
 
@@ -1290,12 +1386,14 @@ class DanmakuConfig {
   // 覆盖/清除（clearCredentials）只动 UiPrefs，永远不写 builtin。
 
   /// 构建期注入的 AppId（`String.fromEnvironment` 是 const，缺省 ''）
-  static const String builtinAppId =
-      String.fromEnvironment('DANDANPLAY_APP_ID');
+  static const String builtinAppId = String.fromEnvironment(
+    'DANDANPLAY_APP_ID',
+  );
 
   /// 构建期注入的 AppSecret（同上；**不会**落盘，只在内存里给签名用）
-  static const String builtinAppSecret =
-      String.fromEnvironment('DANDANPLAY_APP_SECRET');
+  static const String builtinAppSecret = String.fromEnvironment(
+    'DANDANPLAY_APP_SECRET',
+  );
 
   /// 内置凭证是否成对可用（只有 AppId 没有 Secret 没法签名 ⇒ 视为没有）。
   ///
@@ -1455,8 +1553,7 @@ class DanmakuConfig {
   /// 渲染侧对应 `DanmakuTrackAllocator.layout(area:)`：轨道从顶部第 0 行
   /// 往下铺，铺满 `canvasHeight * area` 为止（顶部固定弹幕从上往下、
   /// 底部固定弹幕在这个区域内从下往上找轨，见该函数的 `_laneOrder`）。
-  static double get area =>
-      _readDouble(keyArea, defaultArea, areaMin, areaMax);
+  static double get area => _readDouble(keyArea, defaultArea, areaMin, areaMax);
 
   // ---- ★ 新增项的读（缺省值 = 向后兼容：老用户读出来就是"全显示、不屏蔽"） ----
 
@@ -1599,13 +1696,16 @@ class DanmakuConfig {
     }
   }
 
-  static void setBlockRegex(bool v) => UiPrefs.set(keyBlockRegex, v ? '1' : '0');
+  static void setBlockRegex(bool v) =>
+      UiPrefs.set(keyBlockRegex, v ? '1' : '0');
 
-  static void setBlockScroll(bool v) => UiPrefs.set(keyBlockScroll, v ? '1' : '0');
+  static void setBlockScroll(bool v) =>
+      UiPrefs.set(keyBlockScroll, v ? '1' : '0');
 
   static void setBlockTop(bool v) => UiPrefs.set(keyBlockTop, v ? '1' : '0');
 
-  static void setBlockBottom(bool v) => UiPrefs.set(keyBlockBottom, v ? '1' : '0');
+  static void setBlockBottom(bool v) =>
+      UiPrefs.set(keyBlockBottom, v ? '1' : '0');
 
   /// ★ 2026-10-11：写「只显示彩色弹幕」开关
   static void setColorOnly(bool v) => UiPrefs.set(keyColorOnly, v ? '1' : '0');
@@ -1883,7 +1983,8 @@ class DanmakuHint {
       if (usedLocalSource) {
         return DanmakuHint(
           title: '本机外部弹幕 拒绝了这次请求',
-          text: '这次弹幕是从本机外部弹幕（${DanmakuLocalService.hostPort}）取的，'
+          text:
+              '这次弹幕是从本机外部弹幕（${DanmakuLocalService.hostPort}）取的，'
               '而它回了 401/403（原文：${xe.isEmpty ? "未提供原因" : xe}）。'
               '本机外部弹幕 的本地接口「免签名」、正常不需要凭证 ⇒ '
               '这个报错多半说明 2080 端口上回应的不是外部弹幕，'
@@ -1929,7 +2030,8 @@ class DanmakuHint {
          * 但这条**提示文案**没跟上，用户点进来还是看到旧名字。
          * ⇒ 改成「弹幕服务」，与页签口径一致。
          */
-        text: '弹幕服务有两个数据源，在弹幕设置里选一个：'
+        text:
+            '弹幕服务有两个数据源，在弹幕设置里选一个：'
             '「本机外部弹幕」（本机跑着外部弹幕 就用它，免签名、不用申请任何凭证）'
             '或「官方 API」（它要一对 AppId / AppSecret —— '
             '构建期若已注入则「直接用」；没注入的构建，'
@@ -1951,13 +2053,17 @@ class DanmakuHint {
 
     return DanmakuHint(
       title: '凭证没通过',
-      text: '弹幕服务说这次请求的凭证不对（$xe）。'
+      text:
+          '弹幕服务说这次请求的凭证不对（$xe）。'
           '本次请求用的是客户端「内置」的官方凭证；'
           '★ 若要换成你自己的，去弹幕设置的「凭证」一节填一对 AppId / AppSecret'
           '（构建期没注入内置凭证时，那一节就是「唯一」的补救入口）。'
           '也可以改用「本机外部弹幕」（免签名）或「外部视频源弹幕」，'
           '再点「重新获取弹幕」。',
-      action: const DanmakuHintAction(label: '去弹幕设置', openDanmakuSettings: true),
+      action: const DanmakuHintAction(
+        label: '去弹幕设置',
+        openDanmakuSettings: true,
+      ),
       url: 'https://dev.dandanplay.com',
     );
   }
@@ -1968,10 +2074,11 @@ class DanmakuHint {
   /// 正文是一张**风控响应页** —— 状态码是 200，最容易骗过
   /// "非 2xx 才报错"的判断，所以这里给一句人话。
   static DanmakuHint htmlPage({required String what}) => DanmakuHint(
-        title: '拿到的是网页，不是数据',
-        text: '$what这次返回的是一张网页（多半是被人机校验拦了），不是数据。'
-            '等几分钟再试一次；一直这样的话，先换成别的片源。',
-      );
+    title: '拿到的是网页，不是数据',
+    text:
+        '$what这次返回的是一张网页（多半是被人机校验拦了），不是数据。'
+        '等几分钟再试一次；一直这样的话，先换成别的片源。',
+  );
 
   @override
   String toString() => 'DanmakuHint($title)';
@@ -2094,17 +2201,17 @@ class DanmakuPublicInstance {
 ///    并把读数写进提交信息 —— 没实测过的地址**不许**进这张表。
 const List<DanmakuPublicInstance> kDanmakuPublicInstances =
     <DanmakuPublicInstance>[
-  DanmakuPublicInstance(
-    baseUrl: 'https://danmu-api-delta.vercel.app',
-    token: '87654321',
-    label: '公共实例 A',
-  ),
-  DanmakuPublicInstance(
-    baseUrl: 'https://danmu-api-kappa.vercel.app',
-    token: '87654321',
-    label: '公共实例 B',
-  ),
-];
+      DanmakuPublicInstance(
+        baseUrl: 'https://danmu-api-delta.vercel.app',
+        token: '87654321',
+        label: '公共实例 A',
+      ),
+      DanmakuPublicInstance(
+        baseUrl: 'https://danmu-api-kappa.vercel.app',
+        token: '87654321',
+        label: '公共实例 B',
+      ),
+    ];
 
 /// 用户配置的弹幕后端（自建服务，如 danmu_api）
 ///
@@ -2201,18 +2308,13 @@ class ExternalDanmakuClient {
     DateTime Function()? clock,
     bool unsignedLocal = false,
     DanmakuEndpoint? endpoint,
-  })  : _transport = transport ??
-            _debugTransportOverride ??
-            IoDanmakuTransport(
-              // ★ 接线点 ①：弹幕客户端默认传输层
-              //   读用户的代理选择（UiPrefs）⇒ 用户不选就是 direct。
-              findProxy: currentDanmakuFindProxy(),
-            ),
-        _appId = appId ?? DanmakuConfig.appId,
-        _appSecret = appSecret ?? DanmakuConfig.appSecret,
-        _clock = clock ?? DateTime.now,
-        _unsignedLocal = unsignedLocal,
-        _endpointExplicit = endpoint;
+  }) : _transport =
+           transport ?? _debugTransportOverride ?? CoreDanmakuTransport(),
+       _appId = appId ?? DanmakuConfig.appId,
+       _appSecret = appSecret ?? DanmakuConfig.appSecret,
+       _clock = clock ?? DateTime.now,
+       _unsignedLocal = unsignedLocal,
+       _endpointExplicit = endpoint;
 
   /// 弹弹play后端的**默认**主机名（客户端要连的 API 端点）。
   ///
@@ -2790,12 +2892,14 @@ class ExternalDanmakuClient {
           if (e is! Map<String, dynamic>) continue;
           final id = _asInt(e['episodeId']);
           if (id == null || id <= 0) continue;
-          out.add(DanmakuMatch(
-            episodeId: id,
-            animeTitle: title,
-            episodeTitle: e['episodeTitle']?.toString() ?? '',
-            cover: cover,
-          ));
+          out.add(
+            DanmakuMatch(
+              episodeId: id,
+              animeTitle: title,
+              episodeTitle: e['episodeTitle']?.toString() ?? '',
+              cover: cover,
+            ),
+          );
         }
       }
     }
@@ -2858,6 +2962,7 @@ class ExternalDanmakuClient {
     });
     return list;
   }
+
   /// Poster URL for a work, or '' when unavailable.
   ///
   /// 2026-10-15: lives on /api/v2/bangumi/{animeId} as `bangumi.imageUrl`.
@@ -2907,7 +3012,7 @@ class ExternalDanmakuClient {
       );
     }
     if (!allowSearchFallback) {
-      throw DanmakuException('没有匹配到弹幕库（fileName=$fileName）');
+      throw DanmakuNoMatch();
     }
     /*
      * 2026-10-15: go through the multi-keyword search.
@@ -2921,7 +3026,7 @@ class ExternalDanmakuClient {
         ? await searchEpisodesSmart(anime)
         : await searchEpisodes(anime: anime, episode: episode);
     if (found.isEmpty) {
-      throw DanmakuException('没有匹配到弹幕库（fileName=$fileName）');
+      throw DanmakuNoMatch();
     }
     final m = found.first;
     final cs = await fetchComments(m.episodeId);
@@ -3144,14 +3249,7 @@ class DanmakuLocalService {
     timeout ??= _isPublicEndpoint(endpoint)
         ? publicProbeBudget
         : localProbeBudget;
-    final t = transport ??
-        IoDanmakuTransport(
-          timeout: timeout,
-          // ★ 接线点 ②：探活/自检用的传输层
-          //   与 ① 用同一个解析函数 —— 否则"探活直连、取弹幕走代理"
-          //   会出现"探活通了但取不到"的假阳性。
-          findProxy: currentDanmakuFindProxy(),
-        );
+    final t = transport ?? CoreDanmakuTransport(timeout: timeout);
     final shouldClose = transport == null;
     /*
      * ★ 整次探测的唯一截止时间（见上方长注释）。
@@ -3174,11 +3272,12 @@ class DanmakuLocalService {
           remaining(),
           endpoint: endpoint,
         );
-        return publicStatus ?? DanmakuLocalStatus(
-          online: false,
-          endpoint: endpoint,
-          isPublicInstance: true,
-        );
+        return publicStatus ??
+            DanmakuLocalStatus(
+              online: false,
+              endpoint: endpoint,
+              isPublicInstance: true,
+            );
       }
       // ① 首选：弹弹play 桌面版的原生端点（本机 2080 与本机自建实例同款拼法）
       final st0 = await _probeOne(
@@ -3415,7 +3514,8 @@ class DanmakuBox {
   }
 
   @override
-  String toString() => 'DanmakuBox(${left.toStringAsFixed(1)}, '
+  String toString() =>
+      'DanmakuBox(${left.toStringAsFixed(1)}, '
       '${top.toStringAsFixed(1)}, ${width.toStringAsFixed(1)}, '
       '${height.toStringAsFixed(1)})';
 }
@@ -3484,7 +3584,8 @@ class DanmakuPlacement {
   bool visibleAt(double t) => t >= enterAt && t < exitAt;
 
   @override
-  String toString() => 'DanmakuPlacement(lane $lane, '
+  String toString() =>
+      'DanmakuPlacement(lane $lane, '
       '${enterAt.toStringAsFixed(2)}~${exitAt.toStringAsFixed(2)}s, '
       'w=${width.toStringAsFixed(1)}, ${fixed ? "固定" : "滚动"}, '
       '"${comment.text}")';
@@ -3586,23 +3687,20 @@ class DanmakuTrackAllocator {
         }
         if (!ok) continue;
         final exitAt = fixed ? t + fixedSeconds : t + (canvasWidth + w) / v;
-        out.add(DanmakuPlacement(
-          comment: c,
-          lane: li,
-          laneTop: li * lh,
-          width: w,
-          enterAt: t,
-          exitAt: exitAt,
-          speed: fixed ? 0 : v,
-          fixed: fixed,
-          fontSize: fontSize,
-        ));
-        occ.add(_Occ(
-          enterAt: t,
-          exitAt: exitAt,
-          width: w,
-          fixed: fixed,
-        ));
+        out.add(
+          DanmakuPlacement(
+            comment: c,
+            lane: li,
+            laneTop: li * lh,
+            width: w,
+            enterAt: t,
+            exitAt: exitAt,
+            speed: fixed ? 0 : v,
+            fixed: fixed,
+            fontSize: fontSize,
+          ),
+        );
+        occ.add(_Occ(enterAt: t, exitAt: exitAt, width: w, fixed: fixed));
         placed = true;
         break;
       }
@@ -3676,7 +3774,8 @@ class DanmakuLayout {
   }
 
   /// 一行统计，探针日志里打这个
-  String get summary => '轨道 $laneCount 条 · 排版 $length 条'
+  String get summary =>
+      '轨道 $laneCount 条 · 排版 $length 条'
       '${dropped > 0 ? " · 丢弃 $dropped 条" : ""}';
 }
 
@@ -3705,7 +3804,8 @@ class _Occ {
   }
 
   @override
-  String toString() => '_Occ(${enterAt.toStringAsFixed(2)}~'
+  String toString() =>
+      '_Occ(${enterAt.toStringAsFixed(2)}~'
       '${exitAt.toStringAsFixed(2)}s, w=${width.toStringAsFixed(1)}, '
       '${fixed ? "固定" : "滚动"})';
 }
@@ -3872,12 +3972,12 @@ class DanmakuAggregate {
   }
 
   static String _kindLabel(DanmakuSourceChannel k) => switch (k) {
-        DanmakuSourceChannel.plugin => '插件',
-        DanmakuSourceChannel.imported => '导入源',
-        DanmakuSourceChannel.local => '本机',
-        DanmakuSourceChannel.library => '本地库',
-        DanmakuSourceChannel.none => '未知',
-      };
+    DanmakuSourceChannel.plugin => '插件',
+    DanmakuSourceChannel.imported => '导入源',
+    DanmakuSourceChannel.local => '本机',
+    DanmakuSourceChannel.library => '本地库',
+    DanmakuSourceChannel.none => '未知',
+  };
 
   @override
   String toString() => 'DanmakuAggregate(${comments.length} 条, $feeds)';
@@ -3922,9 +4022,7 @@ class DanmakuAggregator {
   /// ```
   /// ⚠️ 这样一来 `sumOfFeeds - comments.length` 就**只**反映跨源重复，
   ///    与面板上"合并去重 N 条"的语义一致（那个 N 只该统计跨源）。
-  static DanmakuAggregate merge(
-    List<DanmakuFeedInput> sources,
-  ) {
+  static DanmakuAggregate merge(List<DanmakuFeedInput> sources) {
     final feeds = <DanmakuFeedStat>[];
     /*
      * `seenBy` 记「这个 (时间,正文) 是**哪一路**先给的」。
@@ -3940,13 +4038,15 @@ class DanmakuAggregator {
     for (var si = 0; si < sources.length; si++) {
       final src = sources[si];
       final list = src.comments;
-      feeds.add(DanmakuFeedStat(
-        kind: src.kind,
-        count: list.length,
-        detail: src.detail,
-        error: src.error,
-        loaded: src.loaded,
-      ));
+      feeds.add(
+        DanmakuFeedStat(
+          kind: src.kind,
+          count: list.length,
+          detail: src.detail,
+          error: src.error,
+          loaded: src.loaded,
+        ),
+      );
       /*
        * 这一路**自己**见过的键。用于区分两件事：
        *   · 这一路内部又出现一次 ⇒ 保留（真实发言）
@@ -4002,20 +4102,18 @@ class DanmakuFeedInput {
   });
 
   /// 没试过这一路（例如插件不支持弹幕）—— 用这个构造，别伪造一个空列表
-  const DanmakuFeedInput.skipped({
-    required this.kind,
-    this.detail = '',
-  })  : comments = const <DanmakuComment>[],
-        error = '',
-        loaded = false;
+  const DanmakuFeedInput.skipped({required this.kind, this.detail = ''})
+    : comments = const <DanmakuComment>[],
+      error = '',
+      loaded = false;
 
   /// 这一路失败了 —— 错误原文照透（面板要显示"为什么只来了一半"）
   const DanmakuFeedInput.failed({
     required this.kind,
     required this.error,
     this.detail = '',
-  })  : comments = const <DanmakuComment>[],
-        loaded = true;
+  }) : comments = const <DanmakuComment>[],
+       loaded = true;
 
   final DanmakuSourceChannel kind;
   final List<DanmakuComment> comments;
@@ -4023,4 +4121,3 @@ class DanmakuFeedInput {
   final String error;
   final bool loaded;
 }
-

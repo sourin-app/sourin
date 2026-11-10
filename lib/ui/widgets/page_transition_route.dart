@@ -169,7 +169,11 @@ class SourinPageTransitionsBuilder extends ZoomPageTransitionsBuilder {
     // ① 新页：按用户选的风格入场
     final entering = PageTransition.apply(
       animation: animation.drive(CurveTween(curve: curve)),
-      child: child,
+      // Cache the page content only. Capturing the transition itself freezes
+      // its opacity and transform until the secondary animation completes.
+      child: debugDisableExitSnapshot
+          ? child
+          : _ExitSnapshot(animation: secondaryAnimation, child: child),
       style: style,
     );
 
@@ -220,13 +224,15 @@ class SourinPageTransitionsBuilder extends ZoomPageTransitionsBuilder {
      *    本层是**叠加**（外面再包一层 FadeTransition），不是替换。
      */
     final exitLayer = FadeTransition(
-      opacity: Tween<double>(begin: 1.0, end: 0.0).animate(
-        secondaryAnimation.drive(CurveTween(curve: curve)),
-      ),
+      opacity: Tween<double>(
+        begin: 1.0,
+        end: 0.0,
+      ).animate(secondaryAnimation.drive(CurveTween(curve: curve))),
       child: ScaleTransition(
-        scale: Tween<double>(begin: 1.0, end: 1.05).animate(
-          secondaryAnimation.drive(CurveTween(curve: curve)),
-        ),
+        scale: Tween<double>(
+          begin: 1.0,
+          end: 1.05,
+        ).animate(secondaryAnimation.drive(CurveTween(curve: curve))),
         child: entering,
       ),
     );
@@ -283,8 +289,7 @@ class SourinPageTransitionsBuilder extends ZoomPageTransitionsBuilder {
      *
      * ⚠️ 生产恒为 false（无任何代码路径会置 true）。
      */
-    if (debugDisableExitSnapshot) return exitLayer;
-    return _ExitSnapshot(animation: secondaryAnimation, child: exitLayer);
+    return exitLayer;
   }
 }
 
@@ -308,10 +313,7 @@ bool debugDisableExitSnapshot = false;
 /// ⚠️ `widget.animation` 只用于「过渡结束后让快照失效」这一件事 ——
 ///    不用它驱动任何视觉（缩放/淡出仍在外面那两层做）。
 class _ExitSnapshot extends StatefulWidget {
-  const _ExitSnapshot({
-    required this.animation,
-    required this.child,
-  });
+  const _ExitSnapshot({required this.animation, required this.child});
 
   final Animation<double> animation;
   final Widget child;
@@ -339,8 +341,9 @@ class _ExitSnapshotState extends State<_ExitSnapshot> {
    * ⇒ 现在**唯一**的开关就是 controller 上的 `allowSnapshotting`，
    *   由 `_onStatus` 按「动画是否在飞」显式置位，别处不再有第二个真相。
    */
-  late final SnapshotController _c =
-      SnapshotController(allowSnapshotting: false);
+  late final SnapshotController _c = SnapshotController(
+    allowSnapshotting: false,
+  );
 
   /// 过渡是否在飞 —— 只有在这期间才允许用快照
   ///
@@ -388,8 +391,8 @@ class _ExitSnapshotState extends State<_ExitSnapshot> {
   }
 
   void _onStatus(AnimationStatus st) {
-    final flying = st == AnimationStatus.forward ||
-        st == AnimationStatus.reverse;
+    final flying =
+        st == AnimationStatus.forward || st == AnimationStatus.reverse;
     if (flying == _snapshotting) return;
     /*
      * ★★ 唯一开关：改 controller 的 `allowSnapshotting`（不是只 setState）。

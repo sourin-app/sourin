@@ -38,6 +38,7 @@ import '../widgets/app_toast.dart';
 import '../widgets/settings_kit.dart';
 import '../widgets/settings_sub_page.dart';
 import '../widgets/update_dialog.dart';
+import 'global_proxy_settings_page.dart';
 
 class AboutSettingsPage extends StatefulWidget {
   const AboutSettingsPage({super.key});
@@ -257,8 +258,6 @@ class UpdateRouteEditor extends StatefulWidget {
 
 class UpdateRouteEditorState extends State<UpdateRouteEditor> {
   late UpdateRouteConfig _cfg;
-  late TextEditingController _host;
-  late TextEditingController _port;
   late TextEditingController _mirror;
 
   @override
@@ -266,17 +265,11 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
     super.initState();
     final c = AppUpdateController.instance.route;
     _cfg = c;
-    _host = TextEditingController(text: c.proxyHost);
-    _port = TextEditingController(
-      text: c.proxyPort > 0 ? '${c.proxyPort}' : '',
-    );
     _mirror = TextEditingController(text: c.customMirror);
   }
 
   @override
   void dispose() {
-    _host.dispose();
-    _port.dispose();
     _mirror.dispose();
     super.dispose();
   }
@@ -292,11 +285,13 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final r in UpdateRoute.values)
+        for (final r in const [UpdateRoute.direct, UpdateRoute.mirror])
           ui.RadioListTile<UpdateRoute>(
             value: r,
             // ignore: deprecated_member_use
-            groupValue: _cfg.route,
+            groupValue: _cfg.route == UpdateRoute.proxy
+                ? UpdateRoute.direct
+                : _cfg.route,
             // ignore: deprecated_member_use
             onChanged: (v) =>
                 _apply(_cfg.copyWith(route: v ?? UpdateRoute.direct)),
@@ -307,31 +302,15 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
               style: const TextStyle(fontSize: FontSizes.sm),
             ),
           ),
-        if (_cfg.route == UpdateRoute.proxy) ...[
-          const SizedBox(height: Sp.x2),
-          Row(
-            children: [
-              Expanded(
-                flex: 3,
-                child: _Field(_host, '代理地址（如 127.0.0.1）', _onHost),
-              ),
-              const SizedBox(width: Sp.x2),
-              Expanded(
-                child: _Field(
-                  _port,
-                  '端口（如 7890）',
-                  _onPort,
-                  keyboard: TextInputType.number,
-                ),
-              ),
-            ],
+        ui.OutlinedButton.icon(
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const GlobalProxySettingsPage(),
+            ),
           ),
-          _SettingsSwitchRow(
-            label: '跟随系统代理设置',
-            value: _cfg.followSystemProxy,
-            onChanged: (v) => _apply(_cfg.copyWith(followSystemProxy: v)),
-          ),
-        ],
+          icon: const Icon(Icons.vpn_lock_outlined),
+          label: const Text('全局代理设置'),
+        ),
         if (_cfg.route == UpdateRoute.mirror) ...[
           const SizedBox(height: Sp.x2),
           Wrap(
@@ -358,7 +337,7 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
           _Field(_mirror, '或填写自己的镜像地址（可留空）', _onMirror),
           const SizedBox(height: Sp.x1),
           Text(
-            '镜像只用于下载安装包；获取更新信息仍走直连或代理。',
+            '镜像只用于下载安装包；所有更新请求均跟随全局代理。',
             style: TextStyle(
               fontSize: FontSizes.cap,
               color: colors.onSurfaceVariant,
@@ -370,30 +349,25 @@ class UpdateRouteEditorState extends State<UpdateRouteEditor> {
   }
 
   static String _routeLabel(UpdateRoute r) => switch (r) {
-    UpdateRoute.direct => '直连下载',
-    UpdateRoute.proxy => '通过代理下载',
+    UpdateRoute.direct => '跟随全局代理',
+    UpdateRoute.proxy => '跟随全局代理',
     UpdateRoute.mirror => '镜像加速下载',
   };
 
-  void _onHost(String v) => _apply(_cfg.copyWith(proxyHost: v.trim()));
-  void _onPort(String v) =>
-      _apply(_cfg.copyWith(proxyPort: int.tryParse(v.trim()) ?? 0));
   void _onMirror(String v) => _apply(_cfg.copyWith(customMirror: v.trim()));
 }
 
 class _Field extends StatelessWidget {
-  const _Field(this.ctrl, this.hint, this.onChanged, {this.keyboard});
+  const _Field(this.ctrl, this.hint, this.onChanged);
   final TextEditingController ctrl;
   final String hint;
   final ValueChanged<String> onChanged;
-  final TextInputType? keyboard;
 
   @override
   Widget build(BuildContext context) {
     return ui.TextField(
       controller: ctrl,
       onChanged: onChanged,
-      keyboardType: keyboard,
       style: const TextStyle(fontSize: FontSizes.sm),
       decoration: InputDecoration(
         isDense: true,

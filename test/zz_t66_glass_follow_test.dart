@@ -65,36 +65,55 @@ void main() {
             width: width,
             details: details,
           );
-          final tabs = find.byType(miuix.MiuixTabRow);
+          final tabs = find.byType(miuix.MiuixGlassSegmentedTabRow);
           expect(tabs, findsOneWidget);
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 2);
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).tabs, [
-            '追更中',
-            '全部收藏',
-            '继续观看 1',
+          expect(
+            tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+            2,
+          );
+          expect(tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).tabs, [
+            '追更 0',
+            '收藏 0',
+            '历史 1',
           ]);
           final bounds = tester.getRect(tabs);
           expect(bounds.left, greaterThanOrEqualTo(0));
           expect(bounds.right, lessThanOrEqualTo(width));
-          expect(bounds.height, greaterThanOrEqualTo(44));
+          expect(bounds.height, greaterThanOrEqualTo(40));
           expect(find.text(_progress.title), findsOneWidget);
+          final state = tester.state<FollowPageState>(find.byType(FollowPage));
+          expect(state.activeTabKey, 'continue');
 
-          await tester.tap(find.text('全部收藏'));
+          await tester.tap(find.text('收藏 0'));
           await tester.pump();
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 1);
+          expect(
+            tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+            1,
+          );
           expect(find.text('还没有收藏'), findsOneWidget);
-          Focus.of(tester.element(tabs)).requestFocus();
+          expect(state.activeTabKey, 'all');
+          Focus.of(tester.element(find.text('收藏 0'))).requestFocus();
           await tester.pump();
           await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
           await tester.pump();
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 0);
+          expect(
+            tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+            0,
+          );
           expect(find.text('还没有追更的内容'), findsOneWidget);
+          expect(state.activeTabKey, 'following');
           await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
           await tester.pump();
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 1);
+          expect(
+            tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+            1,
+          );
           await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
           await tester.pump();
-          expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 2);
+          expect(
+            tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+            2,
+          );
           expect(find.text(_progress.title), findsOneWidget);
           expect(details, isEmpty);
           expect(tester.takeException(), isNull);
@@ -135,7 +154,7 @@ void main() {
             );
             expect(node.hasFlag(SemanticsFlag.isButton), isTrue);
 
-            await tester.tap(title);
+            await tester.tap(card);
             await tester.pump();
             expect(details, ['fixture:continue']);
             Focus.of(tester.element(title)).requestFocus();

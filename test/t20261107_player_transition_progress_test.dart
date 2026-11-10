@@ -182,6 +182,53 @@ void main() {
     });
   }
 
+  for (final resume in <Duration?>[
+    null,
+    Duration.zero,
+    const Duration(seconds: 3),
+    const Duration(milliseconds: 3250),
+    const Duration(seconds: 42),
+  ]) {
+    testWidgets('session carries explicit resume intent $resume', (
+      tester,
+    ) async {
+      final resolution = Completer<List<StreamCandidate>>();
+      Future<void>? changing;
+      try {
+        final session = await _mount(tester);
+        SourinApi.debugResolveStreamFetcher = (_, __, {PlayRequest? req}) =>
+            resolution.future;
+        changing = session.applySession(
+          PlayRequestData(
+            provider: 'timeline-other-source',
+            id: 'other-series',
+            title: 'Other source',
+            episodes: _episodes,
+            episodeIndex: 0,
+            episodeId: 'A1',
+            resumeFrom: resume,
+          ),
+        );
+        await tester.pump();
+        expect(resolution.isCompleted, isFalse);
+        expect(session.currentPosition, Duration.zero);
+        expect(
+          debugPlayerPendingSeekForProbe(),
+          resume == const Duration(milliseconds: 3250) ||
+                  resume == const Duration(seconds: 42)
+              ? resume
+              : null,
+        );
+        expect(tester.takeException(), isNull);
+      } finally {
+        if (!resolution.isCompleted) resolution.complete([]);
+        await tester.pump();
+        if (changing != null) await changing;
+        await _unmount(tester);
+      }
+    });
+  }
+
   testWidgets('same-session metadata refresh retains displayed progress', (
     tester,
   ) async {

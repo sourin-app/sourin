@@ -622,28 +622,33 @@ class SettingsEntryRow extends StatelessWidget {
             node: Focus.of(ctx),
             child: miuix.MiuixCard(
               cornerRadius: Radii.lg,
-              child: ExcludeFocus(
-                child: miuix.MiuixArrowPreference(
-                  title: title,
-                  summary: subtitle,
-                  onClick: onTap,
-                  insideMargin: const EdgeInsets.symmetric(
-                    horizontal: Sp.x4,
-                    vertical: Sp.x3,
-                  ),
-                  startAction: icon == null
-                      ? null
-                      : Padding(
-                          padding: const EdgeInsets.only(right: Sp.x3),
-                          child: SizedBox.square(
-                            dimension: _iconPlate,
-                            child: Icon(
-                              icon,
-                              size: Sp.x5,
-                              color: colors.primary,
+              child: ClipPath(
+                clipper: const ShapeBorderClipper(
+                  shape: miuix.MiuixSquircleBorder(cornerRadius: Radii.lg),
+                ),
+                child: ExcludeFocus(
+                  child: miuix.MiuixArrowPreference(
+                    title: title,
+                    summary: subtitle,
+                    onClick: onTap,
+                    insideMargin: const EdgeInsets.symmetric(
+                      horizontal: Sp.x4,
+                      vertical: Sp.x3,
+                    ),
+                    startAction: icon == null
+                        ? null
+                        : Padding(
+                            padding: const EdgeInsets.only(right: Sp.x3),
+                            child: SizedBox.square(
+                              dimension: _iconPlate,
+                              child: Icon(
+                                icon,
+                                size: Sp.x5,
+                                color: colors.primary,
+                              ),
                             ),
                           ),
-                        ),
+                  ),
                 ),
               ),
             ),

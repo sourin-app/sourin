@@ -2,12 +2,18 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/app_update/app_update_controller.dart';
 import 'package:sourin_spike/core/app_update/release.dart';
-import 'package:sourin_spike/core/app_update/route.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/core/ffi.dart';
+import 'package:sourin_spike/core/sourin_api.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/settings/about_page.dart';
+import 'package:sourin_spike/ui/settings/global_proxy_settings_page.dart';
+import 'package:sourin_spike/ui/widgets/proxy_panel.dart';
 import 'package:sourin_spike/ui/widgets/release_notes.dart';
 import 'package:sourin_spike/ui/widgets/update_dialog.dart';
 
@@ -20,9 +26,11 @@ import 'support/ui_shot.dart';
 void main() {
   setUpAll(loadRealFonts);
 
-  ReleaseInfo release() => parseReleaseJson(jsonDecode(
-          File('test/fixtures/github_release_v1_1_0.json').readAsStringSync())
-      as Map<String, dynamic>);
+  ReleaseInfo release() => parseReleaseJson(
+    jsonDecode(
+      File('test/fixtures/github_release_v1_1_0.json').readAsStringSync(),
+    ) as Map<String, dynamic>,
+  );
 
   final windowsOnly = ReleaseInfo(
     tag: 'v1.1.0',
@@ -41,34 +49,55 @@ void main() {
     publishedAt: null,
   );
 
-  setUp(() async {
-    final tmp = await Directory.systemTemp.createTemp('sourin_update_ui');
-    await UiPrefs.load(tmp.path);
+  setUp(() {
+    // UI fixtures use in-memory preferences. A disk write started by a prior
+    // widget test belongs to its fake-async zone and must not be awaited here.
+    UiPrefs.debugResetForTest();
     AppUpdateController.instance.loadPrefs();
     AppUpdateController.instance.debugResetAvailable();
-    AppUpdateController.instance.debugSetDownloadState(UpdateDownloadState.idle);
+    AppUpdateController.instance.debugSetDownloadState(
+      UpdateDownloadState.idle,
+    );
+    ProxyCache.reset();
+    SourinCore.debugCallAsyncTransport = (command, args) async =>
+        switch (command) {
+          'global_proxy_migration_choices' => <dynamic>[],
+          'list_proxy_configs' => {
+            SourinApi.globalProxyProvider: {
+              'mode': 'custom',
+              'url': 'http://global-proxy.invalid:7890',
+              'scope': 'api_only',
+            },
+          },
+          'has_proxy_password' => {'has': false},
+          'system_proxy_hint' => {'hint': null},
+          _ => throw StateError('Unexpected core command: $command'),
+        };
   });
 
-  Widget host(Widget child) => MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          brightness: Brightness.dark,
-          fontFamily: 'Microsoft YaHei UI',
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF7C4DFF),
-            brightness: Brightness.dark,
-          ),
-        ),
-        home: Scaffold(body: Center(child: child)),
-      );
+  tearDown(() {
+    SourinCore.debugCallAsyncTransport = null;
+    ProxyCache.reset();
+    UiPrefs.debugResetForTest();
+  });
+
+  Widget host(Widget child) {
+    final theme = AppTheme.themeFor(Brightness.dark);
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme,
+      builder: (_, child) => AppThemeHost(data: theme, child: child!),
+      home: Scaffold(body: Center(child: child)),
+    );
+  }
 
   /// 拉起对话框（返回触发器，点它开窗）
   Widget opener(ReleaseInfo rel, UpdatePlatform platform) => Builder(
-        builder: (ctx) => TextButton(
-          onPressed: () => showUpdateDialog(ctx, rel, platform: platform),
-          child: const Text('打开'),
-        ),
-      );
+    builder: (ctx) => TextButton(
+      onPressed: () => showUpdateDialog(ctx, rel, platform: platform),
+      child: const Text('打开'),
+    ),
+  );
 
   testWidgets('更新对话框：版本号、说明、三个动作都在', (tester) async {
     await setShotViewport(tester, const Size(1440, 900));
@@ -95,8 +124,11 @@ void main() {
     expect(find.text('本次更新'), findsOneWidget, reason: '## 标题');
     expect(find.textContaining('按 ABI 选择安装包'), findsOneWidget);
     expect(find.text('第一项'), findsOneWidget);
-    expect(find.textContaining('发行说明'), findsOneWidget,
-        reason: '[文字](链接) 应渲染成可读文字，而不是把原始语法露出来');
+    expect(
+      find.textContaining('发行说明'),
+      findsOneWidget,
+      reason: '[文字](链接) 应渲染成可读文字，而不是把原始语法露出来',
+    );
     expect(find.textContaining('dmg'), findsOneWidget);
 
     final f = await saveViewShot(tester, 'update_dialog_macos');
@@ -110,8 +142,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('没有提供当前设备的安装包'), findsOneWidget);
-    final btn = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, '下载更新'));
+    final btn = tester.widget<miuix.MiuixButton>(
+      find.widgetWithText(miuix.MiuixButton, '下载更新'),
+    );
+    expect(btn.enabled, isFalse);
     expect(btn.onPressed, isNull, reason: '没有可下的东西就不能让用户点下载');
 
     final f = await saveViewShot(tester, 'update_dialog_no_asset');
@@ -121,17 +155,26 @@ void main() {
   testWidgets('下载中：进度条与取消都在', (tester) async {
     await setShotViewport(tester, const Size(1440, 900));
     final c = AppUpdateController.instance;
-    await tester.pumpWidget(host(_afterBuild(
-      () => c.debugSetDownloadState(const UpdateDownloadState(
-          active: true, bytes: 12 << 20, total: 28 << 20)),
-      opener(release(), UpdatePlatform.windows),
-    )));
+    await tester.pumpWidget(
+      host(
+        _afterBuild(
+          () => c.debugSetDownloadState(
+            const UpdateDownloadState(
+              active: true,
+              bytes: 12 << 20,
+              total: 28 << 20,
+            ),
+          ),
+          opener(release(), UpdatePlatform.windows),
+        ),
+      ),
+    );
     await tester.tap(find.text('打开'));
     await tester.pumpAndSettle();
 
     expect(find.textContaining('正在下载'), findsOneWidget);
     expect(find.text('取消'), findsOneWidget);
-    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(find.byType(miuix.MiuixLinearProgressIndicator), findsOneWidget);
 
     final f = await saveViewShot(tester, 'update_dialog_downloading');
     expect(f.existsSync(), isTrue);
@@ -140,11 +183,19 @@ void main() {
   testWidgets('下载失败：错误以提示条出现，不弹第二个窗', (tester) async {
     await setShotViewport(tester, const Size(1440, 900));
     final c = AppUpdateController.instance;
-    await tester.pumpWidget(host(_afterBuild(
-      () => c.debugSetDownloadState(const UpdateDownloadState(
-          active: false, error: '下载失败，请检查网络或下载方式设置')),
-      opener(release(), UpdatePlatform.windows),
-    )));
+    await tester.pumpWidget(
+      host(
+        _afterBuild(
+          () => c.debugSetDownloadState(
+            const UpdateDownloadState(
+              active: false,
+              error: '下载失败，请检查网络或下载方式设置',
+            ),
+          ),
+          opener(release(), UpdatePlatform.windows),
+        ),
+      ),
+    );
     await tester.tap(find.text('打开'));
     await tester.pumpAndSettle();
 
@@ -153,41 +204,66 @@ void main() {
     expect(f.existsSync(), isTrue);
   });
 
-  testWidgets('「更新下载方式」三种选择都渲染得出来', (tester) async {
+  testWidgets('更新下载方式共用全局代理并保留镜像选择', (tester) async {
     await setShotViewport(tester, const Size(1440, 900));
-    AppUpdateController.instance.setRoute(const UpdateRouteConfig());
     await tester.pumpWidget(host(const UpdateRouteEditor()));
     await tester.pumpAndSettle();
 
-    expect(find.text('直连下载'), findsOneWidget);
-    expect(find.text('通过代理下载'), findsOneWidget);
+    expect(find.text('跟随全局代理'), findsOneWidget);
+    expect(find.text('全局代理设置'), findsOneWidget);
     expect(find.text('镜像加速下载'), findsOneWidget);
+    expect(find.byType(miuix.MiuixTextField), findsNothing);
 
     var f = await saveViewShot(tester, 'update_route_direct');
-    expect(f.existsSync(), isTrue);
-
-    // 切到代理：地址/端口/跟随系统应出现
-    await tester.tap(find.text('通过代理下载'));
-    await tester.pumpAndSettle();
-    expect(find.text('代理地址（如 127.0.0.1）'), findsOneWidget);
-    expect(find.text('端口（如 7890）'), findsOneWidget);
-    expect(find.text('跟随系统代理设置'), findsOneWidget);
-    f = await saveViewShot(tester, 'update_route_proxy');
     expect(f.existsSync(), isTrue);
 
     // 切到镜像：预置镜像 + 自定义输入 + 那句说明
     await tester.tap(find.text('镜像加速下载'));
     await tester.pumpAndSettle();
     expect(find.text('ghfast'), findsOneWidget);
-    expect(find.textContaining('获取更新信息仍走直连或代理'), findsOneWidget);
+    expect(find.textContaining('所有更新请求均跟随全局代理'), findsOneWidget);
+    expect(find.byType(miuix.MiuixTextField), findsOneWidget);
     f = await saveViewShot(tester, 'update_route_mirror');
     expect(f.existsSync(), isTrue);
   });
 
+  testWidgets('旧更新代理配置只显示全局入口，不再出现独立地址表单', (tester) async {
+    await setShotViewport(tester, const Size(1440, 900));
+    UiPrefs.debugResetForTest({
+      'appupdate.route': 'proxy',
+      'appupdate.proxyHost': 'old-proxy.invalid',
+      'appupdate.proxyPort': '8080',
+    });
+    AppUpdateController.instance.loadPrefs();
+    await tester.pumpWidget(host(const UpdateRouteEditor()));
+    await tester.pumpAndSettle();
+    expect(find.text('跟随全局代理'), findsOneWidget);
+    expect(find.text('通过代理下载'), findsNothing);
+    expect(find.byType(miuix.MiuixTextField), findsNothing);
+    expect(find.byType(ProxyPanel), findsNothing);
+    await tester.tap(find.text('全局代理设置'));
+    await tester.pumpAndSettle();
+    expect(find.byType(GlobalProxySettingsPage), findsOneWidget);
+    expect(
+      tester.widget<ProxyPanel>(find.byType(ProxyPanel)).providerId,
+      SourinApi.globalProxyProvider,
+    );
+    expect(
+      tester
+          .widget<EditableText>(find.byType(EditableText).first)
+          .controller
+          .text,
+      'http://global-proxy.invalid:7890',
+    );
+    Navigator.of(tester.element(find.byType(GlobalProxySettingsPage))).pop();
+    await tester.pumpAndSettle();
+    expect(find.byType(miuix.MiuixTextField), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('手机窄屏下更新对话框不溢出', (tester) async {
     await setShotViewport(tester, const Size(412, 915));
-    await tester.pumpWidget(
-        host(opener(release(), UpdatePlatform.android)));
+    await tester.pumpWidget(host(opener(release(), UpdatePlatform.android)));
     await tester.tap(find.text('打开'));
     await tester.pumpAndSettle();
 
@@ -224,9 +300,15 @@ void main() {
 
   testWidgets('空说明退化成一句话，不留空白', (tester) async {
     await setShotViewport(tester, const Size(1440, 900));
-    await tester.pumpWidget(host(SingleChildScrollView(
-      child: Column(children: buildReleaseNotes('', linkColor: Colors.white)),
-    )));
+    await tester.pumpWidget(
+      host(
+        SingleChildScrollView(
+          child: Column(
+            children: buildReleaseNotes('', linkColor: Colors.white),
+          ),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
     expect(find.text('这个版本没有写说明。'), findsOneWidget);
   });

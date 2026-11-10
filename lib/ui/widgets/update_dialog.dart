@@ -115,14 +115,15 @@ class _UpdateDialogState extends State<_UpdateDialog> {
            * `showAppDialog` 的 `plugin_edit_dialog` 保持一致。
            */
           fill: false,
-          actions: Row(
-            mainAxisSize: MainAxisSize.min,
+          actions: Wrap(
+            alignment: WrapAlignment.end,
+            spacing: Sp.x2,
+            runSpacing: Sp.x2,
             children: [
               ui.TextButton(
                 onPressed: () => Navigator.pop(context, false),
                 child: const Text('稍后'),
               ),
-              const SizedBox(width: Sp.x2),
               ui.TextButton(
                 // ★ 必须先 await 落盘再关窗（CR-1015）：
                 //   用户点「忽略」往往就是不想再看到它了，随后可能立刻退出 ——
@@ -136,7 +137,6 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 },
                 child: const Text('忽略此版本'),
               ),
-              const SizedBox(width: Sp.x2),
               ui.FilledButton(
                 onPressed: d.active || widget.asset == null
                     ? null

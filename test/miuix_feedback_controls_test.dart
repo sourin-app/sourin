@@ -7,6 +7,7 @@ import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/app_toast.dart';
 import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
+import 'package:sourin_spike/ui/widgets/miuix_tooltip_host.dart';
 
 Widget feedbackHost(Widget child, {VoidCallback? onEscape}) {
   final theme = AppTheme.themeFor(Brightness.dark);
@@ -351,7 +352,7 @@ void main() {
       expect(find.byType(miuix.MiuixPlainTooltip), findsNothing);
       await tester.pump(const Duration(milliseconds: 1));
       await tester.pumpAndSettle();
-      expect(find.byType(miuix.MiuixTooltipBox), findsOneWidget);
+      expect(find.byType(MiuixTooltipHost), findsOneWidget);
       expect(find.byType(miuix.MiuixPlainTooltip), findsOneWidget);
       expect(find.text('延迟提示'), findsOneWidget);
       await mouse.moveTo(Offset.zero);
@@ -404,7 +405,7 @@ void main() {
         mounted.value = false;
         await tester.pumpAndSettle();
         await tester.pump(const Duration(seconds: 3));
-        expect(find.byType(miuix.MiuixTooltipBox), findsNothing);
+        expect(find.byType(MiuixTooltipHost), findsNothing);
         expect(find.byType(miuix.MiuixPlainTooltip), findsNothing);
         expect(find.text('将被销毁'), findsNothing);
         expect(tester.takeException(), isNull);

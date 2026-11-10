@@ -43,16 +43,15 @@
 // > 比「现在开着没有」更该先被看到。
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter_miuix/miuix.dart' as miuix;
 
-import 'widgets/settings_tabs.dart';
 import 'widgets/settings_dropdown.dart';
 
 import 'package:material_ui/material_ui.dart';
 
 import 'widgets/miuix_controls.dart' as ui;
+import 'widgets/settings_disclosure.dart';
 
 // ★ 2026-10-22（PR #32 / CR 线程 5）：`ValueListenable` 必须**精确**导入。
 //   `material_ui` 只 `export 'package:flutter/widgets.dart';`，而 widgets.dart
@@ -64,6 +63,7 @@ import 'widgets/miuix_controls.dart' as ui;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart';
 
+import '../core/danmaku.dart' show DanmakuConfig;
 import '../core/device.dart';
 import '../core/ffi.dart' show userErrorText;
 import '../core/player_gestures.dart';
@@ -71,14 +71,14 @@ import '../core/sourin_api.dart';
 import '../core/ui_prefs.dart';
 import '../design/widgets/app_glass_dialog.dart';
 import '../design/widgets/app_icon_button.dart';
-import '../design/widgets/app_ink_well.dart';
 import '../design/widgets/app_switch.dart';
 import '../design/widgets/app_text_button.dart';
 import 'app_theme.dart';
 import 'remote_bridge.dart';
 import 'tokens.dart';
 import 'settings/source_discovery_page.dart';
-import 'settings/tvbox_aggregate_page.dart';
+import 'settings/source_manager_page.dart';
+import 'settings/global_proxy_settings_page.dart';
 import 'widgets/settings_motion_panel.dart';
 import 'widgets/app_loading.dart';
 import 'widgets/app_inline_spinner.dart';
@@ -87,7 +87,6 @@ import 'widgets/app_menu.dart';
 import 'widgets/pan_share_dialog.dart';
 import 'widgets/qr_view.dart';
 import 'widgets/source_composer_dialog.dart';
-import 'widgets/source_composer_model.dart';
 /*
  * ═══════════════════════════════════════════════════════════════════════
  * ★★★ 四个面板的接线（2026-09-24 集成任务 M）
@@ -112,9 +111,7 @@ import 'widgets/source_composer_model.dart';
  *   所以 `test/wiring_test.dart` 断言的是"**被挂载**"，
  *   而不是"文件存在"。
  */
-import 'widgets/backup_panel.dart';
 import 'widgets/provider_login_panel.dart';
-import 'widgets/proxy_panel.dart';
 /*
  * ★ 响应式卡片网格（2026-09-25）
  *
@@ -122,7 +119,6 @@ import 'widgets/proxy_panel.dart';
  * `ReorderableListView` 只有单列，所以换成这个自己搭的网格 ——
  * 为什么不加第三方包 / 为什么不用 SliverGrid，理由全写在那个文件头部。
  */
-import 'widgets/reorderable_card_grid.dart';
 /*
  * ═══════════════════════════════════════════════════════════════════════
  * ★★★ Provider 导入 / 编辑入口（任务 R）
@@ -258,7 +254,6 @@ import 'widgets/tvbox_source_panel.dart';
 // ★ N8b-3（2026-10-27）：网盘账号页（弹窗形态）—— 本行入口是它**唯一**的
 //   可达路径（见下方 SettingsEntryRow 那段注释）。
 import 'settings/pan_settings_page.dart';
-import '../ui/app_theme.dart';
 import '../design/icons/app_icons.dart';
 
 /// 本文件里的旧名字 → `settings_kit.dart` 里的公开类
@@ -268,8 +263,6 @@ import '../design/icons/app_icons.dart';
 typedef _Block = SettingsBlock;
 typedef _GestureToggle = SettingsGestureToggle;
 typedef _GestureChoice<T> = SettingsGestureChoice<T>;
-typedef _GesturePill = SettingsGesturePill;
-typedef _InfoRow = SettingsInfoRow;
 
 /// 设置页
 class SettingsPage extends StatefulWidget {
@@ -306,25 +299,6 @@ class SettingsPageState extends State<SettingsPage> {
 
   /// 「TVBox 聚合」分组是否展开（Owner A′ 的 B 半：默认展开，先让用户看见）
   bool _tvboxExpanded = true;
-
-  String _sourceQuery = '';
-  bool? _sourceEnabledFilter;
-  SourceClass? _sourceClassFilter;
-
-  void _setSourceFilter({
-    String? query,
-    bool? enabled,
-    SourceClass? sourceClass,
-    bool setEnabled = false,
-    bool setClass = false,
-  }) {
-    setState(() {
-      if (query != null) _sourceQuery = query;
-      if (setEnabled) _sourceEnabledFilter = enabled;
-      if (setClass) _sourceClassFilter = sourceClass;
-    });
-    _dataRev.value++;
-  }
 
   /// 切换某张卡的详情区展开态
   void _toggleProviderDetails(String id) {
@@ -383,31 +357,10 @@ class SettingsPageState extends State<SettingsPage> {
   ///    （空态 UI）的语义原样保留。
   bool _firstLoadDone = false;
 
-  /// ★★★ 数据版本号 + toast 通知（task-43，「JS 插件」二级页要用）
-  ///
-  /// # `_dataRev`：二级页是 `Navigator.push` 上来的**另一条路由**
-  ///
-  /// 不在本 State 的子树里 ⇒ host 的 `setState` **不会**重建它 ⇒
-  /// 操作后（`loadAll` 已刷新数据）界面看着不变，像「点了没反应」。
-  /// 二级页订阅它、自己重建。
-  ///
-  /// # `_toastRev`：★ 2026-10-10 起**已不再被写**（死通道）
-  ///
-  /// 它当初存在的唯一理由是「host 的 toast 画在宿主自己的 Stack 里，
-  /// 被整屏的 push 路由盖住 ⇒ `_flash()` 的反馈全部看不见」。
-  /// 现在 `_flash` 走 `showAppToast`，而宿主 `ToastHost` 挂在
-  /// `lib/shell.dart` 的 `MaterialApp.builder` 里、**Navigator 之外**
-  /// ⇒ 二级页天然能弹，这条同步链路不再需要。
-  ///
-  /// ⚠️ **故意保留**（连同二级页里读它的 `ValueListenableBuilder`）：
-  ///   它现在是恒 `null` 的一路通道 ⇒ 只画不出东西（死代码，不是坏行为）。
-  ///   等二级页也切到 `showAppToast` 时可以连同读取点一起清掉；
-  ///   现在删，一旦某个读取点漏改就是「二级页没反馈」的新回归。
-  ///
-  /// ⚠️ 用 `ValueNotifier` 而不是让二级页 `addListener(host)`：
-  ///    `State` **不是** `Listenable`（只有 `ChangeNotifier` 是）。
+  /// Source management is a separate route. Its activity section subscribes
+  /// to accepted data changes; rebuilding this retained settings owner cannot
+  /// update that route. User feedback goes through the shell-level ToastHost.
   final _dataRev = ValueNotifier<int>(0);
-  final _toastRev = ValueNotifier<String?>(null);
 
   // ── 内容源 ──
   List<ProviderManifest> _providers = [];
@@ -472,10 +425,6 @@ class SettingsPageState extends State<SettingsPage> {
 
   /// ── 插件（任务 R）──
   ///
-  /// 原版 `pluginBusy` —— 「重新加载」期间禁用。
-  /// `reload_plugins` 会**执行全部插件脚本**，不是瞬时操作。
-  bool _pluginBusy = false;
-
   // ── 插件 ──
   PluginListResult _plugins = const PluginListResult();
 
@@ -583,6 +532,38 @@ class SettingsPageState extends State<SettingsPage> {
   ///    （源/插件/遥控都是核心，片头片尾是附加信息）。
   List<SkipMarker> _skipMarkers = [];
 
+  // Compare the values rendered by this page, including preferences changed
+  // elsewhere. Keep request results fresh regardless; secondary routes receive
+  // their existing _dataRev notification independently of this page rebuilding.
+  Record? _lastBuiltOverviewInputs;
+  Record get _overviewInputs => (
+    providerCount: _providers.length,
+    skipMarkerCount: _skipMarkers.length,
+    remote: (
+      _remote?.running,
+      _remote?.url,
+      _remote?.pin,
+      _remote?.fixedPin,
+      _remote?.reachable,
+      _remote?.qrSvg,
+    ),
+    remoteAutoStart: _remoteAutoStart,
+    remoteBusy: _remoteBusy,
+    danmakuSubtitle: _danmakuEndpointSubtitle(),
+    danmakuGuide: _danmakuShouldGuide(),
+    themeMode: AppTheme.mode,
+    coreVersion: _coreVersionLabel,
+    touchOnly: Device.isTouchOnly,
+    desktop: Device.isDesktop,
+    gestures: (
+      PlayerGestures.doubleTapEnabled,
+      PlayerGestures.doubleTapSeconds,
+      PlayerGestures.longPressEnabled,
+      PlayerGestures.longPressRate,
+      PlayerGestures.longPressRewindStep,
+    ),
+  );
+
   @override
   void initState() {
     super.initState();
@@ -686,7 +667,9 @@ class SettingsPageState extends State<SettingsPage> {
      *      的文档：加载过但结果为空时它会误判成"还没加载过"，
      *      于是刷新时又把整页换成转圈、销毁 ListView、滚动归零）。
      */
-    if (mounted && !_firstLoadDone) setState(() => _loading = true);
+    if (mounted && !_firstLoadDone && !_loading) {
+      setState(() => _loading = true);
+    }
     try {
       /*
        * ★ 并发拉三份
@@ -757,16 +740,14 @@ class SettingsPageState extends State<SettingsPage> {
       }
 
       if (!mounted) return;
-      setState(() {
-        _providers = results[0] as List<ProviderManifest>;
-        _plugins = results[1] as PluginListResult;
-        _remote = results[2] as RemoteStatus;
-        _remoteAutoStart = autoStart;
-        _skipMarkers = markers;
-        _pluginSources = sources;
-        _tvboxSources = tvboxSources;
-        _tvboxAggregateSource = aggregateSource;
-      });
+      _providers = results[0] as List<ProviderManifest>;
+      _plugins = results[1] as PluginListResult;
+      _remote = results[2] as RemoteStatus;
+      _remoteAutoStart = autoStart;
+      _skipMarkers = markers;
+      _pluginSources = sources;
+      _tvboxSources = tvboxSources;
+      _tvboxAggregateSource = aggregateSource;
     } catch (e) {
       debugPrint('[SETTINGS] 加载失败: $e');
       _flash('加载失败：$e');
@@ -785,10 +766,14 @@ class SettingsPageState extends State<SettingsPage> {
        * `finally` 是唯一同时覆盖 try 成功与 catch 失败的位置。
        */
       if (mounted) {
-        setState(() {
-          _loading = false;
-          _firstLoadDone = true;
-        });
+        if (_loading ||
+            !_firstLoadDone ||
+            _lastBuiltOverviewInputs != _overviewInputs) {
+          setState(() {
+            _loading = false;
+            _firstLoadDone = true;
+          });
+        }
         // ★ task-43：二级页是另一条路由，收不到本次 setState ⇒ 用计数通知
         _dataRev.value++;
       }
@@ -797,39 +782,7 @@ class SettingsPageState extends State<SettingsPage> {
 
   /// 弹一条操作反馈
   ///
-  /// ★ 2026-10-10：`_flash(msg)` → `showAppToast(context, msg)`
-  ///
-  /// 改前是「自绘黑底胶囊」：自己 `setState` + 一个 3 秒的
-  /// `Future.delayed` 清屏。
-  ///
-  /// # 为什么不自己画了（三个理由）
-  ///
-  /// ```text
-  /// ① 宿主已经挂好了 —— `lib/shell.dart` 的 `MaterialApp.builder` 里
-  ///    `ToastHost(child: _TitleBarHost(child: …))`，位置与自绘标题栏
-  ///    **同一层**（Navigator 之外）⇒ 首页/详情页/播放页/本页的
-  ///    **所有**二级路由都收得到。
-  ///    （`test/toast_host_mounted_test.dart` 有守卫：删掉挂载立刻红。）
-  /// ② 自己画的版本有个**结构缺陷**：`_flash` 写在宿主 State 里，
-  ///    而 JS 插件二级页是 `Navigator.push` 上去的**另一条路由** ——
-  ///    所以必须额外维护一个 `_toastRev` + 二级页里自己再画一份
-  ///    （`lib/ui/settings_page.dart:3591` 那个 `ValueListenableBuilder`）。
-  ///    统一组件在 shell 层，二级页**天然**能弹 ⇒ 这条同步链路不必存在。
-  /// ③ 观感更好且**可关闭**：常驻 ✕ + Esc 可关 + 2.6s 后 1.2s 渐隐。
-  /// ```
-  ///
-  /// # ⚠️ `_toastRev` / `_toast` 字段与二级页的读取点**故意保留**
-  ///
-  /// 它们还被 `_PluginsPageState`（二级页自己那份 toast 绘制）读着，
-  /// 删字段会连带删掉二级页的显示逻辑 —— 那是超出本轮范围的改动。
-  ///
-  /// ⇒ 只换**发射端**（`_flash` 的实现），接收端原样留着。
-  ///    注意 `_flash` 现在**不再写**这两个字段，所以旧通道不会触发
-  ///    ⇒ 同一条消息**不会**弹两次。代价是二级页那个
-  ///    `ValueListenableBuilder` 目前恒为 `null`（不画任何东西）——
-  ///    这是"死代码"而不是"坏行为"，等二级页也切到 `showAppToast`
-  ///    时可以连同 `_toastRev` 一起清掉。留一条不触发的新通道，
-  ///    比删掉之后发现某个读取点漏了要安全。
+  /// Shell-level feedback remains visible above pushed settings routes.
   void _flash(String msg) {
     if (!mounted) return;
     showAppToast(context, msg);
@@ -846,7 +799,7 @@ class SettingsPageState extends State<SettingsPage> {
   /// 用户明确要的是**二级页面**：
   /// > 我希望设置页，这几个功能，**拆分到二级页面**，而不是在一级
   ///
-  /// 本文件已有的「点击 → 弹窗」模式（`_openOrderDialog` /
+  /// 本文件已有的「点击 → 弹窗」模式（`_openImportDialog` /
   /// 片头片尾历史）是**弹窗**，不是页面 —— 那适合"看一眼就走"的
   /// 轻量内容；这 5 个是**有若干开关/选项、要停留操作**的配置面板，
   /// 弹窗会让它们挤在一个小盒子里（PC 播放手势那个尤其明显）。
@@ -859,8 +812,8 @@ class SettingsPageState extends State<SettingsPage> {
   ///
   /// ⚠️ 返回入口由 `SettingsSubPage` **页内自画**
   ///    （全局标题栏**没有**返回按钮，见那个文件的说明）。
-  void _openSubPage(Widget page) {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
+  Future<void> _openSubPage(Widget page) {
+    return Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
   }
 
   /// 打开「JS 插件」二级页（task-43）
@@ -869,8 +822,101 @@ class SettingsPageState extends State<SettingsPage> {
   ///
   /// ⚠️ 传 `this`：二级页要调 `_pluginsBlock` 与那一堆动作方法。
   ///    设置页 tab 被 shell 保活，本 State 不会先于二级页 dispose。
-  void _openPluginsPage() {
-    _openSubPage(_PluginsPage(host: this));
+  Future<void> openLiveSources() =>
+      _openPluginsPage(initialType: ManagedSourceType.live);
+
+  Future<void> _openPluginsPage({ManagedSourceType initialType = ManagedSourceType.all}) {
+    return _openSubPage(
+      SourceManagerPage(
+        initialType: initialType,
+        onSourcesChanged: () {
+          if (!mounted) return;
+          widget.onProvidersChanged?.call();
+          unawaited(loadAll());
+        },
+        onImportTvbox: _openImportDialog,
+        onPasteJs: _installPluginSource,
+        onEditProvider: _editProvider,
+        onRemoveProvider: _removeManagedProvider,
+        onHealthCheck: () async {
+          await loadAll();
+          await _healthSweep();
+        },
+        onReload: _reloadPlugins,
+        onSortBySpeed: () async {
+          await loadAll();
+          await _sortBySpeed();
+        },
+        onPanShare: _openPanShare,
+        onSpeedTestFinished: _onSpeedTestFinished,
+        subscriptionSettings: const TvboxAutoUpdateRow(),
+        activity: Column(
+          children: [
+            HealthSweepProgressRow(
+              rev: _healthRev,
+              snapshot: () => (
+                sweeping: _sweeping,
+                done: _healthDone,
+                ok: _healthOk,
+                total: _healthTotal,
+              ),
+              label: () => '健康检测 $_healthDone/$_healthTotal',
+              okLabel: () => '可用 $_healthOk',
+              onStop: () => _healthToken?.cancel(),
+            ),
+            ValueListenableBuilder<int>(
+              valueListenable: _dataRev,
+              builder: (context, _, __) => Column(
+                children: [
+                  const TvboxRestoreFailuresView(),
+                  for (final failure in _plugins.failed)
+                    _FailedPlugin(file: failure.$1, reason: failure.$2),
+                  for (final plugin in _plugins.plugins.where((p) => !p.loaded))
+                    _FailedPlugin(
+                      file: plugin.file,
+                      reason: plugin.error ?? '加载失败',
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        onConfigureProvider: (provider) async {
+          final plugin = _plugins.plugins
+              .where((p) => p.id == provider.id)
+              .firstOrNull;
+          await Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => SettingsSubPage(
+                title: provider.name,
+                subtitle: '源设置 · 代理、登录与更新',
+                children: [
+                  _ProviderCard(
+                    provider: provider,
+                    expanded: true,
+                    pluginEntry: plugin,
+                    tvboxSource: _tvboxSourceOf(provider.id),
+                    onCopy: _copy,
+                    onEdit: () => _editProvider(provider),
+                    onRemove: () => _removeManagedProvider(provider),
+                    onConfig: plugin == null
+                        ? null
+                        : () => _configPlugin(plugin),
+                    onOverride: () =>
+                        _openOverrideEditor(provider.id, provider.name),
+                    onPluginUpdate: provider.kind == 'js'
+                        ? () => _openPluginUpdate(provider.id, provider.name)
+                        : provider.kind == 'tvbox'
+                        ? () => _openTvboxUpdate(provider.id, provider.name)
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   /// 打开「弹幕源」二级页（Owner 第 7 条）
@@ -894,30 +940,18 @@ class SettingsPageState extends State<SettingsPage> {
   String _danmakuEndpointSubtitle() {
     final ep = UiPrefs.danmakuEndpoint;
     if (ep.isEmpty) {
-      return '未配置 · 现用本机弹弹play / 官方接口 · 点此填 dan-api 地址';
+      final builtin = DanmakuConfig.defaultPublicInstance;
+      if (builtin != null) {
+        return '默认：${builtin.label} · 可切换或测试连接';
+      }
+      return '未设置 dan-api 服务 · 点此配置或测试连接';
     }
     return '已配置：$ep · 免凭证 · 点此修改或测试连接';
   }
 
-  /// 是否该显示「首次使用 / 还没配」的 dan-api 引导（Owner 第 7 条 ③）
-  ///
-  /// # 判据
-  /// ```text
-  /// 未配置 dan-api  ⇒ 显示引导
-  /// 已配置          ⇒ 不显示（用户已经知道了，再提示就是噪声）
-  /// ```
-  ///
-  /// # ⚠️ 为什么**不**把「本机弹弹play 是否在线」也纳进判据
-  /// ```text
-  /// 在线与否只能靠**发请求探测**才知道（DanmakuLocalService.probe）。
-  /// 而本函数在一级页的 build 里被调用 —— build 里发网络请求是明确的错误：
-  ///   ① 每次 setState 都会重发一次
-  ///   ② 设置页一打开就有网络活动（用户没要求）
-  ///   ③ 探不到时还会拖慢首帧
-  /// 而「未配置」是**同步可读**的偏好值，作为判据既保守又不撒谎：
-  /// 没配 dan-api 的人，本来就该知道有这条路。
-  /// ```
-  bool _danmakuShouldGuide() => UiPrefs.danmakuEndpoint.isEmpty;
+  /// 用户配置与内置实例均不可用时，才显示 dan-api 配置引导。
+  /// 只读端点配置，不探测连接，也不推断本次请求实际使用的服务。
+  bool _danmakuShouldGuide() => DanmakuConfig.effectiveEndpoint == null;
 
   // ═══════════════════════════════════════════════════════════════════
   //  内容源
@@ -1005,7 +1039,8 @@ class SettingsPageState extends State<SettingsPage> {
         p.kind == 'js' ||
         p.kind == 'declarative' ||
         p.kind == 'http' ||
-        p.kind == 'tvbox';
+        p.kind == 'tvbox' ||
+        p.kind == 'm3u_live';
     if (!isThirdParty) {
       _flash('内置源不能移除，可以停用它');
       return;
@@ -1032,43 +1067,16 @@ class SettingsPageState extends State<SettingsPage> {
     if (!ok) return;
 
     try {
-      await SourinApi.removeProvider(p.id);
-      await loadAll();
+      final removed = await SourinApi.removeProvider(p.id);
+      if (!removed) {
+        _flash('源已不存在，请重新加载列表');
+        return;
+      }
       widget.onProvidersChanged?.call();
+      await loadAll();
       _flash('已移除「${p.name}」');
     } catch (e) {
       _flash('移除失败：$e');
-    }
-  }
-
-  /// 打开排序面板
-  Future<void> _openOrderDialog() async {
-    final draft = _providers.map((p) => p.id).toList();
-
-    final result = await showAppDialog<List<String>>(
-      context: context,
-      builder: (_) => _OrderDialog(
-        draft: draft,
-        nameOf: (id) =>
-            _providers.where((p) => p.id == id).firstOrNull?.name ?? id,
-        offOf: (id) =>
-            _providers.where((p) => p.id == id).firstOrNull?.enabled == false,
-      ),
-    );
-
-    if (result == null) return;
-    try {
-      /*
-       * ⚠️ 用**返回值**刷新，不是回显入参
-       *
-       * 入参里可能有过期/不存在的 id，返回值才是真相。
-       */
-      final applied = await SourinApi.setProviderOrder(result);
-      await loadAll();
-      widget.onProvidersChanged?.call();
-      _flash('顺序已保存（${applied.length} 个源）');
-    } catch (e) {
-      _flash('保存顺序失败：$e');
     }
   }
 
@@ -1108,7 +1116,9 @@ class SettingsPageState extends State<SettingsPage> {
   ///   （见下面的实现：只重排 enabled 子序列，再用 reorderSubsetIds 落回全局）。
   /// ```
   Future<void> _sortBySpeed() async {
-    final enabled = _nonLiveProviders.where((p) => p.enabled).toList();
+    final enabled = managedSourceList(_providers)
+        .where((p) => p.enabled && p.capabilities.vod)
+        .toList();
     if (enabled.length < 2) {
       _flash('可测速的源不足 2 个，无需排序');
       return;
@@ -1233,8 +1243,8 @@ class SettingsPageState extends State<SettingsPage> {
   Future<void> _persistOrder(List<String> ids, String okMessage) async {
     try {
       final applied = await SourinApi.setProviderOrder(ids);
-      await loadAll();
       widget.onProvidersChanged?.call();
+      await loadAll();
       _flash(okMessage.replaceFirst('{}', '${applied.length}'));
     } catch (e) {
       _flash('保存顺序失败：$e');
@@ -1249,7 +1259,7 @@ class SettingsPageState extends State<SettingsPage> {
   /// 界面上这两个按钮此时本来就是**置灰**的（见 `canMoveUp` /
   /// `canMoveDown`），正常点不到；这里再判一次是防遥控/程序调用绕过 UI。
   ///
-  /// ⚠️ 与 `_OrderDialog._move` 的边界处理**必须一致** ——
+  /// ⚠️ 与独立源排序页的边界处理**必须一致** ——
   ///    那边也是 `if (j < 0 || j >= len) return;`。
   Future<void> _moveProviderBy(
     String id,
@@ -1408,8 +1418,7 @@ class SettingsPageState extends State<SettingsPage> {
   /// }
   /// ```
   /// JS 插件是**磁盘上的一个 .js 文件**，它的"配置"就是源码本身，
-  /// 所以走源码编辑器；只有 `declarative` / `http` 两种「配置型」源
-  /// 才回填到本弹窗。
+  /// 所以走源码编辑器；旧 HTTP 配置回填到导入弹窗。
   ///
   /// ⚠️ 那句兜底文案里的「试试**重新加载**」不是随口说的 ——
   ///    插件文件被手工删掉后，registry 里可能还留着旧条目，
@@ -1426,29 +1435,8 @@ class SettingsPageState extends State<SettingsPage> {
       return;
     }
 
-    /*
-     * ★★★ 2026-10-17（Owner 第 9 条）：声明式源直接进**可视化编排**
-     *
-     * # Owner 原话
-     * > 点击编辑还是老样子的配置,没有可见的可视化编排,这里肯定也要用到modal,一起给换了
-     *
-     * # 改前为什么「还是老样子」
-     * ```text
-     * 这条路径落到 ProviderImportDialog.showEdit ⇒ 一个**裸 JSON 文本框**。
-     * 编排器本身是有的（provider_import_dialog.dart:644 那个「可视化编排」按钮），
-     * 但：
-     *   ① 要用户先点进导入弹窗、再点按钮才到（编辑入口自己到不了）；
-     *   ② 那里调 SourceComposerDialog 时**没传 initial** ⇒ 编排器是**空白**的，
-     *      编辑一个已有源等于从零重填；
-     *   ③ 编完只写回 JSON 文本框，用户还得再点一次「保存」。
-     * ```
-     * ⇒ 三件事一起解决：从编辑入口**直达**编排器、带初值、提交即生效。
-     *
-     * ⚠️ JS 插件**不受影响**（上面那个 if 已经 return 了）——
-     *    它的「配置」就是源码本身，必须走源码编辑器。
-     */
-    if (p.kind == 'declarative') {
-      await _editDeclarativeViaComposer(p);
+    if (p.kind != 'http') {
+      _flash('该源没有可编辑的配置');
       return;
     }
 
@@ -1468,7 +1456,7 @@ class SettingsPageState extends State<SettingsPage> {
     }
 
     if (!mounted) return;
-    if (seed == null) {
+    if (seed == null || !seed.isHttp) {
       /*
        * 原版 `edit()` 的兜底文案：
        * > flash("该源没有可编辑的配置")
@@ -1480,103 +1468,6 @@ class SettingsPageState extends State<SettingsPage> {
       return;
     }
 
-    final r = await ProviderImportDialog.showEdit(
-      context,
-      seed: seed,
-      name: p.name,
-    );
-    if (!mounted) return;
-    await _afterImport(r);
-  }
-
-  /// 声明式源 ⇒ **可视化编排**（Owner 第 9 条）
-  ///
-  /// # 与 [_editProvider] 里其它分支的分工
-  /// ```text
-  /// js           ⇒ 源码编辑器（配置就是源码）
-  /// declarative  ⇒ **本方法**：可视化编排，提交即生效
-  /// http         ⇒ ProviderImportDialog（要填 baseUrl + headers）
-  /// ```
-  ///
-  /// # 为什么提交后**直接**落盘，而不是像导入弹窗那样写回文本框
-  /// ```text
-  /// 用户点的是**编辑**，不是「打开一个草稿箱」。
-  /// 编辑完还要回去再点一次「保存」，是这次被 Owner 点名的那层别扭；
-  /// 一屏化之后它会更明显（没有「下一步」的仪式感兜着）。
-  /// ⇒ 编排器的「保存」就是最终动作，直接 import_declarative_provider。
-  /// ```
-  Future<void> _editDeclarativeViaComposer(ProviderManifest p) async {
-    ProviderImportSeed? seed;
-    try {
-      seed = await SourinApi.getProviderImportSeed(p.id);
-    } catch (e) {
-      _flash('读取配置失败：$e');
-      return;
-    }
-    if (!mounted) return;
-    if (seed == null || seed.json == null || seed.json!.trim().isEmpty) {
-      _flash('该源没有可编辑的配置');
-      return;
-    }
-
-    ComposerDraft initial;
-    try {
-      final raw = jsonDecode(seed.json!);
-      initial = composerDraftFromJson(
-        raw is Map ? raw.map((k, v) => MapEntry(k.toString(), v)) : const {},
-      );
-    } catch (e) {
-      /*
-       * 解析不了 ⇒ 退回源码/JSON 编辑器那条老路，而不是把用户挡在门外。
-       * ⚠️ 这里**不能**静默 return：用户会以为「点了编辑没反应」。
-       */
-      _flash('这份配置无法可视化解析，已改用文本编辑：$e');
-      await _openDeclarativeTextFallback(p);
-      return;
-    }
-
-    final out = await showAppDialog<Map<String, Object?>>(
-      context: context,
-      builder: (_) => SourceComposerDialog(
-        initial: initial,
-        submitLabel: '保存',
-        /*
-         * ★ 2026-10-25（P5 统一编排面板）：把**这一个源**的覆盖层入口
-         *   一起交给编排器 —— 于是打开后有两个页签：
-         *     ① 源定义（就是上面这份声明式 JSON）
-         *     ② 个性化覆盖（L1/L2/L3，只写 overrides/<id>.json）
-         *   改前这两件事分属两个弹窗，用户得先知道该点哪个入口。
-         *
-         *   ⚠️ 覆盖层页签**不改这个源的配置本身**：它的保存只写
-         *      `<数据目录>/overrides/<id>.json`，删除即完全恢复。
-         */
-        overridesTargetId: p.id,
-        overridesSourceName: p.name,
-        onSubmit: (j) => Navigator.of(context).pop(j),
-      ),
-    );
-    if (out == null || !mounted) return;
-
-    try {
-      const enc = JsonEncoder.withIndent('  ');
-      final res = await SourinApi.importDeclarativeProvider(enc.convert(out));
-      await loadAll();
-      widget.onProvidersChanged?.call();
-      _flash('已保存「${res.name}」v${res.version}');
-    } catch (e) {
-      _flash('保存失败：$e');
-    }
-  }
-
-  /// 可视化解析失败时的退路：仍走原来的导入弹窗（裸 JSON 文本框）
-  Future<void> _openDeclarativeTextFallback(ProviderManifest p) async {
-    ProviderImportSeed? seed;
-    try {
-      seed = await SourinApi.getProviderImportSeed(p.id);
-    } catch (_) {
-      return;
-    }
-    if (seed == null || !mounted) return;
     final r = await ProviderImportDialog.showEdit(
       context,
       seed: seed,
@@ -1605,8 +1496,8 @@ class SettingsPageState extends State<SettingsPage> {
        * 见 `provider_import_dialog.dart` 的 `ProviderImportCancelled.done`。
        */
       case ProviderImportCancelled(done: final ProviderImportDone d):
-        await loadAll();
         widget.onProvidersChanged?.call();
+        await loadAll();
         _flash(d.toast);
       case ProviderImportCancelled():
         // 用户关掉了弹窗 —— 什么都不做（不是错误，不该弹提示）
@@ -1618,8 +1509,8 @@ class SettingsPageState extends State<SettingsPage> {
          * 同 id 覆盖时后端会替换掉原条目（`list.retain(|x| x.id() != ...)`），
          * 本地插入会留下两条同名源。
          */
-        await loadAll();
         widget.onProvidersChanged?.call();
+        await loadAll();
         _flash(toast);
     }
   }
@@ -1687,7 +1578,9 @@ class SettingsPageState extends State<SettingsPage> {
      * ⚠️ 停用的源不探：用户明确停用了它，探出来的「不可用」是噪声，
      *    而且会白白占用检测时间（与测速的 `where((p) => p.enabled)` 同口径）。
      */
-    final targets = _providers.where((p) => p.enabled).toList();
+    final targets = managedSourceList(_providers)
+        .where((p) => p.enabled)
+        .toList();
     if (targets.isEmpty) {
       _flash('没有已启用的源可检测');
       return;
@@ -1805,16 +1698,14 @@ class SettingsPageState extends State<SettingsPage> {
   /// 用户手工把 `.js` 文件放进 `plugins/` 目录后，**界面不会自己发现** ——
   /// 没有这个按钮就只能重启程序。改了插件源码同理。
   Future<void> _reloadPlugins() async {
-    setState(() => _pluginBusy = true);
     try {
       final n = await SourinApi.reloadPlugins();
-      await loadAll();
+      if (!mounted) return;
       widget.onProvidersChanged?.call();
+      await loadAll();
       _flash('已重新加载 $n 个插件');
     } catch (e) {
       _flash('重新加载失败：$e');
-    } finally {
-      if (mounted) setState(() => _pluginBusy = false);
     }
   }
 
@@ -1825,22 +1716,6 @@ class SettingsPageState extends State<SettingsPage> {
   // ═══════════════════════════════════════════════════════════════════
   //  插件
   // ═══════════════════════════════════════════════════════════════════
-
-  /// 从 URL 安装插件
-  Future<void> _installPlugin() async {
-    final url = await _promptText(title: '安装源', hint: '插件地址（支持各种插件市场的链接）');
-    if (url == null || url.trim().isEmpty) return;
-
-    _flash('正在下载…');
-    try {
-      final r = await SourinApi.installPlugin(url.trim());
-      await loadAll();
-      widget.onProvidersChanged?.call();
-      _flash('已安装「${r.name}」v${r.version}（${r.bytes} 字节）');
-    } catch (e) {
-      _flash('安装失败：$e');
-    }
-  }
 
   /// 添加插件（task-10 ③：与「编辑」共用同一个表单）
   ///
@@ -1871,14 +1746,14 @@ class SettingsPageState extends State<SettingsPage> {
       if (r.kind == PluginInputKind.link) {
         // 链接型 ⇒ 走「按链接安装」（会解析插件市场链接并记住来源）
         final res = await SourinApi.installPlugin(r.text);
-        await loadAll();
         widget.onProvidersChanged?.call();
+        await loadAll();
         _flash('已安装「${res.name}」v${res.version}');
       } else {
         // 源码型 ⇒ 新建（文件不存在也能建，与 savePluginSource 不同）
         final res = await SourinApi.installPluginSource(r.text);
-        await loadAll();
         widget.onProvidersChanged?.call();
+        await loadAll();
         _flash('已安装「${res.name}」v${res.version}');
       }
     } catch (e) {
@@ -1894,7 +1769,7 @@ class SettingsPageState extends State<SettingsPage> {
   /// 历史档列表 / 回滚按钮"这些内容。弹窗有 480px 宽 + 有界高度，
   /// 是唯一能讲清楚的地方。
   ///
-  /// # 交互（照 `_SkipHistoryDialog` / `_OrderDialog` 的既有模式）
+  /// # 交互（照 `_SkipHistoryDialog` 的既有模式）
   ///
   /// ```text
   /// 打开弹窗 → 显示当前版本 + 来源链接 + 历史档列表
@@ -1998,8 +1873,8 @@ class SettingsPageState extends State<SettingsPage> {
     if (!ok) return;
     try {
       await SourinApi.removePlugin(e.file);
-      await loadAll();
       widget.onProvidersChanged?.call();
+      await loadAll();
       _flash('已删除「${e.name}」');
     } catch (err) {
       _flash('删除失败：$err');
@@ -2044,8 +1919,8 @@ class SettingsPageState extends State<SettingsPage> {
          *    按 id 覆盖同名插件并记住新的安装链接）。
          */
         final res = await SourinApi.installPlugin(r.text);
-        await loadAll();
         widget.onProvidersChanged?.call();
+        await loadAll();
         _flash('已更新「${res.name}」v${res.version}');
       } else {
         /*
@@ -2053,8 +1928,8 @@ class SettingsPageState extends State<SettingsPage> {
          *    文件不存在会报错。新建要用 `installPluginSource`。
          */
         await SourinApi.savePluginSource(e.file, r.text);
-        await loadAll();
         widget.onProvidersChanged?.call();
+        await loadAll();
         _flash('已保存');
       }
     } catch (err) {
@@ -2062,40 +1937,8 @@ class SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  /// 配置插件（按插件声明的字段渲染表单）
-  ///
-  /// # ★★★ 2026-10-18（Owner 第 11 条）：「没有可配置项」到底是谁的问题
-  ///
-  /// Owner 原话：
-  /// ```text
-  /// > 插件的可视化编排可能做好了,但是我点击配置就提示无配置项,
-  /// > 编排的弹窗根本就显示不出来
-  /// ```
-  ///
-  /// ## 取证读数（真核心 + 32 个本机插件，见本轮交付说明）
-  /// ```text
-  /// 对 32 个 JS 源逐个调 plugin_config_get：fields 非空 0 个 / 为空 32 个
-  /// 造一个**真的声明了 config** 的插件再调：fields = 3 项（proxy/quality/token）
-  /// ⇒ 解析链路（hydrate_config → call_js → serde）**完好**，
-  ///   空 fields 的原因是**这 32 个插件一个都没声明 config**。
-  /// ```
-  /// 所以旧行为（弹一句「没有可配置项」）本身是**如实**的。
-  ///
-  /// ## 那 Owner 看到的「编排弹窗出不来」是哪来的
-  /// ```text
-  /// 「可视化编排」是**声明式源**的编辑器，与插件的 config 声明是**两套东西**：
-  ///   · declarative 源 → 编排器（SourceComposerDialog）
-  ///   · js 插件        → 按 config 声明渲染表单（本方法）
-  /// 而「配置」按钮只对 `_pluginOf(id) != null`（= js 插件）出现，
-  /// 声明式源**根本没有**「配置」入口 ⇒ 用户只能走「编辑」，
-  /// 而「编辑」在旧代码里对 declarative 已经直达编排器（见
-  /// `_editDeclarativeViaComposer`）。
-  /// ⇒ 真正的缺口是：**声明式源没有直达编排器的「配置」入口**，
-  ///   用户点到的那个「配置」是插件的 config 表单，它当然没有编排器。
-  /// ```
-  /// 本方法的改动：空 fields 时不再只说一句「没有」，而是**给出下一步**
-  /// （声明式源直接进编排器；js 插件如实说明它没声明配置项），
-  /// 避免用户以为「编排功能没做」。
+  /// 插件声明配置项时显示配置表单；无配置项时进入个性化覆盖层。
+  /// 覆盖层只写自己的配置文件，不修改插件源码。
   Future<void> _configPlugin(PluginEntry e) async {
     PluginConfig cfg;
     try {
@@ -2113,31 +1956,10 @@ class SettingsPageState extends State<SettingsPage> {
     }
 
     if (cfg.fields.isEmpty) {
-      /*
-       * ★ 空 fields 时**不要**让用户以为功能坏了。
-       *
-       * 分两种如实说明（判据取自后端真实返回，不猜）：
-       * ```text
-       * 插件真没声明 config      → 告诉用户「这个插件没有可配置项」，
-       *                            并提示「可视化编排」是给声明式源的
-       * 声明式源（走不到这里）    → 见 `_openComposerFor`，它有自己的入口
-       * ```
-       * ⚠️ 文案里不许出现「缺陷 / 未实现」这类开发过程用语（仓库硬规矩）。
-       *
-       * ★ 2026-10-25（P5 · Owner：「js插件也要支持 … 那个编排面板也要支持」）：
-       *   改前到这句就 `return` 了 —— 用户点「配置」只得到一句话，**什么都没打开**。
-       *   现在紧接着打开统一编排面板的**覆盖层页签**（`overridesOnly`）：
-       *   ```text
-       *   JS 插件没有声明式 JSON 可编（那是声明式源的事），但它有**数据**：
-       *   L1 字段映射 / L2 数据变换 / L3 JS 片段都作用在 JS 插件吐出来的数据上。
-       *   而覆盖层只写 <数据目录>/overrides/<id>.json —— 插件 .js 文件一个字节不动
-       *   （硬约束 1），删除即完全恢复（硬约束 2）。
-       *   ```
-       */
+      // 共享编排器仍供 JS 使用，只显示该插件的覆盖层页签。
       _flash(
-        '「${e.name}」没有声明可配置项（它没有 config 声明）；'
-        '可视化编排用于声明式源，这里直接打开「源个性化编排」——'
-        '只写覆盖层，插件文件一个字节都不动',
+        '「${e.name}」没有可配置项，已打开「源个性化编排」。'
+        '可调整字段映射、数据变换和 JS 片段',
       );
       if (!mounted) return;
       await showAppDialog<void>(
@@ -2161,8 +1983,8 @@ class SettingsPageState extends State<SettingsPage> {
 
     try {
       final n = await SourinApi.pluginConfigSet(e.id, values);
-      await loadAll();
       widget.onProvidersChanged?.call();
+      await loadAll();
       _flash('已保存 $n 项配置');
     } catch (err) {
       _flash('保存失败：$err');
@@ -2204,100 +2026,6 @@ class SettingsPageState extends State<SettingsPage> {
   /// 免得同一张卡做三次 `where(...).firstOrNull` 查找。
   PluginEntry? _pluginOf(String id) =>
       _plugins.plugins.where((e) => e.id == id).firstOrNull;
-
-  /// 这个源的「配置」按钮回调，**没有可配置的插件时返回 `null`**
-  ///
-  /// # 为什么是 null 而不是"永远给一个回调"
-  ///
-  /// 原版 `_PluginTile` 的「配置」按钮是**无条件显示**的，注释写着：
-  /// > ⚠️ 但这里的 `entry.config` 来自 `listPlugins`，那个字段**永远是空的**
-  /// >    （静态解析拿不到）。所以按钮**总是显示**，点进去再调
-  /// >    `pluginConfigGet` 拿真实声明 —— 没有可配置项时给明确提示。
-  ///
-  /// 我们保留这个语义（点进去有明确提示，比"没按钮"更能告诉用户
-  /// 「这里本来可以配」），但**只对有插件文件的源**给按钮：
-  /// 内置 / 声明式 / HTTP 源根本没有插件配置文件，
-  /// `pluginConfigGet(内置源 id)` 必然报错 —— 那不是"没有可配置项"，
-  /// 而是"这个东西不存在"，给按钮才是骗人。
-  ///
-  /// ⚠️ 两个分支都走 `_configPlugin` / `_flash`，**不另写一套逻辑**。
-  ///
-  /// # ★★★ 2026-10-18（Owner 第 11 条）：声明式源也必须有「配置」入口
-  ///
-  /// 改前这里 `if (e == null) return null` ⇒ **只有 js 插件有按钮**。
-  /// 而 Owner 要的「可视化编排」正是**声明式源**的编辑器 ⇒ 他手上没有任何
-  /// 一个入口能到编排器，只能点 js 插件的「配置」，然后看到
-  /// 「没有可配置项」（那 32 个插件确实一个都没声明 config，见
-  /// `_configPlugin` 的取证读数）。
-  ///
-  /// ⇒ 现在按 kind **正向分派**（与 `_editProvider` 同构）：
-  /// ```text
-  /// js            → `_configPlugin`（按 config 声明渲染表单）
-  /// declarative   → `_editDeclarativeViaComposer`（可视化编排，**带初值**）
-  /// 其它（内置/http/tvbox）→ null（没有可配的东西，不画按钮）
-  /// ```
-  /// ⚠️ 判据必须**正向列举** declarative，不能写成「不是 js 就给」——
-  ///    后者会给内置源画一个点了必报错的按钮（与 `_canEdit` 同一个理由）。
-  /// 打开「TVBox 聚合源」管理页（R2-#2：**两处入口共用同一个页面**）
-  ///
-  /// ```text
-  /// 入口 ①：聚合源那类的**组头**（`TvboxGroupHeader.onConfigure`，R1 加）
-  /// 入口 ②：聚合源**卡片自己的菜单**项「编辑链接…」（本次加）
-  /// ★ 为什么两处都要：Owner 两次反馈点的位置不同（第一次读到的是"进不去"，
-  ///   第二次点的是**卡片菜单**）—— 而菜单项的可用性受 `kind` 门控（见 `_configOf` 的注释）。
-  /// ```
-  void _openAggregatePage() {
-    showAppDialog<void>(
-      context: context,
-      builder: (_) => const TvboxAggregatePage(),
-    );
-  }
-
-  VoidCallback? _configOf(String id) {
-    final p = _providers.where((x) => x.id == id).firstOrNull;
-    /*
-     * ★★★ 2026-10-27（R2-#2 第二次反馈，Owner 逐字）：
-     *   「tvbox聚合源 还是不能编辑链接,继续优化」
-     *
-     * # 为什么**前两次的修法都没碰到这条**（这是真正的第三处断点）
-     * ```text
-     * 第 1 次（R1）：定位到"进聚合二级页的两条路都不可达"（空态入口只在列表为空时画、
-     *   组头入口需 tvboxDirect 非空），于是**给聚合源那类的组头加了入口**。
-     *   ⇒ 但 Owner **第二次**反馈 ⇒ 说明他点的不是组头，是**卡片自己的操作菜单**。
-     * 第 2 次（本次）：Owner 给的截图上，卡片菜单里**只有**「个性化覆盖层…」+「移除这个源」。
-     *   顺着截图查菜单项的门控：
-     *     · 「编辑」    ← `_canEdit`（只认 declarative/http/js）
-     *     · 「配置」    ← `onConfig`（= `_configOf(id)`）
-     *   而 `tvbox_agg` 是**内置 Rust 实现**（`kind` 空）⇒ `_canEdit == false`；
-     *   又**不是 declarative、也没有插件条目** ⇒ `_configOf` 走到 `_pluginOf(id) == null`
-     *   ⇒ **返回 null** ⇒ 「配置」按钮也不画。
-     *   ⇒ 三条按钮路**全部**不覆盖它，而它的菜单里那两项恰好是**唯一不受 kind 门控**的
-     *     ⇒ 这正是"菜单里只剩别的两个"的成因。
-     * ```
-     *
-     * # 修法：给 `tvbox_agg` 一条**显式分派**（正向列举，不是放宽通用判据）
-     * ```text
-     * 它与声明式源同构：**自己就有可编辑的配置**（那条订阅链接），只是载体不是 JSON/JS 文件，
-     * 而是聚合管理页（`TvboxAggregatePage`）。
-     * ⇒ 直接返回"打开聚合管理页"，与组头入口**同一条路**（同一个页面，两处入口）。
-     * ★ 放在 `declarative` 分派**之前** —— 它不依赖 `_pluginOf`，而下面那行 `_pluginOf` 会返回 null。
-     * ```
-     */
-    if (id == kTvboxAggregateId) {
-      return _openAggregatePage;
-    }
-    /*
-     * 声明式源：直达可视化编排。
-     * 这条路**不依赖插件条目**（声明式源本来就没有 .js 文件），
-     * 所以必须在 `_pluginOf` 判空**之前**分派。
-     */
-    if (p != null && p.kind == 'declarative') {
-      return () => _editDeclarativeViaComposer(p);
-    }
-    final e = _pluginOf(id);
-    if (e == null) return null;
-    return () => _configPlugin(e);
-  }
 
   /// 「移除 / 删除」按钮 —— **按 kind 分派**（合并时发现的关键差异）
   ///
@@ -2350,6 +2078,17 @@ class SettingsPageState extends State<SettingsPage> {
       if (e != null) return () => _removePlugin(e);
     }
     return () => _removeProvider(p);
+  }
+
+  Future<void> _removeManagedProvider(ProviderManifest provider) async {
+    final plugin = provider.kind == 'js'
+        ? _plugins.plugins.where((p) => p.id == provider.id).firstOrNull
+        : null;
+    if (plugin != null) {
+      await _removePlugin(plugin);
+    } else {
+      await _removeProvider(provider);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -2599,6 +2338,8 @@ class SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
 
+    _lastBuiltOverviewInputs = _overviewInputs;
+
     /*
      * ══════════════════════════════════════════════════════════════════
      * ★★★ 这一行的判据与 `loadAll()` 的守卫**同源**（task-3，2026-09-25）
@@ -2655,6 +2396,9 @@ class SettingsPageState extends State<SettingsPage> {
       children: [
         ListView(
           clipBehavior: Clip.antiAlias,
+          // Keep the next entry available for focus traversal without laying
+          // out several offscreen Miuix cards during the first page layout.
+          cacheExtent: Sp.x16 + Sp.x8,
           // ⚠️ 不能加 `const` —— `Sp.bottomBarInset` 是 getter（TV/非 TV 不同值）
           // ★ 内容带（t509）：原版 `SettingsView.vue:1612 <div class="container">`
           //   —— 整页**只有一个** `.container`，`.page-head`（:1613）与各
@@ -2933,30 +2677,7 @@ class SettingsPageState extends State<SettingsPage> {
               onTap: _openDanmakuSourcePage,
             ),
 
-            /*
-             * ★★★ Owner 第 7 条 ③：**首次使用引导**
-             *
-             * # 引导什么
-             * ```text
-             * 未配 dan-api 且 本机弹弹play 也不可用
-             *   ⇒ 用户现在取弹幕只能走**官方**，而官方要 AppId/AppSecret
-             *   ⇒ 大多数用户没有凭证 ⇒ 弹幕永远是 403
-             *   ⇒ 这就是 Owner 说的「弹弹play不行」的真实处境
-             * ```
-             * 这时**主动**告诉他：还有 dan-api 这条路（免凭证）。
-             *
-             * # 为什么判据要放在**设置页**而不是播放页
-             * ```text
-             * 播放页的提示是**事后**的（弹幕取失败了才说）；
-             * 而这条是**事前**的：用户还没开始看，先在配置页告诉他怎么配好。
-             * 播放页那套（DanmakuHint）继续负责失败后的补救，两者不冲突。
-             * ```
-             *
-             * ⚠️ **零网络**：本块只读偏好，不发起探测。
-             *    设置页一打开就打网络是不可接受的（慢、且用户没要求）。
-             *    「本机弹弹play 在不在线」由用户点「测试连接」时才知道；
-             *    所以这里用**未配置**作为唯一判据 —— 保守但不撒谎。
-             */
+            // 未填写地址时已有内置实例；只有连默认端点也没有才需要配置引导。
             if (_danmakuShouldGuide()) ...[
               const SizedBox(height: Sp.x1),
               Container(
@@ -3044,6 +2765,12 @@ class SettingsPageState extends State<SettingsPage> {
                 loadAll();
                 widget.onProvidersChanged?.call();
               },
+            ),
+            SettingsEntryRow(
+              icon: AppIcons.settings_outlined,
+              title: '全局代理',
+              subtitle: '所有内容源、直播源与弹幕服务共用的网络代理',
+              onTap: () => _openSubPage(const GlobalProxySettingsPage()),
             ),
             SettingsEntryRow(
               icon: Icons.web_outlined,
@@ -3480,7 +3207,6 @@ class SettingsPageState extends State<SettingsPage> {
      */
     _healthToken?.cancel();
     _dataRev.dispose();
-    _toastRev.dispose();
     /*
      * ★ 2026-10-22（PR #32 / CR 线程 5）：进度通知器同样是本 State 的资产，
      *   谁建谁销毁 —— 留着的话宿主销毁后 `_healthSweep` 的 finally 里那句
@@ -3689,1388 +3415,11 @@ class SettingsPageState extends State<SettingsPage> {
   /// ```text
   /// 启停   _toggleProvider    （它含"写 → 读回真相 → 按真相报"三步）
   /// 编辑   _editProvider
-  /// 配置   _configOf
+  /// 配置   onConfig / _configPlugin
   /// 移除   _removeOf
   /// 更新   _openPluginUpdate  （只有有安装链接的插件才有这个入口）
   /// 排序   _moveLiveBy / _onReorderLive  ← ★ 唯一新增（理由见上面纯函数）
   /// ```
-  Widget _liveTab(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final live = _liveSources;
-    final enabled = live.where((p) => p.enabled).length;
-
-    // ★ 内容带（t509）：左右那两层 `AppMetrics.contentPadding` 已由
-    //   `_tabScrollBody` 那层归零 —— 这里只留底部的 `Sp.x8`。
-    return Padding(
-      padding: const EdgeInsets.only(bottom: Sp.x8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(
-                '直播源',
-                style: TextStyle(
-                  fontSize: FontSizes.lg,
-                  fontWeight: FontWeight.w600,
-                  color: colors.onSurface,
-                ),
-              ),
-              const SizedBox(width: Sp.x3),
-              /*
-               * ★ 启用数**实时算**，不写死 —— 写死会显示过期数据，
-               *   比不显示更糟（与本文件块头那枚 `直播 N/M` chip 同一原则）。
-               */
-              Text(
-                '$enabled/${live.length} 已启用',
-                style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: Sp.x4),
-          if (live.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: Sp.x6),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '还没有支持直播的源',
-                    style: TextStyle(
-                      fontSize: FontSizes.base,
-                      color: colors.onSurface,
-                    ),
-                  ),
-                  const SizedBox(height: Sp.x2),
-                  /*
-                   * ★ 空态必须说清「怎么才会有」—— 只说"没有"用户不知道下一步。
-                   *   同时它也是 Owner 那句「导入js插件,自动更新直播源」的
-                   *   用户可见承诺：导入后这里会自己长出来。
-                   */
-                  Text(
-                    '在「源」里导入后，声明了直播能力的源会自动出现在这里。',
-                    style: TextStyle(
-                      fontSize: FontSizes.sm,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            )
-          else
-            ReorderableCardGrid(
-              itemCount: live.length,
-              dragSlotWidth: _dragSlotW,
-              /*
-               * ★ TV 用更宽的列下限（2026-10-02，实测驱动）
-               *
-               * 起因：android-tv 在 960 逻辑宽的 TV 上截图发现 ——
-               *   3 列 × 单格 296px 时，含「插件更新」的第 7 个按钮
-               *   （↑ ↓ ⟳ ⚙ 编辑 停用 🗑）放不进一行，🗑 被 Wrap
-               *   甩到第二行孤零零一个。桌面 4 列 299px 之所以没
-               *   暴露，是因为 TV 的 `Device.textScale = 1.25` 把
-               *   两个文字按钮撑大了 25%。
-               *
-               * 判据：`columnsFor(912, min=290) = 3`（单格 296）；
-               *       改 440 后 `columnsFor(912, min=440) = 2`（单格 450），
-               *       内容宽 426 > 7 按钮所需 ≈290，余量 136px。
-               *
-               * 为什么治本：3 列 × 296px 在 10 英尺观看距离上本来就
-               * 偏挤（cap 字号 ×1.25 仍偏小），这是"密度不合理"而不是
-               * "按钮太多"。既有的响应式规则（900 窗口→2 列）本就是
-               * 同一逻辑，TV 只是把 minItemWidth 抬到 440。
-               * 桌面/手机不传 440，保持原样零回归。
-               */
-              minItemWidth: Device.isTv ? 440 : kMinCardWidth,
-              onReorder: _onReorderLive,
-              itemBuilder: (context, i, dragHandle, cellWidth) => Padding(
-                key: ValueKey(live[i].id),
-                padding: EdgeInsets.zero,
-                child: _ProviderCard(
-                  provider: live[i],
-                  cellWidth: cellWidth,
-                  dragHandle: dragHandle,
-                  // ★ 第 07 项：展开态由宿主持有（见 SettingsPageState 的说明）
-                  expanded: _expandedProviderIds.contains(live[i].id),
-                  onToggleDetails: () => _toggleProviderDetails(live[i].id),
-                  canMoveUp: i > 0,
-                  canMoveDown: i < live.length - 1,
-                  onMoveUp: () => _moveLiveBy(live[i].id, -1),
-                  onMoveDown: () => _moveLiveBy(live[i].id, 1),
-                  onToggle: () => _toggleProvider(live[i]),
-                  onRemove: _removeOf(live[i]),
-                  onEdit: () => _editProvider(live[i]),
-                  pluginEntry: _pluginOf(live[i].id),
-                  onConfig: _configOf(live[i].id),
-                  onCopy: _copy,
-                  onOverride: () =>
-                      _openOverrideEditor(live[i].id, live[i].name),
-                  onPluginUpdate: _pluginSources.containsKey(live[i].id)
-                      ? () => _openPluginUpdate(live[i].id, live[i].name)
-                      // 同上：TVBox 源走订阅更新弹窗（判据同 `_providers` 那处）
-                      : _tvboxSources.containsKey(live[i].id)
-                      ? () => _openTvboxUpdate(live[i].id, live[i].name)
-                      : null,
-                  // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
-                  tvboxSource: _tvboxSourceOf(live[i].id),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  ///
-  /// ⚠️ `colors` 在 `build()` 里是**局部变量**，这里自己取一次
-  ///    （同一个 `Theme.of(context).colorScheme`，值一致）。
-  Widget _pluginsBlock(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    /*
-     * ★★★ 2026-10-09（Owner：「我在js插件还看到了直播源,这两个要分隔开啊」）
-     *
-     * # 这一份列表**不含**直播源
-     * ```text
-     * 判据与「直播源」tab 同一个真源（`capabilities.live`）⇒
-     * 两个 tab 的并集 = 全部源、交集 = 空。
-     * 详见 `_nonLiveProviders` 的文档（含为什么这是"推翻 09-28 的合并"
-     * 而不是回归）。
-     * ```
-     *
-     * ★ 排序也只作用于这个子序列（CR-19）：`_onReorderProviders` /
-     *   `_moveProviderBy` 收到的下标是**本 tab 内**的下标，按全局
-     *   `_providers` 切表就会移走**别的源**（直播源在全局表里的位置是
-     *   交错的）。两条路径都改走 [reorderSubsetIds]：换位只发生在
-     *   子序列内部，落盘时返回的仍是**新的全局顺序**，
-     *   直播源之间的相对顺序一个都不动。
-     */
-    final allVisible = visibleProviders(_nonLiveProviders);
-    final list = filterManagedSources(
-      allVisible,
-      query: _sourceQuery,
-      enabled: _sourceEnabledFilter,
-      sourceClass: _sourceClassFilter,
-    );
-    // ★ 展示序列（TVBox 聚合组可折叠）：其他源在前、聚合组在后；折叠时整组省掉
-    //   纯函数 `tvboxGroupOrder` 不读 State ⇒ 门禁可直接注入（见 zz_t1048）
-    final visible = tvboxGroupOrder(list, expanded: _tvboxExpanded);
-    /*
-     * ⚠️ 下面这段（102 行）是**原区块的设计说明** —— ⑤ 搬迁时
-     *    差点把它连同注释一起删掉。它解释的是"这块为什么长这样"：
-     *    原版出处、实测数据、为什么 `thirdParty` 必须排除 js、
-     *    为什么标题叫「JS 插件」而不是「内容源」。
-     *
-     *    区块进了二级页之后**更需要**这段说明 —— 所以补回这里，
-     *    而不是让它随搬迁消失。
-     */
-    // ── JS 插件（含全部内容源）──
-    /*
-     * ══════════════════════════════════════════════════════════
-     * ★★★ 内容源 + JS 插件 —— 合并成**一个区块**（2026-09-25）
-     * ══════════════════════════════════════════════════════════
-     *
-     * 用户原话：
-     * > 我说的合并还有 js插件和内容源这两块内容合成一个
-     *
-     * # ★ 原版早就合并过，我们漏了
-     *
-     * 原版 `SettingsView.vue:1652-1692` 的注释（Owner 原话）：
-     * > 把设置页面的内容源删除掉，只保留 js 插件
-     * > 然后 js 插件我觉得布局还是留白太多了，优化一下
-     *
-     * 原版为什么必须合并（原文照抄）：
-     * ```text
-     * 实测本机 list_providers 返回 26 个源，kind 全是 "js"
-     * 于是「内容源」区块变成：
-     *   内容源                          ← 标题，下面一张卡片都没有
-     *     [排序] [健康检测] [导入源]
-     *     （空）
-     *   ───────────── 虚线 ─────────────
-     *   JS 插件  [外置] [26 个]
-     *     [重新加载] [安装插件]
-     * 标题栏 + 虚线 + 边距共占约 156px 的纯空白，而且两个标题栏
-     * 让用户以为有两类东西，实际只有一类。
-     * ```
-     *
-     * # ★★ 我们这边还有一层原版没有的问题：**同一批源画了两遍**
-     *
-     * 原版的「内容源」区块只渲染 `builtin` / `declarative` / `http`
-     * —— `thirdParty` 是**正向列举**那两个 kind 的，注释写着
-     * （`SettingsView.vue:1509`）：
-     * > ★ 第三方源 —— **必须排除 JS 插件**
-     * >   （实测踩到：同一批源显示了两遍）
-     *
-     * 我们的 `_providers` 来自 `list_providers()` —— 它返回
-     * **registry 里全部已注册的源**（含 js）。实测本机：
-     * ```text
-     * provider-order.json   26 条
-     * plugins 目录下的 .js      26 个文件，@id 解析出 26 个
-     * 两个集合**完全相同**（set 相等，两个方向差集都是空）
-     * ```
-     * 于是「内容源」的 26 张 `_ProviderCard` 和「JS 插件」的
-     * 26 个 `_PluginTile` 是**同一批源** —— 用户截图里
-     * 「影视天涯 / 影视建安」上下各出现一次，按钮还不一样。
-     *
-     * 合并后**只保留一份列表**：`_ProviderCard`（它有拖动 +
-     * ↑↓ + 编辑/停用/移除 + 代理/登录）。`_PluginTile` 独有的
-     * 两样信息**并进卡片**，一样都不丢：
-     * ```text
-     * · 「配置」按钮（plugin_config_get 的唯一界面入口）
-     *       → `_ProviderCard.onConfig`
-     * · 插件文件名（`154.js` 这种，用户靠它对上磁盘上的文件）
-     *       → `_ProviderCard.pluginEntry.file`，拼进描述行
-     *       （★ task-5 起改传整条 `PluginEntry`，见该字段的注释）
-     * ```
-     * 加载失败的插件仍**单独列出**（`_plugins.failed` +
-     * `_plugins.plugins` 里 `loaded == false` 的）—— 不静默。
-     *
-     * # 合并后的确切结构（照原版 `SettingsView.vue:1693-1742`）
-     *
-     * ```text
-     * ┌─ 区块 ────────────────────────────────────────────────────┐
-     * │ JS 插件  [外置] [26 个]                                   │
-     * │ [调整顺序][健康检测][导入源] │ [重新加载][从网址安装][粘贴源码安装]
-     * │ 放在 plugins/ 下的 .js 文件，能打开看、能自己改            │
-     * │ <源卡片列表：拖动 / ↑↓ / 编辑 / 停用 / 移除 / 代理 / 登录> │
-     * └───────────────────────────────────────────────────────────┘
-     * ```
-     *
-     * ⚠️ 标题用「JS 插件」而**不是**「内容源」—— 原版的选择，
-     *    理由是本机源全是 JS 插件；而「内容源」这个词会让人
-     *    以为这里还有别的形态。
-     *
-     * ⚠️ 5 个按钮用 `Wrap`（原版 `flex-wrap: wrap` 的语义）：
-     *    > 手机上五个按钮一行放不下，要能自然折行。
-     *    写成 `Row` 会在窄屏**溢出报错**（黄黑条纹），不是折行。
-     *
-     * ⚠️ 两组之间那条竖线用 `Container(width: 1)` 画，**不是**
-     *    `Divider` —— 原版 `.head__sep` 本来就是一个 1px 色块；
-     *    而且本项目刚把卡片里的分隔线删干净（用户要求
-     *    「配置和登录合并到一起上面」），不要再画回来。
-     *
-     * # 与原版的**必要差异**（如实说明，不假装一致）
-     *
-     * ```text
-     * · 排序按钮文案    原版是「排序」，我们沿用「调整顺序」
-     *                   （`provider_layout_test.dart` 锁了这个字面量，
-     *                    而它指的就是同一个入口 `_openOrderDialog`）
-     * · 插件目录        原版显示可点击的绝对路径（pluginDir），
-     *                   我们只显示 `plugins/` —— 没有任何 FFI
-     *                   命令把 data_dir 暴露给这个 widget，
-     *                   宁可少显示，也不画一个点了没反应的假路径
-     * · 卡片上的 ↑↓      原版**明确拒绝**过（理由：排序是跨分组的，
-     *                   卡片箭头管不了跨分组移动）——
-     *                   但用户明确要求了，所以三条路径**都保留**
-     *                   （拖动 + 卡片箭头 + 排序面板），不冲突
-     * ```
-     *
-     * ⚠️ 不做假 UI：没有的能力就不画按钮（画了点了没反应更糟）。
-     */
-    return _Block(
-      /*
-       * ★★★ N8a（2026-10-27）：区块标题「JS 插件」→「源」
-       *
-       * Owner 定名「源」（完整理由见一级页入口行那处注释）。
-       * 区块标题与入口行、页签**用同一个词** —— 用户从三处看到的都一致，
-       * 不再出现"入口叫 A、进去叫 B"。
-       *
-       * ⚠️ 下面那段 102 行的原区块设计说明（"合并内容源 + JS 插件…"）
-       *    **逐字保留**：它讲的是历史决策与实现机制（为什么合并、
-       *    为什么 `thirdParty` 必须排除 js），按 N8a 口径（注释里的
-       *    机制描述可保留）不动。它引用的 `_Block(title: 'JS 插件')`
-       *    字样也是**当时的事实**，不是用户可见文案。
-       */
-      title: '源',
-      /*
-       * ★ 关掉外层大框 —— 见 `_Block.boxed` 的说明。
-       *
-       * 用户原话「内容源做成卡片式的」：卡片本身早就有圆角边框，
-       * 真正让它**不像卡片**的是外面还套着一层容器（盒子套盒子）。
-       * 关掉之后 26 张卡各自独立，不再被读成「一个列表盒子」。
-       *
-       * ⚠️ 合并后**仍然只关这一个区块**。下面 手势/遥控/同步
-       *    那些区块的内容不是卡片列表，它们**需要**外框来分组，
-       *    保持默认 `true`（`_Block.boxed` 的默认值）。
-       */
-      boxed: false,
-      /*
-       * 块头右侧：`[外置] [N 个]`（原版 `block__title` 里的两个 chip）
-       *
-       * ⚠️ 只在**有源被停用**时才补一句「M 已启用」——
-       *    全启用时那行是废话（原版也没有这一句），
-       *    有停用时它才是用户想知道的信息。
-       */
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const _MiniChip(text: '外置'),
-          if (_plugins.plugins.isNotEmpty) ...[
-            const SizedBox(width: 4),
-            _MiniChip(
-              text: '${_plugins.plugins.length} 个',
-              tone: _ChipTone.brand,
-            ),
-          ],
-          /*
-           * ★ 2026-09-28：`直播 N/M` 汇总 chip
-           *
-           * # 为什么合并之后**必须**补这一枚
-           * ```text
-           * 原先"哪些源能直播"靠**独立区块**回答（把 live 的源单独列一遍）。
-           * 区块并进本列表后，用户得逐张卡片看「直播」chip 才能数出来 ——
-           * 26 张卡滚动着数不现实。
-           * ⇒ 用一枚 chip 把"N 个直播源、M 个已启用"提到块头。
-           * ```
-           * ⚠️ 没有直播源时**不画**（画「直播 0/0」是噪声，
-           *    与 `_enabledCount != _providers.length` 那条同一个原则：
-           *    全启用/全没有时那行是废话）。
-           */
-          if (_liveSources.isNotEmpty) ...[
-            const SizedBox(width: 4),
-            _MiniChip(
-              text:
-                  '直播 '
-                  '${_liveSources.where((p) => p.enabled).length}'
-                  '/${_liveSources.length}',
-              tone: _ChipTone.brand,
-            ),
-          ],
-          if (_enabledCount != _providers.length) ...[
-            const SizedBox(width: Sp.x2),
-            Text(
-              '$_enabledCount 已启用',
-              style: TextStyle(
-                fontSize: FontSizes.cap,
-                color: colors.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ],
-      ),
-      /*
-       * 块头**标题行之下**：5 个按钮 + 插件目录提示
-       *
-       * 原版把它们都放在 `<section>` 的头部、卡片列表**之上**
-       * （`.head__acts` 与 `.plug__hint`），这里同构。
-       */
-      headerExtra: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          /*
-           * ★ 2026-10-26：上次启动没恢复的源，提示在**列表最上面**
-           *
-           * # 为什么放在这里（而不是塞进某个弹窗）
-           * ```text
-           * 恢复失败是**启动时**发生的事，用户此刻正站在源列表页上：
-           *   ① 放最上面 ⇒ 不用点任何入口就知道「有源没回来、是哪几个、为什么」；
-           *   ② 放在列表**后面** ⇒ 26 张卡滚到底才看见，等于没说。
-           * ```
-           * # 为什么不会变成常驻噪音
-           * 组件自己带阴性判据：清单为空时返回零尺寸（`SizedBox.shrink`），
-           * 正常情况下这一行**一个像素都不占**；只有确实有源没恢复时才出现。
-           */
-          const TvboxRestoreFailuresView(),
-          SourceManagerToolbar(
-            query: _sourceQuery,
-            enabled: _sourceEnabledFilter,
-            sourceClass: _sourceClassFilter,
-            resultCount: list.length,
-            totalCount: allVisible.length,
-            onQuery: (query) => _setSourceFilter(query: query),
-            onEnabled: (enabled) =>
-                _setSourceFilter(enabled: enabled, setEnabled: true),
-            onClass: (sourceClass) =>
-                _setSourceFilter(sourceClass: sourceClass, setClass: true),
-          ),
-          const SizedBox(height: Sp.x3),
-          /*
-           * ★★ 2026-10-10：8 个按钮 → 2 个常驻 + 一个 ⋮ 菜单
-           *
-           * 改前（Owner：「3.js插件的ui不好看」）：
-           * ```text
-           * [调整顺序][健康检测][测速][导入源] │ [重新加载][从网址安装][粘贴源码安装]
-           * ```
-           * 8 个描边按钮排成两行、还夹一条竖线，在 26 张卡片**上面**压着
-           * —— 一眼扫过去最抢眼的是一排按钮，而不是「有哪些源」。
-           *
-           * ⇒ 按频率分层：
-           * ```text
-           * 常驻  [从网址安装]  [⋮]   安装是这一页的主要入口
-           * 菜单  调整顺序 / 健康检测 / 测速 / 导入源 / 重新加载 / 粘贴源码安装
-           * ```
-           *   —— 全部**一个没删**，只是收进菜单（菜单项带图标 + 文案，
-           *      比 6 个同款描边按钮好认得多）。
-           *
-           * ⚠️ `PopupMenuButton` 可被方向键聚焦、Enter 打开、
-           *    菜单项在菜单路由里可方向键上下选 ⇒ TV 上不失可达。
-           */
-          Wrap(
-            spacing: Sp.x2,
-            runSpacing: Sp.x2,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              ui.FilledButton.icon(
-                key: const ValueKey<String>('source-manager-import'),
-                onPressed: _openImportDialog,
-                icon: const Icon(AppIcons.add, size: 16),
-                label: const Text('导入源'),
-              ),
-              ui.IconButton(
-                key: const ValueKey<String>('source-manager-order'),
-                tooltip: '调整顺序',
-                onPressed: _openOrderDialog,
-                icon: const Icon(AppIcons.reorder, size: 18),
-              ),
-              ui.FilledButton.icon(
-                onPressed: _installPlugin,
-                icon: const Icon(AppIcons.download, size: 16),
-                label: const Text('从网址安装'),
-              ),
-              /*
-               * ★★ 2026-10-17（Owner 第 8 条：「插件那个点击出来操作菜单的也好难看」）
-               *
-               * 从裸 `PopupMenuButton` 换成全仓统一的 [AppMenuButton] ——
-               * 菜单面（底色/描边/圆角/条目高）与 `detail_page` 的「下载」菜单**同源**
-               * （两者共用 app_menu.dart 的 `AppMenuSurface` 与
-               *  `kAppMenuConstraints`）。
-               *
-               * ⚠️ 行为**逐字不变**：
-               *   · 5 项、顺序、`switch` 的五个分支一字不改；
-               *   · busy 时「健康检测 / 重新加载」的文案仍变成「处理中…」
-               *     （文案优先于"用 disabled 表达"—— AppMenuItem 的 label 现算，
-               *      再配 `enabled: !_sweeping` 保住禁用语义）；
-               *   · 每一项仍走共用的 `_menuRow`（图标+文案），不是裸 Text。
-               */
-              AppMenuButton<String>(
-                tooltip: '更多操作',
-                iconSize: 18,
-                onSelected: (v) {
-                  switch (v) {
-                    case 'order':
-                      _openOrderDialog();
-                    case 'speed':
-                      _sortBySpeed();
-                    case 'health':
-                      if (!_sweeping) _healthSweep();
-                    case 'import':
-                      _openImportDialog();
-                    case 'reload':
-                      if (!_pluginBusy) _reloadPlugins();
-                    case 'source':
-                      _installPluginSource();
-                    case 'pan':
-                      _openPanShare();
-                  }
-                },
-                /*
-                 * ★ `AppMenuItem` 本身装的是「文案 + 图标」（值类型），装不下
-                 *   `_menuRow` 这个现成 widget。为了**一行都不重写**文案与图标
-                 *   （`provider_import_test` 与 `provider_layout_test` 都逐字断言
-                 *   了 `_menuRow(...)` 的写法），这里用 AppMenuItem 的 `child`
-                 *   口子把 `_menuRow` 的结果带过去。
-                 *   条目外观（高度/图标色/危险色）仍由 app_menu.dart 统一画。
-                 */
-                items: <AppMenuItem<String>>[
-                  AppMenuItem<String>(
-                    value: 'order',
-                    child: _menuRow(AppIcons.reorder, '调整顺序'),
-                  ),
-                  /*
-                   * ★ 2026-10-18（Owner 第 13 条）：「一键按照速度排序」
-                   *
-                   * 放在「调整顺序」**紧后面** —— 两者都是"改列表顺序"，
-                   * 相邻才容易被找到（用户原话是「还可以一键按照速度排序」，
-                   * 他期待它就在排序入口旁边）。
-                   * ⚠️ 排序后仍可手动拖：本项只是调一次
-                   *    `_persistOrder`，没有任何"锁定顺序"的状态。
-                   */
-                  AppMenuItem<String>(
-                    value: 'speed',
-                    child: _menuRow(AppIcons.speed, '按速度排序'),
-                  ),
-                  AppMenuItem<String>(
-                    value: 'health',
-                    enabled: !_sweeping,
-                    /*
-                     * ★ 2026-10-22（PR #32 / CR 线程 5）：文案里的 `N/总数`
-                     *   也是进度的一部分 ⇒ 同样订阅 `_healthRev`。
-                     *
-                     * 为什么这条不只是"顺手"：本次检测就是从二级页起的
-                     * （`onSelected` 的 `case 'health'` 在 `_pluginsBlock` 里），
-                     * 而 `_pluginsBlock` 只由 `_PluginsPage` 渲染 ⇒ 只靠宿主
-                     * `setState` 的话，中途再拉开这个菜单看到的还是「健康检测」，
-                     * 明明正在跑却不显示进度。
-                     */
-                    child: ValueListenableBuilder<int>(
-                      valueListenable: _healthRev,
-                      builder: (context, _, __) => _menuRow(
-                        AppIcons.monitor_heart_outlined,
-                        _sweeping ? '检测中 $_healthDone/$_healthTotal' : '健康检测',
-                      ),
-                    ),
-                  ),
-                  AppMenuItem<String>(
-                    value: 'import',
-                    child: _menuRow(AppIcons.add, '导入源'),
-                  ),
-                  AppMenuItem<String>(
-                    value: 'reload',
-                    enabled: !_pluginBusy,
-                    child: _menuRow(
-                      AppIcons.refresh,
-                      _pluginBusy ? '处理中…' : '重新加载',
-                    ),
-                  ),
-                  AppMenuItem<String>(
-                    value: 'pan',
-                    child: _menuRow(AppIcons.link, '识别网盘链接'),
-                  ),
-                  AppMenuItem<String>(
-                    value: 'source',
-                    child: _menuRow(AppIcons.code, '粘贴源码安装'),
-                  ),
-                ],
-              ),
-              // 测速自带自己的按钮态（进度/结果），仍常驻在块头右侧。
-              PluginSpeedTestAllButton(
-                pluginIds: list
-                    .where((p) => p.enabled)
-                    .map((p) => p.id)
-                    .toList(growable: false),
-                /*
-                 * ★ 2026-10-18（Owner 第 13 条）：测速完成后发一条 toast。
-                 *
-                 * Owner 原话：「测速完发送一条toast」。
-                 * 改前测速结束时**界面没有任何终态反馈** ——
-                 * 进度行直接消失回到「全部测速」按钮，用户不知道是跑完了
-                 * 还是被取消了。所以由宿主在这里发一条，而不是让按钮自己弹
-                 * （按钮拿不到 `showAppToast` 的 context 也没关系，但它
-                 *  不知道宿主的命名习惯；宿主统一发能保证文案口径一致）。
-                 */
-                onFinished: _onSpeedTestFinished,
-              ),
-            ],
-          ),
-          const SizedBox(height: Sp.x3),
-          /*
-           * ★★★ 2026-10-18（Owner 第 13 条）：健康检测的**进度行**
-           *
-           * Owner 原话：「健康监测和速度测试都要显示出来 正在执行的数量/总数量,
-           *              可以让用户看到多少」。
-           *
-           * 只在跑的时候出现（不跑时不占位、不加噪声），
-           * 与测速那行同一个视觉规格（`FontSizes.cap` + 主色）。
-           * 右侧「停止」让用户随时收手 —— 这也是「支持退出这个页面」的
-           * **用户可见**那一半（另一半是离开页面时自动 cancel）。
-           *
-           * ★★★ 2026-10-22（PR #32 / CodeRabbit 线程 5）：这一行**自己订阅**
-           *   `_healthRev`，不再靠宿主 `setState` 顺带重建。
-           *
-           * ```text
-           * 改前：`if (_sweeping) ...[ 整行 ]` 直接写在这里。
-           * 这里由 `_pluginsBlock` 渲染，而 `_pluginsBlock` 只被 `_PluginsPage`
-           * 渲染 —— 那是 `Navigator.push` 的另一条路由，宿主 `setState` 重建
-           * 不到它 ⇒ 二级页上进度行永远 `0/N`、停下也不消失。
-           * ```
-           * ⚠️ 视觉与几何**逐字未变**（外面那个 `SizedBox(height: Sp.x3)`
-           *   留在原地，行内的 `top: Sp.x3` padding 由 widget 自己补），
-           *   所以 `zz_settings_geometry_test` 的读数不受影响。
-           */
-          HealthSweepProgressRow(
-            rev: _healthRev,
-            snapshot: () => (
-              sweeping: _sweeping,
-              done: _healthDone,
-              ok: _healthOk,
-              total: _healthTotal,
-            ),
-            /*
-             * ⚠️ 文案在这里拼、不在 widget 里拼，是**故意**的：
-             *   `zz_t66_track_c_gates_test` 逐字断言了这个字面量
-             *   （`健康检测 $done/$total` 那句必须真的存在于 UI 代码里），
-             *   搬到 widget 里就会让那条门禁变成假红。
-             */
-            label: () => '健康检测 $_healthDone/$_healthTotal',
-            okLabel: () => '可用 $_healthOk',
-            onStop: () => _healthToken?.cancel(),
-          ),
-          /*
-           * 插件目录提示（原版 `.plug__hint`）
-           *
-           * 原版它挂在「JS 插件」子标题下，合并后并入块头。
-           *
-           * ⚠️ 只显示 `plugins/` 这个**目录名**，不显示绝对路径 ——
-           *    没有任何 FFI 命令把 data_dir 暴露给本 widget，
-           *    编一个路径出来就是假 UI（用户会照着一个不存在的
-           *    路径去找文件）。原版能显示是因为它前端就知道
-           *    `pluginDir`。真路径见「关于」区块里的数据目录。
-           */
-          Text(
-            '放在 plugins/ 下的 .js 文件，能打开看、能自己改',
-            style: TextStyle(
-              fontSize: FontSizes.cap,
-              color: colors.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
-      children: [
-        /*
-         * ══════════════════════════════════════════════════════
-         * ★★★ 卡片列表 —— 支持**拖动排序**（2026-09-25 用户要求）
-         * ══════════════════════════════════════════════════════
-         *
-         * 用户原话：
-         * > 内容源调整顺序也要支持可拖动排序
-         *
-         * 原先是一个 `for (final p in _providers) Padding(...)` ——
-         * 静态铺开，没有任何拖拽能力。
-         *
-         * # 三个参数都是必须的，不是可选优化
-         *
-         * ```text
-         * shrinkWrap: true
-         *   `ReorderableListView` 内部是个 `CustomScrollView`（可滚动）。
-         *   它被放进外层 `build()` 的 `ListView` 里 ——
-         *   嵌套两层可滚动区域时，内层拿不到**有界高度**，
-         *   直接渲染失败。`shrinkWrap` 让它按内容撑开、
-         *   高度由内容决定，滚动仍然只由外层负责。
-         *
-         * physics: NeverScrollableScrollPhysics()
-         *   同上：内层**不能**自己滚，否则滚轮会被它截走 ——
-         *   而这一页的滚轮本来就有问题（`spatial_nav.dart`
-         *   的 `ensureVisible`，另一个任务在修），
-         *   再截一层会让它彻底滚不动。
-         *
-         * buildDefaultDragHandles: false
-         *   默认把手是在**整张卡右侧**盖一条 48px 宽的透明长条。
-         *   它会吃掉「编辑 / 停用 / 移除」三个按钮的点击 ——
-         *   表现为「点按钮没反应」。所以关掉，改成自己在
-         *   卡片里画一个**明确的**把手（见 `_ProviderCard._actions`）。
-         * ```
-         *
-         * # 为什么每张卡都要 `Key`
-         *
-         * `ReorderableListView` 靠 `Key` 在重排前后**认出同一个条目**
-         * （否则会把「移动」当成「整块重建」，拖动动画会跳）。
-         * 用 `ValueKey(源 id)` 而不是下标 —— 下标在重排后必然变，
-         * 用它等于每次都是新条目。
-         *
-         * # 为什么列表里还留着 `Padding(bottom: Sp.x3)`
-         *
-         * 原版 `.cards { gap: var(--sp-3) }` = 卡片间距 12px。
-         * 卡片之间**必须有间距**，否则「26 张独立卡片」会糊成
-         * 一整块 —— 那就退回到用户不想要的「一个大列表」了。
-         *
-         * # ★ 合并后这一份列表就是**全部内容源**
-         *
-         * 见块头那段注释：`_providers` 含 js（本机 26 个全是 js），
-         * 所以它就是原版「JS 插件」区块里那张 `.plug__list` ——
-         * **不再有第二份** `_PluginTile` 列表。
-         */
-        /*
-         * ══════════════════════════════════════════════════════
-         * ★★★ 卡片列表 —— **响应式多列网格** + 拖动排序
-         * ══════════════════════════════════════════════════════
-         *
-         * 用户原话（两条）：
-         * ```text
-         * 内容源调整顺序也要支持可拖动排序
-         * js插件还没改成一行多个的显示(根据宽度动态处理显示)
-         * ```
-         *
-         * # ★ 2026-09-25 从 `ReorderableListView` 换成网格
-         *
-         * 原来是 `ReorderableListView` —— 它**只有单列**
-         * （构造函数里没有 `gridDelegate` 之类的参数），
-         * 26 张卡竖排 26 行，一屏只看得到 4~5 个。
-         *
-         * 现在换成 `ReorderableCardGrid`（`lib/ui/widgets/`）——
-         * 列数**由可用宽度动态决定**：
-         * ```text
-         * 1280 窗口 → 3 列（可用 1232 / 每列约 403）  与原版一致
-         *  900 窗口 → 2 列
-         *  400 窗口 → 1 列（手机）
-         * ```
-         * 为什么不用 `SliverReorderableGrid` / `reorderable_grid_view`
-         * —— 三条路都逐个查过，理由（含实测数据）写在那个文件的
-         * 头部注释里：**这个 Flutter 版本没有前者，而后者的
-         * `SliverGridDelegate` 会裁掉会自动展开的代理/登录面板**。
-         *
-         * # 三个「必须」都还在
-         *
-         * ```text
-         * 卡片间距        → ReorderableCardGrid 的 `spacing`（Sp.x3）
-         *                 原版 `.plug__list { gap: var(--sp-2) }`，
-         *                 且卡片之间**必须有间距** —— 否则 26 张卡
-         *                 会糊成一整块，退回用户不想要的「一个大列表」
-         *
-         * 每张卡有 Key    → 仍用 `ValueKey(源 id)`（重排前后认条目）。
-         *                 ★ 网格版把它放在**行内的 `Expanded`** 上，
-         *                 由 `ReorderableCardGrid` 内部保证下标正确
-         *
-         * 内层不自己滚    → 网格是一个 `Column`（不是 `CustomScrollView`），
-         *                 所以**不存在**嵌套滚动的问题 ——
-         *                 原先 `ReorderableListView` 需要的
-         *                 `shrinkWrap: true` +
-         *                 `physics: NeverScrollableScrollPhysics()`
-         *                 两个参数随之**不再需要**。
-         *                 这同时省掉了"网格要算全部卡片高度"的开销
-         *                 （`shrinkWrap` 的网格很贵）。
-         * ```
-         *
-         * # ★ 拖动的机制换了（但语义完全一致）
-         *
-         * ```text
-         * 旧：ReusableDragStartListener（只能在 ReorderableListView
-         *     的子树里工作 —— 靠 SliverReorderableList 的
-         *     InheritedWidget 找祖先）
-         * 新：Draggable（把手）+ DragTarget（每个格子）
-         *     —— 拖到第 j 格 = 移到第 j 位，与
-         *     `onReorderItem` 的语义一致（已经是目标位，不再 -= 1）
-         * ```
-         * ⚠️ 把手由 `ReorderableCardGrid` 造好、**传给卡片**
-         *    （`_ProviderCard.dragHandle`）—— 因为"把手放在卡片里
-         *    哪一格"是卡片的版式知识（它还要与 `_panels()` 的
-         *    左缩进逐像素对齐）。
-         *
-         * ⚠️ 三条排序路径**一条都没少**：
-         * ```text
-         * ① 拖动        → 本网格（Draggable + DragTarget）
-         * ② 卡片 ↑↓     → `_ProviderCard._actions`（不受影响）
-         * ③ 排序面板    → 「调整顺序」按钮 → `_OrderDialog`（不受影响）
-         * ```
-         * 三条最终都走 `_persistOrder`（唯一落盘出口）。
-         *
-         * # ★ 合并后这一份列表就是**全部内容源**
-         *
-         * 见块头那段注释：`_providers` 含 js（本机 26 个全是 js），
-         * 所以它就是原版「JS 插件」区块里那张 `.plug__list` ——
-         * **不再有第二份** `_PluginTile` 列表。
-         */
-        /*
-         * ★ 2026-10-26（用户当场看不到"聚合"的根因之一）：
-         *   列表为空时**必须有一句话 + 一个按钮**告诉用户下一步做什么。
-         *
-         * 改前：空列表就是一片空白。用户真实数据目录里
-         *   `third-party-providers.json == []`、`tvbox-sources.json` 不存在，
-         *   而"导入"入口藏在右上角 ⋮ 菜单里 ⇒ **用户不知道自己该点哪**。
-         * ⇒ 只在 `isEmpty` 时出现（非空时组件自己返回零尺寸）；
-         *   有源时**一个像素都不占**，原有布局零变化。
-         *   门禁 `zz_t1046` 用注入证明"有源时不许画"。
-         */
-        SourcesEmptyState(
-          isEmpty: allVisible.isEmpty,
-          onImport: _openImportDialog,
-          onConfigure: () => showAppDialog<void>(
-            context: context,
-            builder: (_) => const TvboxAggregatePage(),
-          ),
-        ),
-        if (list.isEmpty && allVisible.isNotEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 16),
-            child: Text('没有匹配的源'),
-          ),
-        /*
-         * ★ T5：TVBox 订阅自动更新（Owner：「…定时更新」）
-         *
-         * 放在源列表区块顶部：它管的是**全部** TVBox 订阅源（一份配置
-         * 产出几十个源共用一个链接 ⇒ 定时是按链接的，不是按卡片），
-         * 放任何一张卡上都会造成"别的卡也要各自设一遍"的误读。
-         * 读不到配置时组件自己返回零尺寸（附加信息，不拖垮整页）。
-         */
-        const TvboxAutoUpdateRow(),
-        /*
-         * ★ 2026-10-26（Owner 架构要求 A′ 的 **B 半**）：
-         *   TVBox 导入出来的源不再散成 16 张"平级卡"，而是收进
-         *   **「TVBox 聚合」**这一个可折叠分组标题下：
-         *   ```text
-         *   [其他源…（JS/HTTP/声明式，各自独立卡片）]
-         *   ┌ TVBox 聚合（16 个源）  ▸/▾
-         *   └ 折叠后只剩这一行；展开才是那 16 张卡
-         *   ```
-         * ⚠️ 这一层**只改展示分组**：卡片、id、启用态、排序一个都没变
-         *   （身份零迁移；`provider:native` 的收藏/进度/弹幕绑定不受影响）。
-         *   真正的"单个聚合源"由 Rust 侧 `hidden` + `csp/aggregate.rs` 承接。
-         */
-        /*
-         * ══════════════════════════════════════════════════════════════
-         * ★★★ N8b-4（2026-10-27）：源列表按 kind **五分类**分组
-         * ══════════════════════════════════════════════════════════════
-         *
-         * Owner 原话：
-         * > 播放源（js插件页）页面应该区分 tvbox源 / js插件 / 声明式 /
-         * > tvbox聚合源 / 直播，这是不同的实现，应该坐在不同的分类下。
-         *
-         * # 这一层是**纯展示分组**（与既有 TVBox 折叠组同一条纪律）
-         * ```text
-         * 卡片 / id / 启用态 / 排序 / provider:native 路由**一个都没变**
-         * ⇒ 收藏 / 进度 / 弹幕绑定 / 下载队列 零迁移。
-         * ```
-         *
-         * # 与既有「TVBox 聚合」折叠组的关系（**保留，不推翻**）
-         * ```text
-         * 既有那条（`tvboxGroupCount` / `tvboxGroupOrder` / `TvboxGroupHeader`）
-         * 负责的是「TVBox 源」这一类的**可折叠**（16 张卡收进一行）。
-         * 本项**沿用**它当「TVBox 源」这一类的组头 —— 不另造第二个组头
-         * （Lead 裁定：不许顺手重构，一次大改无法归因）。
-         * ⇒ 五分类里的 `tvboxDirect` 用既有 TvboxGroupHeader，
-         *   其余四类用新增的 SourceClassHeader。
-         * ```
-         *
-         * # 为什么「TVBox 聚合源」是**独立一类**而不是并进「TVBox 源」
-         * ```text
-         * 两者 kind **都是 "tvbox"**（csp/provider.rs:126 与
-         * tvbox_aggregate.rs:231）⇒ 只按 kind 分组会糊成一组 ——
-         * 那正是 Owner 说的"没区分开"。
-         * ⇒ 聚合入口（固定 id `tvbox_agg`）**先判**，见 sourceClassOf。
-         * ```
-         *
-         * # 聚合源**只有一个入口**（Lead 加的那一条）
-         * ```text
-         * 被接管的子站 manifest 带 `hidden: true`
-         * （tvbox.rs:1203 / csp/provider.rs:126）⇒ 已被上面的
-         * `visibleProviders(...)` 挡在列表外。
-         * 本项**不再**把 N 个 hidden 子站平铺出来 ——
-         * 它们只经「TVBox 聚合源」那一条（`tvbox_agg`）使用。
-         * 门禁 `zz_t1059` 用注入证明：hidden 子站不得出现在任何分类里。
-         * ```
-         *
-         * # ★★★ 分组输入是 `list`（**折叠之前**的全集），不是 `visible`
-         * ```text
-         * `visible = tvboxGroupOrder(list, expanded: _tvboxExpanded)`
-         * 在**折叠时已经把 tvbox 组整段去掉**了。
-         * 若拿它去分组 ⇒ 折叠后「TVBox 源」这一类**整个消失**
-         * ⇒ 组头（那个「展开」按钮）跟着消失 ⇒ **再也点不回来**（单向开关）。
-         *
-         * ★ 既有门禁 `zz_t1048` **抓不到**它：它验的是两个纯函数的行为 +
-         *   接线字符串，而"折叠后组头还在不在"没人断言过 ——
-         *   这正是"改了分组必须重验折叠"的原因（交叉复核要盯的点）。
-         * ⇒ 修法：**分组基于全集 `list`**，TVBox 那一类的**条目**
-         *   再按折叠态取（折叠 ⇒ 空 ⇒ 连网格都不画）。
-         * ```
-         */
-        for (final (cls, sectionItems) in groupSourcesByClass(list)) ...[
-          // ── 组头：tvboxDirect 沿用既有可折叠组头，其余四类用新组头 ──
-          if (cls == SourceClass.tvboxDirect) ...[
-            /*
-             * ⚠️ 这一条**逐字保留**既有写法（`zz_t1048` 的门禁锚点）：
-             *    它不是新加的判断，而是"TVBox 源"这一类的非空判据。
-             */
-            if (tvboxGroupCount(list) > 0)
-              TvboxGroupHeader(
-                count: tvboxGroupCount(list),
-                expanded: _tvboxExpanded,
-                onToggle: () =>
-                    setState(() => _tvboxExpanded = !_tvboxExpanded),
-                onConfigure: () => showAppDialog<void>(
-                  context: context,
-                  builder: (_) => const TvboxAggregatePage(),
-                ),
-              ),
-          ] else
-            SourceClassHeader(
-              label: cls.label,
-              count: sectionItems.length,
-              /*
-               * ★★★ 2026-10-27（R2-#2，Owner 当场实测）：
-               *   「对于 tvbox 聚合源 还是不能编辑链接」
-               *
-               * # 为什么必须在这里再给一个入口
-               * ```text
-               * 改前，进聚合二级页（里面才有"链接可改/测试连通/立即更新"）**只有两条路**：
-               *   ① `SourcesEmptyState.onConfigure`  → **列表为空**时才画（`:5224` 零尺寸）
-               *   ② `TvboxGroupHeader.onConfigure`   → 需 `cls == tvboxDirect` **且非空**
-               * ⇒ 而 Owner 的真数据里 16 个子站**全是 hidden**（A′：`tvbox_agg` 接管）
-               *   ⇒ `visibleProviders` 之后 `tvboxDirect == 0` ⇒ ② 不画；
-               *   他又**已有源**（37 条可见）⇒ ① 也不画
-               *   ⇒ **两条入口同时不可达**，聚合源卡片却看得见 ⇒ 正是"看得到但编辑不了"。
-               *   实测读数见 `.probe/r2-n8b2-entry-recon.log`（入口可达数 = 0）。
-               * ```
-               *
-               * # 挂在哪（为什么是"聚合源"这一类，而不是别处）
-               * ```text
-               * 本类的**唯一成员**就是 `tvbox_agg` 那条卡片（`sourceClassOf` 钉死 id）。
-               * 管理区管的是"这条聚合背后的链接/测试/更新" ⇒ 语义上就属于这一类。
-               * ⇒ 组头带入口 = **这一类只要存在就一定有入口**（不受 hidden/折叠影响）。
-               * ⚠️ 折叠只影响 `tvboxDirect` 那类的**条目**，本类从不折叠 ⇒ 入口恒在。
-               * ```
-               */
-              onConfigure: cls == SourceClass.tvboxAggregate
-                  ? () => showAppDialog<void>(
-                      context: context,
-                      builder: (_) => const TvboxAggregatePage(),
-                    )
-                  : null,
-            ),
-          /*
-           * ★ 每组一个网格（**不是**一个总网格）——
-           *   组头与卡片必须同属一个分组容器，否则滚动时组头会与
-           *   别的类的卡片错位（"标题属于上一段还是下一段"读不出来）。
-           *
-           * ⚠️ `Builder` 只为**声明本组的局部别名**（集合字面量里不能写 `final`）。
-           *    别名让本组网格的代码与既有单网格版本**逐字相同**，
-           *    同时把边界（`canMoveUp/Down`）收在本组内 ——
-           *    否则「JS 插件」组的第一张会显示成"还能上移"
-           *    （因为全局还有别的类在它前面），点了却不动，用户读作"按钮坏了"。
-           *    （与既有 `canMoveDown: i < list.length - 1` 那条注释同一个理由。）
-           */
-          Builder(
-            builder: (_) {
-              final visible = cls == SourceClass.tvboxDirect
-                  ? tvboxGroupOrder(sectionItems, expanded: _tvboxExpanded)
-                  : sectionItems;
-              final list = sectionItems;
-              if (visible.isEmpty) return const SizedBox.shrink();
-              return ReorderableCardGrid(
-                // ★ 只画非直播源（见本方法开头的说明）；折叠 TVBox 组时把它们整段省掉
-                itemCount: visible.length,
-                dragSlotWidth: _dragSlotW,
-                // ★ TV 用更宽的列下限 —— 理由同上（live 列表那处有完整说明）。
-                minItemWidth: Device.isTv ? 440 : kMinCardWidth,
-                onReorder: (o, n) => _onReorderWithin(visible, o, n),
-                itemBuilder: (context, i, dragHandle, cellWidth) => Padding(
-                  key: ValueKey(visible[i].id),
-                  padding: EdgeInsets.zero,
-                  child: _ProviderCard(
-                    provider: visible[i],
-                    /*
-               * ★ 第 07 项：展开态由宿主持有 —— 同一个 `Set` 同时服务
-               * 「内容源」与「直播源」两份列表（按源 id，天然互不干扰）。
-               */
-                    expanded: _expandedProviderIds.contains(visible[i].id),
-                    onToggleDetails: () =>
-                        _toggleProviderDetails(visible[i].id),
-                    /*
-               * ★ 本格宽度由网格传进来（`ReorderableCardGrid` 算的列数
-               * 本来就是按它分的）。卡片用它决定按钮横排还是换行。
-               *
-               * ⚠️ 卡片**不能**自己用 `LayoutBuilder` 量 ——
-               *    那会让子树不支持 intrinsics，外层的
-               *    `IntrinsicHeight`（负责"同一行卡片等高"）
-               *    会直接抛 "LayoutBuilder does not support
-               *    returning intrinsic dimensions"（实测踩到）。
-               */
-                    cellWidth: cellWidth,
-                    /*
-               * 拖动把手 —— 由网格造好传进来（见上面的说明）。
-               * `ReorderableCardGrid` 靠它知道拖的是第几格。
-               */
-                    dragHandle: dragHandle,
-                    /*
-               * 「上一个 / 下一个」按钮的可用性：
-               * 第一张不能上移、最后一张不能下移。
-               * ⚠️ 边界按钮**置灰而不是隐藏** ——
-               *    隐藏会让每张卡的按钮位置错开，
-               *    置灰则整列按钮**竖直对齐**，好点也好认。
-               */
-                    canMoveUp: i > 0,
-                    canMoveDown: i < list.length - 1,
-                    onMoveUp: () =>
-                        _moveProviderBy(visible[i].id, -1, within: visible),
-                    onMoveDown: () =>
-                        _moveProviderBy(visible[i].id, 1, within: visible),
-                    onToggle: () => _toggleProvider(visible[i]),
-                    onRemove: _removeOf(visible[i]),
-                    onEdit: () => _editProvider(visible[i]),
-                    /*
-               * ★★ 合并后从原 `_PluginTile` **并过来**的两样
-               *
-               * ```text
-               * pluginFile  插件文件名（`154.js`）
-               *             原来在 tile 的第二行显示，
-               *             用户靠它对上磁盘上的文件
-               * onConfig    「配置」按钮 —— `plugin_config_get`
-               *             的**唯一界面入口**（`_configPlugin`）。
-               *             删掉 tile 就必须把它接出来，
-               *             否则插件的配置项再也点不到
-               * ```
-               * 非 JS 源（内置 / 声明式 / HTTP）没有对应的插件
-               * 文件，两个都传 null → 卡片上不画「配置」按钮、
-               * 描述行也不拼文件名。
-               */
-                    pluginEntry: _pluginOf(visible[i].id),
-                    onConfig: _configOf(visible[i].id),
-                    // ★ task-5：标识 chip 可点复制上游链接 —— 复用宿主现成的 `_copy`
-                    //（它带「已复制」toast，且 `_toastRev` 让二级页也看得到）
-                    onCopy: _copy,
-                    // ★ 第 06 项：源个性化覆盖层入口（按源，不改原件）
-                    onOverride: () =>
-                        _openOverrideEditor(visible[i].id, visible[i].name),
-                    // ★ T5：TVBox 源的「上次更新」行（非 TVBox 源 = null ⇒ 不画）
-                    tvboxSource: _tvboxSourceOf(visible[i].id),
-                    /*
-               * ★★ 只有**有安装链接**的插件才有这个入口（task-23）
-               *
-               * `_pluginSources` 来自 `list_plugin_sources`
-               *（纯本地读 `plugins/.meta/<id>.json`，零网络）。
-               * 查到 null → 传 null → 卡片上**不出现**更新按钮。
-               *
-               * 实测预期：本机现有 26 个插件**全是手动放入的**
-               *（没有任何 meta）→ **26 张卡一个都不会有这个按钮**。
-               * 这是**正确行为**，不是 bug —— 见字段注释的原则。
-               */
-                    onPluginUpdate: _pluginSources.containsKey(visible[i].id)
-                        ? () =>
-                              _openPluginUpdate(visible[i].id, visible[i].name)
-                        /*
-                   * TVBox 源走**另一个弹窗**（task-14 附加）
-                   *
-                   * 两者共用卡片上同一个图标按钮（`_ProviderCard.onPluginUpdate`），
-                   * 因为对用户来说都是「这个源能不能更新」。
-                   *
-                   * 判据是 `_tvboxSources.containsKey`，**不是**
-                   * `_tvboxSources[id]!.sourceUrl != null` —— 见字段注释：
-                   * 没链接的源也要能点进去**补填**链接。
-                   *
-                   * 两处都查不到 => 仍传 `null` => **不画按钮**
-                   * （`test/plugin_update_ui_test.dart` 钉住了这个语义）。
-                   */
-                        : _tvboxSources.containsKey(visible[i].id)
-                        ? () => _openTvboxUpdate(visible[i].id, visible[i].name)
-                        : null,
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-
-        // 空态（原版 `.prov-empty`：「还没有内容源，点击「导入源」添加」）
-        if (_providers.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: Sp.x6),
-            child: Center(
-              child: Text(
-                '还没有内容源',
-                style: TextStyle(
-                  fontSize: FontSizes.sm,
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-            ),
-          ),
-
-        /*
-         * ══════════════════════════════════════════════════════
-         * ★ 加载失败的插件必须显示 —— 不静默
-         * ══════════════════════════════════════════════════════
-         *
-         * 两个来源都要列：
-         * ```text
-         * _plugins.failed            读文件 / 执行脚本失败的（file + 原因）
-         * _plugins.plugins !loaded   解析出来了但没注册上（如缺 @id）
-         * ```
-         * ⚠️ 只列 `failed` 会漏掉第二种：`list_plugins` 对
-         *    「解析成功但没注册」的条目**照样塞进 plugins**
-         *    （`loaded: false` + `error`）。不在这里显示的话
-         *    用户放进去的文件就是"凭空消失"。
-         */
-        for (final f in _plugins.failed)
-          _FailedPlugin(file: f.$1, reason: f.$2),
-        for (final e in _plugins.plugins.where((e) => !e.loaded))
-          _FailedPlugin(file: e.file, reason: e.error ?? '加载失败'),
-      ],
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//  子组件
-// ═══════════════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════════════
-//  「JS 插件」二级页的 tab 条（task-74 ③）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// Owner 原话（m04668）：
-// > js源配置页面加一个直播源 ... 然后在这个直播源 tab下进行控制,
-// > 然后这个tab也使用液态玻璃 那个效果实现吧,记住固定在上面,
-// > 而不是随着整体下滑
-//
-// 拆成三件事，分别由下面三个声明承担：
-// ```text
-// _PluginsTab             两个 tab 的名字（枚举驱动，不手写两份）
-// _PluginsTabBar          玻璃 + 滑动药丸（照抄 my_shelf / follow_page）
-// _PluginsTabBarDelegate  pinned 的 SliverPersistentHeader delegate
-// ```
-//
-// Plugin sections share the actual Miuix tab row used by the library shelf.
-enum _PluginsTab {
-  plugins('源'),
-  live('直播源');
-
-  const _PluginsTab(this.label);
-  final String label;
-}
-
-// Fixed extents keep the pinned section measurable under IntrinsicHeight.
-const double _pluginsTabWidth = 96;
-const double _pluginsTabH = 34;
-const double _pluginsTabBarExtent = _pluginsTabH + Sp.x2 * 2 + Sp.x2;
-
-class _PluginsTabBar extends StatelessWidget {
-  const _PluginsTabBar({required this.current, required this.onChanged});
-
-  final _PluginsTab current;
-  final ValueChanged<_PluginsTab> onChanged;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    width: _pluginsTabWidth * _PluginsTab.values.length,
-    child: SettingsTabs(
-      labels: [for (final tab in _PluginsTab.values) tab.label],
-      selected: current.index,
-      onSelected: (index) => onChanged(_PluginsTab.values[index]),
-      height: _pluginsTabH,
-    ),
-  );
-}
-
-/// tab 条的 pinned delegate
-///
-/// # 为什么照抄 `settings_sub_page.dart:398-451` 而不是 import 它
-///
-/// `_StickyBackBar` 是那个文件的**私有**类，而那个文件本轮**只读**
-/// （Lead 明确禁止改动）。照抄它的两条关键做法：
-/// ```text
-/// ① minExtent == maxExtent 时 `shrinkOffset` 恒为 0 —— 不写 clamp 也不会
-///    算出负高度（负高度会直接抛异常，比视觉错更糟）
-/// ② 条**必须有不透明底色** —— 内容会从它下面滚过，
-///    透明会让两行文字叠在一起
-/// ```
-class _PluginsTabBarDelegate extends SliverPersistentHeaderDelegate {
-  const _PluginsTabBarDelegate({
-    required this.extent,
-    required this.background,
-    required this.child,
-  });
-
-  final double extent;
-
-  /// 条的**不透明**底色 —— 玻璃是半透明的，它自己挡不住下面滚过的文字
-  final Color background;
-
-  final Widget child;
-
-  @override
-  double get minExtent => extent;
-
-  @override
-  double get maxExtent => extent;
-
-  @override
-  Widget build(
-    BuildContext context,
-    double shrinkOffset,
-    bool overlapsContent,
-  ) => Container(
-    height: extent,
-    color: background,
-    alignment: Alignment.centerLeft,
-    // ★ 内容带（t509）：本层是 `SliverPersistentHeader(pinned: true)`，
-    //   但它整体在 `SettingsSubPage.build` 的那层带之内 ⇒ 这里归零。
-    //   原来这里是 `AppMetrics.contentPadding`（24），会与带重复 ⇒ ×2。
-    padding: EdgeInsets.zero,
-    child: child,
-  );
-
-  @override
-  bool shouldRebuild(covariant _PluginsTabBarDelegate old) =>
-      old.extent != extent ||
-      old.background != background ||
-      old.child != child;
-}
-
-/// 「JS 插件」二级页（task-43）
-///
-/// # 为什么是**同文件**的顶层私有类
-/// ```text
-/// 见 `SettingsPageState._pluginsBlock` 的说明：那一块依赖 host 的
-/// 22 个成员 + 约 1105 行私有 class，跨文件搬的代价远大于收益，
-/// 而本文件有并发写入者。
-///
-/// 用户要的是「点进去才看到」（UX），不是「代码在哪个文件」（组织）。
-/// ```
-///
-/// ⚠️ 外壳用 `SettingsSubPage`（与另外 5 个二级页**完全一致**）：
-///    它自带返回按钮 + Esc/遥控返回 —— 全局标题栏**没有**返回键，
-///    自己画会漏掉键盘路径（那个文件的注释记着这个坑）。
-class _PluginsPage extends StatefulWidget {
-  const _PluginsPage({required this.host});
-
-  /// 宿主设置页 State（提供 `_pluginsBlock` 与全部动作方法）
-  final SettingsPageState host;
-
-  @override
-  State<_PluginsPage> createState() => _PluginsPageState();
-}
-
-class _PluginsPageState extends State<_PluginsPage> {
-  /// 当前 tab
-  ///
-  /// ★ 默认 `plugins` —— 与原行为**逐字一致**：老用户点进来第一眼看到的
-  ///   还是那份内容源列表，多出来的只是顶上一根 tab 条。
-  _PluginsTab _tab = _PluginsTab.plugins;
-
-  /// 两个 tab 的**共同骨架**
-  ///
-  /// # ★★★ 为什么必须走 `scrollBody:` 而不是 `children:`
-  ///
-  /// `SettingsSubPage` 有两条结构路径（`settings_sub_page.dart:100` 逐字写着）：
-  /// ```text
-  /// scrollBody == null → _scrollingBody → CustomScrollView + SliverList
-  /// scrollBody != null → _pinnedBody    → Column + Expanded(scrollBody)
-  /// ```
-  /// 走 `children:` 的话每个子件是 `CustomScrollView` 里**平级的一个 sliver**
-  /// —— 没有任何缝能塞进 `SliverPersistentHeader`，tab 条只能随内容滚走。
-  /// 而 Owner 的原话是「记住固定在上面，而不是随着整体下滑」。
-  /// ⇒ 自己供给 `CustomScrollView`，把 tab 条放进
-  ///   `SliverPersistentHeader(pinned: true)`。
-  Widget _tabScrollBody(BuildContext context) {
-    final host = widget.host;
-    final colors = Theme.of(context).colorScheme;
-
-    // ★ 内容带（t509）：带由 `SettingsSubPage.build` 统一提供（一级/二级页
-    //   都在原版那**一个** `.container` 之内）⇒ 这里**不要**再加一层，
-    //   否则二级页会变成 ×2。
-    return CustomScrollView(
-      clipBehavior: Clip.antiAlias,
-      slivers: [
-        SliverToBoxAdapter(
-          child: SourceDiscoveryEntry(
-            onSourcesChanged: () {
-              host.loadAll();
-              host.widget.onProvidersChanged?.call();
-            },
-          ),
-        ),
-        /*
-         * ★ tab 条：`pinned: true` 就是「滚到哪都留在视口顶」的**全部来源**。
-         *
-         * ⚠️ 玻璃是**半透明**的，它自己挡不住下面滚过的文字 ⇒
-         *    必须在它后面垫一层**不透明**底（`colors.surface`）。
-         *    用 `FTheme.colors.background` 不行 —— forui 的
-         *    `neutral.light.background` 是纯白 #FFFFFF，白叠白等于没垫。
-         */
-        SliverPersistentHeader(
-          pinned: true,
-          delegate: _PluginsTabBarDelegate(
-            extent: _pluginsTabBarExtent,
-            background: colors.surface,
-            child: _PluginsTabBar(
-              current: _tab,
-              onChanged: (t) => setState(() => _tab = t),
-            ),
-          ),
-        ),
-
-        /*
-         * ★★ 两个 tab 的内容都订阅 `host._dataRev`
-         *
-         * 本页是**另一条路由**，host 的 setState 不重建它。
-         * 而每个操作都靠 host 方法 → `await loadAll()`（它的 `finally` 里
-         * `_dataRev.value++`）—— 不订阅的话用户按「编辑」「启用」后
-         * 界面不变（像没反应）。
-         *
-         * ★ Owner 要的「导入 js 插件 → 自动更新直播源」正是**白拿**的：
-         *   导入 / 更新 / 回滚 / 启停**全都**走 `loadAll()`，
-         *   于是两个 tab 一起刷新 —— 不必为直播源另造一套通知机制。
-         */
-        ValueListenableBuilder<int>(
-          valueListenable: host._dataRev,
-          builder: (context, _, __) => SliverToBoxAdapter(
-            child: _tab == _PluginsTab.plugins
-                ? host._pluginsBlock(context)
-                : host._liveTab(context),
-          ),
-        ),
-
-        // 底部让位（悬浮底栏盖在所有路由之上）
-        //
-        // ⚠️ 这里**不能**加 `const`：`Sp.bottomBarInset` 是 **getter**
-        //    （`tokens.dart:73`：`Device.isTv ? 110 : 90`），
-        //    getter 调用不能出现在 const 表达式里 ⇒ `invalid_constant`。
-        //    同样的坑在本仓已记过两次：`search_page.dart:605`、
-        //    `live_page.dart:1500`（两处注释逐字写着同一条）。
-        SliverToBoxAdapter(child: SizedBox(height: Sp.bottomBarInset)),
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final host = widget.host;
-    /*
-     * ★★★ 用 `Stack` 包一层 —— 二级页要自己画 toast（task-43）
-     *
-     * # 为什么必须自己画
-     * ```text
-     * `_flash()` 把消息写进 host 的 `_toast`，而 host 的 toast 画在
-     * **宿主自己的 Stack** 里 —— 被 push 上来的本页整屏盖住。
-     *
-     * 成功类还能靠列表刷新看出变化；
-     * ★ 失败类（"安装失败：…"／"删除失败：…"／"保存失败：…"）
-     *   **列表根本不变** ⇒ 用户完全没有反馈，只会以为「点了没反应」。
-     * ```
-     *
-     * ⚠️ 样式与 host 的 toast **逐字一致**（黑底胶囊 + 同一个
-     *    `Sp.bottomBarInset` 让位）—— 两处观感不同比没有更糟。
-     */
-    return Stack(
-      children: [
-        SettingsSubPage(
-          /*
-           * ★★★ N8a（2026-10-27）：二级页页头标题「JS 插件」→「源」
-           * 与入口行 / 区块标题 / 页签同一个词。
-           */
-          title: '源',
-          subtitle: '内容源：安装 / 编辑 / 更新 / 排序 / 代理配置',
-          /*
-           * ★ task-74 ③：从 `children:` 换成 `scrollBody:` ——
-           *   理由逐字见 `_tabScrollBody` 的文档注释。
-           */
-          scrollBody: _tabScrollBody(context),
-        ),
-        // ── toast（与 host 的渲染逐字一致，见上面的说明）──
-        ValueListenableBuilder<String?>(
-          valueListenable: host._toastRev,
-          builder: (context, msg, __) {
-            if (msg == null) return const SizedBox.shrink();
-            return Positioned(
-              left: 0,
-              right: 0,
-              bottom: Sp.bottomBarInset,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: Sp.x5,
-                    vertical: Sp.x3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.85),
-                    borderRadius: Radii.rFull,
-                  ),
-                  child: Text(
-                    msg,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: FontSizes.sm,
-                    ),
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
-      ],
-    );
-  }
 }
 
 class _Section extends StatelessWidget {
@@ -5576,7 +3925,7 @@ class _ProviderCard extends StatelessWidget {
   /// ★ task-5（缺陷 5）：复制文本（上游链接）
   ///
   /// 复用**宿主**的 `_copy`（`lib/ui/settings_page.dart:1537`）—— 它已经做了
-  /// `Clipboard.setData` + `_flash('已复制')`，且 `_toastRev` 让**二级页**
+  /// `Clipboard.setData` + `_flash('已复制')`，且 shell 的 ToastHost 让**二级页**
   ///（本卡片所在的「JS 插件」页）也能看到那条 toast（见 `_flash` 的注释）。
   ///
   /// ⚠️ `null` = 宿主没提供 → 上游 chip **退化成不可点**（仍显示链接文本，
@@ -5592,24 +3941,8 @@ class _ProviderCard extends StatelessWidget {
   /// 只读原插件/原声明式源、只写自己的文件，删除即完全恢复。
   final VoidCallback? onOverride;
 
-  /// 「配置」按钮（插件配置项 / 声明式源的可视化编排入口）
-  ///
-  /// # ★ 同样是从 `_PluginTile` 并过来的
-  ///
-  /// `null` = 这个源**既没有插件配置文件、也不是声明式源**
-  /// （内置 / HTTP / TVBox），卡片上**不画**「配置」按钮。
-  ///
-  /// ⚠️ 为什么不"永远显示、点进去再说"（原版 tile 的做法）：
-  ///    对内置源调 `pluginConfigGet(id)` 必然报错 —— 那不是
-  ///    「没有可配置项」，而是**这个东西不存在**，给按钮是骗人。
-  ///    JS 插件（本机 26 个源全部）仍然**总是**显示按钮，
-  ///    与原版一致（原版注释：`entry.config` 永远是空的，
-  ///    所以点进去再拿真实声明，没有就明确提示）。
-  ///
-  /// ★ 2026-10-18（Owner 第 11 条）：**声明式源也给按钮**，且直达
-  ///   可视化编排（带初值）。改前只对 js 插件给按钮 ⇒ 声明式源没有任何
-  ///   一个入口能到编排器，用户点 js 的「配置」只会看到「没有可配置项」。
-  ///   分派见 `_configOf`。
+  /// 插件配置入口。没有插件时不提供回调，避免向非插件源请求配置。
+  /// JS 插件未声明配置项时由 _configPlugin 打开个性化覆盖层。
   final VoidCallback? onConfig;
 
   /// 「插件更新」入口（检测更新 + 更新历史/回滚）—— task-23
@@ -5653,16 +3986,16 @@ class _ProviderCard extends StatelessWidget {
       provider.kind == 'js' ||
       provider.kind == 'declarative' ||
       provider.kind == 'http' ||
-      provider.kind == 'tvbox';
+      provider.kind == 'tvbox' ||
+      provider.kind == 'm3u_live';
 
   /// 该源能否编辑（★ 正向列举，不是「不等于 builtin」）
   ///
-  /// # 三种形态各自能改什么（原版 `SettingsView.vue:1344` 的注释）
+  /// # 可编辑的源类型
   ///
   /// ```text
-  /// · declarative / http —— 有原始配置（JSON / URL + 头），可编辑
-  /// · js                —— 插件是磁盘上的 .js 文件，可编辑
-  /// · builtin           —— 编译进程序的，没有可改的配置
+  /// · http —— 保留旧 HTTP 配置的 URL 和请求头编辑
+  /// · js   —— 插件是磁盘上的 .js 文件，可编辑
   /// ```
   ///
   /// # 为什么不写成 `provider.kind != 'builtin'`
@@ -5674,10 +4007,7 @@ class _ProviderCard extends StatelessWidget {
   /// 具体场景：后端的 `kind` 是 `String` 不是 enum，将来加
   /// `"wasm"` 之类的新形态时，`!= "builtin"` 会立刻放行，
   /// 用户点进去才发现没有可编辑的配置。
-  bool get _canEdit =>
-      provider.kind == 'declarative' ||
-      provider.kind == 'http' ||
-      provider.kind == 'js';
+  bool get _canEdit => provider.kind == 'http' || provider.kind == 'js';
 
   /// kind 的中文标签
   ///
@@ -5935,13 +4265,20 @@ class _ProviderCard extends StatelessWidget {
                                * 「⚙ 直连」摘要行跟着从卡片上消失了，感知就是"被删"。
                                *
                                * 修法：摘要**常显**（直连/跟随系统/自定义 一眼可见），
-                               * 面板本体仍遵守第 07 项「展开才挂载」；点摘要 = 展开卡片。
+                               * 点摘要进入统一的全局代理页。
                                * 读取中/失败 → 零尺寸（不占行高、测试环境无 DLL 不出垃圾）。
                                */
                                 _ProxyModeSummary(
                                   providerId: provider.id,
                                   colors: colors,
-                                  onActivate: onToggleDetails,
+                                  onActivate: () async {
+                                    await Navigator.of(context).push<void>(
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            const GlobalProxySettingsPage(),
+                                      ),
+                                    );
+                                  },
                                   loader: proxySummaryLoader,
                                 ),
                               ],
@@ -5999,7 +4336,7 @@ class _ProviderCard extends StatelessWidget {
               ),
 
             // Only mount detail panels after an explicit body tap.
-            if (expanded) _panels(),
+            if (expanded) _panels(context),
           ],
         ),
       ),
@@ -6074,7 +4411,7 @@ class _ProviderCard extends StatelessWidget {
   ///    这里仍然传 null 是**保持行为不变**的取舍（不再是"模型缺字段"）；
   ///    要省掉每卡一次 `listProviders()` 可以把 `provider.capabilities`
   ///    传进去 —— 那是另一个任务，不在本次改动范围。
-  Widget _panels() {
+  Widget _panels(BuildContext context) {
     return Padding(
       /*
        * ★ 缩进 = 拖动把手格 + 图标宽 + 图标与正文的间距（`Sp.x3`）
@@ -6091,7 +4428,16 @@ class _ProviderCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          ProxyPanel(providerId: provider.id, providerName: provider.name),
+          SettingsEntryRow(
+            icon: AppIcons.settings_outlined,
+            title: '跟随全局代理',
+            subtitle: '打开全局代理设置',
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => const GlobalProxySettingsPage(),
+              ),
+            ),
+          ),
           ProviderLoginPanel(
             providerId: provider.id,
             providerName: provider.name,
@@ -6793,8 +5139,8 @@ class _ProviderCard extends StatelessWidget {
                * ```text
                * Owner 的截图显示：聚合源卡片的菜单里**只有**
                *   「个性化覆盖层…」+「移除这个源」——
-               * 因为「编辑」受 `_canEdit`（只认 declarative/http/js）、
-               *     「配置」受 `onConfig`（`_configOf` 对聚合源返回 null）⇒ **两项都不画**。
+               * 因为「编辑」受 `_canEdit`（只认 HTTP / JS）、
+               *     「配置」受 `onConfig` ⇒ 两项都可能不画。
                * ⇒ 而 Owner 要的就是"改这条聚合源的**订阅链接**"——
                *   那是 `TvboxAggregatePage` 里的管理面板（`TvboxSourceManagePanel`）。
                * ```
@@ -6804,7 +5150,7 @@ class _ProviderCard extends StatelessWidget {
                * `_canEdit` 的注释（:5597-5605）逐字写着**不许**写成"不等于 builtin"——
                *   "将来新增源类型时会误放行（**点了报错比不放更糟**）"。
                * 聚合源正是那个反例：它**有**可改的东西（链接），只是不是 JSON/JS 文件。
-               * ⇒ 所以按 `kTvboxAggregateId` **显式列**（正向列举），与 `_configOf` 同一条判据。
+               * ⇒ 所以按 `kTvboxAggregateId` **显式列**（正向列举），由调用方提供管理页回调。
                * ```
                */
               if (provider.id == kTvboxAggregateId)
@@ -6895,9 +5241,9 @@ class _ProxyModeSummary extends StatefulWidget {
   final String providerId;
   final ColorScheme colors;
 
-  /// 点击摘要的回调 —— 生产传 `onToggleDetails`（点摘要 = 展开卡片）。
+  /// 点击摘要的回调 —— 生产进入统一的全局代理页。
   /// `null` ⇒ 只展示、不可点（与卡片正文不可点的语义一致）。
-  final VoidCallback? onActivate;
+  final Future<void> Function()? onActivate;
 
   /// 测试缝（`@visibleForTesting` 语义由使用方保证，这里不设注解是因为
   /// 私有类的构造参数没有可见性问题）。
@@ -6910,31 +5256,48 @@ class _ProxyModeSummary extends StatefulWidget {
 class _ProxyModeSummaryState extends State<_ProxyModeSummary> {
   ProxyConfig? _cfg;
   bool _settled = false;
+  int _loadEpoch = 0;
 
   @override
   void initState() {
     super.initState();
+    ProxyCache.revision.addListener(_onProxyChanged);
     _load();
   }
 
+  void _onProxyChanged() => unawaited(_load());
+
+  @override
+  void dispose() {
+    ProxyCache.revision.removeListener(_onProxyChanged);
+    _loadEpoch++;
+    super.dispose();
+  }
+
   Future<void> _load() async {
+    final epoch = ++_loadEpoch;
     try {
-      final cfg = await (widget.loader ?? SourinApi.proxyConfigWithPassword)(
+      final cfg = await (widget.loader ?? SourinApi.proxyConfigFor)(
         widget.providerId,
       );
-      if (!mounted) return;
+      if (!mounted || epoch != _loadEpoch) return;
       setState(() {
         _cfg = cfg;
         _settled = true;
       });
     } catch (_) {
       // 读取失败（典型：测试环境没有核心 DLL）→ 零尺寸，不出占位垃圾
-      if (!mounted) return;
+      if (!mounted || epoch != _loadEpoch) return;
       setState(() {
         _cfg = null;
         _settled = true;
       });
     }
+  }
+
+  Future<void> _activate() async {
+    await widget.onActivate?.call();
+    if (mounted) await _load();
   }
 
   @override
@@ -6954,7 +5317,7 @@ class _ProxyModeSummaryState extends State<_ProxyModeSummary> {
           const SizedBox(width: 4),
           Flexible(
             child: Text(
-              cfg.summary,
+              '跟随全局代理 · ${cfg.summary}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
@@ -6968,7 +5331,7 @@ class _ProxyModeSummaryState extends State<_ProxyModeSummary> {
     );
     final onTap = widget.onActivate;
     if (onTap == null) return row;
-    return ui.InkWell(onTap: onTap, child: row);
+    return ui.InkWell(onTap: _activate, child: row);
   }
 }
 
@@ -7025,102 +5388,6 @@ class _ProviderIcon extends StatelessWidget {
     'tvbox' => AppIcons.hub_outlined,
     _ => AppIcons.live_tv_outlined,
   };
-}
-
-class _PluginTile extends StatelessWidget {
-  const _PluginTile({
-    required this.entry,
-    required this.onEdit,
-    required this.onConfig,
-    required this.onRemove,
-  });
-
-  final PluginEntry entry;
-  final VoidCallback onEdit;
-  final VoidCallback onConfig;
-  final VoidCallback onRemove;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: Sp.x2),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        entry.name.isEmpty ? entry.file : entry.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: FontSizes.sm,
-                          fontWeight: FontWeights.regular,
-                          color: colors.onSurface,
-                        ),
-                      ),
-                    ),
-                    if (!entry.loaded) ...[
-                      const SizedBox(width: Sp.x2),
-                      ui.Tooltip(
-                        message: entry.error ?? '加载失败',
-                        child: Icon(
-                          AppIcons.error_outline,
-                          size: 14,
-                          color: colors.error,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                Text(
-                  '${entry.file}'
-                  '${entry.version.isNotEmpty ? " · v${entry.version}" : ""}',
-                  style: TextStyle(
-                    fontSize: FontSizes.cap,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          /*
-           * ★ 有配置声明时才显示「配置」按钮
-           *
-           * ⚠️ 但这里的 `entry.config` 来自 `listPlugins`，
-           *    那个字段**永远是空的**（静态解析拿不到）。
-           *    所以按钮**总是显示**，点进去再调 `pluginConfigGet`
-           *    拿真实声明 —— 没有可配置项时给明确提示。
-           */
-          AppIconButton(
-            onPressed: onConfig,
-            icon: Icon(AppIcons.settings_outlined),
-            iconSize: 18,
-            tooltip: '配置',
-          ),
-          AppIconButton(
-            onPressed: onEdit,
-            icon: Icon(AppIcons.edit_outlined),
-            iconSize: 18,
-            tooltip: '编辑',
-          ),
-          AppIconButton(
-            onPressed: onRemove,
-            icon: Icon(AppIcons.delete_outline),
-            iconSize: 18,
-            tooltip: '删除',
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class _FailedPlugin extends StatelessWidget {
@@ -7568,89 +5835,25 @@ class _RemoteBlockState extends State<_RemoteBlock> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-
-    if (!_shouldOpen) {
-      /*
-       * ★ 去 Material（A 类迁移）：删掉透明 Material 外壳
-       *
-       * 原来这层 `Material(type: transparency)` **只**为了给 InkWell 的
-       * 水波提供绘制面 —— 它不画底色、没有形状、没有阴影。
-       * 换成 AppInkWell 后高亮是自绘的（画在自己身上），
-       * 不再需要祖先 Material ⇒ 整层删除，行为不变。
-       *
-       * ⚠️ 本块内**没有** ListTile 家族控件（实测 grep：0 处），
-       *    否则删掉 Material 会触发
-       *    「No Material widget found」断言。
-       */
-      return AppInkWell(
-        borderRadius: Radii.rLg,
-        onTap: () => _setOpen(true),
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: Sp.x4,
-            vertical: Sp.x3,
-          ),
-          decoration: BoxDecoration(
-            color: colors.surfaceContainerHighest.withValues(alpha: 0.3),
-            borderRadius: Radii.rLg,
-            border: Border.all(color: colors.outlineVariant),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '局域网遥控',
-                      style: TextStyle(
-                        fontSize: FontSizes.base,
-                        color: colors.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _collapsedSubtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: FontSizes.cap,
-                        color: colors.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: Sp.x2),
-              Icon(
-                AppIcons.expand_more,
-                size: 20,
-                color: colors.onSurfaceVariant,
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return SettingsBlock(
+    return SettingsDisclosure(
       title: '局域网遥控',
-      trailing: AppTextButton(
-        onPressed: widget.busy ? null : () => _setOpen(false),
-        child: const Text('收起'),
-      ),
-      children: [
-        Text(
-          'TV 遥控器打字搜索很难用。开启后，手机浏览器打开下面的网址，'
-          '就能搜索、选集、切线路、下一集 —— 手机输入关键词，电视上直接开播。',
-          style: TextStyle(
-            fontSize: FontSizes.sm,
-            color: colors.onSurfaceVariant,
+      summary: _collapsedSubtitle,
+      expanded: _shouldOpen,
+      onChanged: _setOpen,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            '开启后，手机浏览器打开下面的网址，即可搜索、选集和切换线路。',
+            style: TextStyle(
+              fontSize: FontSizes.sm,
+              color: colors.onSurfaceVariant,
+            ),
           ),
-        ),
-        const SizedBox(height: Sp.x4),
-        widget.child,
-      ],
+          const SizedBox(height: Sp.x4),
+          widget.child,
+        ],
+      ),
     );
   }
 }
@@ -7915,141 +6118,6 @@ Future<bool> probeProviderHealthForTest(String id) => _probeProviderHealth(id);
 // ═══════════════════════════════════════════════════════════════════════
 //  对话框
 // ═══════════════════════════════════════════════════════════════════════
-
-/// 源排序对话框
-class _OrderDialog extends StatefulWidget {
-  const _OrderDialog({
-    required this.draft,
-    required this.nameOf,
-    required this.offOf,
-  });
-
-  final List<String> draft;
-  final String Function(String) nameOf;
-  final bool Function(String) offOf;
-
-  @override
-  State<_OrderDialog> createState() => _OrderDialogState();
-}
-
-class _OrderDialogState extends State<_OrderDialog> {
-  late List<String> _list = [...widget.draft];
-
-  void _move(int i, int dir) {
-    final j = i + dir;
-    if (j < 0 || j >= _list.length) return;
-    setState(() {
-      final t = _list[i];
-      _list[i] = _list[j];
-      _list[j] = t;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    /*
-     * R4-EXCEPTION: 机制② 缺 Material 祖先 —— content 里是 ListTile。
-     *
-     * ★ 2026-10-20 复核**改判**：此前这里登记的理由是「装 420 需传
-     *   maxWidth: 468 ⇒ 只需传宽度就可以收拢」，并用「点第 2 行『上移』
-     *   顺序真的变了」当依据。**那条依据是错的**：当时把 AppGlassDialog
-     *   放在 `MaterialApp(home: Scaffold(body: Center(...)))` 里跑，
-     *   Scaffold **提供了 Material 祖先**，所以 ListTile 的 InkWell 能用。
-     *
-     * 实测（`.probe/r4f_order_material_test.dart`，走真的 showAppDialog 路由）：
-     * ```text
-     * No Material widget found.
-     * ListTile widgets require a Material widget ancestor within the
-     * closest LookupBoundary.
-     * 找到「上移」数 = 0        ← trailing 里的按钮根本没建出来
-     * ```
-     * ⇒ 换外壳不是「能不能点」的问题，是**弹窗根本打不开**。
-     *   与同类的 TextField 缺口（本仓 `.probe/probe_tf_test.dart`）同源：
-     *   AppGlassDialog 是零 Material 的纯玻璃卡片，不提供 Material 宿主。
-     *
-     * ⚠️ 宽度**不是**拦路石：content 宽 420 ⇒ 传 maxWidth: 468 即可
-     *   （口径：content 宽 = maxWidth − 48）。
-     * ⇒ 给 AppGlassDialog 补上「透明 Material 宿主」之后才可收拢。
-     */
-    return AppGlassDialog(
-      // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
-      //   → 统一外壳。**这就是当初登记「补齐透明 Material 宿主之后才可收拢」
-      //   所指的那一步**（改前那段改判详注已随迁移删除，结论保留在此）。
-      //   逐项等价（先读原语义，不是机械替换）：
-      //   · 返回值 `List<String>?` 完全不变：取消 = `Navigator.pop(context)`
-      //     （**null**）；保存 = `pop(context, _list)`（**当前顺序的快照**）。
-      //     `_list` 的初值/交换逻辑一字未改。
-      //   · 按钮文案与顺序不变（取消 / 保存）。
-      //   · 宽度：走外壳默认 460（§3.5「窄弹窗」档；内容区可用宽 412）。
-      //     原内容写死 420 ⇒ 不再重复写宽度（412 比 420 窄 8px；每行是
-      //     ListTile，没有硬编码宽度 ⇒ 无夹取、无溢出）。
-      //   ⚠️ 机制②：外壳内容区**零 Material 宿主**，而每行是 `ListTile`
-      //     （内部 InkWell）⇒ 就地包一层 `MaterialType.transparency`，
-      //     否则在**真 showAppDialog 路由**里弹窗根本打不开
-      //     （实测异常："ListTile widgets require a Material widget ancestor"，
-      //      见 test/zz_dialog18_unified_shell_test.dart 的仪器自检）。
-      title: '调整内容源顺序',
-      content: SizedBox(
-        // ★ 有界高度：ListView 落在**外壳的滚动区**里必须自带高度，
-        //   否则会抛 "Vertical viewport was given unbounded height"。
-        //   （照改前的 400 —— 内容再多也只占 400px，列表自己滚。）
-        height: 400,
-        child: Material(
-          type: MaterialType.transparency,
-          child: ListView.builder(
-            clipBehavior: Clip.antiAlias,
-            itemCount: _list.length,
-            itemBuilder: (_, i) {
-              final id = _list[i];
-              return ui.ListTile(
-                dense: true,
-                leading: Text(
-                  '${i + 1}',
-                  style: TextStyle(color: colors.onSurfaceVariant),
-                ),
-                title: Text(widget.nameOf(id)),
-                // 已停用的标注出来，避免用户以为它消失了
-                subtitle: widget.offOf(id)
-                    ? Text(
-                        '已停用',
-                        style: TextStyle(
-                          fontSize: FontSizes.cap,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      )
-                    : null,
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    AppIconButton(
-                      onPressed: i > 0 ? () => _move(i, -1) : null,
-                      icon: Icon(AppIcons.keyboard_arrow_up),
-                      tooltip: '上移',
-                    ),
-                    AppIconButton(
-                      onPressed: i < _list.length - 1
-                          ? () => _move(i, 1)
-                          : null,
-                      icon: Icon(AppIcons.keyboard_arrow_down),
-                      tooltip: '下移',
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-      actions: AppGlassDialogActions(
-        onCancel: () => Navigator.pop(context),
-        confirmLabel: '保存',
-        confirmIsDestructive: false,
-        onConfirm: () => Navigator.pop(context, _list),
-      ),
-    );
-  }
-}
 
 /// 「插件更新」弹窗 —— 检测更新 + 更新历史（回滚）（task-23）
 ///

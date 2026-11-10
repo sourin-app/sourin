@@ -64,7 +64,10 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
+
 import 'widgets/miuix_controls.dart' as ui;
+import 'widgets/miuix_tooltip_host.dart' show MiuixTooltipVisibility;
+
 /*
  * ★★ task-53【#4b-④】滚轮调音量需要这三个：
  *   `PointerSignalEvent` / `PointerScrollEvent` / `GestureBinding`
@@ -134,8 +137,10 @@ import 'player/nonmedia_guard.dart';
 import 'cast/cast_button.dart';
 import 'player/episode_panel.dart';
 import 'player/player_bottom_bar.dart';
+import 'player/player_buffer_poller.dart';
 import 'player/player_more_menu.dart';
 import 'player/player_popover.dart';
+import 'player/player_settings_portal.dart';
 import 'subtitle/subtitle_panel.dart';
 import 'tokens.dart';
 import 'widgets/app_loading.dart';
@@ -147,11 +152,14 @@ import 'danmaku_search_page.dart';
 import 'widgets/episode_strip.dart';
 // ★ 遥控端选集过滤（1.1 类推，lead 预授权）也用同一份判据
 // ★ 标题跟随（Owner 解锁授权）：详情标题展示层剥离内嵌集数后缀
-import 'widgets/episode_filter.dart'
-    show episodesForLine, showTitleOf;
+import 'widgets/episode_filter.dart' show episodesForLine, showTitleOf;
 // ★ 第 16 项：内嵌 / 全屏**共用**的播放动作契约（第 16 项闭合用）
 import 'widgets/live_embedded_player.dart'
-    show LivePlaybackAction, LivePlaybackTarget, dispatchLivePlaybackAction, livePlaybackActionForKey;
+    show
+        LivePlaybackAction,
+        LivePlaybackTarget,
+        dispatchLivePlaybackAction,
+        livePlaybackActionForKey;
 import 'widgets/motion_prefs.dart';
 import 'widgets/overlay_motion.dart';
 import 'widgets/player_settings_sheet.dart';
@@ -501,7 +509,8 @@ const int kLineDurationCacheCap = 400;
 /// ```
 @visibleForTesting
 bool isSuspectedSampleLine(int? durationSeconds) =>
-    durationSeconds != null && durationSeconds > 0 &&
+    durationSeconds != null &&
+    durationSeconds > 0 &&
     durationSeconds < kSampleLineThresholdSeconds;
 
 /// 秒 → 「m:ss」（Owner 指定的标注格式：疑似样片 (0:20)）
@@ -655,15 +664,21 @@ String emptyCandidateLogLine({
   final idHead = contentId.length <= 24
       ? contentId
       : contentId.substring(0, 24);
-  final buf = StringBuffer('候选为空 '
-      'provider=$provider id~=$idHead 空列表=$empty 摘除=$droppedCount');
+  final buf = StringBuffer(
+    '候选为空 '
+    'provider=$provider id~=$idHead 空列表=$empty 摘除=$droppedCount',
+  );
   if (droppedReasons.isNotEmpty) {
-    final head = droppedReasons.take(3).map((r) {
-      final s = r.trim();
-      return s.length <= 80 ? s : s.substring(0, 80);
-    }).join(' | ');
+    final head = droppedReasons
+        .take(3)
+        .map((r) {
+          final s = r.trim();
+          return s.length <= 80 ? s : s.substring(0, 80);
+        })
+        .join(' | ');
     buf.write(' 原因=$head');
-    if (droppedReasons.length > 3) buf.write('（还有 ${droppedReasons.length - 3} 条）');
+    if (droppedReasons.length > 3)
+      buf.write('（还有 ${droppedReasons.length - 3} 条）');
   } else if (droppedCount > 0) {
     // ★ 摘了却没原因 ⇒ 如实说"原因缺失"，不编造
     buf.write(' 原因=（未给出）');
@@ -986,7 +1001,11 @@ final _arrowKeys = <LogicalKeyboardKey>{
 
 class _PlayerPageState extends State<PlayerPage>
     with SingleTickerProviderStateMixin
-    implements MediaSession, MediaProgressSession, MediaLineSession, LivePlaybackTarget {
+    implements
+        MediaSession,
+        MediaProgressSession,
+        MediaLineSession,
+        LivePlaybackTarget {
   late final Player _player;
   late final VideoController _controller;
 
@@ -1213,7 +1232,6 @@ class _PlayerPageState extends State<PlayerPage>
     return age >= Duration.zero && age <= _kUserSeekGraceWindow;
   }
 
-
   /// 本次起播是否**已经确认出过画面**（`stream.width` 首次非空）
   ///
   /// # 为什么需要它（而不是"看 `_error` 是不是空"）
@@ -1391,8 +1409,6 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 必须 dispose（见 `dispose()`）。
   final ValueNotifier<bool> _controlsLive = ValueNotifier<bool>(true);
 
-
-
   /*
    * ═══════════════════════════════════════════════════════════════════
    *  ★★★ N10：seek 让路窗口的定时器
@@ -1448,10 +1464,12 @@ class _PlayerPageState extends State<PlayerPage>
             //   而这里是 fire-and-forget ⇒ 不接住就变成**未捕获的异步异常**
             //   （在 `flutter test` 里会直接算用例失败）。让路是优化，失败静默降级。
             //   （PR #32 复核线程 4/9）
-            unawaited(SourinApi.endYieldForSeek().catchError((Object e) {
-              // 与 dispose 那处（:14460）同一写法：失败只记日志，不外抛
-              AppLog.write('PLAYER', '让路窗口结束: endYieldForSeek 失败（已忽略）：$e');
-            }));
+            unawaited(
+              SourinApi.endYieldForSeek().catchError((Object e) {
+                // 与 dispose 那处（:14460）同一写法：失败只记日志，不外抛
+                AppLog.write('PLAYER', '让路窗口结束: endYieldForSeek 失败（已忽略）：$e');
+              }),
+            );
           },
         );
       } catch (_) {
@@ -1459,6 +1477,7 @@ class _PlayerPageState extends State<PlayerPage>
       }
     }());
   }
+
   /// 把 `_controlsVisible` 推给 [_controlsLive]（值没变不通知）
   void _pushControlsLive() {
     /*
@@ -1471,6 +1490,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (_controlsLive.value == _controlsVisible) return;
     _controlsLive.value = _controlsVisible;
   }
+
   Timer? _hideTimer;
 
   /// 「人已经停手」—— [_cursorIdleTimer] 走完且控制条确实被收掉了。
@@ -1490,7 +1510,6 @@ class _PlayerPageState extends State<PlayerPage>
   /// 以后任何一边调参都会顺带改掉另一边。
   /// ```
   Timer? _cursorIdleTimer;
-
 
   /// 光标此刻**是否真的**处于「已隐藏」态（= 渲染层要不要给 `none`）
   ///
@@ -1525,8 +1544,9 @@ class _PlayerPageState extends State<PlayerPage>
   ///    存 bool 会让「值没变就不通知」失效（`_fullscreen` 与 `_cursorIdleStale`
   ///    同时变时 bool 翻了但光标没变 ⇒ 白重建一次）。
   /// ⚠️ 必须 dispose（见 `dispose()`）。
-  final ValueNotifier<MouseCursor> _cursorLive =
-      ValueNotifier<MouseCursor>(MouseCursor.defer);
+  final ValueNotifier<MouseCursor> _cursorLive = ValueNotifier<MouseCursor>(
+    MouseCursor.defer,
+  );
 
   /// ★ Owner 第 1 条：记一次「人还在操作」—— 续命光标隐藏计时器
   ///
@@ -1622,8 +1642,9 @@ class _PlayerPageState extends State<PlayerPage>
   ///    `debugPlayerCursorIdleHiddenForProbe()` 读数不一致的假象。
   /// ⚠️ 值没变就**不通知**：这是「鼠标移动但光标态没变」零重建的前提。
   void _pushCursorLive() {
-    final next =
-        _cursorIdleHidden ? SystemMouseCursors.none : MouseCursor.defer;
+    final next = _cursorIdleHidden
+        ? SystemMouseCursors.none
+        : MouseCursor.defer;
     if (_cursorLive.value == next) return;
     _cursorLive.value = next;
   }
@@ -2119,8 +2140,7 @@ class _PlayerPageState extends State<PlayerPage>
   static int _globalPlayConsumer = 0;
   static final String _playConsumerPrefix =
       'player-${DateTime.now().microsecondsSinceEpoch}';
-  final String _playConsumer =
-      '$_playConsumerPrefix-${++_globalPlayConsumer}';
+  final String _playConsumer = '$_playConsumerPrefix-${++_globalPlayConsumer}';
   int _playGeneration = ++_globalPlayGeneration;
   bool _playClosed = false;
 
@@ -2229,10 +2249,10 @@ class _PlayerPageState extends State<PlayerPage>
     final ep = current?.id == id
         ? current
         : selected.length == 1
-            ? selected.single
-            : matches.length == 1
-                ? matches.single
-                : null;
+        ? selected.single
+        : matches.length == 1
+        ? matches.single
+        : null;
     if (selectedLine && ep != null && ep.flag != _selectedFlag) {
       throw StateError('这条线路没有当前集，请选择其他集');
     }
@@ -2242,13 +2262,11 @@ class _PlayerPageState extends State<PlayerPage>
     final order = ep == null ? -1 : line.indexOf(ep);
     return PlayRequest(
       sourceCode: sourceCode,
-      extra: {
-        'play_consumer': _playConsumer,
-        'play_generation': generation,
-      },
+      extra: {'play_consumer': _playConsumer, 'play_generation': generation},
       episodeId: id,
       flag: ep?.flag ?? _selectedFlag,
-      episodeTitle: ep?.title ??
+      episodeTitle:
+          ep?.title ??
           (id == _unlistedEpisodeId ? _unlistedEpisodeTitle : null),
       episodeOrder: order < 0 ? null : order + 1,
     );
@@ -2268,8 +2286,10 @@ class _PlayerPageState extends State<PlayerPage>
     if (explicit.length == 1) {
       return (null, int.parse(explicit.single.group(1)!));
     }
-    final ep = RegExp(r'^(?:EP|E)\s*(\d{1,3})(?:$|\b)', caseSensitive: false)
-        .firstMatch(text);
+    final ep = RegExp(
+      r'^(?:EP|E)\s*(\d{1,3})(?:$|\b)',
+      caseSensitive: false,
+    ).firstMatch(text);
     if (ep != null) return (null, int.parse(ep.group(1)!));
     if (RegExp(r'^\d{1,3}$').hasMatch(text)) {
       return (null, int.parse(text));
@@ -2280,7 +2300,9 @@ class _PlayerPageState extends State<PlayerPage>
   /// Resolve the same episode on another line and reuse the existing resume path.
   void _pickEpisodeFlag(String flag) {
     if (flag == _selectedFlag || !_flagsOf(_episodes).contains(flag)) return;
-    final cur = _epIndex >= 0 && _epIndex < _episodes.length ? _episodes[_epIndex] : null;
+    final cur = _epIndex >= 0 && _epIndex < _episodes.length
+        ? _episodes[_epIndex]
+        : null;
     final order = _lineEpisodeNumber(cur?.title);
     final line = _episodes.where((e) => e.flag == flag).toList();
     final exact = line.where((e) => e.title == cur?.title).toList();
@@ -2297,10 +2319,10 @@ class _PlayerPageState extends State<PlayerPage>
     final target = exact.length == 1
         ? exact.single
         : numbered.length == 1
-            ? numbered.single
-            : cur == null && line.length == 1
-                ? line.single
-                : null;
+        ? numbered.single
+        : cur == null && line.length == 1
+        ? line.single
+        : null;
     final position = _pendingSeek ?? _position;
     _rewatchToken++;
     _seekToken++;
@@ -2527,39 +2549,8 @@ class _PlayerPageState extends State<PlayerPage>
   /// 设置面板是否打开
   bool _settingsOpen = false;
 
-  /*
-   * ★★★ task-25 D / 2026-10-08：面板的显示**只有一个真源**，没有镜像 bool
-   *
-   * `_settingsOpen`  面板是否该画（**唯一真源**，onClose / Esc 都只改它）
-   *
-   * # 为什么不再留一个 `_settingsPortalShown` 镜像（曾经有过，已删）
-   *
-   * 最初留它，是为了把 `OverlayPortalController.show()` 收敛成幂等
-   * （show() 里有 `assert(schedulerPhase != persistentCallbacks)`，
-   *  build 期间调会炸）。但它**会过期**，而一旦过期就造成第 3 条那个
-   * 「点齿轮无反应、底栏也回不来」且**不可自愈**的故障：
-   *
-   * ```text
-   * portal 的 Element 被重建（挂载点两侧都有条件子件，见 :9272 的注释）
-   *   ⇒ controller 的可见状态不跟随（overlay.dart:1675-1684 的契约）
-   *   ⇒ 镜像仍是 true ⇒ show() 被吞 ⇒ 面板永远画不出来
-   * ```
-   *
-   * ⇒ 现在**直接问 controller**（`isShowing` 是它自己维护的真实状态，
-   *   不存在过期问题），镜像就没有存在理由了。
-   *
-   * ⚠️ `_settingsOpen == false` 时 overlayChildBuilder 直接返回
-   *    `SizedBox.shrink()` ⇒ 面板一定不渲染（这条没变）。
-   */
-
-  /// rootOverlay 上的播放设置面板（★ task-25 D）
-  ///
-  /// ⚠️ 它是**常驻**的（不随 `_settingsOpen` 创建/销毁）：`OverlayPortal` 的
-  ///    控制器必须在**构造期**就存在，否则第一次 false→true 时会新建一个
-  ///    「从没 show 过」的控制器 ⇒ 面板永远不出现。
-  /// ⚠️ `OverlayPortalController` 没有 `dispose()`（overlay.dart:1685-1773）
-  ///    ⇒ `dispose()` 里不需要收它。
-  final OverlayPortalController _settingsPortal = OverlayPortalController();
+  /// Shared title-bar notifications are published after the current frame.
+  late final PlayerTitleBarSession _titleBarSession;
 
   // ═══════════════════════════════════════════════════════════════════
   //  ★★★ danmaku-service 弹幕（task-13 ⑦）
@@ -2700,6 +2691,7 @@ class _PlayerPageState extends State<PlayerPage>
   ///   `_danmakuFetchToken`（换集/重取都会 ++）—— 不另造一枚令牌，
   ///   否则两套判断会漂移（这正是"两份判据"的经典坑）。
   int _danmakuSearchToken = -1;
+  int _danmakuSearchRequest = 0;
 
   /// 最近一次选路结果（客户端是本地模式还是官方模式）。
   /// appId/appSecret 与 baseUrl 都是 ExternalDanmakuClient 的**构造快照**
@@ -2850,12 +2842,12 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ 与 `DanmakuAggregate._kindLabel` **同一套词**（core 里那份给日志/状态行，
   ///    这份给面板）。两处分开是因为 core 不该依赖 UI 文案 —— 但要一起改。
   static String _aggregateFeedLabel(DanmakuFeedStat f) => switch (f.kind) {
-        DanmakuSourceChannel.plugin => '插件提供',
-        DanmakuSourceChannel.imported => '导入源',
-        DanmakuSourceChannel.local => '本机服务',
-        DanmakuSourceChannel.library => '本地弹幕库',
-        DanmakuSourceChannel.none => '未知来源',
-      };
+    DanmakuSourceChannel.plugin => '插件提供',
+    DanmakuSourceChannel.imported => '导入源',
+    DanmakuSourceChannel.local => '本机服务',
+    DanmakuSourceChannel.library => '本地弹幕库',
+    DanmakuSourceChannel.none => '未知来源',
+  };
 
   /// 取弹幕的并发令牌（换集时旧的响应必须被丢掉）
   int _danmakuFetchToken = 0;
@@ -2868,27 +2860,27 @@ class _PlayerPageState extends State<PlayerPage>
   /// ★ 由几个字段**现算**（不另存一份副本）——副本迟早会和真源不同步，
   ///   而这个面板存在的唯一意义就是"如实反映当前状态"。
   DanmakuInfoData get _danmakuInfo => DanmakuInfoData(
-        source: _infoSource,
-        match: _infoMatch,
-        /*
+    source: _infoSource,
+    match: _infoMatch,
+    /*
          * ⚠️ `null` = 没问过（未知），0 = 问过且确实 0 条。两者不能合并：
          *    把"未知"画成 0 会让排查的人去追一个根本不存在的空数据。
          *    判据用 `_infoSource` 而不是 `comments.isEmpty` —— 后者把
          *    "取回来了但确实是 0 条"也当成未知（那正是要排查的第二种情况）。
          */
-        count: _infoSource == DanmakuInfoSource.none
-            ? null
-            : _danmakuComments.length,
-        title: _infoTitle,
-        cid: _biliCid,
-        detail: _infoDetail,
-        // ★ 失败原因要**原文**（服务端的 X-Error-Message 等照样透出，
-        //   不改写）—— 这个面板就是用来排查的，转述会丢掉关键信息。
-        error: _danmakuError == null ? null : _danmakuErrorText(_danmakuError!),
-        loading: _danmakuLoading,
-        enabled: _danmakuEnabled,
-        aggregate: _infoAggregate,
-        /*
+    count: _infoSource == DanmakuInfoSource.none
+        ? null
+        : _danmakuComments.length,
+    title: _infoTitle,
+    cid: _biliCid,
+    detail: _infoDetail,
+    // ★ 失败原因要**原文**（服务端的 X-Error-Message 等照样透出，
+    //   不改写）—— 这个面板就是用来排查的，转述会丢掉关键信息。
+    error: _danmakuError == null ? null : _danmakuErrorText(_danmakuError!),
+    loading: _danmakuLoading,
+    enabled: _danmakuEnabled,
+    aggregate: _infoAggregate,
+    /*
          * ★★★ 2026-10-19（第 66 轮 R3-⑥ / Owner 第 ⑤ 条）：
          *   面板要的「**具体哪个源** / **上次更新时间**」这两根线在这里接上。
          *
@@ -2901,9 +2893,9 @@ class _PlayerPageState extends State<PlayerPage>
          * 有真值时必须用真值。
          * ```
          */
-        sourceName: _danmakuInfoSourceName,
-        updatedAt: _danmakuInfoUpdatedAt,
-        /*
+    sourceName: _danmakuInfoSourceName,
+    updatedAt: _danmakuInfoUpdatedAt,
+    /*
          * ★★★ N6（2026-10-27）②：绑定区逐路明细。
          *
          * ⚠️ `bindings` 住在 `DanmakuInfoData` 上（面板只读 `d.bindings`）——
@@ -2916,8 +2908,10 @@ class _PlayerPageState extends State<PlayerPage>
          * 不可见时白读四次 UiPrefs 没有意义。
          * ```
          */
-        bindings: _danmakuInfoVisible ? _danmakuBindings : const <DanmakuBindRouteView>[],
-      );
+    bindings: _danmakuInfoVisible
+        ? _danmakuBindings
+        : const <DanmakuBindRouteView>[],
+  );
 
   /// ★★★ N6（2026-10-27）②：弹幕面板「绑定」区的**四路明细**
   ///
@@ -2959,9 +2953,11 @@ class _PlayerPageState extends State<PlayerPage>
     }
 
     // dan-api 在宿主语义里同时覆盖内置/自建服务那几档
-    final danApiActive = _infoSource == DanmakuInfoSource.service ||
+    final danApiActive =
+        _infoSource == DanmakuInfoSource.service ||
         _infoSource == DanmakuInfoSource.selfHosted;
-    final localActive = _infoSource == DanmakuInfoSource.localDanmaku ||
+    final localActive =
+        _infoSource == DanmakuInfoSource.localDanmaku ||
         _infoSource == DanmakuInfoSource.library;
 
     return <DanmakuBindRouteView>[
@@ -3291,7 +3287,7 @@ class _PlayerPageState extends State<PlayerPage>
     'sub-margin-y',
   ];
 
-  // ── 连播策略（照抄原版 `stores/player.ts` 的四个偏好）──
+  // ── 连播策略 ──
   //
   // 原版存 localStorage（`dsh.playprefs`）；我们的对应物是 `UiPrefs`
   // （同样是**纯前端偏好**，丢了最多是回到默认值）。
@@ -3299,7 +3295,6 @@ class _PlayerPageState extends State<PlayerPage>
   // ```text
   // endAction            autoNext（自动连播）
   // countdownBeforeNext  true
-  // keepSourceOnNext     true
   // autoSkip             true
   // ```
 
@@ -3314,13 +3309,6 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 连播前是否先倒计时
   bool _countdownBeforeNext = true;
-
-  /// 连播是否沿用线路
-  ///
-  /// ⚠️ 原版这个开关**没有接进任何播放逻辑**（全仓库 grep
-  /// `keepSourceOnNext` 只有声明/持久化/面板三处）。我们照抄它的
-  /// 完整行为：能存、能读、显示当前值，但**不假装它改变了什么**。
-  bool _keepSourceOnNext = true;
 
   /// 是否自动跳过片头（原版 `prefs.autoSkip`，默认 true）
   bool _autoSkip = true;
@@ -3460,16 +3448,29 @@ class _PlayerPageState extends State<PlayerPage>
   // 数据流（单向）：
   // ```text
   // mpv demuxer-cache-time / -duration
-  //   -> _BufferPoller（500ms，值变才回调）
+  //   -> PlayerBufferPoller（500ms，值变才回调）
   //   -> _bindBufferPoller 的回调里做**交叉校验**
-  //   -> setState(_bufferedRange)
-  //   -> _BottomBar(buffered:) -> _ProgressSlider 叠一条缓冲条
+  //   -> _setBufferedRange -> _bufferedProgress (progress only)
+  //   -> PlayerBottomBar(bufferedListenable:) -> PlayerProgressSlider
   // ```
 
   /// 当前缓冲区间；null = 没有读数（或校验不过）⇒ **不画**
   BufferedRange? _bufferedRange;
+  final _bufferedProgress = ValueNotifier<PlayerBufferedRange?>(null);
 
-  _BufferPoller? _bufferPoller;
+  void _setBufferedRange(BufferedRange? next) {
+    if (_bufferedRange?.end == next?.end &&
+        _bufferedRange?.start == next?.start) {
+      return;
+    }
+    _bufferedRange = next;
+    final end = next?.end;
+    _bufferedProgress.value = end == null
+        ? null
+        : PlayerBufferedRange(start: next!.start ?? Duration.zero, end: end);
+  }
+
+  PlayerBufferPoller? _bufferPoller;
 
   /// mpv 的 `cache-buffering-state`（0..100）；只给探针读，不参与绘制
   double? _bufferStatePercent;
@@ -4025,7 +4026,7 @@ class _PlayerPageState extends State<PlayerPage>
      * ⚠️ **必须与 `dispose` 成对**（见下面 dispose 里的复位）——
      *    漏了的话返回首页后标题栏一直是黑的。
      */
-    titleBarDark.value = true;
+    _titleBarSession = PlayerTitleBarSession();
 
     /*
      * ⚠️ 硬解必须在 Player 创建**之后**用 setProperty 设置
@@ -4447,10 +4448,10 @@ class _PlayerPageState extends State<PlayerPage>
       final byPrefix = raw.startsWith('unsupported:')
           ? 'unsupported'
           : raw.startsWith('unauthorized:')
-              ? 'unauthorized'
-              : raw.startsWith('network:')
-                  ? 'network'
-                  : null;
+          ? 'unauthorized'
+          : raw.startsWith('network:')
+          ? 'network'
+          : null;
       final kind = byPrefix ?? e.kind;
       switch (kind) {
         case 'unsupported':
@@ -4460,9 +4461,7 @@ class _PlayerPageState extends State<PlayerPage>
            *   入口会出现（声明为真），点发送才失败。
            *   ⇒ 必须说清是「这个源不支持发送」，而不是含糊的「发送失败」。
            */
-          return raw.isEmpty
-              ? '这个源不支持发送弹幕'
-              : '这个源不支持发送弹幕（$raw）';
+          return raw.isEmpty ? '这个源不支持发送弹幕' : '这个源不支持发送弹幕（$raw）';
         case 'unauthorized':
           return raw.isEmpty ? '需要先登录才能发弹幕' : '需要先登录才能发弹幕（$raw）';
         case 'network':
@@ -4496,7 +4495,10 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   void _refreshAggregateTitleInPlace() {
     if (_provider != kTvboxAggregateProviderId) return;
-    _providerName = aggregateSourceTitle(note: _aggNote, label: _current?.label);
+    _providerName = aggregateSourceTitle(
+      note: _aggNote,
+      label: _current?.label,
+    );
   }
 
   Future<void> _loadProviderName() async {
@@ -4610,6 +4612,7 @@ class _PlayerPageState extends State<PlayerPage>
       s: s,
     );
     if (key.endsWith(':')) return; // 认不出线路 ⇒ 不记（宁缺勿错）
+    if (_lineDurationCache[key] == d.inSeconds) return;
     _lineDurationCache[key] = d.inSeconds;
     // 超上限按插入序淘汰最旧（LinkedHashMap 保插入序）
     while (_lineDurationCache.length > kLineDurationCacheCap) {
@@ -4766,9 +4769,10 @@ class _PlayerPageState extends State<PlayerPage>
       return;
     }
 
+    final provider = _provider;
     unawaited(() async {
       try {
-        final results = await SourinApi.panCheck(uniq);
+        final results = await SourinApi.panCheck(uniq, provider: provider);
         if (!mounted) return;
         // ★★★ 代次核对：换了集/台/源 ⇒ 这批结果属于旧会话，丢弃
         if (gen != _panCheckGen) {
@@ -4783,9 +4787,11 @@ class _PlayerPageState extends State<PlayerPage>
           }
         }
         if (next.isEmpty && _panStates.isEmpty) return;
-        setState(() => _panStates
-          ..clear()
-          ..addAll(next));
+        setState(
+          () => _panStates
+            ..clear()
+            ..addAll(next),
+        );
       } catch (e) {
         /*
          * ★ 留痕但防刷屏（lead 批复 B）：key = provider（同一源同一会话只记一次）。
@@ -4800,7 +4806,10 @@ class _PlayerPageState extends State<PlayerPage>
            *    插值的载体确实是日志（AppLog.write），不是用户可见字段
            *    ⇒ 排版跨行会让它被误判 ⇒ 整条消息写成**一个字面量、一行**。
            */
-          AppLog.write('PLAY', '网盘预检失败（不影响播放，仅不显示标注）err=$e provider=$_provider id~=${_contentId.length <= 24 ? _contentId : _contentId.substring(0, 24)}');
+          AppLog.write(
+            'PLAY',
+            '网盘预检失败（不影响播放，仅不显示标注）err=$e provider=$_provider id~=${_contentId.length <= 24 ? _contentId : _contentId.substring(0, 24)}',
+          );
         }
       }
     }());
@@ -4829,7 +4838,6 @@ class _PlayerPageState extends State<PlayerPage>
     );
     _countdownBeforeNext =
         UiPrefs.get('dsh.playprefs.countdownBeforeNext') != '0';
-    _keepSourceOnNext = UiPrefs.get('dsh.playprefs.keepSourceOnNext') != '0';
     _autoSkip = UiPrefs.get('dsh.playprefs.autoSkip') != '0';
     /*
      * ★ T7：记忆式片头总开关。**缺省 = 关**（`== '1'` 而不是 `!= '0'`）——
@@ -4923,6 +4931,9 @@ class _PlayerPageState extends State<PlayerPage>
     try {
       final native = _player.platform;
       if (native is NativePlayer) {
+        // Global All traffic is already wrapped by the core; native playback
+        // must not independently pick another proxy from environment variables.
+        await native.setProperty('http-proxy', '');
         /*
          * ★★★ task-22 P2-9：解码模式
          *
@@ -5121,14 +5132,19 @@ class _PlayerPageState extends State<PlayerPage>
       if (native is NativePlayer && !debugPlayerSkipOpenForProbe) {
         await native
             .setProperty('demuxer-lavf-format', want)
-            .timeout(const Duration(seconds: 2), onTimeout: () {
-          debugPrint('[PLAYER] demuxer-lavf-format 下发超时（2s）—— 跳过');
-        });
+            .timeout(
+              const Duration(seconds: 2),
+              onTimeout: () {
+                debugPrint('[PLAYER] demuxer-lavf-format 下发超时（2s）—— 跳过');
+              },
+            );
       }
       _demuxerOverride = want.isEmpty ? null : want;
-      debugPrint('[PLAYER] mpv: demuxer-lavf-format='
-          '${want.isEmpty ? "（清空）" : want}（kind=$kind '
-          'url=${url.length > 60 ? url.substring(url.length - 60) : url}）');
+      debugPrint(
+        '[PLAYER] mpv: demuxer-lavf-format='
+        '${want.isEmpty ? "（清空）" : want}（kind=$kind '
+        'url=${url.length > 60 ? url.substring(url.length - 60) : url}）',
+      );
     } catch (e) {
       debugPrint('[PLAYER] 下发 demuxer-lavf-format 失败: $e');
     }
@@ -5538,19 +5554,31 @@ class _PlayerPageState extends State<PlayerPage>
       //   段间归零），不判流坏、不写"疑似片段"——每条流只记一次。
       if (_discontinuityLoggedFor != _current?.url) {
         _discontinuityLoggedFor = _current?.url;
-        debugPrint('[PLAYER] 该线路清单含 DISCONTINUITY，时间轴可能跳变'
-            '（总时长已用清单值 ${authoritative.inMilliseconds}ms 修正）');
+        debugPrint(
+          '[PLAYER] 该线路清单含 DISCONTINUITY，时间轴可能跳变'
+          '（总时长已用清单值 ${authoritative.inMilliseconds}ms 修正）',
+        );
       }
     }
-    setState(() {
-      _duration = authoritative;
-      // 真实时长以流里的为准（元数据不准）
-      if (authoritative > Duration.zero) _realDuration = authoritative;
-    });
+    // A different line can share the displayed duration but need its own
+    // cache entry and sample badge. Record it before deciding whether to build.
+    final current = _current;
+    final oldSampleBadge = current == null ? null : _sampleBadgeFor(current);
     // ★ 1.3：起播后把这条线路的真实时长记进缓存
     //   （下一轮默认选线才能避开样片；_current 为 null 时 _recordLineDuration 自己会退）
     //   ⚠️ 记的是**权威值**——分片伪影（6s）会把 82.72s 的完整内容误判成样片。
     _recordLineDuration(authoritative);
+    final sampleBadgeChanged =
+        current != null && oldSampleBadge != _sampleBadgeFor(current);
+    // Distinct segment durations may resolve to the same playlist total.
+    if (_duration != authoritative ||
+        (authoritative > Duration.zero && _realDuration != authoritative) ||
+        sampleBadgeChanged) {
+      setState(() {
+        _duration = authoritative;
+        if (authoritative > Duration.zero) _realDuration = authoritative;
+      });
+    }
     _publishPlaybackProgress();
   }
 
@@ -5961,11 +5989,9 @@ class _PlayerPageState extends State<PlayerPage>
      *
      * ★ 护栏 C：吞掉的每一次都要落日志（带 key 与计数），不许静默吞。
      */
-    final isHls = playerStreamIsHls(
-      kind: _current?.kind,
-      url: _current?.url,
-    );
-    if (had && playerErrorIsHlsSegmentEof(e, sawFirstFrame: had, isHls: isHls)) {
+    final isHls = playerStreamIsHls(kind: _current?.kind, url: _current?.url);
+    if (had &&
+        playerErrorIsHlsSegmentEof(e, sawFirstFrame: had, isHls: isHls)) {
       _hlsSegmentEofSwallowed++;
       final key = playerErrorJitterKey(e);
       AppLog.write(
@@ -6029,10 +6055,7 @@ class _PlayerPageState extends State<PlayerPage>
      *   真断流仍然写着「播放中断」，而续片/抑制不会先落一行误导性的"中断"。
      */
     if (had) {
-      AppLog.write(
-        'PLAY',
-        PlaybackErrorText.forDisplay('播放中断（已有画面，非阻断）：$e'),
-      );
+      AppLog.write('PLAY', PlaybackErrorText.forDisplay('播放中断（已有画面，非阻断）：$e'));
     }
 
     setState(() {
@@ -6296,8 +6319,10 @@ class _PlayerPageState extends State<PlayerPage>
        *   不收尾 `_loading`（新会话自己会收尾，见上面的字段注释）。
        */
       if (genAtLoadStart != _playSessionGen) {
-        debugPrint('[PLAYER] 丢弃过期的起播结果（会话代次 '
-            '$genAtLoadStart → $_playSessionGen）—— 换集后不许播旧候选');
+        debugPrint(
+          '[PLAYER] 丢弃过期的起播结果（会话代次 '
+          '$genAtLoadStart → $_playSessionGen）—— 换集后不许播旧候选',
+        );
         return;
       }
       setState(() => _streams = list);
@@ -6446,8 +6471,10 @@ class _PlayerPageState extends State<PlayerPage>
        */
       if (!_isCurrentPlayResolve(generation) ||
           genAtLoadStart != _playSessionGen) {
-        debugPrint('[PLAYER] 丢弃过期的起播（续播准备期间换了集/会话：代次 '
-            '$genAtLoadStart → $_playSessionGen）');
+        debugPrint(
+          '[PLAYER] 丢弃过期的起播（续播准备期间换了集/会话：代次 '
+          '$genAtLoadStart → $_playSessionGen）',
+        );
         return;
       }
       await _startPlayback(first);
@@ -6559,7 +6586,9 @@ class _PlayerPageState extends State<PlayerPage>
       if (mirrorTarget != null) {
         try {
           peer = await SourinApi.getProgress(
-              mirrorTarget.provider, mirrorTarget.mediaId);
+            mirrorTarget.provider,
+            mirrorTarget.mediaId,
+          );
         } catch (e) {
           // ★ 镜像那条读失败**绝不影响续播** —— 会话自己的键已经拿到了
           debugPrint('[PLAYER] 读镜像进度失败（忽略，用本键那条）: $e');
@@ -6684,8 +6713,10 @@ class _PlayerPageState extends State<PlayerPage>
       if (!_isCurrentPlayResolve(generation) ||
           _playSessionGen != genAtEntry ||
           _epIndex != epAtEntry) {
-        debugPrint('[PLAYER] 读进度期间换了集/会话 ⇒ 本次续播作废'
-            '（代次 $genAtEntry → $_playSessionGen，集 $epAtEntry → $_epIndex）');
+        debugPrint(
+          '[PLAYER] 读进度期间换了集/会话 ⇒ 本次续播作废'
+          '（代次 $genAtEntry → $_playSessionGen，集 $epAtEntry → $_epIndex）',
+        );
         return;
       }
       _pendingSeek = Duration(seconds: pos);
@@ -6746,7 +6777,9 @@ class _PlayerPageState extends State<PlayerPage>
       if (mirrorTarget != null) {
         try {
           peer = await SourinApi.getProgress(
-              mirrorTarget.provider, mirrorTarget.mediaId);
+            mirrorTarget.provider,
+            mirrorTarget.mediaId,
+          );
         } catch (e) {
           debugPrint('[PLAYER] 读目标集镜像进度失败（忽略）: $e');
         }
@@ -6771,7 +6804,9 @@ class _PlayerPageState extends State<PlayerPage>
           progressEpisodeId: candidate.episodeId,
           currentEpisodeId: target,
         )) {
-          debugPrint('[PLAYER] 目标集 $target 的候选进度属于另一集（${candidate.episodeId}），丢弃');
+          debugPrint(
+            '[PLAYER] 目标集 $target 的候选进度属于另一集（${candidate.episodeId}），丢弃',
+          );
           return null;
         }
         if (!progressBelongsToCurrentEpisode(
@@ -6962,8 +6997,12 @@ class _PlayerPageState extends State<PlayerPage>
      * 判据与实现见 `player/nonmedia_guard.dart`（纯函数 + 注入证红）。
      * ⚠️ 放在「起播失败耗时」计时起点之前：预检属于"还没交给 mpv"的阶段。
      */
-    final NonMediaCheck precheck = await precheckNonMedia(st.url, st.httpHeaders);
-    if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
+    final NonMediaCheck precheck = await precheckNonMedia(
+      st.url,
+      st.httpHeaders,
+    );
+    if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+      return;
     if (precheck.error != null) {
       AppLog.write('PLAY', '非媒体预检剔除（不再报"格式解不了"）：${precheck.error}');
       if (mounted) {
@@ -7048,14 +7087,16 @@ class _PlayerPageState extends State<PlayerPage>
        */
       // ★ 伪装的 .mp3（其实是 mp4）必须在 open 前纠正 demuxer，否则只有音轨
       await _applyDemuxerOverride();
-      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+        return;
       if (!debugPlayerSkipOpenForProbe) {
         await _player.open(
           Media(playUrl, httpHeaders: st.httpHeaders),
           play: !_isLive || (widget.initialLivePlayback?.playing ?? true),
         );
       }
-      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+        return;
       /*
        * ★★★ task-22 P1-11：`video-zoom` 是**逐文件**属性 —— mpv 换文件时会
        *   把它复位。只在 `_setHwdec()` 里下发一次是不够的（换集后缩放就没了），
@@ -7076,10 +7117,7 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 只加日志与时间锚点，零行为变化。
        */
       _openDoneAtMs = _loadClock.elapsedMilliseconds;
-      AppLog.write(
-        'PLAY',
-        '起播分段 ④ open 完成 kind=${st.kind} url=$playUrl',
-      );
+      AppLog.write('PLAY', '起播分段 ④ open 完成 kind=${st.kind} url=$playUrl');
       if (_isLive) _liveSwitchMark('③ open 返回', 'kind=${st.kind}');
 
       /*
@@ -7309,7 +7347,8 @@ class _PlayerPageState extends State<PlayerPage>
        *    慢的源（HLS / 大 MP4）3 秒还没 demux 完，快的源白等 3 秒。
        *    轮询是"该等多久等多久"。
        */
-      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) return;
+      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+        return;
       final pending = _pendingSeek;
       if (pending != null && pending > Duration.zero) {
         // 保持续播意图，直到 seek 落地；等待 duration 时禁止自动片头抢跑。
@@ -8114,7 +8153,9 @@ class _PlayerPageState extends State<PlayerPage>
     } catch (e) {
       AppLog.write('DL', '失败：$e');
       if (!mounted) return;
-      setState(() => _clipDownloadError = userErrorText(e, fallback: '下载失败，请稍后重试'));
+      setState(
+        () => _clipDownloadError = userErrorText(e, fallback: '下载失败，请稍后重试'),
+      );
       _flash('下载失败');
     } finally {
       if (mounted) {
@@ -8330,10 +8371,12 @@ class _PlayerPageState extends State<PlayerPage>
       originProvider: widget.originProvider,
     );
     if (pluginId == null || pluginId.isEmpty) {
-      inputs.add(const DanmakuFeedInput.skipped(
-        kind: DanmakuSourceChannel.plugin,
-        detail: '本地会话，没有插件可问',
-      ));
+      inputs.add(
+        const DanmakuFeedInput.skipped(
+          kind: DanmakuSourceChannel.plugin,
+          detail: '本地会话，没有插件可问',
+        ),
+      );
     } else {
       try {
         final bundle = await SourinApi.providerDanmakuList(
@@ -8371,13 +8414,17 @@ class _PlayerPageState extends State<PlayerPage>
           final c = DanmakuComment.fromJson(j);
           if (c != null) parsed.add(c);
         }
-        inputs.add(DanmakuFeedInput(
-          kind: DanmakuSourceChannel.plugin,
-          comments: parsed,
-          detail: bundle.source.isNotEmpty ? bundle.source : pluginId,
-        ));
-        debugPrint('[DMK] 插件 $pluginId 给了 ${parsed.length} 条弹幕'
-            '${bundle.truncated ? "（上游已截断）" : ""}');
+        inputs.add(
+          DanmakuFeedInput(
+            kind: DanmakuSourceChannel.plugin,
+            comments: parsed,
+            detail: bundle.source.isNotEmpty ? bundle.source : pluginId,
+          ),
+        );
+        debugPrint(
+          '[DMK] 插件 $pluginId 给了 ${parsed.length} 条弹幕'
+          '${bundle.truncated ? "（上游已截断）" : ""}',
+        );
       } on SourinCoreException catch (e) {
         /*
          * ★ 不支持的源 ⇒ `loaded:false`（"没试"而不是"失败"）；
@@ -8387,29 +8434,36 @@ class _PlayerPageState extends State<PlayerPage>
          *    看到「插件提供：失败 · HTTP 500」会去查网络 —— 两件事。
          */
         final raw = e.message.trim();
-        final unsupported = raw.startsWith('unsupported:') ||
+        final unsupported =
+            raw.startsWith('unsupported:') ||
             raw.contains('不支持') ||
             raw.contains('未声明');
         if (unsupported) {
-          inputs.add(DanmakuFeedInput.skipped(
-            kind: DanmakuSourceChannel.plugin,
-            detail: raw.isEmpty ? '这个源没有声明弹幕能力' : raw,
-          ));
+          inputs.add(
+            DanmakuFeedInput.skipped(
+              kind: DanmakuSourceChannel.plugin,
+              detail: raw.isEmpty ? '这个源没有声明弹幕能力' : raw,
+            ),
+          );
         } else {
-          inputs.add(DanmakuFeedInput.failed(
-            kind: DanmakuSourceChannel.plugin,
-            error: raw.isEmpty ? e.kind : raw,
-            detail: pluginId,
-          ));
+          inputs.add(
+            DanmakuFeedInput.failed(
+              kind: DanmakuSourceChannel.plugin,
+              error: raw.isEmpty ? e.kind : raw,
+              detail: pluginId,
+            ),
+          );
         }
         debugPrint('[DMK] 插件 $pluginId 取弹幕失败: $e');
       } catch (e) {
         // 非 SourinCoreException（解析/类型）—— 同样如实记，不吞
-        inputs.add(DanmakuFeedInput.failed(
-          kind: DanmakuSourceChannel.plugin,
-          error: '$e',
-          detail: pluginId,
-        ));
+        inputs.add(
+          DanmakuFeedInput.failed(
+            kind: DanmakuSourceChannel.plugin,
+            error: '$e',
+            detail: pluginId,
+          ),
+        );
         debugPrint('[DMK] 插件 $pluginId 取弹幕异常: $e');
       }
     }
@@ -8692,7 +8746,10 @@ class _PlayerPageState extends State<PlayerPage>
      *   本地服务就是 danmaku-service 协议 ⇒ 成功状态仍用「danmaku-service · 」前缀。
      */
     final localStatus = await _ensureDanmakuLocalStatus();
-    if (!mounted || generation != _playSessionGen || token != _danmakuFetchToken) return;
+    if (!mounted ||
+        generation != _playSessionGen ||
+        token != _danmakuFetchToken)
+      return;
     _danmakuSourceLine = '数据源：${localStatus.line}';
     /*
      * ★★★ T27-14（CodeRabbit A7）：自动路由 = 「本机在线就优先本机」。
@@ -8719,6 +8776,7 @@ class _PlayerPageState extends State<PlayerPage>
         _danmakuError = null;
         _danmakuSettings = _danmakuSettings.copyWith(
           loading: true,
+          sourceLine: _danmakuSourceLine,
           clearError: true,
         );
       });
@@ -8797,7 +8855,8 @@ class _PlayerPageState extends State<PlayerPage>
         _pinnedEpisodeId = null; // 一次性
         try {
           final cs = await client.fetchComments(pinned);
-          if (!mounted || generation != _playSessionGen ||
+          if (!mounted ||
+              generation != _playSessionGen ||
               token != _danmakuFetchToken) {
             return;
           }
@@ -8814,7 +8873,8 @@ class _PlayerPageState extends State<PlayerPage>
             primarySource: DanmakuInfoSource.library,
             token: token,
           );
-          if (!mounted || generation != _playSessionGen ||
+          if (!mounted ||
+              generation != _playSessionGen ||
               token != _danmakuFetchToken) {
             return;
           }
@@ -8822,7 +8882,8 @@ class _PlayerPageState extends State<PlayerPage>
             _danmakuComments = agg.comments;
             _danmakuError = null;
             _danmakuLoading = false;
-            _danmakuStatus = '已载入「$fileName」（弹幕库 #$pinned · '
+            _danmakuStatus =
+                '已载入「$fileName」（弹幕库 #$pinned · '
                 '${agg.comments.length} 条）';
             _setDanmakuInfo(
               source: DanmakuInfoSource.library,
@@ -8830,8 +8891,10 @@ class _PlayerPageState extends State<PlayerPage>
               aggregate: agg,
             );
           });
-          debugPrint('[DMK] 按用户点选的 episodeId 直达：#$pinned ⇒ '
-              '${agg.comments.length} 条 · ${agg.summary}');
+          debugPrint(
+            '[DMK] 按用户点选的 episodeId 直达：#$pinned ⇒ '
+            '${agg.comments.length} 条 · ${agg.summary}',
+          );
           return;
         } catch (e) {
           debugPrint('[DMK] 点选的那一条取失败（回落到匹配链路）: $e');
@@ -8844,7 +8907,8 @@ class _PlayerPageState extends State<PlayerPage>
         videoDuration: _duration.inSeconds,
         anime: fileName,
       );
-      if (!mounted || generation != _playSessionGen ||
+      if (!mounted ||
+          generation != _playSessionGen ||
           token != _danmakuFetchToken) {
         return;
       }
@@ -8862,12 +8926,13 @@ class _PlayerPageState extends State<PlayerPage>
             : 'dan-api',
         primarySource: _danmakuUsingLocal
             ? (_danmakuLocalStatus?.endpoint != null
-                ? DanmakuInfoSource.selfHosted
-                : DanmakuInfoSource.localDanmaku)
+                  ? DanmakuInfoSource.selfHosted
+                  : DanmakuInfoSource.localDanmaku)
             : DanmakuInfoSource.service,
         token: token,
       );
-      if (!mounted || generation != _playSessionGen ||
+      if (!mounted ||
+          generation != _playSessionGen ||
           token != _danmakuFetchToken) {
         return;
       }
@@ -8927,8 +8992,8 @@ class _PlayerPageState extends State<PlayerPage>
         _setDanmakuInfo(
           source: _danmakuUsingLocal
               ? (_danmakuLocalStatus?.endpoint != null
-                  ? DanmakuInfoSource.selfHosted
-                  : DanmakuInfoSource.localDanmaku)
+                    ? DanmakuInfoSource.selfHosted
+                    : DanmakuInfoSource.localDanmaku)
               : DanmakuInfoSource.service,
           detail: _danmakuLocalStatus?.version == null
               ? null
@@ -8943,13 +9008,41 @@ class _PlayerPageState extends State<PlayerPage>
            *   理由见它上方那条关于 `zz_cr_dmk_b` 的说明。
            */
           status: _danmakuStatus,
-          sourceLine: _danmakuSourceLine,
         );
       });
       _armDanmakuBadgeExpiry(kDanmakuBadgeEmptyMs);
     } on DanmakuException catch (e) {
-      if (!mounted || generation != _playSessionGen ||
+      if (!mounted ||
+          generation != _playSessionGen ||
           token != _danmakuFetchToken) {
+        return;
+      }
+      if (e is DanmakuNoMatch) {
+        setState(() {
+          _danmakuComments = const <DanmakuComment>[];
+          _danmakuStatus = '未找到匹配弹幕，可手动搜索';
+          _danmakuError = null;
+          _danmakuErrorAt = null;
+          _danmakuEmptyExpired = false;
+          _danmakuLoading = false;
+          _setDanmakuInfo(
+            source: usingLocal
+                ? (localStatus.endpoint != null
+                      ? DanmakuInfoSource.selfHosted
+                      : DanmakuInfoSource.localDanmaku)
+                : DanmakuInfoSource.service,
+            match: DanmakuInfoMatch.none,
+            clearTitle: true,
+            clearDetail: true,
+            clearAggregate: true,
+          );
+          _danmakuSettings = _danmakuSettings.copyWith(
+            loading: false,
+            clearError: true,
+            status: _danmakuStatus,
+          );
+        });
+        _armDanmakuBadgeExpiry(kDanmakuBadgeEmptyMs);
         return;
       }
       setState(() {
@@ -8979,10 +9072,13 @@ class _PlayerPageState extends State<PlayerPage>
             errorMessage: e.errorMessage,
             body: e.body,
             uri: e.uri,
-            hint: DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,
+            hint: DanmakuHint.of(
+              e,
+              allowUseLocal: _danmakuOfficialFailed,
               // ★★ N2：与提示条用**同一份判据**（面板画的是这份 error.hint），
               //   两处若不一致就会出现「提示条有按钮、面板里没有」的自相矛盾。
-              usedLocalSource: usingLocal),
+              usedLocalSource: usingLocal,
+            ),
           ),
           status: '',
         );
@@ -9025,8 +9121,11 @@ class _PlayerPageState extends State<PlayerPage>
       final h = (e.statusCode == 401 || e.statusCode == 403)
           // ★★ N2：官方那条边**确实试过并失败了** ⇒ 第 2 态也要给回头路
           //   （「改用本机弹弹play」）。否则文案建议「选本机」，用户没有入口。
-          ? DanmakuHint.of(e, allowUseLocal: _danmakuOfficialFailed,
-              usedLocalSource: usedLocalSource)
+          ? DanmakuHint.of(
+              e,
+              allowUseLocal: _danmakuOfficialFailed,
+              usedLocalSource: usedLocalSource,
+            )
           : e.hint;
       /*
        * ★★ Owner 第 9 条：点明**这句失败是谁的凭证**
@@ -9052,7 +9151,8 @@ class _PlayerPageState extends State<PlayerPage>
             : '弹幕失败：$why ｜ ${h.title}（打开弹幕设置可一键处理；这是 danmaku-service 的凭证，与 外部视频站弹幕无关）',
       );
     } catch (e) {
-      if (!mounted || generation != _playSessionGen ||
+      if (!mounted ||
+          generation != _playSessionGen ||
           token != _danmakuFetchToken) {
         return;
       }
@@ -9293,36 +9393,31 @@ class _PlayerPageState extends State<PlayerPage>
   /// ```
   Future<void> _searchDanmaku(String keyword) async {
     final kw = keyword.trim();
-    if (kw.isEmpty) return;
+    if (kw.isEmpty || !mounted) return;
+    final request = ++_danmakuSearchRequest;
     final generation = _playSessionGen;
     final searchToken = _danmakuFetchToken;
     bool rejectStale() {
-      if (!mounted) return true;
-      if (generation == _playSessionGen && searchToken == _danmakuFetchToken) return false;
+      if (!mounted || request != _danmakuSearchRequest) return true;
+      if (generation == _playSessionGen && searchToken == _danmakuFetchToken)
+        return false;
       setState(() {
         _danmakuSearchLoading = false;
         _danmakuSearchError = null;
         _danmakuSearchResults = const <DanmakuMatch>[];
         _danmakuSettings = _danmakuSettings.copyWith(
-          searchLoading: false, clearSearchError: true,
-          searchResults: const <DanmakuMatch>[], searchStale: true,
+          searchLoading: false,
+          clearSearchError: true,
+          searchResults: const <DanmakuMatch>[],
+          searchStale: true,
         );
       });
       return true;
     }
-    // 探一次本机（同 `_loadDanmaku`：进程内缓存，面板路径本身不探）
-    final localStatus = await _ensureDanmakuLocalStatus();
-    if (rejectStale()) return;
-    _danmakuSourceLine = '数据源：${localStatus.line}';
-    final usingLocal = localStatus.online && !_danmakuForceOfficial;
-    if (usingLocal != _danmakuUsingLocal) {
-      // 选路变了 ⇒ 旧客户端是另一种 baseUrl/签名形态，必须重建（同 `_loadDanmaku`）
-      _danmakuUsingLocal = usingLocal;
-      _resetDanmakuClient();
-    }
-    final client = _ensureDanmakuClient(unsignedLocal: usingLocal);
-    // ★ 记下"发起搜索时的令牌"，回来时用它判是否已换集（见字段注释）
-    if (!mounted) return;
+
+    // Cover preparation as well as the HTTP request with the same loading,
+    // failure and latest-request lifecycle. A slow probe must not leave old
+    // results actionable or let an older search replace a newer one.
     setState(() {
       _danmakuSearchLoading = true;
       _danmakuSearchError = null;
@@ -9341,6 +9436,15 @@ class _PlayerPageState extends State<PlayerPage>
       );
     });
     try {
+      final localStatus = await _ensureDanmakuLocalStatus();
+      if (rejectStale()) return;
+      _danmakuSourceLine = '数据源：${localStatus.line}';
+      final usingLocal = localStatus.online && !_danmakuForceOfficial;
+      if (usingLocal != _danmakuUsingLocal) {
+        _danmakuUsingLocal = usingLocal;
+        _resetDanmakuClient();
+      }
+      final client = _ensureDanmakuClient(unsignedLocal: usingLocal);
       /*
        * 2026-10-15: multi-keyword search.
        *
@@ -9445,8 +9549,10 @@ class _PlayerPageState extends State<PlayerPage>
     final targets = <int>{};
     final ids = <int>{};
     for (final item in items) {
-      if (item.episodeIndex < 0 || item.episodeIndex >= _episodes.length ||
-          item.episodeId <= 0 || !targets.add(item.episodeIndex) ||
+      if (item.episodeIndex < 0 ||
+          item.episodeIndex >= _episodes.length ||
+          item.episodeId <= 0 ||
+          !targets.add(item.episodeIndex) ||
           !ids.add(item.episodeId)) {
         _flash('对应关系有冲突，请调整后再确认');
         return false;
@@ -9458,8 +9564,9 @@ class _PlayerPageState extends State<PlayerPage>
         _contentId,
         DanmakuBindStore(
           workTitle: workTitle,
-          episodes: {for (final item in items)
-            item.episodeIndex: item.episodeId},
+          episodes: {
+            for (final item in items) item.episodeIndex: item.episodeId,
+          },
           updatedAt: DateTime.now().millisecondsSinceEpoch,
         ),
       );
@@ -9473,12 +9580,14 @@ class _PlayerPageState extends State<PlayerPage>
   void _completeDanmakuBatchBinding(List<BatchBindPlanItem> items) {
     for (final item in items) {
       if (item.episodeIndex != _epIndex) continue;
-      _pickDanmakuMatch(DanmakuMatch(
-        episodeId: item.episodeId,
-        episodeTitle: item.episodeTitle,
-        animeTitle: item.workTitle,
-        shift: item.shift,
-      ));
+      _pickDanmakuMatch(
+        DanmakuMatch(
+          episodeId: item.episodeId,
+          episodeTitle: item.episodeTitle,
+          animeTitle: item.workTitle,
+          shift: item.shift,
+        ),
+      );
       return;
     }
     setState(() {
@@ -9575,7 +9684,9 @@ class _PlayerPageState extends State<PlayerPage>
       _holdSheetGuard();
     }
     _flash('正在载入「${m.label}」的弹幕…');
-    unawaited(_loadDanmakuNamed(m.label.isNotEmpty ? m.label : '弹幕库#${m.episodeId}'));
+    unawaited(
+      _loadDanmakuNamed(m.label.isNotEmpty ? m.label : '弹幕库#${m.episodeId}'),
+    );
   }
 
   /// ★★★ Owner 1013：「播放页那些弹窗…而且还非常的卡顿（这里必须解决）」
@@ -10032,6 +10143,7 @@ class _PlayerPageState extends State<PlayerPage>
       });
       return true;
     }
+
     setState(() {
       _biliState = _biliState.copyWith(
         loading: true,
@@ -10276,10 +10388,7 @@ class _PlayerPageState extends State<PlayerPage>
         _danmakuErrorAt = DateTime.now();
         _danmakuLoading = false;
         // ★ 失败也要如实登记来源（面板要显示"谁失败了"+ 原文原因）
-        _setDanmakuInfo(
-          source: DanmakuInfoSource.bili,
-
-        );
+        _setDanmakuInfo(source: DanmakuInfoSource.bili);
         _danmakuSettings = _danmakuSettings.copyWith(
           loading: false,
           error: e,
@@ -10350,10 +10459,7 @@ class _PlayerPageState extends State<PlayerPage>
        *   只合并不报来源 ⇒ 用户看到「1900 条」却不知道哪来的
        *   （Lead 特别提醒过这一条，`_aggregateRows` 就是画它的）。
        */
-      _setDanmakuInfo(
-        source: DanmakuInfoSource.bili,
-        aggregate: agg,
-      );
+      _setDanmakuInfo(source: DanmakuInfoSource.bili, aggregate: agg);
       _danmakuSettings = _danmakuSettings.copyWith(
         enabled: true,
         loading: false,
@@ -10413,10 +10519,7 @@ class _PlayerPageState extends State<PlayerPage>
       _danmakuStatus = '外部视频站 · ${r.summary}';
       _danmakuError = null;
       // ★ 与上面那行**同一帧**登记来源（面板不猜文案）
-      _setDanmakuInfo(
-        source: DanmakuInfoSource.bili,
-        aggregate: agg,
-      );
+      _setDanmakuInfo(source: DanmakuInfoSource.bili, aggregate: agg);
       /*
        * ★★★ OPS-10 ⑤（Owner 逐字：「导入externaldanmaku弹幕之后,并没有提示任何信息
        *     和反馈,返回播放页继续,也没有出现弹幕」）
@@ -10725,7 +10828,6 @@ class _PlayerPageState extends State<PlayerPage>
     // ① 纯 UI 动作先落地 —— 不依赖任何 mpv 往返
     // ★★★ T27-09：浮层打开 ⇒ 顶/底栏一起收（显隐统一真源，见 _collapseControlsForSheet）
     _collapseControlsForSheet();
-    setState(() => _settingsOpen = true);
     _showSettingsPortal();
 
     // ② 回读降级为**后台**刷新：读到了自己 setState 进面板
@@ -10735,35 +10837,11 @@ class _PlayerPageState extends State<PlayerPage>
     unawaited(_readVideoZoom());
   }
 
-  /// 让挂到 rootOverlay 的播放设置面板**真的显示出来**（★ task-25 D）
-  ///
-  /// ⚠️ 必须**真的调** `show()`：`OverlayPortal` 在 `_zOrderIndex == null` 时
-  ///    直接 `return _OverlayPortal(overlayLocation: null, overlayChild: null, …)`
-  ///    （flutter/lib/src/widgets/overlay.dart:2092-2098）⇒ 只声明式地写
-  ///    `if (_settingsOpen)` 在 overlayChildBuilder 里，面板**永远不会出现**。
-  ///
-  /// ⚠️ 幂等性由 controller 自己保证：show() 里有
-  ///    `assert(schedulerPhase != persistentCallbacks)`（build 期间调用会炸），
-  ///    但**重复调用本身无害** —— 直接问 `isShowing` 就够了。
+  /// The portal owns its controller and applies this visibility after build.
+  /// A remounted portal starts from the same source of truth.
   void _showSettingsPortal() {
-    /*
-     * ★★ 判据用 controller 的**真实**状态（`isShowing`），**不再**用镜像 bool。
-     *
-     * # 为什么删掉了那个镜像（2026-10-08，第 3 条）
-     * ```text
-     * 旧实现：`if (_settingsPortalShown) return;` —— 镜像是自己记的，会过期。
-     *   portal 的 Element 若被重建（挂载点两侧都有条件子件，见 :9272 注释），
-     *   controller 的可见状态不跟随（overlay.dart:1675-1684 的契约），
-     *   而镜像还是 true ⇒ show() 被吞 ⇒ 面板**再也画不出来**，且不可自愈。
-     *
-     * 现在：`isShowing` 是 controller 自己维护的真实状态，不存在过期问题；
-     *   Element 重建后它如实变成 false ⇒ 这次 show() 一定会真的发出去。
-     * ```
-     *
-     * 挂载点另有常量 Key（Element 根本不再被重建），这两层是互补的保险。
-     */
-    if (_settingsPortal.isShowing) return;
-    _settingsPortal.show();
+    if (_settingsOpen) return;
+    setState(() => _settingsOpen = true);
   }
 
   /// 打开播放设置面板（★ task-25 D 只读探针的唯一入口）
@@ -10775,7 +10853,6 @@ class _PlayerPageState extends State<PlayerPage>
   void debugOpenSettingsForProbe() {
     // ★★★ T27-09：与 _openSettings 同款 —— 探针必须走生产同一条显隐路径
     _collapseControlsForSheet();
-    setState(() => _settingsOpen = true);
     _showSettingsPortal();
   }
 
@@ -10939,15 +11016,10 @@ class _PlayerPageState extends State<PlayerPage>
     _noteCursorActivity();
   }
 
-
-  /// 收起 rootOverlay 上的播放设置面板（Esc / 关闭按钮 / dispose 都走这里）
+  /// Close the settings portal through its single visibility state.
   void _hideSettingsPortal() {
-    // ★ 与 `_showSettingsPortal` 同款：先清镜像，再看 controller 的**真实**状态。
-    //   若 controller 已经不显示了，就别再 hide() —— 未 attach 且
-    //   `_zOrderIndex == null` 时 `hide()` 里的 `assert(_zOrderIndex != null)`
-    //   会炸（overlay.dart:1748）。
-    if (!_settingsPortal.isShowing) return;
-    _settingsPortal.hide();
+    if (!_settingsOpen) return;
+    setState(() => _settingsOpen = false);
   }
 
   /// Esc 收起播放设置面板的**全部**动作（Owner 第 3 条的自愈也在这里）
@@ -11016,7 +11088,6 @@ class _PlayerPageState extends State<PlayerPage>
       mpvStyle: _mpvStyle,
       endAction: _endAction,
       countdownBeforeNext: _countdownBeforeNext,
-      keepSourceOnNext: _keepSourceOnNext,
       autoSkip: _autoSkip,
       // ★ T7：记忆式片头开关（回调为 null 时不画 —— 这里必传，行必现）
       skipMemoryEnabled: _skipMemoryEnabled,
@@ -11072,10 +11143,6 @@ class _PlayerPageState extends State<PlayerPage>
       onSetCountdown: (v) {
         setState(() => _countdownBeforeNext = v);
         _savePlayPref('countdownBeforeNext', v ? '1' : '0');
-      },
-      onSetKeepSource: (v) {
-        setState(() => _keepSourceOnNext = v);
-        _savePlayPref('keepSourceOnNext', v ? '1' : '0');
       },
       onSetAutoSkip: (v) {
         setState(() => _autoSkip = v);
@@ -11318,9 +11385,7 @@ class _PlayerPageState extends State<PlayerPage>
        * ★ 不 setState、不补判、直接 return —— 新会话自己有它的 `_loadSkipMarker`。
        */
       if (gen != _playSessionGen) {
-        debugPrint(
-          '[PLAYER] 丢弃过期的片头标记响应（会话代次 $gen → $_playSessionGen）',
-        );
+        debugPrint('[PLAYER] 丢弃过期的片头标记响应（会话代次 $gen → $_playSessionGen）');
         return;
       }
       setState(() => _skipMarker = m);
@@ -11399,11 +11464,11 @@ class _PlayerPageState extends State<PlayerPage>
   /// （跳过片尾曲 + 立刻触发播放结束分支）。所以片尾继续走原来的独立分支。
   /// ```
   List<SkipWindow> _skipWindowsOf(SkipMarker m) => windowsOf(
-        introStart: m.introStart,
-        introEnd: m.introEnd,
-        // ★ 只传 intro + midroll；outroStart/outroEnd 故意不传（见上）
-        midrolls: m.midrolls,
-      );
+    introStart: m.introStart,
+    introEnd: m.introEnd,
+    // ★ 只传 intro + midroll；outroStart/outroEnd 故意不传（见上）
+    midrolls: m.midrolls,
+  );
 
   /// 标记某条窗口"已处理"（跳过或让位都算）——幂等靠它
   void _markSkipped(SkipWindow w) {
@@ -11419,10 +11484,10 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 该窗口是否已处理过
   bool _alreadySkipped(SkipWindow w) => switch (w.kind) {
-        'intro' => _introSkipped,
-        'midroll' => _midrollSkippedStarts.contains(w.start.inSeconds),
-        _ => false,
-      };
+    'intro' => _introSkipped,
+    'midroll' => _midrollSkippedStarts.contains(w.start.inSeconds),
+    _ => false,
+  };
 
   /// 播放位置变化时检查要不要跳
   void _maybeSkip(Duration pos) {
@@ -11510,13 +11575,23 @@ class _PlayerPageState extends State<PlayerPage>
       final hit = windows.firstWhere((w) => w.contains(pos));
       _markSkipped(hit);
       if (hit.kind == 'midroll') {
-        debugPrint('[PLAYER] 跳过中插 ${hit.start.inSeconds} → ${hit.end.inSeconds}');
-        AppLog.write('PLAY', '跳过中插 ${hit.start.inSeconds} → ${hit.end.inSeconds}'
-            '（触发源=自动，位置 ${sec}s）');
+        debugPrint(
+          '[PLAYER] 跳过中插 ${hit.start.inSeconds} → ${hit.end.inSeconds}',
+        );
+        AppLog.write(
+          'PLAY',
+          '跳过中插 ${hit.start.inSeconds} → ${hit.end.inSeconds}'
+              '（触发源=自动，位置 ${sec}s）',
+        );
       } else {
-        debugPrint('[PLAYER] 跳过片头 ${hit.start.inSeconds} → ${hit.end.inSeconds}');
-        AppLog.write('PLAY', '跳过片头 ${hit.start.inSeconds} → ${hit.end.inSeconds}'
-            '（触发源=自动，位置 ${sec}s）');
+        debugPrint(
+          '[PLAYER] 跳过片头 ${hit.start.inSeconds} → ${hit.end.inSeconds}',
+        );
+        AppLog.write(
+          'PLAY',
+          '跳过片头 ${hit.start.inSeconds} → ${hit.end.inSeconds}'
+              '（触发源=自动，位置 ${sec}s）',
+        );
       }
       _skipSeekCalls++; // ★ 只读探针（fix/skip-auto-seek）：真的发出了 seek
       _lastSkipSeek = target;
@@ -11921,7 +11996,10 @@ class _PlayerPageState extends State<PlayerPage>
        * ⚠️ 详情里**不一定**带 episodes，所以再调一次 `getEpisodes`
        *    （与详情页的取法一致）。
        */
-      final d = await (_switchDetailForProbe ?? SourinApi.getDetail)(p.provider, p.id);
+      final d = await (_switchDetailForProbe ?? SourinApi.getDetail)(
+        p.provider,
+        p.id,
+      );
       final srcCode = d.sources.isNotEmpty ? d.sources.first.code : null;
 
       var eps = d.episodes;
@@ -12216,11 +12294,14 @@ class _PlayerPageState extends State<PlayerPage>
   void _publishPlaybackProgress() {
     if (_isLive || _playClosed || !mounted) return;
     final episode = _epIndex >= 0 && _epIndex < _episodes.length
-        ? _episodes[_epIndex] : null;
+        ? _episodes[_epIndex]
+        : null;
     final duration = _realDuration > Duration.zero ? _realDuration : _duration;
     final previous = _playbackProgress.value;
-    if (previous != null && previous.provider == _provider &&
-        previous.id == _contentId && previous.generation == _playSessionGen &&
+    if (previous != null &&
+        previous.provider == _provider &&
+        previous.id == _contentId &&
+        previous.generation == _playSessionGen &&
         previous.episodeId == (episode?.id ?? _unlistedEpisodeId) &&
         previous.episodeTitle == (episode?.title ?? _unlistedEpisodeTitle) &&
         previous.position.inSeconds == _position.inSeconds &&
@@ -12345,8 +12426,8 @@ class _PlayerPageState extends State<PlayerPage>
       _nextCountdown = 0;
       _countdownTimer?.cancel();
       // 只有显式换源携带续播意图；普通换集仍从头播放。
-      _pendingSeek = req.resumeFrom != null &&
-              req.resumeFrom! > const Duration(seconds: 3)
+      _pendingSeek =
+          req.resumeFrom != null && req.resumeFrom! > const Duration(seconds: 3)
           ? req.resumeFrom
           : null;
     });
@@ -12574,10 +12655,12 @@ class _PlayerPageState extends State<PlayerPage>
     if (episodes.isEmpty) return;
     final same =
         _episodes.length == episodes.length &&
-        Iterable<int>.generate(_episodes.length).every((i) =>
-            _episodes[i].id == episodes[i].id &&
-            _episodes[i].title == episodes[i].title &&
-            _episodes[i].flag == episodes[i].flag);
+        Iterable<int>.generate(_episodes.length).every(
+          (i) =>
+              _episodes[i].id == episodes[i].id &&
+              _episodes[i].title == episodes[i].title &&
+              _episodes[i].flag == episodes[i].flag,
+        );
     if (same) return;
 
     final previousId = currentEpisodeId;
@@ -12585,14 +12668,17 @@ class _PlayerPageState extends State<PlayerPage>
     final previousFlag = _epIndex >= 0 && _epIndex < _episodes.length
         ? _episodes[_epIndex].flag
         : _selectedFlag;
-    final retainedIndex = episodes.indexWhere((e) =>
-        e.id == previousId &&
-        (previousFlag == null || e.flag == previousFlag));
+    final retainedIndex = episodes.indexWhere(
+      (e) =>
+          e.id == previousId &&
+          (previousFlag == null || e.flag == previousFlag),
+    );
     final oldFile = _isConcretePanEpisode(previousId);
     final selectedIndex = retainedIndex >= 0
         ? retainedIndex
         : _epIndex.clamp(0, episodes.length - 1);
-    final shouldHandoff = !_isLive &&
+    final shouldHandoff =
+        !_isLive &&
         _current == null &&
         !oldFile &&
         _isConcretePanEpisode(episodes[selectedIndex].id);
@@ -13206,7 +13292,9 @@ class _PlayerPageState extends State<PlayerPage>
       case 'goto_channel':
         final chId = c.id;
         if (chId == null || chId.isEmpty || !_isLive) return;
-        final ch = _liveChannels()?.channels.where((x) => x.id == chId).firstOrNull;
+        final ch = _liveChannels()?.channels
+            .where((x) => x.id == chId)
+            .firstOrNull;
         if (ch == null) {
           debugPrint('[REMOTE] goto_channel 找不到频道 $chId');
           return;
@@ -13421,8 +13509,7 @@ class _PlayerPageState extends State<PlayerPage>
       );
       if (!_isCurrentPlayResolve(generation)) return;
       if (token != _rewatchToken) {
-        debugPrint(
-            '[PLAYER] 丢弃过期的换集解析结果（切集令牌 $token → $_rewatchToken）');
+        debugPrint('[PLAYER] 丢弃过期的换集解析结果（切集令牌 $token → $_rewatchToken）');
         return;
       }
       setState(() => _streams = list);
@@ -13867,8 +13954,8 @@ class _PlayerPageState extends State<PlayerPage>
        *    那个代次判据比的是 `_provider`，顺序反了会把这次当成过期丢弃。
        */
       unawaited(_loadProviderName());
-    // ★ 与站名**同一批**刷新：换源后发送入口的能力必须跟着换
-    unawaited(_loadDanmakuSendCapability());
+      // ★ 与站名**同一批**刷新：换源后发送入口的能力必须跟着换
+      unawaited(_loadDanmakuSendCapability());
 
       await _startPlayback(first);
     } catch (e) {
@@ -14651,7 +14738,9 @@ class _PlayerPageState extends State<PlayerPage>
     final token = _seekToken;
     final positionEpoch = _positionObservationEpoch;
     await (_userSeekForProbe ?? _player.seek)(target);
-    if (!mounted || _playClosed || generation != _playSessionGen ||
+    if (!mounted ||
+        _playClosed ||
+        generation != _playSessionGen ||
         token != _seekToken) {
       return;
     }
@@ -14704,20 +14793,22 @@ class _PlayerPageState extends State<PlayerPage>
     // ★ 互检 P2-2：必须**等写库结果**——false = 被声明优先拦截，
     //   用户视角什么都没发生，**不给 flash**（sourin_api 的文档纪律）。
     //   _memoryIntroEnd 也只在真写入后更新，否则被拦的候选值会污染去重。
-    unawaited(SourinApi.setSkipMemory(
-      _provider,
-      widget.id,
-      title: _liveTitle,
-      introEnd: d.inSeconds,
-    ).then((ok) {
-      if (!ok) return;
-      _memoryIntroEnd = d.inSeconds;
-      _flash('已记住片头到 ${d.inSeconds}s，下次自动跳过');
-      AppLog.write(
-        'PLAY',
-        '记忆片头终点 ${d.inSeconds}s（用户 seek，$_provider:${widget.id}）',
-      );
-    }));
+    unawaited(
+      SourinApi.setSkipMemory(
+        _provider,
+        widget.id,
+        title: _liveTitle,
+        introEnd: d.inSeconds,
+      ).then((ok) {
+        if (!ok) return;
+        _memoryIntroEnd = d.inSeconds;
+        _flash('已记住片头到 ${d.inSeconds}s，下次自动跳过');
+        AppLog.write(
+          'PLAY',
+          '记忆片头终点 ${d.inSeconds}s（用户 seek，$_provider:${widget.id}）',
+        );
+      }),
+    );
   }
 
   void _seekBy(int seconds) {
@@ -14981,17 +15072,13 @@ class _PlayerPageState extends State<PlayerPage>
   ///
   /// 为什么要这个口子：真实 mpv 只在**真播放**时才给出 demuxer-cache-*，
   /// 而探针要在**任意可控输入**下断言缓冲条的几何。
-  /// 本方法走的是与生产**完全相同**的那条 `setState(_bufferedRange)`，
+  /// 本方法走与生产相同的 `_setBufferedRange` 局部通知路径，
   /// 所以它证明的是"UI 对区间的反应"，不是"另一个实现"。
   BufferedRange? debugPlayerPushBufferForProbe(
     Duration? end, {
     Duration? start,
   }) {
-    setState(() {
-      _bufferedRange = end == null
-          ? null
-          : BufferedRange(end: end, start: start);
-    });
+    _setBufferedRange(end == null ? null : BufferedRange(end: end, start: start));
     return _bufferedRange;
   }
 
@@ -15148,7 +15235,7 @@ class _PlayerPageState extends State<PlayerPage>
      * ⚠️ **退出全屏时必须恢复** —— 否则回到窗口模式后又拖不动了，
      *    那就是把上一轮修好的 bug 又放回来。
      */
-    titleBarVisible.value = !next;
+    _titleBarSession.setFullscreen(next);
 
     if (!Device.isDesktop) return; // 移动端没有"窗口全屏"概念
 
@@ -15559,7 +15646,8 @@ class _PlayerPageState extends State<PlayerPage>
     //    的判据④对**剥注释后**的源码做字面量匹配（`_page.contains('!_hintsOpen && !_zoomOpen')`）。
     if (mounted &&
         _playing &&
-        !_hintsOpen && !_zoomOpen &&
+        !_hintsOpen &&
+        !_zoomOpen &&
         _popover.openId == null) {
       setState(() => _controlsVisible = false);
       /*
@@ -15639,18 +15727,15 @@ class _PlayerPageState extends State<PlayerPage>
   /// [ms] 用默认值 = 失败态那 8 秒；空态传 [kDanmakuBadgeEmptyMs]。
   void _armDanmakuBadgeExpiry([int ms = kDanmakuBadgeFailMs]) {
     _danmakuBadgeTimer?.cancel();
-    _danmakuBadgeTimer = Timer(
-      Duration(milliseconds: ms),
-      () {
-        if (!mounted) return;
-        /*
+    _danmakuBadgeTimer = Timer(Duration(milliseconds: ms), () {
+      if (!mounted) return;
+      /*
          * ★ 两件事一起做：
          *   ① 翻牌（getter 下一帧就不再画"没有弹幕"）；
          *   ② setState 触发重建（getter 是懒的，没人重建就没人重读）。
          */
-        setState(() => _danmakuEmptyExpired = true);
-      },
-    );
+      setState(() => _danmakuEmptyExpired = true);
+    });
   }
 
   String? _tip;
@@ -16882,7 +16967,6 @@ class _PlayerPageState extends State<PlayerPage>
       await _toggleFullscreen(awaitOs: false);
     }
     // ② 保底：无论是否全屏，退出时标题栏都必须是可见的
-    titleBarVisible.value = true;
     /*
      * ★ 并且**必须复位深色态** —— 与 `initState` 里的 `titleBarDark = true` 成对。
      *
@@ -16964,22 +17048,16 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 把「标题栏退出深色态」推到**返回帧画完之后**（详见 `_exitPlayer` 里的长注释）。
   ///
-  /// ⚠️ 只有 `_exitPlayer` 用这个（主动返回那条路）；`dispose` 里仍然直接复位 ——
-  ///    那是**兜底**，它跑的时候页面早就没了，没有"返回帧"可让。
+  /// Dispose uses the same idempotent release during route replacement.
   void _scheduleTitleBarDarkReset() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      titleBarDark.value = false;
-    });
-    // 见 _exitPlayer 的注释：addPostFrameCallback 不保证有下一帧。
-    WidgetsBinding.instance.scheduleFrame();
+    _titleBarSession.release();
   }
 
   // ═══════════════════════════════════════════════════════════════════
   //  生命周期
   // ═══════════════════════════════════════════════════════════════════
 
-  /// ★ 缺陷 13：把 mpv 的缓冲属性接到底栏（500ms 轮询，见 _BufferPoller）
+  /// ★ 缺陷 13：把 mpv 的缓冲属性接到底栏（500ms 轮询，见 PlayerBufferPoller）
   ///
   /// # 为什么要**交叉校验**（这是本条最容易被忽略的一步）
   /// ```text
@@ -16995,15 +17073,15 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⚠️ `kBufferRangeMode == 'off'` 时**一条属性都不读**（零开销）。
   void _bindBufferPoller() {
     if (kBufferRangeMode == 'off') return;
-    _bufferPoller = _BufferPoller(
+    _bufferPoller = PlayerBufferPoller(
       read: _readMpvDouble,
       onChanged: (end, statePercent, spanSec) {
-        if (!mounted) return;
+        if (!mounted || _playClosed) return;
         _bufferStatePercent = statePercent;
         if (end == null) {
           // ★ 读不到就如实清空（不保留上一次的值 —— 那会变成"卡住不动"的假区间）
           if (_bufferedRange != null) {
-            setState(() => _bufferedRange = null);
+            _setBufferedRange(null);
           }
           return;
         }
@@ -17015,7 +17093,7 @@ class _PlayerPageState extends State<PlayerPage>
               'position=${_position.inMilliseconds}ms span=${spanSec}s ⇒ 本次不画',
             );
             if (_bufferedRange != null) {
-              setState(() => _bufferedRange = null);
+              _setBufferedRange(null);
             }
             return;
           }
@@ -17023,12 +17101,10 @@ class _PlayerPageState extends State<PlayerPage>
         final startMs = spanSec == null
             ? null
             : (end.inMilliseconds - (spanSec * 1000).round()).clamp(0, 1 << 40);
-        setState(() {
-          _bufferedRange = BufferedRange(
-            end: end,
-            start: startMs == null ? null : Duration(milliseconds: startMs),
-          );
-        });
+        _setBufferedRange(BufferedRange(
+          end: end,
+          start: startMs == null ? null : Duration(milliseconds: startMs),
+        ));
       },
     );
   }
@@ -17072,8 +17148,7 @@ class _PlayerPageState extends State<PlayerPage>
         'play_consumer': _playConsumer,
         'play_generation': _playGeneration,
         'invalidate': true,
-      })
-          .catchError((Object _) => <String, dynamic>{}),
+      }).catchError((Object _) => <String, dynamic>{}),
     );
     /*
      * ★ 2026-10-08（Owner 第 9 条）：控制条动画控制器必须跟着本页销毁 ——
@@ -17111,10 +17186,12 @@ class _PlayerPageState extends State<PlayerPage>
     //
     // ⚠️ 为什么这里**必须**吞掉：dispose 是在页面销毁时跑的，
     //   此时抛异常对用户毫无意义（页面都没了），只会污染日志与测试。
-    unawaited(SourinApi.endYieldForSeek().catchError((Object e) {
-      // 失败只记日志，不外抛 —— dispose 阶段没有任何补救动作可做
-      AppLog.write('PLAYER', 'dispose: 结束取流让出失败（已忽略）：$e');
-    }));
+    unawaited(
+      SourinApi.endYieldForSeek().catchError((Object e) {
+        // 失败只记日志，不外抛 —— dispose 阶段没有任何补救动作可做
+        AppLog.write('PLAYER', 'dispose: 结束取流让出失败（已忽略）：$e');
+      }),
+    );
     // 缺陷 13：轮询定时器必须跟着本页停掉
     _bufferPoller?.stop();
     _bufferPoller?.clear();
@@ -17158,6 +17235,7 @@ class _PlayerPageState extends State<PlayerPage>
     _popover.removeListener(_onPopoverChanged);
     _popover.dispose();
     _positionNotifier.dispose();
+    _bufferedProgress.dispose();
     // ★ 2026-10-14：弹幕轻量悬浮窗的实时值载体（ChangeNotifier ⇒ 必须释放）
     //   ⚠️ 无监听者需要摘（订阅它的 `ValueListenableBuilder` 在 dispose 前
     //     已随树拆掉，它自己会 removeListener）—— 直接 dispose 即可。
@@ -17233,7 +17311,6 @@ class _PlayerPageState extends State<PlayerPage>
      * ```
      * 幂等赋值没有副作用（`ValueNotifier` 值不变时不通知）。
      */
-    titleBarVisible.value = true;
     /*
      * ★ 同样复位**深色态**（与 `initState` 的 `titleBarDark = true` 成对）。
      *
@@ -17242,7 +17319,7 @@ class _PlayerPageState extends State<PlayerPage>
      * 而 `_exitPlayer` 只覆盖"主动返回"。
      * 两处都复位才能保证**任何**退出路径都不留下黑标题栏。幂等无副作用。
      */
-    titleBarDark.value = false;
+    _titleBarSession.release();
     /*
      * ★ 注销探针登记（2026-09-25）
      *
@@ -17251,7 +17328,6 @@ class _PlayerPageState extends State<PlayerPage>
      *    的陈旧读数，会让实测得出错误结论。
      */
     if (identical(_livePlayerState, this)) _livePlayerState = null;
-
 
     /*
      * ★ 注销遥控的播放能力（与 initState 的 setPlayer 配对）
@@ -18041,34 +18117,35 @@ class _PlayerPageState extends State<PlayerPage>
                     ListenableBuilder(
                       listenable: _controlsLive,
                       builder: (context, _) => _TopBar(
-                      episodeTitle: _currentEpisodeTitle,
-                      isLive: _isLive,
-                      // ★ task-32 接线契约（逐字）：state 必须传进 providerName；
-                      //   聚合源的复合串在写入点算（见 _refreshAggregateTitleInPlace）
-                      providerName: _providerName,
-                      // ★ 标题跟随（Owner 解锁授权）：顶栏剧名剥掉直播频道型源
-                      //   内嵌的集数后缀（集名由下面 episodeTitle 独立渲染）；
-                      //   普通源零变化。写库路径仍读 _liveTitle（t61 契约不动）。
-                      title: showTitleOf(_liveTitle, _episodes),
-                      /*
+                        episodeTitle: _currentEpisodeTitle,
+                        isLive: _isLive,
+                        // ★ task-32 接线契约（逐字）：state 必须传进 providerName；
+                        //   聚合源的复合串在写入点算（见 _refreshAggregateTitleInPlace）
+                        providerName: _providerName,
+                        // ★ 标题跟随（Owner 解锁授权）：顶栏剧名剥掉直播频道型源
+                        //   内嵌的集数后缀（集名由下面 episodeTitle 独立渲染）；
+                        //   普通源零变化。写库路径仍读 _liveTitle（t61 契约不动）。
+                        title: showTitleOf(_liveTitle, _episodes),
+                        /*
                        * 弹幕信息：只在**弹幕这一层有话说**时挂出来。
                        * 没有绑定、没在取、也没失败 ⇒ 不给入口，免得用户点开
                        * 看到一张"什么都没"的卡片。
                        */
-                      dmInfo: _danmakuInfoVisible ? _danmakuInfo : null,
-                      dmInfoOpen: _danmakuInfoOpen,
-                      onToggleDmInfo: () =>
-                          setState(() => _danmakuInfoOpen = !_danmakuInfoOpen),
-                      /*
+                        dmInfo: _danmakuInfoVisible ? _danmakuInfo : null,
+                        dmInfoOpen: _danmakuInfoOpen,
+                        onToggleDmInfo: () => setState(
+                          () => _danmakuInfoOpen = !_danmakuInfoOpen,
+                        ),
+                        /*
                        * ★★★ N6（2026-10-27）③：解绑的落点是**宿主 State**
                        *   （`_unbindDanmakuRoute`：清存储 + 重取弹幕 +
                        *   重建明细行）。绑定明细（②）不走这里 —— 它是
                        *   `_danmakuInfo.bindings`（见上面的 getter）。
                        */
-                      onUnbindDanmakuRoute: _unbindDanmakuRoute,
-                      onBack: () => unawaited(_exitPlayer()),
-                      onHints: hints.isEmpty ? null : _toggleHints,
-                      /*
+                        onUnbindDanmakuRoute: _unbindDanmakuRoute,
+                        onBack: () => unawaited(_exitPlayer()),
+                        onHints: hints.isEmpty ? null : _toggleHints,
+                        /*
                      * ★ 常驻悬浮返回键（用户缺陷②）
                      *
                      * 用户原话：
@@ -18077,7 +18154,7 @@ class _PlayerPageState extends State<PlayerPage>
                      * 顶栏随控制条 3 秒后一起消失 ⇒ 屏幕上再没有可点的返回口。
                      * 判据与设计见 `_FloatingBackButton` 的长注释。
                      */
-                      /*
+                        /*
                          * ★★★ 缺陷（Owner 2026-10-09）：错误态下**也要**给返回口
                          *
                          * 改前只有 `_canUseFloatingBack` ⇒ `_error != null` 时传 null
@@ -18085,7 +18162,7 @@ class _PlayerPageState extends State<PlayerPage>
                          * 而顶栏那枚又因 `visible == false` 被 IgnorePointer 挡住。
                          * 见 `_canUseTopBarBack` 的长注释。
                          */
-                      /*
+                        /*
                          * ★ 顶栏渐变条的可见性 —— 与**底栏同一条判据**
                          *
                          * 底栏的判据是
@@ -18132,14 +18209,14 @@ class _PlayerPageState extends State<PlayerPage>
                          *    （那是错误态唯一的返回口，Owner 2026-10-09 专门报过）。
                          * ```
                          */
-                      // ★★★ T27-13：顶栏正常支与底栏共读**唯一真源** `_chromeVisible`
-                      //   ——原来这里内联的
-                      //   `(_controlsVisible && _error == null) && !_videoOutputDead
-                      //    && _liveAudioOnlyNotice == null` 与底栏的 11 项门控
-                      //   **差 7 个浮层 flag**，两栏各算各的 ⇒ 会分裂。
-                      //   现在两者都是 `_chromeVisible` 求值 ⇒ 结果恒相等。
-                      visible: _chromeVisible || _canUseTopBarBack,
-                      /*
+                        // ★★★ T27-13：顶栏正常支与底栏共读**唯一真源** `_chromeVisible`
+                        //   ——原来这里内联的
+                        //   `(_controlsVisible && _error == null) && !_videoOutputDead
+                        //    && _liveAudioOnlyNotice == null` 与底栏的 11 项门控
+                        //   **差 7 个浮层 flag**，两栏各算各的 ⇒ 会分裂。
+                        //   现在两者都是 `_chromeVisible` 求值 ⇒ 结果恒相等。
+                        visible: _chromeVisible || _canUseTopBarBack,
+                        /*
                          * ★ 2026-10-08（Owner 第 9 条）：顶栏的淡入淡出。
                          *
                          * ⚠️ 只喂给那条渐变条 —— 常驻悬浮返回键走
@@ -18172,9 +18249,9 @@ class _PlayerPageState extends State<PlayerPage>
                          * ⚠️ 正常播放时（`_error == null`）表达式退化成原来的 `_controlsFade`
                          *    **逐字节不变** ⇒ 缺陷 2 的几何/交叉淡化判据（zz_t2 探针）不受影响。
                          */
-                      fade: _canUseTopBarBack
-                          ? kAlwaysCompleteAnimation
-                          /*
+                        fade: _canUseTopBarBack
+                            ? kAlwaysCompleteAnimation
+                            /*
                            * ★★★ Owner 缺陷④（2026-10-11）：降级横幅出现 ⇒ 顶栏
                            *     **必须真的淡出去**（不能只把 `visible` 设 false）。
                            *
@@ -18191,11 +18268,11 @@ class _PlayerPageState extends State<PlayerPage>
                            * ⚠️ 只在**正常播放**这一支（`_error == null`）生效
                            *    —— 见 `visible:` 那条注释，错误态返回口不许动。
                            */
-                          : (_videoOutputDead || _liveAudioOnlyNotice != null)
-                              ? kAlwaysDismissedAnimation
-                              : _controlsFade,
-                      backArrowKey: _topBarBackKey,
-                      /*
+                            : (_videoOutputDead || _liveAudioOnlyNotice != null)
+                            ? kAlwaysDismissedAnimation
+                            : _controlsFade,
+                        backArrowKey: _topBarBackKey,
+                        /*
                          * ★★★ task-16（Owner：「全屏左上角这个单独的返回icon,
                          *     还没消失」）—— 悬浮键的**常驻**判据。
                          *
@@ -18207,7 +18284,7 @@ class _PlayerPageState extends State<PlayerPage>
                          *    不是本按钮自己的矩形 —— 用户的本意是
                          *    「鼠标在画面上就该有返回口」。
                          */
-                    ),
+                      ),
                     ),
 
                     // ── 下一集倒计时 ──
@@ -18453,8 +18530,7 @@ class _PlayerPageState extends State<PlayerPage>
                          */
                         return child!;
                       },
-                      child:
-                          _BottomBar(
+                      child: _BottomBar(
                         playing: _playing,
                         positionNotifier: _positionNotifier,
                         duration: _duration,
@@ -18636,9 +18712,28 @@ class _PlayerPageState extends State<PlayerPage>
                           onAreaGuide: _setDanmakuAreaGuide,
                           onOpenAdvanced: _openDanmakuSettings,
                           onOpenSearch: _openDanmakuSearch,
-                          onSearch: _openDanmakuSearch,
+                          onSearch: (keyword) {
+                            _danmakuSearchDraft.keyword = keyword.trim();
+                            unawaited(_searchDanmaku(keyword));
+                          },
+                          searchResults: _danmakuSettings.searchResults,
+                          searchLoading: _danmakuSettings.searchLoading,
+                          searchSearched: _danmakuSettings.searchSearched,
+                          searchStale: _danmakuSettings.searchStale,
+                          searchFailed: _danmakuSettings.searchError != null,
+                          loadNotice:
+                              _danmakuComments.isEmpty &&
+                                  !_danmakuLoading &&
+                                  _danmakuError == null
+                              ? _danmakuStatus
+                              : '',
+                          onPickMatch: (match) {
+                            _popover.close();
+                            _pickDanmakuMatch(match);
+                          },
                           searchKeyword: _danmakuSearchDraft.keyword.isNotEmpty
-                              ? _danmakuSearchDraft.keyword : _liveTitle.trim(),
+                              ? _danmakuSearchDraft.keyword
+                              : _liveTitle.trim(),
                         ),
                         /*
                      * ★★★ task-22 P1-5 / P1-11：画面缩放
@@ -18674,7 +18769,7 @@ class _PlayerPageState extends State<PlayerPage>
                         // ★ T27-13：与顶栏**同一** `_controlsFade` 实例
                         //   （占据态则钉 dismissed，见 `_bottomFade`）。
                         fade: _bottomFade,
-                        buffered: _isLive ? null : _bufferedRange,
+                        bufferedListenable: _isLive ? null : _bufferedProgress,
                         bufferBarKey: _bufferBarKey,
                         /*
                      * ★★★ 2026-10-09（Owner 第 12 条）popover / 「更多」入口数据
@@ -18719,7 +18814,8 @@ class _PlayerPageState extends State<PlayerPage>
                          * ⚠️ Owner 已确认：「弹幕总开关关闭时也不显示」。
                          *    所以这里是 AND，不是「开关只管暂停」。
                          */
-                        danmakuSend: (_danmakuEnabled &&
+                        danmakuSend:
+                            (_danmakuEnabled &&
                                 _danmakuCanSend &&
                                 _danmakuSendProvider != null &&
                                 !_isLive)
@@ -18958,44 +19054,12 @@ class _PlayerPageState extends State<PlayerPage>
                  * ★ 而上面 `!... && !_settingsOpen && ...` 那条控制条判据照旧，
                  *   所以「面板开着时底栏不画」的观感与改前**完全一致**。
                  *
-                 * ⚠️ `child:` 给 `SizedBox.shrink()` —— portal 自身不参与画面，
-                 *    它的位置完全由 theater 决定（`_RenderLayoutSurrogateProxyBox`）。
+                 * Portal 使用独立的非零语义锚点，不绘制也不拦截输入。
+                 * 面板范围仍由 rootOverlay 的 theater 决定。
                  */
-                    OverlayPortal(
-                      /*
-                   * ★★ 必须给**常量** Key —— 这一行修的是「点设置面板没反应、
-                   *    下面那栏再也不回来」（Owner 第 3 条）。
-                   *
-                   * 机制：本 Stack 的兄弟里**两侧都有条件子件**（上面 `if (_hintsOpen)`，
-                   * 下面 `if (_danmakuSheetOpen)` / `if (_biliSheetOpen)` /
-                   * `if (_subtitlePanelOpen)` / 选集 / 直播 / 线路 …）。Stack 的
-                   * `updateChildren` 对**无 key** 子件用位置槽位（IndexedSlot）匹配 ⇒
-                   * 任一侧开/关都会把这一格的 Element 判成「换了个 widget」而
-                   * deactivate + inflate 重建。
-                   *
-                   * 重建时 controller 的可见状态**不跟随**（overlay.dart:1675-1684 逐字：
-                   * 「When an [OverlayPortalController] is moved from one [OverlayPortal]
-                   *  to another, its [isShowing] state does not carry over.」）：旧 State
-                   * `dispose()` 把 `controller._attachTarget` 清成 null
-                   * （overlay.dart:2060-2066），新 State 的 `_zOrderIndex` 初值是 null，
-                   * 而 controller 自己那份 `_zOrderIndex` 早在旧 State 的
-                   * `_setupController` 里被置 null 了（overlay.dart:2033）。
-                   *
-                   * 于是 —— 改前若镜像 bool 还是 true（面板开着时开了别的浮层，
-                   * 或反过来），`_showSettingsPortal()` 会被
-                   * `if (_settingsPortalShown) return;` 吞掉（那行已随镜像一起删除），
-                   * 新 State 永远 `_zOrderIndex == null` ⇒ build 走
-                   * `overlayLocation: null, overlayChild: null` 那条分支
-                   * （overlay.dart:2092-2098）⇒ 面板永远画不出来；而底栏门控
-                   * 里 `!_settingsOpen` 照旧成立 ⇒ 底栏也永远不回来。
-                   * 且**不可自愈**：`_hideSettingsPortal()` 全文件只有 Esc 那一处调用，
-                   * 面板不可见时用户不会去按 Esc。
-                   *
-                   * ⚠️ 必须写成 `const ValueKey<String>(…)`：若每次 build 新建一个 Key，
-                   *    匹配永远失败，等于把这个 bug 变成**必现**。
-                   */
+                    PlayerSettingsPortal(
                       key: const ValueKey<String>('player-settings-portal'),
-                      controller: _settingsPortal,
+                      visible: _settingsOpen,
                       /*
                    * ⚠️ 必须是 **rootOverlay**：播放页有两种宿主 ——
                    *    ① `lib/ui/media_page.dart` 内嵌（同一个 Overlay）
@@ -19003,9 +19067,8 @@ class _PlayerPageState extends State<PlayerPage>
                    *    「最近的 Overlay」在嵌套场景下可能是**别的路由**的，
                    *    那正是本条要修的「被夹在小盒子里」的同一种病。
                    */
-                      overlayLocation: OverlayChildLocation.rootOverlay,
-                      overlayChildBuilder: (ctx) => _buildSettingsPortalChild(ctx),
-                      child: const SizedBox.shrink(),
+                      overlayChildBuilder: (ctx) =>
+                          _buildSettingsPortalChild(ctx),
                     ),
                     // ── 弹幕设置面板（「弹幕」齿轮 → task-13 ⑦）──
                     /*
@@ -19043,15 +19106,15 @@ class _PlayerPageState extends State<PlayerPage>
                         child: ValueListenableBuilder<DanmakuQuickValues>(
                           valueListenable: _danmakuQuickLive,
                           builder: (context, qv, _) => DanmakuSettingsDialog(
-                          fill: false,
-                          state: _danmakuSettings.copyWith(
-                            fontScale: qv.fontScale,
-                            opacity: qv.opacity,
-                            speed: qv.speed,
-                            area: qv.area,
-                          ),
-                          readout: _danmakuReadout,
-                          /*
+                            fill: false,
+                            state: _danmakuSettings.copyWith(
+                              fontScale: qv.fontScale,
+                              opacity: qv.opacity,
+                              speed: qv.speed,
+                              area: qv.area,
+                            ),
+                            readout: _danmakuReadout,
+                            /*
                            * 2026-10-15 (Owner): the status strip shows how many
                            * rows EACH source has, so the panel needs both counts --
                            * but `state.count` is only "whatever is live right now".
@@ -19061,8 +19124,10 @@ class _PlayerPageState extends State<PlayerPage>
                            * count is meaningful; otherwise the honest answer is
                            * null ("we never asked") rather than 0 ("it has none").
                            */
-                          biliCount: _biliCid > 0 ? _danmakuComments.length : null,
-                          /*
+                            biliCount: _biliCid > 0
+                                ? _danmakuComments.length
+                                : null,
+                            /*
                            * ★★★ 2026-10-19（第 66 轮 R3-⑤ / Owner 第 ⑤ 条）：
                            *   把**逐路弹幕原料**递给面板。
                            *
@@ -19083,45 +19148,46 @@ class _PlayerPageState extends State<PlayerPage>
                            *    {}   = 接了、但这一集确实没有任何一路有原料。
                            *    这里传 map（哪怕是空的）——因为"接了"是事实。
                            */
-                          feedSamples: _danmakuFeedSamples,
-                          onSetEnabled: _setDanmakuEnabled,
-                          onSetFontScale: _setDanmakuFontScale,
-                          onSetOpacity: _setDanmakuOpacity,
-                          onSetSpeed: _setDanmakuSpeed,
-                          onSetArea: _setDanmakuArea,
-                          onReload: _reloadDanmaku,
-                          onOpenBili: _openBiliSheet,
-                          // ★★★ 2026-10-14（Owner）：「搜索番剧」区的两个回调
-                          //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
-                          onSearch: (kw) => unawaited(_searchDanmaku(kw)),
-                          onPickMatch: _pickDanmakuMatch,
-                          onBatchBind: (rs) => unawaited(_batchBindDanmaku(rs)),
-                          onHintAction: _runDanmakuHintAction,
-                          // ★★★ 2026-10-14（Owner）：凭证节的保存 / 清除
-                          //   面板只递值，写盘与状态更新全在宿主（同 onSearch 分工）。
-                          /*
+                            feedSamples: _danmakuFeedSamples,
+                            onSetEnabled: _setDanmakuEnabled,
+                            onSetFontScale: _setDanmakuFontScale,
+                            onSetOpacity: _setDanmakuOpacity,
+                            onSetSpeed: _setDanmakuSpeed,
+                            onSetArea: _setDanmakuArea,
+                            onReload: _reloadDanmaku,
+                            onOpenBili: _openBiliSheet,
+                            // ★★★ 2026-10-14（Owner）：「搜索番剧」区的两个回调
+                            //   面板只把关键词 / 选中的一条递过来，网络与状态全在宿主。
+                            onSearch: (kw) => unawaited(_searchDanmaku(kw)),
+                            onPickMatch: _pickDanmakuMatch,
+                            onBatchBind: (rs) =>
+                                unawaited(_batchBindDanmaku(rs)),
+                            onHintAction: _runDanmakuHintAction,
+                            // ★★★ 2026-10-14（Owner）：凭证节的保存 / 清除
+                            //   面板只递值，写盘与状态更新全在宿主（同 onSearch 分工）。
+                            /*
                            * ★ 2026-10-09：屏蔽词 / 分类开关改了就重建播放页 ——
                            *   过滤发生在 danmaku_overlay 的排版那一层，
                            *   重建后 `_ensureLayout` 会用新规则重排（旧布局被 key 判为过期）。
                            *   `_danmakuComments` **不动**：屏蔽只影响"画什么"，
                            *   不影响"有几条"（面板读数才不会撒谎）。
                            */
-                          onChanged: () {
-                            if (mounted) setState(() {});
-                          },
-                          onClose: () {
-                            setState(() => _danmakuSheetOpen = false);
-                            // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
-                            _restoreBarsAfterSheet();
-                            /*
+                            onChanged: () {
+                              if (mounted) setState(() {});
+                            },
+                            onClose: () {
+                              setState(() => _danmakuSheetOpen = false);
+                              // ★ Owner 2026-10-11 第 2 条：关面板 ⇒ 顶/底栏一起回来。
+                              _restoreBarsAfterSheet();
+                              /*
                              * ★★ 2026-10-18（R3-④）：让播放/暂停守卫多站 350ms。
                              *
                              * 遮罩双击时第 2 击会在本面板关掉后落到播放区
                              * ⇒ 不加这行就会暂停视频（用户报的缺陷）。
                              * 详见 `_holdSheetGuard()` 的文档。
                              */
-                            _holdSheetGuard();
-                          },
+                              _holdSheetGuard();
+                            },
                           ),
                         ),
                       ),
@@ -19143,14 +19209,17 @@ class _PlayerPageState extends State<PlayerPage>
                            */
                           workTitle: _title.isNotEmpty ? _title : widget.title,
                           localTitles: _episodes.map((e) => e.title).toList(),
-                          onSearch: (keyword) => unawaited(_searchDanmaku(keyword)),
+                          onSearch: (keyword) =>
+                              unawaited(_searchDanmaku(keyword)),
                           onBiliSearch: _biliSearch,
                           onPickMatch: _pickDanmakuMatch,
-                          onBatchBind: (matches) => unawaited(_batchBindDanmaku(matches)),
+                          onBatchBind: (matches) =>
+                              unawaited(_batchBindDanmaku(matches)),
                           // 第 11 项：搜索页交上来的**用户确认映射**（含改号与拖动后的顺序）
                           onBatchBindPlan: (items, title) =>
                               unawaited(_batchBindDanmakuPlan(items, title)),
-                          onBiliImport: (input) => unawaited(_biliImport(input, 0)),
+                          onBiliImport: (input) =>
+                              unawaited(_biliImport(input, 0)),
                           onBiliSelectPage: _biliSelectPage,
                           /*
                            * ★ 第 12 项：请求状态与返回详情搬进本页的可展开诊断区后，
@@ -19311,39 +19380,41 @@ class _PlayerPageState extends State<PlayerPage>
                         child: _SheetScrim(
                           onClose: _closeEpisodeSheet,
                           child: PlayerPanelTheme(
-                              child: _episodePanelIsDrawer(context)
-                                  ? Align(
-                                      alignment: Alignment.centerRight,
-                                      child: PlayerEpisodePanel(
-                                        episodes: _episodes,
-                                        currentIndex: _epIndex,
-                                        flags: _flagsOf(_episodes),
-                                        selectedFlag: _selectedFlag,
-                                        onPickFlag: _pickEpisodeFlag,
-                                        onPick: _gotoEpisode,
-                                        // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
-                                        //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。
-                                        onClose: _closeEpisodeSheet,
-                                        style: PlayerEpisodePanelStyle.rightDrawer,
-                                      ),
-                                    )
-                                  : Align(
-                                      alignment: Alignment.bottomCenter,
-                                      child: PlayerEpisodePanel(
-                                        episodes: _episodes,
-                                        currentIndex: _epIndex,
-                                        flags: _flagsOf(_episodes),
-                                        selectedFlag: _selectedFlag,
-                                        onPickFlag: _pickEpisodeFlag,
-                                        onPick: _gotoEpisode,
-                                        // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
-                                        //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。
-                                        onClose: _closeEpisodeSheet,
-                                        style: PlayerEpisodePanelStyle.bottomSheet,
-                                      ),
+                            child: _episodePanelIsDrawer(context)
+                                ? Align(
+                                    alignment: Alignment.centerRight,
+                                    child: PlayerEpisodePanel(
+                                      episodes: _episodes,
+                                      currentIndex: _epIndex,
+                                      flags: _flagsOf(_episodes),
+                                      selectedFlag: _selectedFlag,
+                                      onPickFlag: _pickEpisodeFlag,
+                                      onPick: _gotoEpisode,
+                                      // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
+                                      //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。
+                                      onClose: _closeEpisodeSheet,
+                                      style:
+                                          PlayerEpisodePanelStyle.rightDrawer,
                                     ),
-                            ),
+                                  )
+                                : Align(
+                                    alignment: Alignment.bottomCenter,
+                                    child: PlayerEpisodePanel(
+                                      episodes: _episodes,
+                                      currentIndex: _epIndex,
+                                      flags: _flagsOf(_episodes),
+                                      selectedFlag: _selectedFlag,
+                                      onPickFlag: _pickEpisodeFlag,
+                                      onPick: _gotoEpisode,
+                                      // ★★★ Owner 第 2 条：X 与「点空白」走**同一个**关点
+                                      //   ⇒ 「暂停 ⇒ 恢复」必然成对，不会出现某种关法画面不动。
+                                      onClose: _closeEpisodeSheet,
+                                      style:
+                                          PlayerEpisodePanelStyle.bottomSheet,
+                                    ),
+                                  ),
                           ),
+                        ),
                       ),
                     ),
 
@@ -19585,8 +19656,8 @@ class _PlayerPageState extends State<PlayerPage>
                               //   带「TVBox 聚合(<备注>) · 」前缀
                               aggregateNote:
                                   _provider == kTvboxAggregateProviderId
-                                      ? _aggNote
-                                      : null,
+                                  ? _aggNote
+                                  : null,
                               // ★ 1.3：疑似样片线路标注（读线路时长缓存）
                               sampleBadgeOf: _sampleBadgeFor,
                               // ★★★ T1b 接线①（2026-11-01）：网盘预检的行标注
@@ -19731,7 +19802,7 @@ class _LoadingOverlay extends StatelessWidget {
   const _LoadingOverlay();
 
   /// ★ OPS-14：原来这里是裸的 CircularProgressIndicator，颜色写死为纯白，
-///   （不写出参名，避免撞上测试里那条按字面量匹配的源码门禁；下面三行是真实改动）
+  ///   （不写出参名，避免撞上测试里那条按字面量匹配的源码门禁；下面三行是真实改动）
   ///   没给尺寸/描边 ⇒ Material 默认 4px 描边、约束到 40×40，叠在 `black54` 上
   ///   就是业主说的「太浅 + 太大」。现在整块交给共享组件，尺寸与描边只有一处真源。
   /// ⚠ 文案**保留**（不改成别的字），只是颜色不再用纯白。
@@ -20107,6 +20178,7 @@ class _BeforeErrorCard extends StatelessWidget {
     ),
   );
 }
+
 ///
 /// 央视直播的视频轨被 DRM 加密 —— 这不是我们的 bug，是内容方的保护。
 /// 独立实测（ffmpeg，与 mpv 不同解码器）：
@@ -20620,7 +20692,9 @@ bool playerErrorIsSevere(String e) {
   final s = e.toLowerCase();
   // HTTP 状态码：4xx / 5xx（含 "http 404"、"HTTP/1.1 503" 等形态）
   if (RegExp(r'\b(4\d\d|5\d\d)\b').hasMatch(s) &&
-      (s.contains('http') || s.contains('server returned') || s.contains('code'))) {
+      (s.contains('http') ||
+          s.contains('server returned') ||
+          s.contains('code'))) {
     return true;
   }
   const severeMarkers = <String>[
@@ -21025,8 +21099,9 @@ int? debugPlayerToggleMuteCalls() => _livePlayerState?._toggleMuteCalls;
 bool? debugPlayerIsTypingForProbe() => _livePlayerState?._isTypingInField();
 
 /// `_onKey` 探针用的进程级焦点节点（实现里不用它，只为满足签名）
-final FocusNode debugPlayerOnKeyProbeNode =
-    FocusNode(debugLabel: 'onKey-probe');
+final FocusNode debugPlayerOnKeyProbeNode = FocusNode(
+  debugLabel: 'onKey-probe',
+);
 
 /// ★ 探针：**真的走一遍**焦点树路径 `_onKey`（`KeyEventResult.ignored` = 放行）
 ///
@@ -21201,9 +21276,7 @@ Future<bool> debugPlayerRunPanPrecheckForProbe() async {
 ///
 /// 断言用「stage 名」而不是对象，避免测试与生产实现细节绑死。
 Map<String, String> debugPlayerPanStatesForProbe() =>
-    _livePlayerState?._panStates.map(
-          (k, v) => MapEntry(k, v.state.name),
-        ) ??
+    _livePlayerState?._panStates.map((k, v) => MapEntry(k, v.state.name)) ??
     const <String, String>{};
 
 /// ★★★ T1b 门禁探针：清掉留痕账（让用例彼此不污染）
@@ -21346,8 +21419,7 @@ bool debugPlayerPickEpisodeFlagForProbe(String flag) {
 }
 
 /// ★ 1.4 门禁读数：当前集下标（全集索引，与 `_epIndex` 同义）
-int debugPlayerEpisodeIndexForProbe() =>
-    _livePlayerState?._epIndex ?? -1;
+int debugPlayerEpisodeIndexForProbe() => _livePlayerState?._epIndex ?? -1;
 
 /// ★ 遥控选集过滤（1.1 类推，2026-10-30）门禁探针：
 /// 走**生产** `_remoteGetState()` 拿真实 `/api/state` 形状
@@ -21744,7 +21816,6 @@ bool debugPlayerOpenPopoverForProbe(String id) =>
 bool debugPlayerForceBarsForShot() =>
     _livePlayerState?.debugForceBarsForShot() ?? false;
 
-
 /// ★ task-12 ④ 探针用：当前**起播候选**的 url 列表（只读）。
 ///
 /// # 为什么需要它
@@ -21860,7 +21931,9 @@ String debugPlayerUserSeekStateForProbe() {
   if (s == null) return 'no-state';
   final pos = s._lastUserSeek?.inMilliseconds;
   final at = s._lastUserSeekAt;
-  final age = at == null ? null : (s._userSeekClock.elapsed - at).inMilliseconds;
+  final age = at == null
+      ? null
+      : (s._userSeekClock.elapsed - at).inMilliseconds;
   return 'position=${pos ?? "-"} ageMs=${age ?? "-"}';
 }
 
@@ -22039,8 +22112,8 @@ String debugPlayerJitterState() {
 /// 改前 `_autoHideNow()` 不推这个值 ⇒ 隐藏后它仍停在 true，
 /// 于是"鼠标唤起"那次 push 因 `true == true` 提前 return ⇒ 顶栏不重建 ⇒
 /// 返回箭头看得到却点不到（不透明度 1.0 + IgnorePointer 仍挡）。
-bool? debugPlayerControlsLiveForProbe() => _livePlayerState?._controlsLive.value;
-
+bool? debugPlayerControlsLiveForProbe() =>
+    _livePlayerState?._controlsLive.value;
 
 bool? debugPlayerControlsVisible() {
   final s = _livePlayerState;
@@ -22234,7 +22307,8 @@ Duration? debugPlayerPendingSeekForProbe() => _livePlayerState?._pendingSeek;
 ///
 /// 与真实渲染的浮层是**同一个字段**（`_rewatchPrompt`）——「有没有弹」与
 /// 「弹的秒数」用这一个读数即可，不必另造一个"是否显示"的布尔（两个真相会漂）。
-Duration? debugPlayerRewatchPromptForProbe() => _livePlayerState?._rewatchPrompt;
+Duration? debugPlayerRewatchPromptForProbe() =>
+    _livePlayerState?._rewatchPrompt;
 
 /// ★★★ 探针：驱动一次"切集"（走**生产方法** `_gotoEpisode`），返回是否成功。
 ///
@@ -22279,13 +22353,15 @@ Future<bool> debugPlayerApplySwitchForProbe({
   s._switchDetailForProbe = (_, __) async => detail;
   s._switchRepointForProbe = (_) async {};
   try {
-    await s._applySwitch(SwitchPick(
-      provider: provider,
-      id: id,
-      title: detail.title,
-      episodeIndex: 1,
-      position: 0,
-    ));
+    await s._applySwitch(
+      SwitchPick(
+        provider: provider,
+        id: id,
+        title: detail.title,
+        episodeIndex: 1,
+        position: 0,
+      ),
+    );
     return true;
   } finally {
     s._switchDetailForProbe = null;
@@ -23352,9 +23428,12 @@ class _TopBar extends StatelessWidget {
             ignoring: !visible,
             child: AnimatedBuilder(
               animation: fade ?? kAlwaysCompleteAnimation,
-              builder: (context, child) => Opacity(
-                opacity: (fade?.value ?? 1.0).clamp(0.0, 1.0),
-                child: child,
+              builder: (context, child) => MiuixTooltipVisibility(
+                visibility: fade ?? kAlwaysCompleteAnimation,
+                child: Opacity(
+                  opacity: (fade?.value ?? 1.0).clamp(0.0, 1.0),
+                  child: child,
+                ),
               ),
               child: Container(
                 padding: EdgeInsets.only(
@@ -23392,7 +23471,10 @@ class _TopBar extends StatelessWidget {
                     ui.IconButton(
                       key: backArrowKey,
                       onPressed: onBack,
-                      icon: const Icon(AppIcons.arrow_back, color: Colors.white),
+                      icon: const Icon(
+                        AppIcons.arrow_back,
+                        color: Colors.white,
+                      ),
                       tooltip: '返回',
                     ),
                     const SizedBox(width: Sp.x2),
@@ -23556,10 +23638,7 @@ class _TopBar extends StatelessWidget {
                      */
                     if (dmInfo != null && onToggleDmInfo != null) ...[
                       const SizedBox(width: Sp.x2),
-                      _DanmakuInfoChip(
-                        data: dmInfo!,
-                        onTap: onToggleDmInfo!,
-                      ),
+                      _DanmakuInfoChip(data: dmInfo!, onTap: onToggleDmInfo!),
                     ],
                   ],
                 ),
@@ -23595,13 +23674,16 @@ class _TopBar extends StatelessWidget {
                   opacity: (fade?.value ?? 1.0).clamp(0.0, 1.0),
                   child: child,
                 ),
-                child: _DanmakuInfoPanelHost(
-                  data: dmInfo!,
-                  onClose: onToggleDmInfo!,
-                  /* ★★★ N6（2026-10-27）③：解绑的落点是**宿主 State**
-                   *   （`_PlayerPageState._unbindDanmakuRoute`：清存储 +
-                   *   重取弹幕 + 重建明细行），经 `_TopBar` 透传到这里。 */
-                  onUnbindRoute: onUnbindDanmakuRoute,
+                child: MiuixTooltipVisibility(
+                  visibility: fade ?? kAlwaysCompleteAnimation,
+                  child: _DanmakuInfoPanelHost(
+                    data: dmInfo!,
+                    onClose: onToggleDmInfo!,
+                    /* ★★★ N6（2026-10-27）③：解绑的落点是**宿主 State**
+                     *   （`_PlayerPageState._unbindDanmakuRoute`：清存储 +
+                     *   重取弹幕 + 重建明细行），经 `_TopBar` 透传到这里。 */
+                    onUnbindRoute: onUnbindDanmakuRoute,
+                  ),
                 ),
               ),
             ),
@@ -23849,12 +23931,11 @@ Widget debugDanmakuInfoChipForProbe({
   required DanmakuInfoData data,
   VoidCallback? onTap,
   Clip clipBehavior = kDanmakuChipClipBehavior,
-}) =>
-    _DanmakuInfoChip(
-      data: data,
-      onTap: onTap ?? () {},
-      clipBehavior: clipBehavior,
-    );
+}) => _DanmakuInfoChip(
+  data: data,
+  onTap: onTap ?? () {},
+  clipBehavior: clipBehavior,
+);
 
 // 弹幕 chip 的**等效不透明填充色**（R2-#6 · Owner 裁定 (c)）
 //
@@ -24030,7 +24111,10 @@ class _NextCountdown extends StatelessWidget {
               children: [
                 ui.TextButton(onPressed: onCancel, child: const Text('取消')),
                 const SizedBox(width: Sp.x2),
-                ui.FilledButton(onPressed: onPlayNow, child: const Text('立即播放')),
+                ui.FilledButton(
+                  onPressed: onPlayNow,
+                  child: const Text('立即播放'),
+                ),
               ],
             ),
           ],
@@ -24104,18 +24188,21 @@ class _RewatchPrompt extends StatelessWidget {
             const SizedBox(height: Sp.x1),
             const Text(
               '这一集以前看过',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: FontSizes.cap,
-              ),
+              style: TextStyle(color: Colors.white70, fontSize: FontSizes.cap),
             ),
             const SizedBox(height: Sp.x3),
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                ui.TextButton(onPressed: onFromStart, child: const Text('从头播放')),
+                ui.TextButton(
+                  onPressed: onFromStart,
+                  child: const Text('从头播放'),
+                ),
                 const SizedBox(width: Sp.x2),
-                ui.FilledButton(onPressed: onContinue, child: const Text('继续观看')),
+                ui.FilledButton(
+                  onPressed: onContinue,
+                  child: const Text('继续观看'),
+                ),
               ],
             ),
           ],
@@ -24394,6 +24481,7 @@ bool danmakuSendAllowed(Iterable<ProviderManifest> providers, String id) {
   final hit = providers.where((p) => p.id == id).firstOrNull;
   return hit?.capabilities.danmakuSend ?? false;
 }
+
 const double _kPlayerBottomBarHeight = 106;
 
 class _BottomBar extends StatelessWidget {
@@ -24470,7 +24558,7 @@ class _BottomBar extends StatelessWidget {
      * 是**纯新增参数**，不会把任何既有调用点打红。
      */
     this.fade,
-    this.buffered,
+    this.bufferedListenable,
     this.bufferBarKey,
     // ★★★ 2026-10-09（Owner 第 12 条）：popover 化之后新加的入口数据
     required this.popover,
@@ -24647,7 +24735,7 @@ class _BottomBar extends StatelessWidget {
   final Animation<double>? fade;
 
   /// 缺陷 13：当前缓冲区间（null = 无读数 = 进度条上不画缓冲条）
-  final BufferedRange? buffered;
+  final ValueListenable<PlayerBufferedRange?>? bufferedListenable;
 
   /// 缺陷 13：缓冲条的 GlobalKey（只给探针量几何用）
   final Key? bufferBarKey;
@@ -24666,15 +24754,6 @@ class _BottomBar extends StatelessWidget {
 
   /// 「更多」浮层的分组清单（宿主算好 —— 组里有什么随剧集/直播/平台变化）
   final List<MoreMenuGroup> moreGroups;
-
-  /// 把本页那个（nullable 的）缓冲读数转成新底栏能画的两端
-  ///
-  /// 拿不到终点就不画 —— 与旧实现同一条纪律：假的缓冲条比没有更糟。
-  static PlayerBufferedRange? _playerBufferedRange(BufferedRange? r) {
-    final e = r?.end;
-    if (r == null || e == null) return null;
-    return PlayerBufferedRange(start: r.start ?? Duration.zero, end: e);
-  }
 
   /// ★ 2026-10-09（Owner 第 12 条）：底栏本体已搬到 `ui/player/player_bottom_bar.dart`
   ///
@@ -24728,105 +24807,11 @@ class _BottomBar extends StatelessWidget {
       onVideoZoom: onVideoZoom,
       onZoomToggle: onZoomToggle,
       fade: fade,
-      buffered: _playerBufferedRange(buffered),
+      bufferedListenable: bufferedListenable,
       bufferBarKey: bufferBarKey,
     );
     onBuilt?.call(bar);
     return bar;
-  }
-}
-
-/// ★★★ task-22 P1-5：底栏上那条「缩放滑动条」
-///
-/// # 为什么是独立控件而不是内联
-///
-/// ① 它要出现在底栏 Column 里，而底栏那个 `build()` 已经有 20 行缩进 ——
-///    内联进去会变成一坨看不出层次的代码；
-/// ② `t68_android_adapt_test.dart` 的 E④ 对 `compactRow` 切片做**源码级计数**
-///    （「恰好一根 `Slider(`」）—— 独立控件让那条滑杆**不在**切片里，
-///    判据不会因为多一个 `if (zoomOpen)` 而漂。
-///
-/// # 数据流（单向，与面板同款）
-///
-/// ```text
-/// 拖滑条 → onChanged/onChangeEnd → widget.onVideoZoom(v)
-///        → 宿主 _setVideoZoom(v) → setState(_videoZoomPct)
-///        → mpv setProperty('video-zoom', log2(v/100))
-///        → 底栏重画，读数跟着走
-/// ```
-/// ★ 缓冲区间轮询器（缺陷 13）
-///
-/// # 为什么必须轮询（而不是订阅）
-/// ```text
-/// media_kit 的 PlayerStream 白名单只转发少数 mpv 属性，
-/// `demuxer-cache-time` / `demuxer-cache-duration` **不在其中**
-///   => 没有任何事件能告诉我们"缓冲区间变了"
-///   => 只能 Timer.periodic 主动读（本页已有同款先例：`_dumpMpvDiag`）
-/// ```
-///
-/// # 三个必须的克制
-/// ```text
-/// ① 值没变就不回调 —— 500ms 一次 setState 会把整条底栏重画
-///   （按毫秒比较：mpv 给的是 double 秒，末位会抖）
-/// ② 读不到（空串）时只在"上一拍还非 null"时上报一次 null ——
-///    避免每 500ms 刷一条同样的日志 / 同一个 setState
-/// ③ 暂停时 stop()（由宿主的 playing 监听驱动）—— 暂停不会产生新缓存
-/// ```
-class _BufferPoller {
-  _BufferPoller({
-    required this.read,
-    required this.onChanged,
-    this.interval = const Duration(milliseconds: 500),
-  });
-
-  /// 读一个 mpv 属性；读不到返回 null（**不抛**）
-  final Future<double?> Function(String key) read;
-
-  /// 三参：终点 / cache-buffering-state / 跨度（秒）
-  final void Function(Duration? end, double? statePercent, double? span)
-  onChanged;
-
-  final Duration interval;
-
-  Timer? _timer;
-  int _lastMs = -1;
-  bool _lastNull = false;
-
-  bool get running => _timer != null;
-
-  /// 幂等：重复 start 不会叠加定时器
-  void start() {
-    _timer ??= Timer.periodic(interval, (_) => unawaited(_tick()));
-  }
-
-  void stop() {
-    _timer?.cancel();
-    _timer = null;
-  }
-
-  void clear() => stop();
-
-  Future<void> _tick() async {
-    final endSec = await read('demuxer-cache-time');
-    final state = await read('cache-buffering-state');
-    final spanSec = await read('demuxer-cache-duration');
-
-    if (endSec == null) {
-      // ★ 只在"从有到无"时上报一次，避免每 500ms 刷屏
-      if (!_lastNull) {
-        _lastNull = true;
-        _lastMs = -1;
-        onChanged(null, state, spanSec);
-      }
-      return;
-    }
-    _lastNull = false;
-
-    final ms = (endSec * 1000).round();
-    // ★ 值没变就不打扰 UI
-    if (ms == _lastMs) return;
-    _lastMs = ms;
-    onChanged(Duration(milliseconds: ms), state, spanSec);
   }
 }
 
@@ -25259,7 +25244,9 @@ class _StreamSheet extends StatelessWidget {
                       final rowTitle = aggregateNote == null
                           ? s.displayName
                           : aggregateSourceTitle(
-                              note: aggregateNote, label: s.displayName);
+                              note: aggregateNote,
+                              label: s.displayName,
+                            );
                       /*
                        * ★★★ T1b 接线①（2026-11-01）：网盘预检的**行级标注**
                        *
@@ -25351,7 +25338,9 @@ class _StreamSheet extends StatelessWidget {
                         //  判据量的是它们之间的距离，别再挪开）
                         // ★ 死链同样不可点（判据见上面 `isPanDead` 那段注释）
                         enabled: s.isPlayable && !isPanDead,
-                        onTap: s.isPlayable && !isPanDead ? () => onPick(s) : null,
+                        onTap: s.isPlayable && !isPanDead
+                            ? () => onPick(s)
+                            : null,
                       );
                     },
                   ),
@@ -25385,11 +25374,7 @@ class _StreamSheet extends StatelessWidget {
 /// ⚠️ 渲染结果逐字不变（DRM 副标题与 enabled 仍紧邻 —— 那条门禁量的就是
 ///    它们之间的距离，位置关系不许动）。
 /// ```
-Text? _panRowSubtitle(
-  StreamCandidate s,
-  PanCheckResult? pan,
-  bool isPanDead,
-) {
+Text? _panRowSubtitle(StreamCandidate s, PanCheckResult? pan, bool isPanDead) {
   if (s.drmProtected) {
     return const Text(
       '受 DRM 保护，暂不支持',
@@ -25525,7 +25510,11 @@ class _LiveChannelsSheet extends StatelessWidget {
                   padding: const EdgeInsets.all(Sp.x4),
                   child: Row(
                     children: [
-                      const Icon(AppIcons.live_tv, color: Colors.white, size: 20),
+                      const Icon(
+                        AppIcons.live_tv,
+                        color: Colors.white,
+                        size: 20,
+                      ),
                       const SizedBox(width: Sp.x2),
                       Expanded(
                         child: Text(
@@ -25632,5 +25621,3 @@ class _LiveChannelsSheet extends StatelessWidget {
     );
   }
 }
-
-

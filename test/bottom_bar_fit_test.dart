@@ -1,3 +1,5 @@
+import 'support/miuix_finders.dart';
+
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -47,12 +49,6 @@ void main() {
                       unread: 0,
                       onSelect: select,
                     ),
-                    rail: MiuixShellNavigation(
-                      current: current,
-                      unread: 0,
-                      onSelect: select,
-                      rail: true,
-                    ),
                   ).build(
                     context: context,
                     current: current,
@@ -66,23 +62,23 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final rail = size.width >= BottomBarShellLayout.railBreakpoint;
-        final panel = find.byType(
-          rail ? miuix.MiuixNavigationRail : miuix.MiuixNavigationBar,
-        );
+        final panel = find.byType(miuix.MiuixGlassNavigationBar);
         expect(panel, findsOneWidget);
+        expect(find.byType(miuix.MiuixNavigationRail), findsNothing);
         final panelBounds = tester.getRect(panel);
-        expect(panelBounds.left, greaterThanOrEqualTo(0));
+        expect(panelBounds.left, greaterThanOrEqualTo(12));
+        expect(panelBounds.width, lessThanOrEqualTo(560));
+        expect(panelBounds.center.dx, closeTo(size.width / 2, .01));
         expect(panelBounds.right, lessThanOrEqualTo(size.width + .01));
         expect(panelBounds.top, greaterThanOrEqualTo(0));
-        expect(panelBounds.bottom, lessThanOrEqualTo(size.height + .01));
-        if (rail) {
-          final body = tester.getRect(find.byKey(const ValueKey('page-body')));
-          expect(body.left, greaterThanOrEqualTo(panelBounds.right));
-        }
-        final direct = rail ? AppTab.values : AppTab.values.take(4);
+        expect(panelBounds.bottom, closeTo(size.height - 16, .01));
+        final body = tester.getRect(find.byKey(const ValueKey('page-body')));
+        expect(body.left, 0);
+        expect(body.width, closeTo(size.width, .01));
+        final compact = size.width - 24 < 440;
+        final direct = compact ? AppTab.values.take(4) : AppTab.values;
         for (final tab in direct) {
-          final target = find.byKey(ValueKey('shell-nav-${tab.name}'));
+          final target = miuixNavigationItem(tab.label);
           final bounds = tester.getRect(target);
           expect(bounds.width, greaterThanOrEqualTo(44));
           expect(bounds.height, greaterThanOrEqualTo(44));
@@ -92,22 +88,25 @@ void main() {
           await tester.pumpAndSettle();
           expect(current, tab);
         }
-        if (!rail) {
+        if (compact)
           for (final tab in [AppTab.cached, AppTab.settings]) {
-            await tester.tap(find.byKey(const ValueKey('shell-nav-more')));
+            await tester.tap(
+              miuixNavigationItem(
+                current == AppTab.cached ? current.label : '更多',
+              ),
+            );
             await tester.pumpAndSettle();
             expect(find.byType(miuix.MiuixWindowListPopup), findsOneWidget);
             await tester.tap(find.text(tab.label).last);
             await tester.pumpAndSettle();
             expect(current, tab);
-            final selected = tester.widget<miuix.MiuixNavigationBarItem>(
-              find.byType(miuix.MiuixNavigationBarItem).last,
+            final selected = tester.widget<miuix.MiuixGlassNavigationBar>(
+              panel,
             );
-            expect(selected.selected, isTrue);
-            expect(selected.label, tab.label);
+            expect(selected.selectedIndex, 4);
+            expect(selected.items.last.label, tab.label);
           }
-        }
-        expect(visited, AppTab.values);
+        expect(visited, AppTab.values.skip(1));
         expect(tester.takeException(), isNull);
       },
     );

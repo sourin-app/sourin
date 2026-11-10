@@ -20,7 +20,7 @@ Candidates, provenance, settings and thirty notices persist in github-discovery.
 
 Manual enable revalidates, uses the existing TVBox builder, and persists a disabled gate before writing any source record. Source-list mutation holds its write lock and does not restore an old whole-list snapshot. Metadata and aggregate membership complete before the durable enabled gate changes. Failed intermediate writes leave the source disabled across restart. A persisted pending-install marker keeps retry available even after bootstrap has loaded the incomplete record; later discovery preserves this marker. Existing registered providers are never overwritten. The regular TVBox updater receives no GitHub subscription URL; discovery provenance is separate, preventing that updater from downloading the repository outside this proxy boundary.
 
-The discovery page provides proxy settings, candidates, explicit enable and persistent messages. Settings, source management and unread homepage notices link to it. Enabled sources and aggregate children show GitHub origin. Validation covers catalog availability, not playback or future uptime. Normal playback follows its existing per-source networking policy after the user enables the source.
+The discovery page provides proxy settings, candidates, explicit enable and persistent messages. Settings, source management and unread homepage notices link to it. Enabled sources and aggregate children show GitHub origin. Validation covers catalog availability, not playback or future uptime. Normal playback follows the shared global routing policy, including its API/media scope, after the user enables the source.
 
 ## Alternatives considered
 
@@ -40,3 +40,28 @@ and 39 configurations in 21.58 seconds. It retained 48 candidates: 23 native
 catalogs passed, thirteen failed and twelve script types remained unsupported.
 No candidate was installed; ten incomplete requests remained visible. Catalog
 validation still does not establish playable media or future availability.
+
+
+## External application flow (v19, 2026-11-09)
+
+The ordinary preview client scanned actual public GitHub through the required
+global-proxy client: 12 repositories, 31 configs, 48 candidates and 24 validated
+native catalogs. Seventeen incomplete requests produced the visible partial-result
+warning. Five source configuration hashes were unchanged by scanning: no automatic
+installation occurred. Script candidates remained unsupported and unexecuted.
+
+The current Miuix candidate button manually enabled one validated source. Source
+management rendered its GitHub repository attribution and enabled switch. The
+switch disabled it; the row menu and confirmation then removed only that test
+source. All 126 original provider ids and their enablement matched the pre-test
+state (81 enabled). Home displayed two unread notices, its notification opened
+the discovery page, and marking all read persisted zero unread. The removed
+candidate again reported installed=false. Automatic discovery remained at its
+original opt-out setting; scheduler behavior remains covered separately by local
+proxy tests rather than pretending a daily external scan was observed.
+
+`github-external-v19/result.json` and three existing-boundary captures under
+`.probe/parallel-astra-1108` record this flow. It validates current mounted
+callbacks and rendered/persisted outcomes, not OS pointer hit-testing. A socket
+sample was taken after the scan and cannot prove packet routing; the strict
+client construction and proxy contract tests define that routing boundary.

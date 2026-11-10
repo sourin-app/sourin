@@ -3,7 +3,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart';
+import 'package:material_ui/material_ui.dart' hide ListTile;
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:media_kit/media_kit.dart';
 
 import 'package:sourin_spike/core/app_log.dart';
@@ -11,6 +12,7 @@ import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 import 'package:sourin_spike/core/stream_prepare.dart';
 import 'package:sourin_spike/ui/player_page.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' show ListTile;
 import 'support/strip_comments.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -287,10 +289,18 @@ void main() {
             ),
           );
 
+      miuix.MiuixBasicComponent componentOf(ListTile tile) =>
+          t.widget<miuix.MiuixBasicComponent>(find.descendant(
+            of: find.byWidget(tile),
+            matching: find.byType(miuix.MiuixBasicComponent),
+          ));
+
       // ① bad：不可点 + 无 onTap + 副标题是预检给的那句归因
       final badTile = tileOf('夸克线路A');
       expect(badTile.enabled, isFalse, reason: '死链必须不可点（点了必然失败）');
       expect(badTile.onTap, isNull);
+      expect(componentOf(badTile).enabled, isFalse);
+      expect(componentOf(badTile).onClick, isNull);
       expect(find.text('链接失效'), findsOneWidget,
           reason: 'bad 行必须把 summary 显示出来 —— 用户不必点进去才知道死链');
 
@@ -299,6 +309,8 @@ void main() {
       expect(lockedTile.enabled, isTrue,
           reason: '★ locked 不等于死：用户有码就能播，锁死是错标');
       expect(lockedTile.onTap, isNotNull, reason: 'locked 行必须还能点');
+      expect(componentOf(lockedTile).enabled, isTrue);
+      expect(componentOf(lockedTile).onClick, same(lockedTile.onTap));
       expect(find.text('需提取码'), findsOneWidget,
           reason: 'locked 行必须标出来（用户知道要先找码）');
 

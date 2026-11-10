@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Applies: 2026-11-08, flutter_miuix 1.3.0 and the Flutter product UI.
+Applies: 2026-11-10, flutter_miuix 1.3.0 and the Flutter product UI.
 
 Extends [Miuix appearance](2026-11-08-miuix-appearance.md) to the discovery,
 TVBox aggregate, subscription management and search controls. The keyword
@@ -39,6 +39,41 @@ rail remains a lazy list and uses Miuix basic components; narrow layouts use
 the application Miuix choice control. A source click filters the current
 results without issuing a new search.
 
+The dedicated source-order page always lists all managed sources, independent of
+the manager's current type, status or text filter. Rows show origin and disabled
+state. Miuix arrow buttons and drag handles edit the same local draft; first/last
+arrows are disabled, and save-in-progress disables both interactions. Explicit
+save persists the displayed ids and notifies the retained settings owner. Back
+without saving discards the draft. A failed save keeps it editable for retry.
+The former private order-dialog entry and its uncalled dialog are removed.
+
+This separate global order page supersedes the filtered-card ordering paragraph
+in [settings-owned home and filters](2026-11-04-settings-owned-html-home-library-and-source-filters.md).
+Other filtering, homepage-template, hidden-provider and mutation contracts in
+that decision remain applicable. Sorting keeps provider ids; display labels do
+not become persistence identities.
+
+Provider selection persists inside its Miuix dialog. Saving freezes the choices,
+bulk actions and dismissal until the command completes. A failed command leaves
+the same draft and displays the returned user message for retry; closing after a
+failure discards only that draft. Successful persistence notifies the retained
+settings owner before the refreshed catalog arrives. Empty selection remains an
+explicit request to disable every provider in the group.
+
+Origin address editing, JS installation and live import also notify inside their
+successful persistence callbacks. A dialog's return value only controls a still
+mounted manager refresh. Removing its route cannot suppress notification of a
+completed write; the retained settings owner checks its own lifetime before
+notifying its shell or loading data. Canceled and failed writes never notify,
+and a successful mounted dialog notifies exactly once.
+
+The uncalled `_openAggregatePage` route and its dedicated import are removed from
+the settings owner. Flat source rows own the reachable subscription-address entry,
+including disabled children and rows narrowed by type, origin and text. The
+shared aggregate page file and its independent widgets remain available. Product
+entry tests open Settings, edit the exact row's origin, check cancel has no write
+and inspect the submitted primary address and ordered fallback list.
+
 ## Alternatives considered
 
 - Repaint the Material controls: does not adopt Miuix interaction.
@@ -63,6 +98,74 @@ remain scrollable, and dialog actions below the viewport are scrolled into view
 before taps. Selection order, errors, deduplication, note round trips and solo
 callbacks remain asserted after the actual user actions.
 
+Order tests use actual Miuix clicks, keyboard Tab/Enter, rendered row positions
+and pointer drag gestures. They cover stable row identity, origin/disabled labels,
+boundary buttons, explicit save, cancel, pending save, failure/retry and a narrow
+viewport. The manager-entry test starts with a JS filter, reorders the complete
+source list and returns to the retained filter. Disabling the up action or drag
+movement, or filtering the order draft, must each make its behavioral gate fail.
+
+Provider-submission tests inspect the command's group id and ordered provider
+ids, frozen Miuix choices and bulk actions, Escape/barrier/back dismissal, retained
+failure text and draft, successful retry and cancellation followed by reopening.
+The failure test must fail if save closes the dialog before the command returns.
+These added cases require a fresh root-run result; no passing result is implied
+by their presence.
+
+Delayed address-write tests cover dialog, child-route and owner removal as well
+as ordinary completion, for edit/install/import and success/failure. The actual
+Settings-to-origin test failed with expected notification count one and actual
+zero before the callback notification repair. Passing and native results remain
+recorded separately in the root plan.
+
 Reconsider the adapters if they stop preserving the existing input/focus
 contracts, and reconsider the source-list layout if measured native or widget
 performance exceeds the established streaming-search budget.
+
+## Flat source management construction
+
+The management page also builds rows through the scrolling builder. Build provider-to-origin and provider-to-multiple-provider-group indices when an accepted catalog arrives, preserving the first matching origin/group. Key rows by provider id and supply index lookup across filtering and order changes. Status, progress and errors retain their leading position. This avoids eagerly constructing every Miuix card and repeatedly scanning all origins on each input or state change.
+
+The 240-source behavior test scrolls to the last row, disables it, filters to the first row, disables that row and returns to the last. It verifies the persisted ids and provenance after each reload. The test establishes behavior, not a native frame-budget improvement.
+
+
+## Live source management entry
+
+An empty Live page offers the shared Miuix “管理直播源” button. It opens the
+existing source manager with the Live type selected, including disabled live
+providers, and keeps Live as the underlying tab. The retained settings action
+owner is mounted lazily without selecting Settings. Reentrant taps are guarded;
+when the route returns, Live reloads through its existing loader. Opening the
+manager does not import, enable or reorder sources.
+
+Entry tests exercise the Miuix button, initial Live filter, disabled providers,
+and back navigation. Live selection checks inspect actual MiuixCard decoration
+and MiuixPressable focus, alongside geometry, clicks, popup dismissal and scrolling.
+Native pointer evidence and measured results belong in the implementation plan.
+
+## Retained settings owner and feedback
+
+The source route subscribes to accepted settings data through `_dataRev` for
+plugin-loading failures and recovery status. Feedback uses the shell-level
+ToastHost, as required by [unified settings feedback](2026-10-18-settings-direct-entry-and-unified-toast.md).
+There is no second null-valued toast notifier or invisible text listener.
+Source type/search/status state belongs to SourceManagerPage; the settings owner
+does not keep an unused duplicate filter. A single JS editor accepts both link
+and source input.
+
+SourceManagerPage owns reload busy state and prevents duplicate requests. The
+retained settings owner can finish a reload, source switch save or source-order
+save after its child routes are popped, refresh data and notify the shell.
+The lifetime guard belongs to this owner: checking only the removed child route
+would suppress notification of a completed save that the still-mounted Home needs.
+When the owner itself is disposed, completion must stop before notifying its
+former shell or starting another load. This covers the shared onSourcesChanged
+callback as well as the delegated reload completion.
+
+`task43_plugins_subpage_test.dart` exercises real settings entry/menu actions,
+activity refresh without rebuilding the hidden owner, success/error feedback,
+duplicate reload prevention, header/Escape/remote back and completion after route
+or owner disposal. Delayed switch/order replies exercise both owner lifetimes,
+including the rendered disabled switch after reopening. Tests must inspect
+rendered feedback and refreshed rows;
+matching retired page class names or an always-null notifier is not evidence.

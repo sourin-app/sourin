@@ -56,7 +56,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:sourin_spike/core/models.dart';
+import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
 
 /// 剥掉注释行 —— 静态断言里做文本匹配**必须先剥注释**
@@ -88,10 +88,12 @@ void main() {
        * → 底层必须**只**被调 1 次。
        */
       var realCalls = 0;
-      ProxyCache.overrideFetchers(configs: () async {
-        realCalls++;
-        return {'cctv': const ProxyConfig(mode: ProxyMode.custom, url: 'x')};
-      });
+      ProxyCache.overrideFetchers(
+        configs: () async {
+          realCalls++;
+          return {'cctv': const ProxyConfig(mode: ProxyMode.custom, url: 'x')};
+        },
+      );
 
       for (var i = 0; i < 26; i++) {
         await ProxyCache.configs();
@@ -107,10 +109,12 @@ void main() {
 
     test('★★ 同一个源问 3 次密码 = 穿透 1 次；不同源各穿透 1 次', () async {
       final seen = <String>[];
-      ProxyCache.overrideFetchers(hasPassword: (id) async {
-        seen.add(id);
-        return id == 'cctv';
-      });
+      ProxyCache.overrideFetchers(
+        hasPassword: (id) async {
+          seen.add(id);
+          return id == 'cctv';
+        },
+      );
 
       await ProxyCache.hasPassword('cctv');
       await ProxyCache.hasPassword('cctv');
@@ -125,10 +129,12 @@ void main() {
 
     test('★★ 系统代理提示全局只问一次', () async {
       var n = 0;
-      ProxyCache.overrideFetchers(sysHint: () async {
-        n++;
-        return 'http://127.0.0.1:7890';
-      });
+      ProxyCache.overrideFetchers(
+        sysHint: () async {
+          n++;
+          return 'http://127.0.0.1:7890';
+        },
+      );
 
       final a = await ProxyCache.systemHint();
       final b = await ProxyCache.systemHint();
@@ -147,10 +153,12 @@ void main() {
        *    26 张卡片就是 26 次穿透 —— 缓存等于没有。
        */
       var n = 0;
-      ProxyCache.overrideFetchers(configs: () async {
-        n++;
-        return <String, ProxyConfig>{}; // 空的
-      });
+      ProxyCache.overrideFetchers(
+        configs: () async {
+          n++;
+          return <String, ProxyConfig>{}; // 空的
+        },
+      );
 
       await ProxyCache.configs();
       await ProxyCache.configs();
@@ -161,10 +169,12 @@ void main() {
 
     test('★ reset() 必须把计数归零并还原 fetcher（否则用例互相污染）', () async {
       var n = 0;
-      ProxyCache.overrideFetchers(configs: () async {
-        n++;
-        return {};
-      });
+      ProxyCache.overrideFetchers(
+        configs: () async {
+          n++;
+          return {};
+        },
+      );
       await ProxyCache.configs();
       expect(n, 1);
 
@@ -183,10 +193,12 @@ void main() {
 
     test('★★ invalidate() 之后必须重新穿透（不是返回旧值）', () async {
       var n = 0;
-      ProxyCache.overrideFetchers(configs: () async {
-        n++;
-        return {'k': const ProxyConfig()};
-      });
+      ProxyCache.overrideFetchers(
+        configs: () async {
+          n++;
+          return {'k': const ProxyConfig()};
+        },
+      );
 
       await ProxyCache.configs();
       expect(n, 1, reason: '第一次穿透');
@@ -194,11 +206,7 @@ void main() {
       // 写操作后失效 → 下次必须再穿透
       ProxyCache.invalidate();
       await ProxyCache.configs();
-      expect(
-        n,
-        2,
-        reason: '★★ invalidate() 后必须重新穿透 —— 否则用户改完代理看到的是旧值',
-      );
+      expect(n, 2, reason: '★★ invalidate() 后必须重新穿透 —— 否则用户改完代理看到的是旧值');
     });
 
     test('★ invalidatePassword 只失效**那一个**源（不动全量配置）', () async {
@@ -224,31 +232,85 @@ void main() {
       await ProxyCache.hasPassword('b'); // 不用重问
       await ProxyCache.configs(); // 全量配置不受影响
 
-      expect(
-        [cfgN, pwN],
-        [1, 3],
-        reason: '★ 只失效 a 的密码 → pwN+1；b 仍命中；全量配置保持命中',
-      );
+      expect([cfgN, pwN], [1, 3], reason: '★ 只失效 a 的密码 → pwN+1；b 仍命中；全量配置保持命中');
     });
   });
 
   group('② 写路径必须主动失效（原版注释：用户改了代理设置时主动失效）', () {
     late String apiCode;
 
+    setUp(() {
+      final previousTransport = SourinCore.debugCallAsyncTransport;
+      ProxyCache.reset();
+      addTearDown(() {
+        SourinCore.debugCallAsyncTransport = previousTransport;
+        ProxyCache.reset();
+      });
+    });
+
     setUpAll(() {
       apiCode = _code(File('lib/core/sourin_api.dart').readAsStringSync());
     });
 
-    test('★ setProxyConfig 写后失效缓存', () {
-      final i = apiCode.indexOf('setProxyConfig(String provider');
-      expect(i >= 0, isTrue, reason: '找不到 setProxyConfig');
-      final body = apiCode.substring(i, i + 600);
-      expect(
-        body.contains('ProxyCache.invalidate()'),
-        isTrue,
-        reason: '★ setProxyConfig 之后必须失效 —— 否则用户改完看到旧值',
-      );
-    });
+    test(
+      'global config writes invalidate the shared config for every source',
+      () async {
+        final stored = <String, dynamic>{
+          SourinApi.globalProxyProvider: {
+            'mode': 'custom',
+            'url': 'http://old-global.invalid:7890',
+          },
+          'source-a': {'mode': 'custom', 'url': 'http://legacy.invalid:8080'},
+        };
+        var reads = 0;
+        final writes = <Map<String, dynamic>>[];
+        SourinCore.debugCallAsyncTransport = (command, args) async {
+          switch (command) {
+            case 'list_proxy_configs':
+              reads++;
+              return Map<String, dynamic>.from(stored);
+            case 'set_proxy_config':
+              final request = args!;
+              writes.add(Map<String, dynamic>.from(request));
+              stored[request['provider'] as String] = request['config'];
+              return null;
+            default:
+              throw UnsupportedError('Unexpected config command: $command');
+          }
+        };
+        for (final provider in ['source-a', 'source-b']) {
+          expect(
+            (await SourinApi.proxyConfigFor(provider)).url,
+            'http://old-global.invalid:7890',
+          );
+        }
+        expect(reads, 1, reason: 'Both source reads share one cached config');
+
+        const updated = ProxyConfig(
+          mode: ProxyMode.custom,
+          url: 'http://new-global.invalid:7890',
+          scope: ProxyScope.all,
+        );
+        await SourinApi.setProxyConfig(SourinApi.globalProxyProvider, updated);
+        expect(writes, [
+          {
+            'provider': SourinApi.globalProxyProvider,
+            'config': updated.toJson(),
+          },
+        ]);
+        for (final provider in ['source-a', 'source-b']) {
+          final config = await SourinApi.proxyConfigFor(provider);
+          expect(config.url, updated.url);
+          expect(config.scope, ProxyScope.all);
+        }
+        expect(
+          reads,
+          2,
+          reason: 'One fresh read after saving, then shared cache',
+        );
+        expect(stored['source-a']['url'], 'http://legacy.invalid:8080');
+      },
+    );
 
     test('★ clearProxyConfig 写后失效缓存', () {
       final i = apiCode.indexOf('clearProxyConfig(String provider');
@@ -275,7 +337,8 @@ void main() {
       expect(
         body.contains('ProxyCache.configs()'),
         isTrue,
-        reason: '★ proxyConfigFor 必须走共享缓存 —— '
+        reason:
+            '★ proxyConfigFor 必须走共享缓存 —— '
             '26 张卡片各拉一次全量 Map 就是原版那次 15 次 IPC 的放大版',
       );
       expect(
@@ -285,20 +348,70 @@ void main() {
       );
     });
 
-    test('★ proxyConfigWithPassword 的两个读都走缓存', () {
-      final i = apiCode.indexOf('proxyConfigWithPassword(String provider');
-      expect(i >= 0, isTrue);
-      final body = apiCode.substring(i, i + 500);
-      expect(
-        body.contains('ProxyCache.hasPassword(provider)'),
-        isTrue,
-        reason: '★ 密码标记也要走缓存',
+    test('source config and credentials share global cache and password invalidation', () async {
+      var configReads = 0;
+      var passwordStored = false;
+      final passwordReads = <String>[];
+      final passwordWrites = <Map<String, dynamic>>[];
+      SourinCore.debugCallAsyncTransport = (command, args) async {
+        switch (command) {
+          case 'list_proxy_configs':
+            configReads++;
+            return {
+              SourinApi.globalProxyProvider: {
+                'mode': 'custom',
+                'url': 'http://global.invalid:7890',
+              },
+              'source-a': {
+                'mode': 'custom',
+                'url': 'http://legacy.invalid:8080',
+              },
+            };
+          case 'has_proxy_password':
+            final provider = args!['provider'] as String;
+            passwordReads.add(provider);
+            expect(provider, SourinApi.globalProxyProvider);
+            return {'has': passwordStored};
+          case 'set_proxy_password':
+            passwordWrites.add(Map<String, dynamic>.from(args!));
+            passwordStored = true;
+            return null;
+          default:
+            throw UnsupportedError('Unexpected credentials command: $command');
+        }
+      };
+      for (final provider in ['source-a', 'source-b', 'source-a']) {
+        final config = await SourinApi.proxyConfigWithPassword(provider);
+        expect(config.url, 'http://global.invalid:7890');
+        expect(config.hasPassword, isFalse);
+      }
+      expect(configReads, 1);
+      expect(passwordReads, [SourinApi.globalProxyProvider]);
+
+      await SourinApi.setProxyPassword(
+        SourinApi.globalProxyProvider,
+        'fixture-next-password',
       );
+      expect(passwordWrites, [
+        {
+          'provider': SourinApi.globalProxyProvider,
+          'password': 'fixture-next-password',
+        },
+      ]);
+      for (final provider in ['source-a', 'source-b']) {
+        final config = await SourinApi.proxyConfigWithPassword(provider);
+        expect(config.url, 'http://global.invalid:7890');
+        expect(config.hasPassword, isTrue);
+      }
       expect(
-        body.contains('await hasProxyPassword('),
-        isFalse,
-        reason: '★ 不得直接穿透',
+        configReads,
+        1,
+        reason: 'Changing only the password keeps config cached',
       );
+      expect(passwordReads, [
+        SourinApi.globalProxyProvider,
+        SourinApi.globalProxyProvider,
+      ], reason: 'The saved global password is fetched once for all sources');
     });
   });
 
@@ -375,7 +488,8 @@ void main() {
         expect(
           src.contains("package:flutter/material.dart"),
           isFalse,
-          reason: '★ $f 不得 import material —— '
+          reason:
+              '★ $f 不得 import material —— '
               'Flutter 3.47 拆了 material 到 material_ui，混用会造成'
               '"两套 Theme 串台"（本项目因此出过 1.16:1 对比度事故）',
         );
@@ -387,7 +501,8 @@ void main() {
       expect(
         src.contains('15 次'),
         isTrue,
-        reason: '★ 原版那条实测教训（15 次 IPC）必须抄进注释 —— '
+        reason:
+            '★ 原版那条实测教训（15 次 IPC）必须抄进注释 —— '
             '否则后来者不知道为什么要这个缓存',
       );
     });

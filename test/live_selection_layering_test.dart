@@ -11,11 +11,11 @@
 //
 // # 这三层必须**不是同一件东西**（本文件的第一组判据）
 // ```text
-// ① 频道高亮 = `_ChannelTile` 里那个 `Container.decoration`
+// ① 频道高亮 = `_ChannelTile` 里那个 `MiuixCard` 的实际 `ShapeDecoration`
 //    ⇒ 画在**本行自己的盒子内部**（文字是它的 child，后画 ⇒ 结构上压不到字）
-// ② 焦点环   = `InkWell` 的 focusNode（键盘/遥控用）
+// ② 焦点环   = `MiuixPressable` 的焦点状态（键盘/遥控用）
 //    ⇒ 与高亮**可分别观测**：高亮看 decoration，焦点看 hasFocus
-// ③ 筛选浮层 = `MenuAnchor` 的 overlay（`live-bar-*` 下拉）
+// ③ 筛选浮层 = Miuix 菜单的 overlay（`live-bar-*` 下拉）
 //    ⇒ 在 Overlay 层，**不是**列表里的透明层
 // ```
 //
@@ -39,6 +39,8 @@
 // ```
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -113,37 +115,41 @@ Widget _list({
       ),
     ));
 
-/// 某一行的**高亮装饰**（`Container.decoration`）
-///
-/// ★ R1 之后 key 带 provider（`provider:id`）⇒ 测试也必须用**生产的同一个**
-///   builder（`liveChannelHighlightKey`），不许在这里再拼一遍字符串：
-///   两处各拼一次的话，改一处忘一处门禁照样绿（假绿）。
-BoxDecoration? _highlight(WidgetTester t, String id, {String provider = _pA}) {
-  final f = find.byKey(liveChannelHighlightKey(provider, id));
-  if (f.evaluate().isEmpty) return null;
-  final box = t.widget<Container>(f);
-  return box.decoration as BoxDecoration?;
+/// Read the actual card decoration and verify its independent selected semantics.
+Color? _highlight(WidgetTester t, String id, {String provider = _pA}) {
+  final finder = find.byKey(liveChannelHighlightKey(provider, id));
+  if (finder.evaluate().isEmpty) return null;
+  final card = t.widget<miuix.MiuixCard>(finder);
+  final element = t.element(finder);
+  bool? selected;
+  element.visitAncestorElements((ancestor) {
+    if (ancestor.widget is Semantics && (ancestor.widget as Semantics).properties.selected != null) {
+      selected = (ancestor.widget as Semantics).properties.selected;
+      return false;
+    }
+    return true;
+  });
+  expect(selected, isNotNull);
+  final palette = miuix.MiuixTheme.of(element).colors;
+  final expected = selected! ? palette.primary.withValues(alpha: .12) : palette.surfaceContainer;
+  expect(card.colors!.color, expected);
+  final decoration = find.descendant(of: finder, matching: find.byWidgetPredicate((w) =>
+    w is DecoratedBox && w.decoration is ShapeDecoration && (w.decoration as ShapeDecoration).color == expected));
+  expect(decoration, findsWidgets, reason: 'The actual card background must paint the selected color');
+  return selected! ? expected : null;
 }
 
-/// 某一行的**点击热区**（`InkWell`）
-InkWell _tileInk(WidgetTester t, String id, {String provider = _pA}) =>
-    t.widget<InkWell>(find.byKey(liveChannelTileKey(provider, id)));
+miuix.MiuixPressable _tileInk(WidgetTester t, String id, {String provider = _pA}) =>
+    t.widget<miuix.MiuixPressable>(find.byKey(liveChannelTileKey(provider, id)));
 
-/// 当前**挂了高亮的行 id 集合**（扫 key，不依赖任何内部字段）
-Set<String> _highlightedRows() {
+Set<String> _highlightedRows(WidgetTester t) {
   const prefix = 'live-channel-highlight-';
   final out = <String>{};
-  for (final e in find.byType(Container).evaluate()) {
-    final w = e.widget;
-    if (w is! Container) continue;
-    final d = w.decoration;
-    if (d is! BoxDecoration || d.color == null) continue;
-    final k = w.key;
-    if (k is! ValueKey<String>) continue;
-    if (!k.value.startsWith(prefix)) continue;
-    final row = k.value.substring(prefix.length);
-    // ★ R1 之后 key = `<prefix><provider>:<id>` ⇒ 取 id 那一半
-    out.add(row.contains(':') ? row.split(':').last : row);
+  for (final e in find.byType(miuix.MiuixCard).evaluate()) {
+    final key = e.widget.key;
+    if (key is! ValueKey<String> || !key.value.startsWith(prefix)) continue;
+    final row = key.value.substring(prefix.length).split(':');
+    if (_highlight(t, row.last, provider: row.first) != null) out.add(row.last);
   }
   return out;
 }
@@ -158,11 +164,11 @@ void main() {
 
     expect(_highlight(t, 'c2'), isNotNull,
         reason: '选中行必须**有**高亮装饰（否则"选中效果"根本不存在）');
-    expect(_highlight(t, 'c2')!.color, isNotNull,
+    expect(_highlight(t, 'c2')!, isNotNull,
         reason: '选中行的高亮必须真的着色（decoration 存在但 color=null = 假高亮）');
 
     for (final id in ['c1', 'c3']) {
-      expect(_highlight(t, id)?.color, isNull,
+      expect(_highlight(t, id), isNull,
           reason: '★ 未选中的 $id 也着了色 ⇒ 选中效果越界到了相邻项 '
               '（计划第 15 条的"选中只作用于目标项"）');
     }
@@ -215,7 +221,7 @@ void main() {
         reason: '★ 文字 $text 跑出本行 $row ⇒ 被裁 / 被遮挡');
 
     /*
-     * 再钉"高亮的绘制层在文字之下"：文字必须是高亮 `Container` 的**后代**
+     * 再钉"高亮的绘制层在文字之下"：文字必须是高亮 `MiuixCard` 的**后代**
      * （同一棵子树、先装饰后内容），且这个容器里不许有 `Stack` 之类的叠层。
      * ★ 若有人把高亮改成 `Stack(children:[内容, Positioned.fill(色块)])`，
      *   下面第二条会红 —— 那种色块画在内容**之后**，会糊住文字。
@@ -230,7 +236,7 @@ void main() {
       find.descendant(of: hlFinder, matching: find.byType(Stack)),
       findsNothing,
       reason: '★ 高亮容器里出现了 Stack ⇒ "高亮"变成了叠在内容上的层；'
-          '正确形态是 Container.decoration（背景先画、内容后画）',
+          '正确形态是 MiuixCard 的装饰背景（背景先画、内容后画）',
     );
   });
 
@@ -276,13 +282,13 @@ void main() {
      * 不会 requestFocus）。这里钉的是"不许有**第二个**选中"：
      * 高亮只许在 c2，且**任何其它行都不许持有焦点**。
      */
-    expect(_highlight(t, 'c2')!.color, isNotNull);
+    expect(_highlight(t, 'c2')!, isNotNull);
     for (final id in ['c1', 'c3']) {
       expect(_tileInk(t, id, provider: _providerOfRow(id)).focusNode!.hasFocus,
           isFalse,
           reason: '★ 未选中行 $id 在首次挂载时持有焦点 ⇒ 焦点环与高亮分家'
               '（用户看到两处"选中"）');
-      expect(_highlight(t, id, provider: _providerOfRow(id))?.color, isNull);
+      expect(_highlight(t, id, provider: _providerOfRow(id)), isNull);
     }
 
     // 换选：c2 → c3（= 用户按键切到下一个台的结果）
@@ -292,8 +298,8 @@ void main() {
     expect(_tileInk(t, 'c3', provider: _pB).focusNode!.hasFocus, isTrue,
         reason: '★ 切换后焦点必须落到新的选中行 —— 否则高亮在 A、能回车的是 B'
             '（正是计划第 15 条要区分的错层）');
-    expect(_highlight(t, 'c3', provider: _pB)!.color, isNotNull);
-    expect(_highlight(t, 'c2')?.color, isNull,
+    expect(_highlight(t, 'c3', provider: _pB)!, isNotNull);
+    expect(_highlight(t, 'c2'), isNull,
         reason: '★ 旧行仍在高亮 ⇒ 一次选中留下两个高亮（错层）');
     expect(_tileInk(t, 'c2').focusNode!.hasFocus, isFalse,
         reason: '★ 旧行仍持有焦点 ⇒ 焦点环与高亮分离');
@@ -324,7 +330,7 @@ void main() {
 
     final sourceBtn = find.descendant(
       of: find.byKey(const ValueKey('live-bar-source')),
-      matching: find.byType(InkWell),
+      matching: find.byType(ui.InkWell),
     );
     expect(sourceBtn, findsOneWidget);
 
@@ -396,7 +402,7 @@ void main() {
     await t.pumpWidget(build('n0'));
     await t.pumpAndSettle();
     expect(find.byType(ListView), findsOneWidget);
-    expect(_highlightedRows(), {'n0'});
+    expect(_highlightedRows(t), {'n0'});
 
     // 鼠标滚轮往下滚（计划要求的"滚动后"）
     await t.drag(find.byType(Scrollable).first, const Offset(0, -600),
@@ -408,8 +414,8 @@ void main() {
      *   坏形态：高亮是浮在列表上的层 ⇒ 滚上去以后它贴在视口某一行的位置，
      *   看起来"选中跑到了别的台"。
      */
-    expect(_highlightedRows(), {'n0'},
-        reason: '★ 滚动后高亮行 = ${_highlightedRows()}，期望 {n0} ⇒ 高亮漂移（错层）');
+    expect(_highlightedRows(t), {'n0'},
+        reason: '★ 滚动后高亮行 = ${_highlightedRows(t)}，期望 {n0} ⇒ 高亮漂移（错层）');
 
     // 若 n0 还挂载着，它必须仍在本行盒子里（不许越出行）
     final n0 = find.byKey(liveChannelHighlightKey(_pA, 'n0'));
@@ -461,8 +467,8 @@ void main() {
     final target = mountedIds.firstWhere((id) => id != 'n0');
     await t.pumpWidget(build(target));
     await t.pumpAndSettle();
-    expect(_highlightedRows(), {target},
-        reason: '★ 换选到 $target 后高亮 = ${_highlightedRows()} ⇒ '
+    expect(_highlightedRows(t), {target},
+        reason: '★ 换选到 $target 后高亮 = ${_highlightedRows(t)} ⇒ '
             '旧行高亮没清掉 / 高亮没落到目标行');
     expect(_tileInk(t, target).focusNode!.hasFocus, isTrue,
         reason: '★ 换选后焦点没跟到 $target ⇒ 焦点环与高亮错位');

@@ -69,25 +69,43 @@ void main() {
           onOpenDetail: (provider, id) => details.add('$provider:$id'),
         ),
       );
-      final tabs = find.byType(miuix.MiuixTabRow);
+      final tabs = find.byType(miuix.MiuixGlassSegmentedTabRow);
       expect(tabs, findsOneWidget);
-      final groupFocus = Focus.of(tester.element(tabs));
-      groupFocus.requestFocus();
+      const tabLabels = ['追更 0', '收藏 0', '历史 1'];
+      FocusNode tabFocus(int index) =>
+          Focus.of(tester.element(find.text(tabLabels[index])));
+      final firstTabFocus = tabFocus(0);
+      firstTabFocus.requestFocus();
       await tester.pump();
-      expect(groupFocus.hasPrimaryFocus, isTrue);
-      expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 0);
+      expect(firstTabFocus.hasPrimaryFocus, isTrue);
+      expect(
+        tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+        0,
+      );
 
       for (final index in [1, 2]) {
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
         await tester.pumpAndSettle();
-        expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, index);
-        expect(FocusManager.instance.primaryFocus, same(groupFocus));
+        expect(
+          tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+          index,
+        );
+        expect(FocusManager.instance.primaryFocus, same(tabFocus(index)));
       }
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
       await tester.pumpAndSettle();
-      expect(tester.widget<miuix.MiuixTabRow>(tabs).selectedTabIndex, 1);
+      expect(
+        tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+        1,
+      );
+      expect(FocusManager.instance.primaryFocus, same(tabFocus(1)));
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.pumpAndSettle();
+      expect(
+        tester.widget<miuix.MiuixGlassSegmentedTabRow>(tabs).selectedIndex,
+        2,
+      );
+      expect(FocusManager.instance.primaryFocus, same(tabFocus(2)));
 
       final title = find.text(followProgressFixture.title);
       expect(title, findsOneWidget);
@@ -98,7 +116,7 @@ void main() {
       expect(card, findsOneWidget);
       final cardFocus = Focus.of(tester.element(title));
       expect(cardFocus.canRequestFocus, isTrue);
-      expect(cardFocus, isNot(same(groupFocus)));
+      expect(cardFocus, isNot(same(tabFocus(2))));
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pumpAndSettle();
       expect(FocusManager.instance.primaryFocus, same(cardFocus));

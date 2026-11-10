@@ -34,6 +34,16 @@ ordering, progress, follow state and concurrently replaced covers.
 Poster cards retry a failed URL twice, after two and four seconds. A URL change
 resets the budget, and disposal cancels the pending retry.
 
+The shared native Flutter cover loader bounds connection acquisition and response
+headers to twenty seconds each, and cancels an image body after twenty seconds
+without bytes. Actual data resets the body deadline, preserving slow progressing
+posters. Non-200 responses cancel their body immediately and retain the received
+status. Cancellation completes before closing progress events; late completions
+are handled and failed cache entries are evicted so existing card retries work.
+Gzip decoding, byte progress, CDN headers, sentinel rejection and decode dimensions
+are retained. These limits apply only to covers, not video-body transport or the
+web image implementation.
+
 ## Alternatives considered
 
 Clearing stale covers alone leaves permanent placeholders. Refetching all details
@@ -47,11 +57,17 @@ Integration tests read real database rows and local HTTP responses: origin
 persistence, restart display for four library views, source-specific headers,
 aggregate child headers, metadata-preserving recovery, disabled-source exclusion,
 fair progress and active video segment access after 4096 cover registrations.
-A widget test observes a decoded image after a real HTTP 503 and retry. Coordinator
+Widget tests observe a decoded image after a real HTTP 503 and retry; another
+local HTTP case stalls headers/body, checks timeout and late-response cancellation,
+then decodes the same recovered URL with gzip. A progressing image crosses the
+original wait interval without timing out. The history page's decode-size check
+uses its actual Image and layout at two widths; hardcoding its card width causes
+the check to fail. Coordinator
 tests cover concurrent callers, cooldown and synchronous failure recovery.
 
-Valid-looking remote image URLs that permanently expire are not proactively
-probed; this avoids a full network scan of the library. Recovery currently reads
+Bounded validation and replacement of existing stale URLs is governed by
+[expired-cover refresh](2026-11-10-expired-library-cover-refresh.md); it extends
+the missing-metadata recovery here without a full network scan. Recovery reads
 the first 100 history/progress entries and all favorites/follows. Revisit these
 bounds if the UI adds deeper history paging. These tests do not establish live
 source availability or final native UI acceptance.

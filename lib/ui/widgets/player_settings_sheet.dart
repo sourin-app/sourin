@@ -42,10 +42,8 @@
 // 播放完            → endAction（自动连播 / 单集循环 / 播完停止）
 // 连播前倒计时       → countdownBeforeNext
 // 自动跳过片头       → autoSkip
-// 连播沿用线路       → keepSourceOnNext
 // ```
-// 我们**照抄这四项**，只是从"ArtPlayer 的面板"搬到"我们自己的面板"——
-// 语义、默认值、可选项一字不改。
+// 面板保留已接入播放行为的策略，语义、默认值、可选项与原版一致。
 //
 // # 样式项的默认值：**不写死，从 mpv 读**
 //
@@ -383,7 +381,6 @@ class PlayerSettingsSheet extends StatefulWidget {
     required this.mpvStyle,
     required this.endAction,
     required this.countdownBeforeNext,
-    required this.keepSourceOnNext,
     required this.autoSkip,
     required this.rate,
     required this.onSetRate,
@@ -401,7 +398,6 @@ class PlayerSettingsSheet extends StatefulWidget {
     required this.onSetMpvProperty,
     required this.onSetEndAction,
     required this.onSetCountdown,
-    required this.onSetKeepSource,
     required this.onSetAutoSkip,
     required this.onClose,
     /*
@@ -481,7 +477,6 @@ class PlayerSettingsSheet extends StatefulWidget {
 
   final PlayEndAction endAction;
   final bool countdownBeforeNext;
-  final bool keepSourceOnNext;
   final bool autoSkip;
 
   /// ★ task-21 P1-8：当前播放倍速
@@ -546,7 +541,6 @@ class PlayerSettingsSheet extends StatefulWidget {
   /// 监听已经无条件写了一次，再写就是两个真相。
   final ValueChanged<double> onSetRate;
   final ValueChanged<bool> onSetCountdown;
-  final ValueChanged<bool> onSetKeepSource;
   final ValueChanged<bool> onSetAutoSkip;
 
   /// ★ T7：「记忆式片头」总开关（缺省 false = 关 —— UX 底线①：不开记忆就不跳）
@@ -1479,7 +1473,7 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  //  连播策略（照抄原版 ArtPlayer settings 的四项）
+  //  连播策略
   // ═══════════════════════════════════════════════════════════════════
 
   Widget _playbackSection() {
@@ -1575,26 +1569,6 @@ class _PlayerSettingsSheetState extends State<PlayerSettingsSheet> {
             widget.onSetSkipMemory!,
             hint: '记忆式：拖过片头自动记住（可在设置清除）',
           ),
-        /*
-         * ⚠️ 「连播沿用线路」在**原版里也是死开关** —— 如实照抄，不自己发明行为。
-         *
-         * 全仓库 grep `keepSourceOnNext` 只有三处：
-         * ```text
-         * stores/player.ts      声明 + 持久化 + 导出
-         * PlayerView.vue:3508   面板里的那个开关
-         * ```
-         * **没有任何播放逻辑读它**（`gotoEpisode` 走的是 session 里已有的
-         * `sourceCode`，跟这个开关无关）。
-         *
-         * 所以这里照抄：开关能存、能读、显示当前值，
-         * 但**不假装它改变了什么** —— 界面上也不写"会沿用线路"这种承诺。
-         */
-        _switchRow(
-          '连播沿用线路',
-          widget.keepSourceOnNext,
-          widget.onSetKeepSource,
-          hint: '原版同样未接入播放逻辑',
-        ),
       ],
     );
   }

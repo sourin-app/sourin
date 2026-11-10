@@ -1,38 +1,5 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  Provider 导入 / 编辑弹窗
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # 这是什么（原版对照）
-//
-// 原版 `src/views/SettingsView.vue` 的同一个弹窗承担**两件事**：
-// ```text
-// ① 新增：「导入源」按钮 → openAdd()              (:1413)
-// ② 编辑：第三方源卡片的「编辑」→ edit(p)         (:1365)
-// ```
-// 两者**共用一套表单**，只是编辑时预填原配置、标题/按钮文案变成"保存"。
-// 原版注释解释了为什么必须复用而不是各写一套：
-// > 后端本来就支持「同 id 覆盖」（`import_declarative_provider` 里的
-// > `list.retain(|x| x.id() != manifest.id)`），所以**编辑不需要新命令** ——
-// > 把原配置回填给用户改，改完再提交同一个导入接口即可。
-//
-// # 两种接入方式（原版 `importMode`）
-//
-// ```text
-// 声明式 JSON    零代码   → import_declarative_provider(json)
-// HTTP Provider  任意语言 → install_http_provider(base_url, headers)
-// ```
-//
-// # ⚠️ 编辑态**锁住**接入方式切换（原版 :2746 的注释，照抄）
-//
-// > 编辑时**隐藏接入方式切换**：源的类型（声明式 / HTTP）是它的身份，
-// > 改类型等于换一个源，不是「编辑」。锁住可以避免用户在编辑态
-// > 切到另一种模式、填完后把原源覆盖成一个完全不同类型的源。
-//
-// # 为什么抽成独立 widget 文件
-//
-// `settings_page.dart` 上有 3~4 个代理同时在改。把弹窗做成**自包含**
-// widget（只依赖 `SourinApi`，不碰页面私有状态），页面那边只留
-// 「打开它 + 拿返回值」两行，冲突面最小。
+// 新增入口仅导入 TVBox 配置；旧 HTTP 配置保留编辑。
+// 声明式 seed 只显示停止支持提示，不提供表单或提交入口。
 
 import 'miuix_controls.dart' as ui;
 
@@ -42,23 +9,19 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../core/sourin_api.dart';
 import 'app_dialog_shell.dart';
-import 'source_composer_dialog.dart';
+import 'source_address_fields.dart';
 import 'overlay_motion.dart';
 import '../tokens.dart';
 import '../../design/icons/app_icons.dart';
 
 /// 接入方式
 enum ImportMode {
-  /// 声明式 JSON —— 粘贴 JSON 描述即可接入标准 CMS 站点
-  declarative,
-
   /// 进程外 HTTP Provider —— 独立进程、任意语言
   http,
 
   /// TVBox 配置（task-5）—— 粘贴 TVBox 的 sites/spider/jar 配置 JSON
   ///
-  /// ★ 与前两种的**本质差别**：前两种是「你告诉我要连什么」，
-  ///   这一种是「TVBox 已经告诉过一堆站点，我替你挑出能用的」——
+  /// TVBox 配置可以包含多个站点，导入时逐个探测。
   ///   所以提交时要**探测**（并发请求每个 site），可能要等几秒，
   ///   而且**不保证全成功**（type3 要 Java、站点可能挂）。
   ///   界面必须把「跳过了谁、为什么」如实列出来。
@@ -176,7 +139,7 @@ class ProviderImportDone extends ProviderImportResult {
 ///
 /// # ★ TVBox 是「先出结果、再关窗」，所以取消态也要能带结果
 ///
-/// 另外两条路径都是"成功即 pop(结果)"，取消必然意味着什么都没做。
+/// HTTP 路径是"成功即 pop(结果)"，取消必然意味着什么都没做。
 /// TVBox 不一样：探测跑完、源**已经落库**了，弹窗里显示的是结果清单，
 /// 用户点「完成」才关。如果那时返回 [ProviderImportCancelled]，
 /// 设置页会当成"用户什么都没做" → **不刷新列表** → 用户明明导入成功
@@ -199,7 +162,7 @@ class ProviderImportDialog extends StatefulWidget {
     this.fill = true,
   });
 
-  /// 编辑态的原配置（null = 新增态）
+  /// 编辑态的旧配置（null = TVBox 新增；仅 HTTP 可编辑）
   final ProviderImportSeed? seed;
 
   /// 编辑态显示在标题里的源名（`seed` 只有 id，名字要从卡片带过来）
@@ -237,7 +200,7 @@ class ProviderImportDialog extends StatefulWidget {
     return r ?? const ProviderImportCancelled();
   }
 
-  /// 打开「编辑」—— 预填原配置
+  /// 打开「编辑」—— 回填 HTTP 配置，其他类型显示不可编辑提示
   ///
   /// `seed == null` 表示后端说这个 id 没有可编辑的配置
   /// （不是第三方源，或 kind 不认识）。
@@ -258,13 +221,14 @@ class ProviderImportDialog extends StatefulWidget {
 }
 
 class _ProviderImportDialogState extends State<ProviderImportDialog> {
-  late ImportMode _mode;
-  late final TextEditingController _jsonCtl;
+  late ImportMode? _mode;
   late final TextEditingController _baseCtl;
   late final TextEditingController _headersCtl;
 
   /// TVBox 配置（JSON 文本**或**配置地址，两者都收）—— task-5
   late final TextEditingController _tvboxCtl;
+  final _tvboxNameCtl = TextEditingController();
+  final _tvboxBackupsCtl = TextEditingController();
 
   /// TVBox 导入的结果明细（成功/跳过/直播），导入完成后显示在弹窗里
   ///
@@ -287,33 +251,14 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
     super.initState();
     final seed = widget.seed;
 
-    /*
-     * ★ 编辑态按 kind 分派回填（原版 `edit()` :1365 的两条分支）
-     *
-     * ```ts
-     * if (cfg.kind === "declarative") {
-     *   importMode.value = "declarative";
-     *   importJson.value = prettyJson(cfg.json);   // ← 格式化后再填
-     * } else {
-     *   importMode.value = "http";
-     *   httpBase.value = cfg.base_url;
-     *   httpHeadersJson.value = Object.keys(cfg.headers || {}).length
-     *     ? JSON.stringify(cfg.headers, null, 2) : "";
-     * }
-     * ```
-     */
     _tvboxCtl = TextEditingController();
     if (seed != null && seed.isHttp) {
       _mode = ImportMode.http;
-      _jsonCtl = TextEditingController();
       _baseCtl = TextEditingController(text: seed.baseUrl ?? '');
       _headersCtl = TextEditingController(text: _formatHeaders(seed.headers));
     } else {
-      _mode = ImportMode.declarative;
-      // 新增态 seed 为 null → 空串（原版 `openAdd` 的清空行为）
-      _jsonCtl = TextEditingController(
-        text: seed == null ? '' : prettyJson(seed.json ?? ''),
-      );
+      // 旧声明式或未知 seed 不得回退到可提交的新增表单。
+      _mode = seed == null ? ImportMode.tvbox : null;
       _baseCtl = TextEditingController();
       _headersCtl = TextEditingController();
     }
@@ -321,45 +266,17 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
 
   @override
   void dispose() {
-    _jsonCtl.dispose();
     _baseCtl.dispose();
     _headersCtl.dispose();
     _tvboxCtl.dispose();
+    _tvboxNameCtl.dispose();
+    _tvboxBackupsCtl.dispose();
     super.dispose();
   }
 
   // ═══════════════════════════════════════════════════════════════════
   //  提交
   // ═══════════════════════════════════════════════════════════════════
-
-  /// 提交声明式 JSON（原版 `doImport` :1455）
-  Future<void> _doImport() async {
-    setState(() {
-      _error = '';
-      _busy = true;
-    });
-    try {
-      final m = await SourinApi.importDeclarativeProvider(_jsonCtl.text);
-      if (!mounted) return;
-      Navigator.pop(
-        context,
-        ProviderImportDone(
-          name: m.name,
-          wasEditing: _isEditing,
-          // 声明式源**没有契约版本** —— 不传 isHttp，文案就不拼「契约 v…」
-          version: m.version,
-        ),
-      );
-    } catch (e) {
-      // ⚠️ 失败**不关弹窗** —— 用户填的内容要留着改（原版行为）
-      if (mounted) {
-        setState(() {
-          _error = _humanError(e);
-          _busy = false;
-        });
-      }
-    }
-  }
 
   /// 连接并安装 / 保存 HTTP Provider（原版 `doInstallHttp` :1470）
   Future<void> _doInstallHttp() async {
@@ -408,9 +325,9 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
 
   /// 导入 TVBox 配置（task-5）
   ///
-  /// # 与另外两条路径的差别
+  /// # 与 HTTP 编辑的差别
   ///
-  /// 前两条是**一次请求、一个结果**（成功就 pop）。这一条是
+  /// HTTP 编辑是**一次请求、一个结果**（成功就 pop）。TVBox 是
   /// **一次请求、一张清单**：后端会并发探测配置里的每个 site，
   /// 报告「导入了谁 / 跳过了谁 / 为什么」。
   ///
@@ -424,7 +341,13 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
       _tvboxResult = null;
     });
     try {
-      final r = await SourinApi.importTvboxConfig(_tvboxCtl.text.trim());
+      final backups = sourceBackupUrls(_tvboxBackupsCtl.text);
+      if (backups.length > 8) throw const FormatException('备用地址最多 8 个');
+      final r = await SourinApi.importTvboxConfig(
+        _tvboxCtl.text.trim(),
+        name: _tvboxNameCtl.text.trim(),
+        backupUrls: backups,
+      );
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -433,7 +356,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
         // 面板里已经列了可点的子仓，再铺一份是重复信息。
       });
     } catch (e) {
-      // ⚠️ 失败**不关弹窗** —— 与另外两条路径一致（原版 importError 行为）
+      // ⚠️ 失败**不关弹窗** —— 与 HTTP 编辑一致（原版 importError 行为）
       if (mounted) {
         setState(() {
           _error = _humanError(e);
@@ -445,7 +368,7 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
 
   /// 合并提交入口（底部主按钮按当前 mode 分派）
   Future<void> _submit() => switch (_mode) {
-    ImportMode.declarative => _doImport(),
+    null => Future<void>.value(),
     ImportMode.http => _doInstallHttp(),
     ImportMode.tvbox => _doImportTvbox(),
   };
@@ -515,13 +438,11 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
     return AppDialogShell(
       title: _titleText,
       // ★ 2026-10-10：统一外壳，顺手把「这个对话框在干嘛」说清楚
-      subtitle: _isEditing
+      subtitle: _mode == null
+          ? null
+          : _isEditing
           ? '保存后立即生效'
-          : switch (_mode) {
-              ImportMode.declarative => '粘贴一段 JSON 配置，导入成一个内容源',
-              ImportMode.http => '填一个 HTTP 插件地址，它会跑在独立进程里',
-              ImportMode.tvbox => '粘贴 TVBox 配置，自动展开成多个内容源',
-            },
+          : '粘贴 TVBox 配置，自动展开成多个内容源',
       /*
        * ★ 关闭 = 取消（与底部那枚「取消 / 完成」按钮**同一个出口**）
        *
@@ -536,41 +457,14 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
       /*
        * ★ 外壳的 `actions` 是**单个 Widget**（它自己套
        *   `Row(mainAxisAlignment: end)` + 分隔线），不是列表 ——
-       *   所以这里用一枚 `Row` 装原来的三颗按钮。
+       *   所以这里用一枚 `Row` 装操作按钮。
        *
        * ⚠️ 内层 Row **必须** `mainAxisSize.min`：默认的 `.max` 会吃掉
        *    外壳那一行的整宽，按钮就会靠左而不是靠右（外壳的对齐失效）。
-       * ⚠️ 按钮的顺序、文案、onPressed、禁用条件**一字未改**。
        */
       actions: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          /*
-           * ★ 2026-10-16（Owner 第 9 条）：新增「可视化编排」入口。
-           *
-           * Owner 原话：「我希望这些最好可以给一个可视化编排插件的一个功能」
-           *
-           * 它是**同一个 JSON 的另一种编辑方式** —— 编排器拼出来的东西
-           * 直接写回 `_jsonCtl`，用户可以在可视化/手写之间随时切换，
-           * 产物**逐字节同构**（见 source_composer_model.dart 的 toJson）。
-           * ⇒ 不新增格式、不新增运行时，只是把「写 JSON」变成「填表单」。
-           *
-           * ⚠️ 只在声明式模式 + 新增态显示：编辑态改的是已有配置，
-           *    走编排会丢掉原有未覆盖字段（编排器只认识模板里那几个键）。
-           */
-          if (!_isEditing && _mode == ImportMode.declarative) ...[
-            ui.TextButton(
-              onPressed: _busy
-                  ? null
-                  : () => setState(() => _jsonCtl.text = kDeclarativeTemplate),
-              child: const Text('填入模板'),
-            ),
-            ui.TextButton.icon(
-              onPressed: _busy ? null : _openComposer,
-              icon: const Icon(AppIcons.auto_fix_high_outlined, size: 16),
-              label: const Text('可视化编排'),
-            ),
-          ],
           /*
            * ★ TVBox 出结果后，「取消」会变成「完成」
            *
@@ -585,49 +479,53 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
                 : () => Navigator.pop(context, _closeResult()),
             // 多仓时**仍然是「取消」**：一个源都没导入，叫「完成」是骗人。
             child: Text(
-              _tvboxResult == null || _tvboxResult!.multiRepo ? '取消' : '完成',
+              _mode == null
+                  ? '关闭'
+                  : _tvboxResult == null || _tvboxResult!.multiRepo
+                  ? '取消'
+                  : '完成',
             ),
           ),
-          ui.FilledButton(
-            onPressed: _busy || !_canSubmit ? null : _submit,
-            child: _busy
-                ? SizedBox(
-                    width: 16,
-                    height: 16,
-                    // T27-07：FilledButton 内的指示器用 onPrimary（按钮自身前景），
-                    // 禁用态下 Material 自动降透明仍 ≥ 灰弧。
-                    child: ui.CircularProgressIndicator(
-                      color: colors.onPrimary,
-                      strokeWidth: 2,
-                    ),
-                  )
-                : Text(_submitLabel),
-          ),
+          if (_mode != null)
+            ui.FilledButton(
+              onPressed: _busy || !_canSubmit ? null : _submit,
+              child: _busy
+                  ? SizedBox(
+                      width: 16,
+                      height: 16,
+                      // T27-07：FilledButton 内的指示器用 onPrimary（按钮自身前景），
+                      // 禁用态下 Material 自动降透明仍 ≥ 灰弧。
+                      child: ui.CircularProgressIndicator(
+                        color: colors.onPrimary,
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : Text(_submitLabel),
+            ),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ── 接入方式切换（编辑态隐藏，原版 :2751）──
-          /*
-             * ⚠️ 编辑态对 TVBox 源**不可达**（task-5）
-             *
-             * TVBox 源没有可回填的原始配置 —— `ProviderImportSeed.fromJson`
-             * 对 kind='tvbox' 返回 null，设置页的「编辑」按钮因此不显示
-             * （见 lib/core/sourin_api.dart 与 settings_page.dart 的 _canEdit）。
-             * 所以下面这个 else 分支的文案里不需要 TVBox 分支；
-             * 真要加编辑能力，得先让后端能吐出原始 sites 片段。
-             */
-          if (!_isEditing) ...[
+          if (_mode == null)
+            Text(
+              widget.seed?.isDeclarative == true
+                  ? '声明式源已停止支持'
+                  : '该源没有可编辑的配置',
+              style: TextStyle(
+                fontSize: FontSizes.sm,
+                color: colors.onSurfaceVariant,
+              ),
+            )
+          else if (!_isEditing) ...[
             _modeTabs(colors),
             const SizedBox(height: Sp.x3),
           ] else
             Padding(
               padding: const EdgeInsets.only(bottom: Sp.x3),
               child: Text(
-                '正在编辑${_mode == ImportMode.http ? "HTTP 插件" : "声明式源"}，'
-                '保存后立即生效',
+                '正在编辑 HTTP 插件，保存后立即生效',
                 style: TextStyle(
                   fontSize: FontSizes.cap,
                   color: colors.onSurfaceVariant,
@@ -635,12 +533,9 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
               ),
             ),
 
-          // ── 表单 ──
-          if (_mode == ImportMode.declarative)
-            ..._declarativeForm(colors)
-          else if (_mode == ImportMode.http)
+          if (_mode == ImportMode.http)
             ..._httpForm(colors)
-          else
+          else if (_mode == ImportMode.tvbox)
             ..._tvboxForm(colors),
 
           // ── TVBox 导入结果（导入成功后留在弹窗里给用户看明细）──
@@ -673,45 +568,21 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
     );
   }
 
-  /// 打开可视化编排器 —— 拼好后把 JSON 写回输入框
-  Future<void> _openComposer() async {
-    final json = await showAppDialog<Map<String, Object?>>(
-      context: context,
-      builder: (_) =>
-          SourceComposerDialog(onSubmit: (j) => Navigator.of(context).pop(j)),
-    );
-    if (json == null || !mounted) return;
-    const enc = JsonEncoder.withIndent('  ');
-    setState(() => _jsonCtl.text = enc.convert(json));
-  }
-
   String get _titleText {
-    if (!_isEditing) {
-      return switch (_mode) {
-        ImportMode.declarative => '导入声明式源',
-        ImportMode.http => '从 URL 安装 HTTP 插件',
-        ImportMode.tvbox => '导入 TVBox 配置',
-      };
-    }
+    if (!_isEditing) return '导入 TVBox 配置';
     final name = widget.editingName ?? widget.seed?.id ?? '';
-    return '编辑「$name」';
+    return _mode == null ? '无法编辑「$name」' : '编辑「$name」';
   }
 
-  /// 主按钮文案（原版：新增 `导入` / `连接并安装`，编辑一律 `保存`）
+  /// 新增仅支持 TVBox；旧 HTTP 配置编辑仍使用保存。
   String get _submitLabel {
     if (_isEditing) return '保存';
-    return switch (_mode) {
-      ImportMode.declarative => '导入',
-      ImportMode.http => '连接并安装',
-      // ★ 「导入并探测」而不是「导入」：这个按钮真的会发几十个
-      //   并发请求（可能等好几秒），文案必须让用户有心理预期
-      ImportMode.tvbox => '导入并探测',
-    };
+    return '导入并探测';
   }
 
-  /// 主按钮可用性（原版 `:disabled="!importJson.trim()"` / `"!httpBase.trim()"`）
+  /// 只有有效的 HTTP / TVBox 表单可以提交。
   bool get _canSubmit => switch (_mode) {
-    ImportMode.declarative => _jsonCtl.text.trim().isNotEmpty,
+    null => false,
     ImportMode.http => _baseCtl.text.trim().isNotEmpty,
     // ★ 已经出过结果之后禁用再次提交：结果面板还开着，再点一次
     //   会把面板内容换掉 —— 用户会以为"刚才那次没生效"
@@ -726,10 +597,6 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
   Widget _modeTabs(ColorScheme colors) {
     return Row(
       children: [
-        _modeTab(colors, ImportMode.declarative, '声明式 JSON', '零代码'),
-        const SizedBox(width: Sp.x2),
-        _modeTab(colors, ImportMode.http, 'HTTP Provider', '任意语言'),
-        const SizedBox(width: Sp.x2),
         // ⚠️ 三列在窄屏（手机逻辑宽 411）会被挤成一条竖线 ——
         //    文案取最短路（'TVBox' + 'sites/spider'）
         _modeTab(colors, ImportMode.tvbox, 'TVBox 配置', 'sites/spider'),
@@ -788,44 +655,6 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
     );
   }
 
-  /// 声明式 JSON 表单（原版 :2774）
-  List<Widget> _declarativeForm(ColorScheme colors) => [
-    Text(
-      '粘贴 JSON 描述即可接入标准 CMS 站点，无需写代码。'
-      '字段用 JSONPath 映射（如 \$.list）。',
-      style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
-    ),
-    const SizedBox(height: Sp.x3),
-    ui.TextField(
-      controller: _jsonCtl,
-      maxLines: 14,
-      minLines: 8,
-      enabled: !_busy,
-      // 每次输入都要重算主按钮的可用性（原版是 v-model 双向绑定）
-      onChanged: (_) => setState(() {}),
-      style: const TextStyle(fontFamily: 'monospace', fontSize: FontSizes.cap),
-      decoration: InputDecoration(
-        hintText: kDeclarativeTemplate,
-        border: const OutlineInputBorder(),
-        hintStyle: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: FontSizes.cap,
-          // ★ 2026-10-16 修：原来这里是 `onSurfaceVariant.withValues(alpha: 0.5)`
-          //   —— 那层 50% 透明度把本来就不高的对比度又砍一半。
-          //   实测（两态都算过）：
-          //     深色 hint 实际 #5C5C5C 压 #171717 ⇒ 2.68:1
-          //     浅色 hint 实际 #ABADB3 压 #F5F7FA ⇒ 2.09:1
-          //   都**远低于 WCAG AA 正文线 4.5:1**。
-          //
-          //   而这段 hint 不是"占位提示" —— 它是**整段 JSON 模板**，
-          //   用户要照着它填配置。看不清等于这个功能不可用。
-          //   ⇒ 去掉那层 alpha，直接用 onSurfaceVariant（主题里"次要文字"的角色色）。
-          color: colors.onSurfaceVariant,
-        ),
-      ),
-    ),
-  ];
-
   /// HTTP Provider 表单（原版 :2798）
   List<Widget> _httpForm(ColorScheme colors) => [
     Text(
@@ -870,41 +699,18 @@ class _ProviderImportDialogState extends State<ProviderImportDialog> {
   /// `rust/sourin_core/src/tvbox.rs` 的 `import_tvbox_config`。
   List<Widget> _tvboxForm(ColorScheme colors) => [
     Text(
-      '粘贴 TVBox 配置 JSON（含 sites 段），或直接填配置地址。'
-      '导入时会并发探测每个站点，只把能连上的建成内容源 —— '
-      'type1（苹果 CMS）可用；type3（csp 源）已支持 4 类共 20 个源，'
-      '其余类会显示「尚未实现」并写明原因；type0/4 是别的协议；'
-      '直播源（lives）本版本不导入。',
+      '填入 TVBox 订阅地址或配置 JSON，导入内容源与直播。'
+      '主地址不可用时按顺序尝试备用地址；导入后仍可统一编辑。',
       style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
     ),
     const SizedBox(height: Sp.x3),
-    ui.TextField(
-      controller: _tvboxCtl,
-      maxLines: 14,
-      minLines: 8,
+    SourceAddressFields(
+      name: _tvboxNameCtl,
+      primary: _tvboxCtl,
+      backups: _tvboxBackupsCtl,
+      acceptConfiguration: true,
       enabled: !_busy,
-      // 每次输入都要重算主按钮的可用性
-      onChanged: (_) => setState(() {}),
-      style: const TextStyle(fontFamily: 'monospace', fontSize: FontSizes.cap),
-      decoration: InputDecoration(
-        hintText: kTvboxTemplate,
-        border: const OutlineInputBorder(),
-        hintStyle: TextStyle(
-          fontFamily: 'monospace',
-          fontSize: FontSizes.cap,
-          // ★ 2026-10-16 修：原来这里是 `onSurfaceVariant.withValues(alpha: 0.5)`
-          //   —— 那层 50% 透明度把本来就不高的对比度又砍一半。
-          //   实测（两态都算过）：
-          //     深色 hint 实际 #5C5C5C 压 #171717 ⇒ 2.68:1
-          //     浅色 hint 实际 #ABADB3 压 #F5F7FA ⇒ 2.09:1
-          //   都**远低于 WCAG AA 正文线 4.5:1**。
-          //
-          //   而这段 hint 不是"占位提示" —— 它是**整段 JSON 模板**，
-          //   用户要照着它填配置。看不清等于这个功能不可用。
-          //   ⇒ 去掉那层 alpha，直接用 onSurfaceVariant（主题里"次要文字"的角色色）。
-          color: colors.onSurfaceVariant,
-        ),
-      ),
+      onChanged: () => setState(() {}),
     ),
   ];
 
@@ -1166,66 +972,6 @@ class TvboxImportResultView extends StatelessWidget {
 //  纯函数（可单测）
 // ═══════════════════════════════════════════════════════════════════════
 
-/// 导入模板（原版 `SettingsView.vue:837` 的 `TEMPLATE`，逐字照抄）
-///
-/// 原版注释：`/** 导入模板（用户改改就能用） */`
-///
-/// ⚠️ 内容**不要"美化"或改字段名** —— 这份模板是给用户当范例改的，
-///    里面 `{category}` / `{page}` / `{id}` / `{keyword}` 占位符的
-///    写法就是声明式源的参数契约。改错一个词，用户照着填的源会解析失败。
-const String kDeclarativeTemplate = '''
-{
-  "id": "demo",
-  "name": "示例站",
-  "base": "https://api.example.com",
-  "headers": {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://example.com/"
-  },
-  "capabilities": { "vod": true, "search": true },
-  "endpoints": {
-    "categories": {
-      "path": "",
-      "params": { "ac": "class" },
-      "map": {
-        "items": "\$.class",
-        "id": "\$.type_id",
-        "title": "\$.type_name"
-      }
-    },
-    "list": {
-      "path": "",
-      "params": { "ac": "videolist", "t": "{category}", "pg": "{page}" },
-      "map": {
-        "items": "\$.list",
-        "id": "\$.vod_id",
-        "title": "\$.vod_name",
-        "cover": "\$.vod_pic",
-        "subtitle": "\$.vod_remarks"
-      }
-    },
-    "detail": {
-      "path": "",
-      "params": { "ac": "detail", "ids": "{id}" },
-      "map": {
-        "items": "\$.list",
-        "id": "\$.vod_id",
-        "title": "\$.vod_name",
-        "episodes": "\$.list[0].vod_play_url"
-      }
-    },
-    "search": {
-      "path": "",
-      "params": { "ac": "videolist", "wd": "{keyword}", "pg": "{page}" },
-      "map": {
-        "items": "\$.list",
-        "id": "\$.vod_id",
-        "title": "\$.vod_name"
-      }
-    }
-  }
-}''';
-
 /// TVBox 配置模板（task-5）
 ///
 /// # 为什么给一份「能跑的」而不是「全字段的」
@@ -1249,30 +995,6 @@ const String kTvboxTemplate = '''
     }
   ]
 }''';
-
-/// 尽量美化 JSON；**解析失败就原样返回**
-///
-/// 原版 `prettyJson`（:1431）：
-/// ```ts
-/// try { return JSON.stringify(JSON.parse(raw), null, 2); }
-/// catch { return raw; }
-/// ```
-/// 原版注释点出了为什么不能把异常抛出去：
-/// > 用户手改坏了也能看到原文 —— 否则打开编辑弹窗的瞬间就报错，
-/// > 用户连自己错在哪都看不到。
-///
-/// ⚠️ Dart 的 `jsonDecode` 对**顶层非对象**（如 `123`、`"x"`）也成功 ——
-///    我们会 `jsonEncode` 回去，结果一样，无需特判。
-String prettyJson(String raw) {
-  final t = raw.trim();
-  if (t.isEmpty) return raw;
-  try {
-    final v = jsonDecode(raw);
-    return const JsonEncoder.withIndent('  ').convert(v);
-  } catch (_) {
-    return raw;
-  }
-}
 
 /// 解析自定义头输入（空 = 无头）
 ///

@@ -31,6 +31,8 @@ import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import '../tokens.dart';
 import 'motion_prefs.dart';
+import 'miuix_tooltip_host.dart';
+import 'miuix_slider_hit_area.dart';
 import '../theme/miuix_framework_bridge.dart';
 
 class RefreshIndicator extends StatefulWidget {
@@ -139,19 +141,25 @@ class _ActionButton extends StatelessWidget {
             style?.foregroundColor?.resolve({WidgetState.disabled}) ??
             defaults.disabledContentColor,
       ),
-      child: IconTheme.merge(
-        data: IconThemeData(color: fg),
-        child: DefaultTextStyle.merge(
-          style: style?.textStyle?.resolve(states) ?? const TextStyle(),
-          child:
-              child ??
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (icon != null) ...[icon!, const SizedBox(width: Sp.x2)],
-                  if (label != null) Flexible(child: label!),
-                ],
-              ),
+      // Center the content inside Miuix's minimum-size box. Its outer Center
+      // positions that box, so a direct Text or a minimum-width Row can drift.
+      child: Center(
+        widthFactor: 1,
+        heightFactor: 1,
+        child: IconTheme.merge(
+          data: IconThemeData(color: fg),
+          child: DefaultTextStyle.merge(
+            style: style?.textStyle?.resolve(states) ?? const TextStyle(),
+            child:
+                child ??
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (icon != null) ...[icon!, const SizedBox(width: Sp.x2)],
+                    if (label != null) Flexible(child: label!),
+                  ],
+                ),
+          ),
         ),
       ),
     );
@@ -898,8 +906,10 @@ class Slider extends StatefulWidget {
     this.autofocus = false,
     this.semanticFormatterCallback,
     this.height = 28,
+    this.trackHeight,
   });
   final double value, min, max, height;
+  final double? trackHeight;
   final int? divisions;
   final String? label;
   final ValueChanged<double>? onChanged, onChangeStart, onChangeEnd;
@@ -1018,25 +1028,30 @@ class _SliderState extends State<Slider> {
           onPointerCancel: (event) {
             if (event.pointer == activePointer) cancel();
           },
-          child: miuix.MiuixSlider(
-            key: ValueKey(generation),
-            value: v,
-            min: widget.min,
-            max: widget.max > widget.min ? widget.max : widget.min + 1,
-            enabled: enabled,
-            onValueChanged: enabled ? change : null,
-            onValueChangeFinished: finish,
-            steps: math.max(0, (widget.divisions ?? 1) - 1),
+          child: MiuixSliderHitArea(
             height: widget.height,
-            colors: miuix.MiuixSliderColors(
-              foregroundColor: widget.activeColor ?? defaults.foregroundColor,
-              disabledForegroundColor: defaults.disabledForegroundColor,
-              backgroundColor: widget.inactiveColor ?? defaults.backgroundColor,
-              disabledBackgroundColor: defaults.disabledBackgroundColor,
-              thumbColor: widget.thumbColor ?? defaults.thumbColor,
-              disabledThumbColor: defaults.disabledThumbColor,
-              keyPointColor: defaults.keyPointColor,
-              keyPointForegroundColor: defaults.keyPointForegroundColor,
+            trackHeight: widget.trackHeight ?? widget.height,
+            child: miuix.MiuixSlider(
+              key: ValueKey(generation),
+              value: v,
+              min: widget.min,
+              max: widget.max > widget.min ? widget.max : widget.min + 1,
+              enabled: enabled,
+              onValueChanged: enabled ? change : null,
+              onValueChangeFinished: finish,
+              steps: math.max(0, (widget.divisions ?? 1) - 1),
+              height: widget.trackHeight ?? widget.height,
+              colors: miuix.MiuixSliderColors(
+                foregroundColor: widget.activeColor ?? defaults.foregroundColor,
+                disabledForegroundColor: defaults.disabledForegroundColor,
+                backgroundColor:
+                    widget.inactiveColor ?? defaults.backgroundColor,
+                disabledBackgroundColor: defaults.disabledBackgroundColor,
+                thumbColor: widget.thumbColor ?? defaults.thumbColor,
+                disabledThumbColor: defaults.disabledThumbColor,
+                keyPointColor: defaults.keyPointColor,
+                keyPointForegroundColor: defaults.keyPointForegroundColor,
+              ),
             ),
           ),
         ),
@@ -1129,6 +1144,13 @@ class ListTile extends StatelessWidget {
   final double? minLeadingWidth, horizontalTitleGap;
   @override
   Widget build(BuildContext context) {
+    final theme = miuix.MiuixTheme.of(context);
+    final foreground = miuix.MiuixBasicComponentDefaults.titleColor(context)
+        .resolve(enabled);
+    final summary = enabled
+        ? theme.colors.onSurfaceSecondary
+        : miuix.MiuixBasicComponentDefaults.summaryColor(context)
+              .resolve(false);
     final margin =
         (contentPadding ??
                 EdgeInsets.symmetric(
@@ -1142,12 +1164,19 @@ class ListTile extends StatelessWidget {
       startAction: leading,
       insideMargin: trailing == null ? margin : margin.copyWith(right: Sp.x3),
       content: [
-        if (title != null) title!,
+        if (title != null)
+          DefaultTextStyle.merge(
+            style: theme.textStyles.headline1.copyWith(
+              color: foreground,
+              fontWeight: FontWeight.w500,
+            ),
+            child: title!,
+          ),
         if (subtitle != null)
           DefaultTextStyle.merge(
-            style: TextStyle(
-              fontSize: FontSizes.sm,
-              color: miuix.MiuixTheme.of(context).colors.onSurfaceSecondary,
+            style: theme.textStyles.body2.copyWith(
+              color: summary,
+              fontWeight: FontWeight.w400,
             ),
             child: subtitle!,
           ),
@@ -1186,7 +1215,18 @@ class ListTile extends StatelessWidget {
             : tileColor!,
         child: body,
       );
-    return body;
+    // Custom content bypasses BasicComponent's MiuixText title/summary path.
+    // Supply the same type hierarchy and state colors to Flutter Text children.
+    return DefaultTextStyle.merge(
+      style: theme.textStyles.body2.copyWith(
+        color: foreground,
+        fontWeight: FontWeight.w400,
+      ),
+      child: IconTheme.merge(
+        data: IconThemeData(color: foreground),
+        child: body,
+      ),
+    );
   }
 }
 
@@ -1610,16 +1650,12 @@ class _TooltipState extends State<Tooltip> {
           onPointerMove: (_) {
             delay?.cancel();
           },
-          child: miuix.MiuixTooltipBox(
+          child: MiuixTooltipHost(
             state: state,
-            enableUserInput: false,
-            semanticLabel: widget.message,
             spacing:
                 widget.verticalOffset ??
                 miuix.MiuixTooltipDefaults.spacingBetweenTooltipAndAnchor,
-            positioning: widget.preferBelow
-                ? miuix.MiuixTooltipAnchorPosition.below
-                : miuix.MiuixTooltipAnchorPosition.above,
+            preferBelow: widget.preferBelow,
             tooltip: (context, scope) => miuix.MiuixPlainTooltip(
               scope: scope,
               insideMargin:

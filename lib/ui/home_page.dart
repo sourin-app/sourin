@@ -66,6 +66,7 @@ import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
 import 'widgets/press_feedback.dart';
 import 'widgets/my_shelf.dart';
+import 'widgets/app_inline_spinner.dart';
 import 'widgets/source_bar.dart';
 import 'widgets/sourin_scroll_behavior.dart';
 import 'webhome/webhome_page.dart';
@@ -146,8 +147,17 @@ bool providesHomeContent(ProviderManifest p) => p.capabilities.vod;
 ///
 /// ⚠️ 顺序**绝不能重排** —— 那是用户在设置页拖出来的顺序
 ///    （`provider-order.json`）。这里只做**减法**。
-List<ProviderManifest> homeSourceList(List<ProviderManifest> all) =>
-    all.where(providesHomeContent).toList();
+List<ProviderManifest> homeSourceList(List<ProviderManifest> all) => all
+    .where(
+      (p) =>
+          p.enabled &&
+          p.working &&
+          !p.hidden &&
+          p.id != kTvboxAggregateId &&
+          p.kind != 'declarative' &&
+          providesHomeContent(p),
+    )
+    .toList();
 
 /// 空态该说哪句话 —— **分情况**（2026-10-15 修正）
 ///
@@ -959,6 +969,7 @@ class HomePage extends StatefulWidget {
     this.onShelfPlay,
     this.onSeeAllShelf,
     this.isTv = false,
+    this.catalogClock,
   });
 
   /// 点卡片 → 详情页
@@ -1016,6 +1027,10 @@ class HomePage extends StatefulWidget {
 
   final bool isTv;
 
+  /// Clock for the short-lived in-memory metadata cache.
+  @visibleForTesting
+  final DateTime Function()? catalogClock;
+
   @override
   State<HomePage> createState() => HomePageState();
 }
@@ -1035,12 +1050,14 @@ class HomePageState extends State<HomePage> {
   /// 用双冒号分隔（原版也是）—— 因为 provider id 里可能含单冒号，
   /// 单冒号做分隔符会切错。
   final Map<String, List<MediaItem>> _sectionItems = {};
+  final Map<String, String> _sectionErrors = {};
+  final Set<String> _retryingSources = {};
 
   /// ★★★ task-11：**已经拉过**（哪怕结果是空）的区块键集合
   ///
   /// # 为什么必须有它 —— 否则"空区块"会让缓存与请求**无限循环**
   ///
-  /// 判"要不要拉"原来只看 `_sectionItems[key]?.isEmpty ?? true`（见 `_loadSectionsOf`），
+  /// 判"要不要拉"原来只看 `_sectionItems[key]?.isEmpty ?? true`（现在同时看 `_loadedBy`），
   /// 而"拉过但结果为空"与"从来没拉过"**在这个判据下完全同形**。
   /// 以前无所谓（每次进页面都全拉一遍），但缓存命中后就成了真问题：
   /// ```text
@@ -1148,33 +1165,20 @@ class HomePageState extends State<HomePage> {
   final Map<String, double> _railScroll = {};
   final _scrollController = ScrollController();
 
-  /// 分区骨架指纹（用于「没变就不换引用」）
-  ///
-  /// ★ task-11 明确语义：它**始终是 `getHome()` 全量结果的指纹**，
-  ///   而不是 `_groups` 当前装的那份的指纹。
-  ///   为什么必须钉死这一点：缓存快照的命中判据与写入判据都是它 ——
-  ///   若这里改成「子集的指纹」，那 `_switchSource` 与 `loadAll` 两条路径
-  ///   就会用**两个不同的值**去查同一份快照 ⇒ 永远不命中，而且是**静默**的
-  ///   （表现只是「缓存好像没生效」，不会有任何报错）。
+  /// Current provider's structure, also used for its content snapshot.
   String _fingerprint = '';
-
-  /// ★★ task-11：最近一次 `loadAll` **显示过**的源（判「源真的换了」用）
-  ///
-  /// 与 `_currentSource` 的区别：那个在 `_switchSource` 里就改了（立刻生效），
-  /// 这个只在 `loadAll` 走完时更新 —— 用来区分「换源」与「同一个源刷新」。
   String _shownSource = '';
 
-  /// ★★ task-11：最近一次 `getHome()` 的**全量**分组（只含骨架，很小）
-  ///
-  /// # 为什么需要留着它
-  ///
-  /// 缓存命中后 `_groups` 会收窄成「当前源的子集」（那样才有「秒开」：
-  /// 命中那一刻的 `_groups` 必须**就是**要画的那份，不能等下一轮全量回来）。
-  /// 但收窄之后就再也解析不出**别的源**的分区了 —— 用户点另一个源时会看到空态。
-  /// ⇒ 全量骨架单独留一份，切到没缓存的源时从它里面取子集。
-  ///
-  /// ⚠️ 它只在 `loadAll` 里整体替换（`_allGroups = next`），从不原地改。
+  /// Metadata of sources already visited; unvisited sources are loaded on demand.
   List<ProviderGroup> _allGroups = [];
+
+  String _sourceFingerprint(String provider) => _allGroups
+      .where((group) => group.provider == provider)
+      .map(
+        (group) =>
+            '${group.provider}:${group.sections.map((s) => s.id).join(",")}',
+      )
+      .join('|');
   // ════════════════════════════════════════════════════════════════════
   //  ★★★ task-6：首页直播条的**可用性闸**（Owner 第 8 条）
   // ════════════════════════════════════════════════════════════════════
@@ -1479,11 +1483,36 @@ class HomePageState extends State<HomePage> {
   ///     设置页逻辑），最容易漏掉第三者 ⇒ 设计判据时要把**所有调用点 grep 全**。
   ///
   /// ⚠️ 它**只影响 debugPrint**，零行为影响。
+  int _aggregateRevision = 0;
+  int _homeLoadEpoch = 0;
+  final Map<String, DateTime> _catalogFetchedAt = {};
+
   Future<void> loadAll({
     bool force = false,
     String reason = 'unspecified',
   }) async {
     debugPrint('[HOME] loadAll 开始 (force=$force, reason=$reason)');
+    final epoch = ++_homeLoadEpoch;
+    if (reason == 'providers-changed' || reason == 'github-source-enabled') {
+      _catalogFetchedAt.clear();
+      _aggregateRevision++;
+      _liveProbeGen++;
+      homeListCache.clear();
+      if (mounted) {
+        setState(() {
+          _enabled = [];
+          _groups = [];
+          _allGroups = [];
+          _sectionItems.clear();
+          _loadedBy.clear();
+          _sectionErrors.clear();
+          _retryingSources.clear();
+          _fingerprint = '';
+          _loading = true;
+          _error = null;
+        });
+      }
+    }
     /*
      * ★★ 探针记录（task-41）—— 让 `reason` 变成**可运行时读取**的计数
      *
@@ -1517,10 +1546,13 @@ class HomePageState extends State<HomePage> {
      * ⚠️ 不 await —— 「我的」是独立数据平面，
      *    让它自己慢慢加载，不阻塞内容分区（那要 4 秒）。
      */
-    unawaited(_shelfKey.currentState?.load() ?? Future.value());
+    if (reason != 'source-switch') {
+      unawaited(_shelfKey.currentState?.load() ?? Future.value());
+    }
     try {
       // ① 无条件刷新源列表（见文件头注释 —— 这是修过的真 bug）
       final providers = await SourinApi.listProviders();
+      if (!mounted || epoch != _homeLoadEpoch) return;
       debugPrint('[HOME] listProviders → ${providers.length} 个');
       final enabled = providers.where((p) => p.enabled).toList();
       /*
@@ -1600,6 +1632,44 @@ class HomePageState extends State<HomePage> {
         UiPrefs.setHomeSource(current);
       }
 
+      // Source availability is local and must reach the screen before the
+      // potentially slow home request. All-off never fetches or revives data.
+      final sourcesChanged = !sourceBarSourcesEqual(_enabled, homeSources);
+      final clearHome =
+          homeSources.isEmpty &&
+          (_groups.isNotEmpty ||
+              _allGroups.isNotEmpty ||
+              _sectionItems.isNotEmpty ||
+              _loadedBy.isNotEmpty ||
+              _loading);
+      if (sourcesChanged) {
+        _catalogFetchedAt.clear();
+        final allowed = homeSources.map((p) => p.id).toSet();
+        _allGroups = _allGroups
+            .where((g) => allowed.contains(g.provider))
+            .toList();
+      }
+      if (current != _currentSource) {
+        _groups = [];
+        _fingerprint = _sourceFingerprint(current);
+      }
+      if (sourcesChanged || current != _currentSource || clearHome) {
+        setState(() {
+          _enabled = homeSources;
+          _currentSource = current;
+          if (homeSources.isEmpty) {
+            _groups = [];
+            _allGroups = [];
+            _sectionItems.clear();
+            _loadedBy.clear();
+            _sectionErrors.clear();
+            _retryingSources.clear();
+            _loading = false;
+          }
+        });
+      }
+      if (homeSources.isEmpty) return;
+
       /*
        * ② 首次进入才显示骨架屏
        *
@@ -1631,14 +1701,13 @@ class HomePageState extends State<HomePage> {
         );
         if (mounted) {
           setState(() {
-            /*
-             * ★ 这里**只补内容，不动 `_groups`**
-             *
-             * `_groups` 在本函数稍后会被全量 `next` 覆盖（它是**全量**语义），
-             * 而「收窄成子集」只发生在 `_switchSource` 的命中路径上 ——
-             * 两条路径各管一段，语义不重叠（见 `_groups` 那段说明）。
-             */
+            // Publish both the section structure and its contents before the
+            // metadata request. Items alone remain hidden behind the skeleton.
+            // Local availability has already excluded disabled providers.
+            _groups = cachedTop.groups;
             _sectionItems.addAll(cachedTop.items);
+            _loading = false;
+            _error = null;
             // ⚠️ 不动 `_loadedBy`：它是"这个 State 拉过"的事实，
             //    而快照是**上一个** State 拉的（见那个字段的说明）。
             //    这里要的都是"有没有数据可画"，`_sectionItems` 已经回答了。
@@ -1646,88 +1715,52 @@ class HomePageState extends State<HomePage> {
         }
       }
       final t0 = DateTime.now();
-      debugPrint('[HOME] 调 getHome()…（25 个源，可能要几秒）');
-      final next = await SourinApi.getHome();
+      final fetchedAt = _catalogFetchedAt[current];
+      final catalogAge = fetchedAt == null
+          ? null
+          : (widget.catalogClock ?? DateTime.now)().difference(fetchedAt);
+      final reuseCatalog =
+          !force &&
+          (reason == 'tab-switch' || reason == 'source-switch') &&
+          !sourcesChanged &&
+          _error == null &&
+          catalogAge != null &&
+          !catalogAge.isNegative &&
+          catalogAge <= kHomeCacheFreshFor;
+      final List<ProviderGroup> next;
+      if (reuseCatalog) {
+        next = _allGroups.where((g) => g.provider == current).toList();
+      } else {
+        _catalogFetchedAt.remove(current);
+        debugPrint('[HOME] 请求当前源目录（源=$current）');
+        final fetched = await SourinApi.getProviderHome(current);
+        if (!mounted || epoch != _homeLoadEpoch || current != _currentSource) {
+          return;
+        }
+        next = fetched.where((g) => g.provider == current).toList();
+        _catalogFetchedAt[current] = (widget.catalogClock ?? DateTime.now)();
+        _allGroups = [
+          ..._allGroups.where((g) => g.provider != current),
+          ...next,
+        ];
+      }
       debugPrint(
-        '[HOME] getHome 返回: ${next.length} 个分组，'
-        '耗时 ${DateTime.now().difference(t0).inMilliseconds}ms',
+        '[HOME] 当前源目录${reuseCatalog ? "复用" : "返回"}（源=$current）：'
+        '${next.length}个分组，耗时${DateTime.now().difference(t0).inMilliseconds}ms',
       );
-
-      /*
-       * ③ 分区没变就不换引用
-       *
-       * 指纹 = provider + 每个区块的 id。内容变了
-       *（用户导入/停用了源）才真的换 —— 那种情况本来也该重渲。
-       */
-      final fp = next
-          .map((g) => '${g.provider}:${g.sections.map((s) => s.id).join(",")}')
-          .join('|');
-      final changed = fp != _fingerprint;
-      // ★ task-11：全量骨架单独留一份（切到没缓存的源时要用，见 _allGroups）
-      _allGroups = next;
-
-      /// ★ task-11：骨架变了但**当前源的分区没变** ⇒ 保留当前源的子集 + 数据，
-      /// 只让下面第 ④ 步去把内容拉新（见那段长注释）
-      var keepSubset = false;
-
-      if (mounted) {
+      final fp = _sourceFingerprint(current);
+      final changed =
+          fp != _fingerprint ||
+          _groups.any((g) => g.provider != current) ||
+          (_groups.isEmpty && next.isNotEmpty);
+      if (changed || _loading != showSkeleton || _error != null) {
         setState(() {
-          _enabled = homeSources;
-          _currentSource = current;
-          /*
-           * ★ task-11：骨架变了时**不能**拿全量 `next` 去覆盖 `_groups`
-           *
-           * # 为什么（不这么改，缓存的第一帧就白做了）
-           *
-           * 缓存命中的那一刻 `_groups` 已经缩成**当前源的子集**
-           * （`_switchSource` 命中路径干的就是这件事），于是：
-           * ```text
-           * 用户切回首页 → loadAll（tab-switch）→ 命中缓存 → 画出来（1 帧，卡片全在）
-           *   → 拿到 next（全量）→ 指纹与缓存的子集指纹**必然不同** ⇒ changed=true
-           *   → _groups = next（全量）⇒ visible 又能解析了…但 _fingerprint 也变成了全量指纹
-           *   → ★ 于是**下一次** take() 拿着全量指纹去比子集指纹 ⇒ 永不命中
-           * ```
-           * ⇒ 复用已有的 `_refreshSource`：它把**当前源**的数据补齐 + 重新存快照，
-           *   存的是**同一个语义**（子集 + 子集指纹），命中链就不断。
-           *
-           * ⚠️ 只在 `_groups` **非空**时走这条路：首屏冷启动（_groups 为空）
-           *    必须老老实实 `_groups = next`，否则永远没有骨架可渲染。
-           */
-          if (changed) {
-            if (_groups.isNotEmpty && current.isNotEmpty) {
-              /*
-               * 当前源的分区 id 串**逐字相同** ⇒ 骨架没变，只刷新内容。
-               * ⚠️ 用 id 串比而不是「个数相同」：区块**换了一个**（数量不变）
-               *    同样是骨架变了，那种情况必须换引用（否则画的是旧标题）。
-               */
-              final newSubset = next
-                  .where((g) => g.provider == current)
-                  .toList();
-              final oldIds = _groups
-                  .expand((g) => g.sections.map((s) => s.id))
-                  .join(',');
-              final newIds = newSubset
-                  .expand((g) => g.sections.map((s) => s.id))
-                  .join(',');
-              if (newSubset.isNotEmpty && oldIds == newIds) {
-                keepSubset = true;
-                debugPrint(
-                  '[HOME] 骨架变了但当前源（$current）的分区没变'
-                  ' ⇒ 保留子集，只刷内容',
-                );
-              } else {
-                _groups = newSubset;
-                _fingerprint = fp;
-              }
-            } else {
-              _groups = next;
-              _fingerprint = fp;
-            }
-          }
+          if (changed) _groups = next;
           _loading = showSkeleton;
           _error = null;
         });
       }
+      _fingerprint = fp;
 
       /*
        * ④ 区块内容按需刷新 + **只拉当前源**
@@ -1760,7 +1793,7 @@ class HomePageState extends State<HomePage> {
         debugPrint(
           '[HOME] 快照足够新（源=$current，存了 '
           '${DateTime.now().difference(recent.at).inSeconds}s）'
-          ' ⇒ 这一轮不发区块请求',
+          ' ⇒ 仅复用已取得的区块，缺项仍需加载',
         );
       }
 
@@ -1777,20 +1810,21 @@ class HomePageState extends State<HomePage> {
            * ⚠️ tried 参与判据是**必须**的：没有它，一个「拉过但确实是空」的区块
            *    会在**每一帧**都被算成「没拉过」⇒ 无限重拉（见 _loadedBy 的说明）。
            */
-          if (force || (!has && !tried && !recentlyFresh)) {
+          final cachedSection = recentlyFresh && recent.items.containsKey(key);
+          if (force || (!has && !tried && !cachedSection)) {
             pending.add(_loadSection(g.provider, s.id, s.source));
           }
         }
       }
       debugPrint(
         '[HOME] 待加载区块 ${pending.length} 个'
-        '（当前源=$current）'
-        '${keepSubset ? "（骨架未变 ⇒ 只刷内容）" : ""}',
+        '（当前源=$current）',
       );
       await Future.wait(pending);
+      if (!mounted || epoch != _homeLoadEpoch) return;
       debugPrint('[HOME] 全部区块加载完成');
 
-      if (mounted) setState(() => _loading = false);
+      if (mounted && _loading) setState(() => _loading = false);
 
       /*
        * ★ task-11：loadAll 换源时把视口复位到顶部
@@ -1895,12 +1929,14 @@ class HomePageState extends State<HomePage> {
        *    结果回来后由 `_probeLiveStrip` 自己 setState 补画。
        */
       _maybeProbeLiveStrip();
-    } catch (e, st) {
-      debugPrint('[HOME] ★ loadAll 失败: ');
-      debugPrint('');
-      if (mounted) {
+    } catch (e) {
+      final message = userErrorText(e);
+      debugPrint('[HOME] loadAll 失败：$message');
+      if (mounted &&
+          epoch == _homeLoadEpoch &&
+          (_error != message || _loading)) {
         setState(() {
-          _error = e.toString();
+          _error = message;
           _loading = false;
         });
       }
@@ -1925,12 +1961,17 @@ class HomePageState extends State<HomePage> {
     SectionSource src,
   ) async {
     final key = '$provider::$sectionId';
+    final revision = _aggregateRevision;
+    final epoch = _homeLoadEpoch;
     try {
       if (src.isCategory && src.categoryId != null) {
         final page = await SourinApi.getList(provider, src.categoryId!);
-        if (mounted) {
+        if (mounted &&
+            revision == _aggregateRevision &&
+            epoch == _homeLoadEpoch) {
           setState(() {
             _sectionItems[key] = page.items;
+            _sectionErrors.remove(key);
             // ★ task-11：**空结果也算"拉过"** —— 否则缓存命中后的后台刷新
             //   会把这个空区块判成"没拉过"，一帧一次地重拉（见 _loadedBy）。
             _markLoaded(provider, sectionId);
@@ -1938,61 +1979,63 @@ class HomePageState extends State<HomePage> {
         }
       } else if (src.isRank && src.rankId != null) {
         final page = await SourinApi.getRank(provider, src.rankId!);
-        if (mounted) {
+        if (mounted &&
+            revision == _aggregateRevision &&
+            epoch == _homeLoadEpoch) {
           setState(() {
             _sectionItems[key] = page.items;
+            _sectionErrors.remove(key);
             _markLoaded(provider, sectionId);
           });
         }
       }
       // 其它类型（custom / static / recent）由界面自行处理，无需预取
     } catch (e) {
-      /*
-       * ★ 错误隔离：单个区块失败**不影响**其他区块
-       *
-       * 原版 `console.warn` 后继续 —— 这里同理，只记日志。
-       * 不 setState 报错：一个源挂了不该让整页显示错误条。
-       */
-      debugPrint('[HOME] 区块 $sectionId 加载失败: $e');
+      // Keep successful/cached sections visible. Transport failure is not an
+      // empty catalog, and an old configuration may not restore its errors.
+      final text = userErrorText(e, fallback: '网络请求未完成');
+      final status = RegExp(r'\bHTTP\s*[:：]?\s*([45]\d{2})\b').firstMatch(text);
+      final message = status == null
+          ? '网络请求未完成，请稍后重试或切换来源'
+          : '源站返回 HTTP ${status.group(1)}，可重试或切换来源';
+      debugPrint('[HOME] 区块 $sectionId 加载失败: $message');
+      if (mounted &&
+          revision == _aggregateRevision &&
+          epoch == _homeLoadEpoch &&
+          _sectionErrors[key] != message) {
+        setState(() => _sectionErrors[key] = message);
+      }
+    }
+  }
+
+  Future<void> _retryFailedSections(String provider) async {
+    if (_retryingSources.contains(provider)) return;
+    final revision = _aggregateRevision;
+    final sections = (_allGroups.isEmpty ? _groups : _allGroups)
+        .where((group) => group.provider == provider)
+        .expand((group) => group.sections)
+        .where(
+          (section) => _sectionErrors.containsKey('$provider::${section.id}'),
+        )
+        .toList();
+    if (sections.isEmpty) return;
+    setState(() => _retryingSources.add(provider));
+    try {
+      await Future.wait(
+        sections.map(
+          (section) => _loadSection(provider, section.id, section.source),
+        ),
+      );
+      if (mounted && revision == _aggregateRevision) _cacheSource(provider);
+    } finally {
+      if (mounted && revision == _aggregateRevision) {
+        setState(() => _retryingSources.remove(provider));
+      }
     }
   }
 
   List<MediaItem> _itemsOf(String provider, String sectionId) =>
       _sectionItems['$provider::$sectionId'] ?? const [];
-
-  /// 补拉某个源里**还没有数据**的区块（切源时调用）
-  ///
-  /// 为什么不一次拉全部源的：那正是要避免的 ——
-  /// 4 个源 × 8 区块 ≈ 30 次请求。按需拉，切到才拉。
-  ///
-  /// ★★★ task-11：加了 [force]（缓存命中后的后台刷新要它）
-  ///
-  /// ```text
-  /// force=false（切源用）→ 只补"从来没拉过"的 ⇒ 缓存命中的区块**不发请求**
-  ///                         （用户要的"不重拉"就是这一条）
-  /// force=true（后台刷新用）→ 全拉一遍 ⇒ 保证旧的会被新的追上
-  /// ```
-  /// ⚠️ 判据用 `_loadedBy[provider]` 而**不是** `items.isEmpty` ——
-  ///    见那个字段的说明（空结果的区块也要算"拉过"，否则会无限重拉）。
-  Future<void> _loadSectionsOf(String provider, {bool force = false}) async {
-    // ⚠️ 同 `_ensureSections`：必须用**全量骨架** `_allGroups`。
-    //    用 `_groups`（已被 loadAll 收窄成当前源）时，后台刷新**非当前源**会静默失效。
-    //    ★ 这条正是"C 过期后 revalidate 请求=0"的成因：刷新根本没发生。
-    final g = (_allGroups.isEmpty ? _groups : _allGroups)
-        .where((x) => x.provider == provider)
-        .firstOrNull;
-    if (g == null) return;
-
-    final loaded = _loadedBy[provider] ?? const <String>{};
-    final pending = <Future<void>>[];
-    for (final s in g.sections) {
-      final has = loaded.contains(s.id) || _hasItems(provider, s);
-      if (force || !has) {
-        pending.add(_loadSection(provider, s.id, s.source));
-      }
-    }
-    await Future.wait(pending);
-  }
 
   /// 标记「provider 的这个区块已经拉过」（**空结果也算**）
   void _markLoaded(String provider, String sectionId) {
@@ -2012,82 +2055,37 @@ class HomePageState extends State<HomePage> {
   bool _hasItems(String provider, Section s) =>
       (_sectionItems['$provider::${s.id}']?.isNotEmpty) ?? false;
 
-  /// ★★ task-11：进入一个源时**按需**补数据（「不重拉」真正落地的地方）
-  ///
-  /// # 为什么必须有它（原来的路径会**无条件**重拉）
-  ///
-  /// ```text
-  /// 老路径：_switchSource → unawaited(_loadSectionsOf(id))
-  ///   判据 = loaded.contains(s.id) || items 非空
-  ///   缓存命中时 _loadedBy 是**空的**（State 是新的），items 非空 ⇒ 不发 ✓
-  ///   —— 但一个**拉过且确实是空**的区块：items 空 + loaded 空 ⇒ has=false
-  ///      ⇒ **立刻发请求**，与用户诉求（"切回来不要重拉"）直接冲突。
-  /// ```
-  ///
-  /// # 判据（`_hasItems`，而不是 `_loadedBy`）
-  /// ```text
-  /// 有数据 → 一个请求都不发（缓存命中就该是 0 请求）
-  /// 没数据 → 补拉（不能因为"以前拉过是空的"就永远空着）
-  /// ```
-  /// ★ 这条判据天然就对：**发请求的唯一理由是「现在画不出东西」**。
+  /// Explicit probe prefetch uses the same per-provider API and section loader.
+  /// It does not change the user's visible selection.
   Future<void> _ensureSections(String provider) async {
-    /*
-     * ⚠️⚠️ 必须从 `_allGroups` 取骨架，**不能**用 `_groups`
-     *
-     * ```text
-     * `loadAll` 会把 `_groups` 收窄成"当前源的那一份"（keepSubset）⇒
-     *   对**非当前源**，`_groups.where(provider==x)` 是**空的** ⇒ 这里 `return`，
-     *   一个区块都不拉、快照也不写。
-     * ★ 真机读数就是这么露出来的：探针在"当前源=srcl"时预热 t11a ⇒
-     *   预热静默失效 ⇒ 后面切回 t11a **永远不命中**（读数 720ms/2 请求，与冷加载一样）。
-     * ⇒ 那不是缓存坏了，是**找不到骨架就悄悄放弃**。
-     * ```
-     * `_allGroups` 存的正是**完整骨架**（所有源），它的存在就是为了解析任意源的子集。
-     * 收窄 `_groups` 是渲染优化，不该让"预取别的源"跟着失效。
-     */
-    final g = (_allGroups.isEmpty ? _groups : _allGroups)
-        .where((x) => x.provider == provider)
-        .firstOrNull;
-    if (g == null) return;
-
-    final pending = <Future<void>>[];
-    for (final s in g.sections) {
-      /*
-       * ⚠️ 只处理**能预取**的区块（category / rank）。
-       *
-       * `custom` / `static` / `recent` 由界面自己画（见 `_loadSection` 的说明）——
-       * 对它们调 `_loadSection` 是**空操作**：一个请求都不发，但会进 `pending`，
-       * 于是日志里出现"补拉 1 个区块"而实际零请求 ⇒ 读数与日志对不上。
-       * ★ srcl 源的「正在直播」正是 custom ⇒ 这条不加，切到 srcl 每次都多一行假日志。
-       */
-      final fetchable =
-          (s.source.isCategory && s.source.categoryId != null) ||
-          (s.source.isRank && s.source.rankId != null);
-      if (fetchable && !_hasItems(provider, s)) {
-        pending.add(_loadSection(provider, s.id, s.source));
+    if (!_enabled.any((p) => p.id == provider)) return;
+    final revision = _aggregateRevision;
+    final epoch = _homeLoadEpoch;
+    var groups = _allGroups.where((g) => g.provider == provider).toList();
+    if (groups.isEmpty) {
+      groups = await SourinApi.getProviderHome(provider);
+      if (!mounted ||
+          revision != _aggregateRevision ||
+          epoch != _homeLoadEpoch) {
+        return;
       }
+      groups = groups.where((g) => g.provider == provider).toList();
+      _allGroups = [
+        ..._allGroups.where((g) => g.provider != provider),
+        ...groups,
+      ];
+      _catalogFetchedAt[provider] = (widget.catalogClock ?? DateTime.now)();
     }
-    if (pending.isNotEmpty) {
-      debugPrint(
-        '[HOME] 按需补拉（源=$provider）：${pending.length} 个区块'
-        '（其余 ${g.sections.length - pending.length} 个已有数据 ⇒ 零请求）',
-      );
+    await Future.wait([
+      for (final group in groups)
+        for (final section in group.sections)
+          if (!_hasItems(provider, section) &&
+              !(_loadedBy[provider]?.contains(section.id) ?? false))
+            _loadSection(provider, section.id, section.source),
+    ]);
+    if (mounted && revision == _aggregateRevision && epoch == _homeLoadEpoch) {
+      _cacheSource(provider);
     }
-    await Future.wait(pending);
-    /*
-     * ★★★ 收尾必须**存快照** —— 这一行是「切源缓存」成立的关键
-     *
-     * # 少了它会怎样（我自己第一版就漏了，靠真机探针的读数才发现）
-     * ```text
-     * 快照只在两处写入：loadAll 尾部、_refreshSource 尾部。
-     * 而用户切源的路径是：_switchSource →（未命中）→ _ensureSections
-     *   ⇒ 这条路上**一次都没写** ⇒ 用户切到 B、再切回 A、再切回 B…
-     *     **永远不命中**（缓存里只有 loadAll 那一刻的源）。
-     *   ⇒ 用户报的正是「每次切换源都要重载」—— 修了却对这条路径无效。
-     * ```
-     * ⇒ 放在 `Future.wait` 之后：数据已经落进 `_sectionItems`，快照才完整。
-     */
-    _cacheSource(provider);
   }
 
   /// 切源
@@ -2095,159 +2093,47 @@ class HomePageState extends State<HomePage> {
   /// 同一页面内换源，**每个源各记各的滚动位置**
   ///（切走再切回来要回到原位置，不被别的源带跑）。
   void _switchSource(String id) {
-    if (id == _currentSource) return;
-
-    // 记下当前源的位置，切走之后能回来
+    if (id == _currentSource || !_enabled.any((p) => p.id == id)) return;
     if (_scrollController.hasClients) {
       _railScroll[_currentSource] = _scrollController.offset;
     }
-
-    /*
-     * ══════════════════════════════════════════════════════════════
-     * ★★★ task-11：缓存命中 ⇒ **同一次 setState 里**把数据换上去
-     * ══════════════════════════════════════════════════════════════
-     *
-     * Owner 原话：
-     * > 我在首页每次切换源的时候都要重载,我想如果有缓存就好了
-     *
-     * # 为什么必须放在**这一次** setState 里（不能"先切源、再补数据"）
-     *
-     * ```text
-     * 两次 setState → 中间那一帧 _groups/_sectionItems 还是空的
-     *   ⇒ build 走的是 `visible.isEmpty` 分支 ⇒ **空态**
-     *   （比骨架更糟：骨架至少说明"在加载"，空态是在说"这个源没内容"）
-     * ⇒ 一次 setState 换完 ⇒ **第一帧就有卡片**，不经过骨架也不经过空态
-     * ```
-     *
-     * ⚠️ 判据取的是 `_fingerprint`（当前骨架的指纹），不是"缓存里有没有这个源"：
-     *    骨架变了（用户刚在设置页启停过源）⇒ 旧快照的分区列表与指纹对不上
-     *    ⇒ `take()` 直接判不命中（那一条也顺手删掉，不占名额）。
-     */
+    // Invalidate immediately, before the local provider-list await in loadAll.
+    ++_homeLoadEpoch;
+    final fingerprint = _sourceFingerprint(id);
     final cached = homeListCache.take(
       id,
-      fingerprint: _fingerprint,
+      fingerprint: fingerprint,
       now: DateTime.now(),
     );
-
     setState(() {
       _currentSource = id;
-      if (cached != null) {
-        // ★ 命中路径把 _groups 收窄成**这个源**的子集 ——
-        //   这样同一帧里 visible 就能解析出内容（见上面那段说明）。
-        //   冷路径会从 _allGroups 重新取子集，两者互不干扰。
-        _groups = cached.groups;
-        _sectionItems.addAll(cached.items);
-        _loading = false;
-        _error = null;
-      }
+      _shownSource = id;
+      _groups =
+          cached?.groups ?? _allGroups.where((g) => g.provider == id).toList();
+      if (cached != null) _sectionItems.addAll(cached.items);
+      _fingerprint = fingerprint.isEmpty
+          ? (cached?.fingerprint ?? '')
+          : fingerprint;
+      _loading = _groups.isEmpty;
+      _error = null;
     });
-
-    if (cached != null) {
-      /*
-       * ★ task-11：命中路径也要落盘
-       *
-       * ⚠️ 上面那段「落盘」的注释写着"必须放在 setState 之后" —— 它原来在
-       *    **函数末尾**，而命中路径会 `return`，所以**整段落盘被跳过了**：
-       *    用户在多个源之间切来切去，只有"切到没缓存的源"才写盘，
-       *    切到有缓存的源**不写** ⇒ 下次启动回到的是那个没缓存的源。
-       *    （同一条：`_restoreScroll` 也是末尾那段，命中路径原本也漏了。）
-       */
-      UiPrefs.setHomeSource(id);
-      debugPrint(
-        '[HOME] 缓存命中（源=$id）：分区=${cached.groups.length} '
-        '区块=${cached.items.length} 卡片=${cached.cardCount} '
-        '（存了 ${DateTime.now().difference(cached.at).inSeconds}s）',
-      );
-      /*
-       * ★★ 后台刷新：这就是 stale-while-revalidate 的 revalidate 那一半
-       *
-       * ★★ 但**必须过一道新鲜度闸** —— 这一条是我第一版写错、后面改的，
-       *   记在这里免得后人再"优化"回去：
-       * ```text
-       * 第一版：命中就无条件 unawaited(_refreshSource(...))
-       *   ⇒ 用户切回一个 2 秒前才拉过的源 ⇒ **立刻又发一轮 get_list**
-       *   ⇒ 与 Owner 的诉求（"每次切换源都要重载"）方向相反：
-       *     观感上是"先画旧内容"，但流量照花，而且探针实测会看到
-       *     "切源第一帧就有请求" ⇒ 判据本身被污染。
-       * ```
-       * ⇒ 只有快照**不够新**（超过 kHomeCacheFreshFor）才去 revalidate。
-       *   30 秒内的第二次切回：一个请求都不发。
-       *
-       * ⚠️ 顺序：**先按需补拉**（`_ensureSections`，可能一个请求都不发），
-       *   再整源后台刷新（`_refreshSource`）。两者写同一批键，
-       *   串行执行才不会有"后完成的赢"把新数据盖回旧的。
-       */
-      final age = DateTime.now().difference(cached.at);
-      final stale = age > kHomeCacheFreshFor;
-      unawaited(() async {
-        await _ensureSections(id);
-        if (stale) {
-          await _refreshSource(id, reason: 'cache-stale');
-        } else {
-          debugPrint(
-            '[HOME] 快照够新（源=$id，存了 ${age.inSeconds}s ≤ '
-            '${kHomeCacheFreshFor.inSeconds}s）⇒ 跳过后台刷新',
-          );
-        }
-      }());
-      _maybeProbeLiveStrip();
-      _restoreScroll(id);
-      return;
-    }
-
-    debugPrint('[HOME] 缓存未命中（源=$id）⇒ 走冷加载路径');
-    setState(() {
-      _currentSource = id;
-      /*
-       * ★ task-11：`_groups` 可能已经收窄成**别的源的子集**（上一次命中留下的），
-       * 那样这里会解析不出目标源的分区 ⇒ 用户看到空态。
-       * 所以冷路径必须从 `_allGroups`（全量骨架）重新取一次子集。
-       *
-       * ⚠️ 没有 `_allGroups`（还没跑过 loadAll）时保持原样 ——
-       *    `loadAll` 迟早会填上，别在这里造一个空分组。
-       */
-      if (_allGroups.isNotEmpty) {
-        final sub = _allGroups.where((g) => g.provider == id).toList();
-        if (sub.isNotEmpty) _groups = sub;
-      }
-    });
-    /*
-     * ★ 落盘（2026-09-24 补齐「首页的选中源记录」）
-     *
-     * 原版是 `watch(homeSource)` 自动写；这里是显式调用 ——
-     * Dart 没有响应式，只有一个入口（这个方法），显式更清楚。
-     *
-     * ⚠️ 必须放在 `setState` **之后** —— 顺序上"先改 UI 状态、
-     *    再持久化"，这样即使写盘抛异常，界面也已经切过去了。
-     */
     UiPrefs.setHomeSource(id);
-
-    // 切源后补拉该源还没加载过的区块
-    // ⚠️ 走 `_ensureSections` 而**不是** `_loadSectionsOf`：
-    //    后者对"拉过但是空"的区块会立刻重发请求（见 `_ensureSections` 的说明）。
-    unawaited(_ensureSections(id));
-
-    /*
-     * ★ task-6：切源后重探直播条
-     *
-     * 两个源的可播线路完全无关（srcl 全 DRM，iptv 全可播）——
-     * 不重探就会拿 A 源的结论去画 B 源的条（串台）。
-     * ★ 探针按 (provider, channelId) 分键缓存 ⇒ 切回来时是**命中缓存**，
-     *   不会重复发请求。
-     */
+    final stale =
+        cached != null &&
+        DateTime.now().difference(cached.at) > kHomeCacheFreshFor;
+    unawaited(() async {
+      await loadAll(force: stale, reason: 'source-switch');
+      if (mounted && id == _currentSource && cached == null) _restoreScroll(id);
+    }());
     _maybeProbeLiveStrip();
-
     _restoreScroll(id);
   }
 
-  /// 恢复目标源的滚动位置（下一帧 —— 等列表换完）
-  ///
-  /// ★ task-11 把它抽成方法：命中缓存与冷加载**两条路径都要恢复位置**
-  ///   （原来这段内联在 _switchSource 末尾，命中路径提前 return 就漏掉了 ——
-  ///    而「切回来位置也回来了」正是用户对「缓存」的另一个期待）。
   void _restoreScroll(String id) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.hasClients) return;
+      if (!mounted || id != _currentSource || !_scrollController.hasClients) {
+        return;
+      }
       final target = _railScroll[id] ?? 0;
       _scrollController.jumpTo(
         target.clamp(0, _scrollController.position.maxScrollExtent),
@@ -2255,62 +2141,29 @@ class HomePageState extends State<HomePage> {
     });
   }
 
-  /// ★★★ task-11：把**一个源**的数据补齐 + 存进缓存
-  ///
-  /// # 为什么不是「重跑一遍 loadAll」
-  ///
-  /// ```text
-  /// loadAll() 会连带 listProviders()（重扫插件目录）+ 重解析当前源的回退 +
-  ///           重画「我的」+ 重算整页探针读数
-  /// ```
-  /// 那些都属于「整页刷新」，与「把**这一个源**的内容拉新」不是一回事。
-  /// 而且 loadAll 拿的是 getHome() 的**全量**结果，会把 _groups 换成全量
-  /// （_switchSource 命中路径靠的正是「当前源的子集」），语义会漂。
-  /// ⇒ 这里只做两件事：拉这个源的区块 + 存快照。
-  ///
-  /// ⚠️ force 必须是 true：缓存命中的意义就是「这些区块已经有数据了」，
-  ///    而 force=false 会被 _sectionLoaded 判成「拉过」⇒ 一个请求都不发 ——
-  ///    那就不是 revalidate，是「永远用旧的」。
-  Future<void> _refreshSource(String provider, {required String reason}) async {
-    if (_disposed) return;
-    debugPrint("[HOME] 后台刷新开始（源=$provider, reason=$reason）");
-    final t0 = DateTime.now();
-    try {
-      await _loadSectionsOf(provider, force: true);
-    } catch (e) {
-      // 单个区块失败已在 _loadSection 里隔离；这里只兜「整体」失败
-      debugPrint("[HOME] 后台刷新失败（源=$provider）: $e");
-    }
-    // ★ 用户可能在刷新期间又切走了 ⇒ 这份快照仍然值得存（它就是这个源的），
-    //   但**不要再 setState**（当前显示的是别的源，刷上去就是串台）。
-    _cacheSource(provider);
-    debugPrint(
-      "[HOME] 后台刷新完成（源=$provider）："
-      "耗时 ${DateTime.now().difference(t0).inMilliseconds}ms",
-    );
-  }
-
-  /// 把 provider 当前的 _groups + _sectionItems 存成快照（LRU + TTL）
-  ///
-  /// ⚠️ items 只挑**属于这个源**的键（provider:: 前缀）——
-  ///    否则会把别的源的数据一起塞进这个条目，上限与命中语义都会失真。
-  /// ⚠️ 存**引用**不深拷贝：_sectionItems 的值只被整体替换（见 _loadSection），
-  ///    不会被原地改 ⇒ 共享安全，且省掉一次 160 元素的复制。
+  /// Save successful content without renewing freshness after a failed refresh.
   void _cacheSource(String provider) {
     // ★ dispose 之后不再组装快照：State 已经没了，_groups/_sectionItems 的语义
     //   在这里不再保证（见 _disposed 的说明）。缓存里那一份保持不变即可。
-    if (_disposed || provider.isEmpty || _groups.isEmpty) return;
+    if (_disposed ||
+        provider.isEmpty ||
+        !_enabled.any((p) => p.id == provider)) {
+      return;
+    }
     final prefix = "$provider::";
+    if (_sectionErrors.keys.any((key) => key.startsWith(prefix))) return;
     final mine = <String, List<MediaItem>>{};
     for (final e in _sectionItems.entries) {
       if (e.key.startsWith(prefix)) mine[e.key] = e.value;
     }
-    final groups = _groups.where((g) => g.provider == provider).toList();
+    final groups = (_allGroups.isEmpty ? _groups : _allGroups)
+        .where((g) => g.provider == provider)
+        .toList();
     if (groups.isEmpty) return;
     homeListCache.put(
       provider,
       HomeSnapshot(
-        fingerprint: _fingerprint,
+        fingerprint: _sourceFingerprint(provider),
         groups: groups,
         items: mine,
         at: DateTime.now(),
@@ -2402,6 +2255,13 @@ class HomePageState extends State<HomePage> {
     }
 
     final visible = _groups.where((g) => g.provider == _currentSource).toList();
+    final failures = [
+      for (final group in visible)
+        for (final section in group.sections)
+          if (_sectionErrors['${group.provider}::${section.id}']
+              case final String message)
+            message,
+    ];
 
     /*
      * ══════════════════════════════════════════════════════════════════
@@ -2627,6 +2487,16 @@ class HomePageState extends State<HomePage> {
                   if (_loading)
                     const SliverToBoxAdapter(child: _SkeletonSections()),
 
+                  if (!_loading && failures.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: _SourceFailureCard(
+                        count: failures.length,
+                        message: failures.first,
+                        retrying: _retryingSources.contains(_currentSource),
+                        onRetry: () => _retryFailedSections(_currentSource),
+                      ),
+                    ),
+
                   // ── 空状态（★ 淡入）──
                   if (!_loading && visible.isEmpty)
                     FadeInSliver(
@@ -2640,14 +2510,27 @@ class HomePageState extends State<HomePage> {
                         delegate: SliverChildListDelegate([
                           for (final g in visible)
                             for (final s in g.sections)
-                              _SectionBlock(
-                                provider: g.provider,
-                                section: s,
-                                items: _itemsOf(g.provider, s.id),
-                                onOpenDetail: _openDetail,
-                                onOpenLive: widget.onOpenLive,
-                                onBrowse: widget.onBrowse,
-                                /*
+                              if (!_sectionErrors.containsKey(
+                                    '${g.provider}::${s.id}',
+                                  ) ||
+                                  _itemsOf(g.provider, s.id).isNotEmpty)
+                                _SectionBlock(
+                                  aggregateRevision: _aggregateRevision,
+                                  provider: g.provider,
+                                  section: s,
+                                  items: _itemsOf(g.provider, s.id),
+                                  loading:
+                                      (s.source.isCategory ||
+                                          s.source.isRank) &&
+                                      !_sectionItems.containsKey(
+                                        '${g.provider}::${s.id}',
+                                      ) &&
+                                      !(_loadedBy[g.provider]?.contains(s.id) ??
+                                          false),
+                                  onOpenDetail: _openDetail,
+                                  onOpenLive: widget.onOpenLive,
+                                  onBrowse: widget.onBrowse,
+                                  /*
                          * ★ task-6：把"**过闸后的名单**"和"记录读数"交给区块。
                          *
                          * # 为什么闸在这里过（而不是在 build 里算好）
@@ -2663,11 +2546,11 @@ class HomePageState extends State<HomePage> {
                          * 见 `srcl.js:391`）⇒ 只有它才需要直播条的判定；
                          * 其它类型的区块传空名单，不产生任何请求/查询。
                          */
-                                liveStrip: s.source.type == 'custom'
-                                    ? _liveStripGate(g.provider)
-                                    : const <({String id, String name})>[],
-                                onLiveStripRendered: _recordLiveStrip,
-                                /*
+                                  liveStrip: s.source.type == 'custom'
+                                      ? _liveStripGate(g.provider)
+                                      : const <({String id, String name})>[],
+                                  onLiveStripRendered: _recordLiveStrip,
+                                  /*
                          * ★★★ N9：给聚合渠道条的**按渠道取数**通道。
                          *
                          * 只对渠道条那一条区块有意义（其余区块拿到也用不上）——
@@ -2675,13 +2558,13 @@ class HomePageState extends State<HomePage> {
                          * 所以渠道条拉回来的内容跟普通区块走同一份
                          * `_sectionItems`（卡片渲染 / 缓存 / 命中判据**同源**）。
                          */
-                                itemsOf: _itemsOf,
-                                loadSectionItems: (sec) => _loadSection(
-                                  g.provider,
-                                  sec.id,
-                                  sec.source,
+                                  itemsOf: _itemsOf,
+                                  loadSectionItems: (sec) => _loadSection(
+                                    g.provider,
+                                    sec.id,
+                                    sec.source,
+                                  ),
                                 ),
-                              ),
                         ]),
                       ),
                     ),
@@ -2730,7 +2613,7 @@ final sourceBarKey = GlobalKey();
 class _StickySourceBar extends SliverPersistentHeaderDelegate {
   _StickySourceBar({required this.child, required this.visibleCount});
 
-  final Widget child;
+  final SourceBar child;
 
   /// ★★★ 本次实际使用的 extent（见 [extentFor]）
   late final double _extentNow = extentFor(visibleCount);
@@ -2875,7 +2758,7 @@ class _StickySourceBar extends SliverPersistentHeaderDelegate {
   /// 不比它就会用着**上一次**的 extent —— 那正是非法几何的来源。
   @override
   bool shouldRebuild(_StickySourceBar old) =>
-      old.child != child || old._extentNow != _extentNow;
+      old._extentNow != _extentNow || !child.hasSameConfiguration(old.child);
 }
 
 /// ★★ 门禁注入点：造一个**真正的** `_StickySourceBar`（不是测试复刻品）
@@ -2920,6 +2803,8 @@ _StickySourceBar debugStickySourceBar({
 
 class _SectionBlock extends StatelessWidget {
   const _SectionBlock({
+    this.loading = false,
+    this.aggregateRevision = 0,
     required this.provider,
     required this.section,
     required this.items,
@@ -2933,6 +2818,8 @@ class _SectionBlock extends StatelessWidget {
   });
 
   final String provider;
+  final int aggregateRevision;
+  final bool loading;
   final Section section;
   final List<MediaItem> items;
   final void Function(MediaItem) onOpenDetail;
@@ -3023,21 +2910,22 @@ class _SectionBlock extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // ── 标题行 + 「查看全部」──
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: railInset),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    section.title,
-                    style: TextStyle(
-                      fontSize: FontSizes.lg,
-                      fontWeight: FontWeight.w600,
-                      color: colors.onSurface,
+          if (!_SectionBlock._isAggChannelsSection(section))
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: railInset),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      section.title,
+                      style: TextStyle(
+                        fontSize: FontSizes.lg,
+                        fontWeight: FontWeight.w600,
+                        color: colors.onSurface,
+                      ),
                     ),
                   ),
-                ),
-                /*
+                  /*
                  * 「查看全部」的三种去向（与原版一一对应）：
                  * ```text
                  * category → 浏览页（带分类参数）
@@ -3045,24 +2933,25 @@ class _SectionBlock extends StatelessWidget {
                  * custom   → 直播页
                  * ```
                  */
-                if (src.isCategory || src.isRank)
-                  _MoreButton(
-                    label: '查看全部',
-                    onTap: () => onBrowse?.call(provider, section.title, src),
-                  )
-                // ★★★ N9：聚合渠道条区块**不给**「去直播」——
-                //   它既不是 category 也不是 rank，旧代码按 `type == custom`
-                //   一律给「去直播」⇒ 点它会把用户送去直播页（完全不相干）。
-                else if (src.type == 'custom' &&
-                    !_SectionBlock._isAggChannelsSection(section))
-                  _MoreButton(
-                    label: '去直播',
-                    onTap: () => onBrowse?.call(provider, section.title, src),
-                  ),
-              ],
+                  if (src.isCategory || src.isRank)
+                    _MoreButton(
+                      label: '查看全部',
+                      onTap: () => onBrowse?.call(provider, section.title, src),
+                    )
+                  // ★★★ N9：聚合渠道条区块**不给**「去直播」——
+                  //   它既不是 category 也不是 rank，旧代码按 `type == custom`
+                  //   一律给「去直播」⇒ 点它会把用户送去直播页（完全不相干）。
+                  else if (src.type == 'custom' &&
+                      !_SectionBlock._isAggChannelsSection(section))
+                    _MoreButton(
+                      label: '去直播',
+                      onTap: () => onBrowse?.call(provider, section.title, src),
+                    ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: Sp.x4),
+          if (!_SectionBlock._isAggChannelsSection(section))
+            const SizedBox(height: Sp.x4),
 
           // ── 直播区块：横向频道条 ──
           /*
@@ -3113,15 +3002,7 @@ class _SectionBlock extends StatelessWidget {
            *    ⇒ 两条路天然互斥。
            */
           if (_SectionBlock._isAggChannelsSection(section))
-            AggChannelsBlock(
-              // ★ 稳定 key：SliverList 按需回收/重建时保住 State
-              //   （渠道选择与已加载集合都在 State 里 —— 丢了就退化成"重拉"）
-              key: const ValueKey<String>('home-agg-channels'),
-              provider: provider,
-              onOpenDetail: onOpenDetail,
-              itemsOf: itemsOf,
-              loadItems: loadSectionItems,
-            )
+            const SizedBox.shrink()
           // ── 直播区块：横向频道条 ──
           else if (src.type == 'custom')
             _LiveStrip(
@@ -3139,6 +3020,23 @@ class _SectionBlock extends StatelessWidget {
            * > 因为「排行」本身就是核心信息 —— 用海报轨道会把这个信息丢掉。
            * > 仍然可横向滚动，信息与操作与原来完全一致。
            */
+          else if (loading && items.isEmpty)
+            Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: Layout.railPaddingOf(context),
+                vertical: Sp.x3,
+              ),
+              child: Row(
+                children: [
+                  const AppInlineSpinner(size: Sp.x4),
+                  const SizedBox(width: Sp.x2),
+                  Text(
+                    '正在加载',
+                    style: TextStyle(color: colors.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            )
           else if (src.isRank && items.isNotEmpty)
             _Rail(items: items, ranked: true, onOpenDetail: onOpenDetail)
           // ── 普通区块：海报轨道 ──
@@ -3191,8 +3089,7 @@ class _Rail extends StatelessWidget {
     }
 
     return SizedBox(
-      // ★ 标题两行（原版 base.css:844-854 -webkit-line-clamp:2）
-      height: AppMetrics.railHeight(titleLines: 2),
+      height: PosterCard.heightOf(context, hasSubtitle: true),
       child: SourinHorizontalRail(
         child: ListView.separated(
           clipBehavior: Clip.antiAlias,
@@ -3208,6 +3105,17 @@ class _Rail extends StatelessWidget {
           separatorBuilder: (_, __) => const SizedBox(width: Sp.x3),
           itemBuilder: (context, i) {
             final it = items[i];
+            final ratingPattern = RegExp(
+              r'^(?:评分\s*[:：]\s*)?(10(?:\.0)?|[0-9](?:\.[0-9])?)\s*分?$',
+            );
+            final ratingText = it.badges
+                .where((badge) => ratingPattern.hasMatch(badge.trim()))
+                .firstOrNull;
+            final noteRating = ratingPattern.firstMatch(it.note?.trim() ?? '');
+            final releaseStatus = PosterCard.releaseStatusFor(note: it.note);
+            final rating = ratingText == null
+                ? noteRating?.group(1)
+                : ratingPattern.firstMatch(ratingText.trim())?.group(1);
             /*
            * ══════════════════════════════════════════════════════════
            * ★★ 按下反馈（task-44 A 项，2026-09-26）
@@ -3238,8 +3146,12 @@ class _Rail extends StatelessWidget {
               child: PosterCard(
                 title: it.title,
                 cover: it.cover,
-                subtitle: it.note,
-                titleLines: 2,
+                subtitle: noteRating == null && releaseStatus == null
+                    ? it.note
+                    : null,
+                releaseStatus: releaseStatus,
+                badge: rating,
+                titleLines: 1,
                 onTap: () => onOpenDetail(it),
               ),
             );
@@ -3495,10 +3407,15 @@ class AggChannelsBlock extends StatefulWidget {
     required this.onOpenDetail,
     required this.itemsOf,
     required this.loadItems,
+    this.revision = 0,
   });
 
   /// 本区块所属的源（= 聚合源 id，`tvbox_agg`）
   final String provider;
+
+  /// Increment when source preferences change, even if the home section ids
+  /// remain identical.
+  final int revision;
 
   final void Function(MediaItem) onOpenDetail;
 
@@ -3515,6 +3432,7 @@ class AggChannelsBlock extends StatefulWidget {
 @visibleForTesting
 class AggChannelsBlockState extends State<AggChannelsBlock> {
   List<AggChannel> _channels = const <AggChannel>[];
+  int _epoch = 0;
 
   /// 当前选中的渠道 id（空串 = 还没有渠道）
   String _current = '';
@@ -3557,6 +3475,21 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
     unawaited(_loadChannels());
   }
 
+  @override
+  void didUpdateWidget(AggChannelsBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.revision == widget.revision &&
+        oldWidget.provider == widget.provider) {
+      return;
+    }
+    _channels = const [];
+    _current = '';
+    _loadedChannels.clear();
+    _sectionsByChannel.clear();
+    _channelErrors.clear();
+    unawaited(_loadChannels());
+  }
+
   /// 取渠道清单，然后**只拉第一个渠道**的数据
   ///
   /// # 为什么清单与首渠道内容分两步（不能合成一次请求）
@@ -3566,13 +3499,14 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
   ///   拿到它才知道"第一个渠道是哪个" ⇒ 两步是懒加载的**必然形状**。
   /// ```
   Future<void> _loadChannels() async {
+    final epoch = ++_epoch;
     setState(() {
       _loadingChannels = true;
       _listError = null;
     });
     try {
       final payload = await fetchAggChannels();
-      if (!mounted) return;
+      if (!mounted || epoch != _epoch) return;
       /*
        * ★ 真机读数（N9 UI 层的"实机/实网"证据）——
        *   渠道条那一块**只有这里**会出现在 stdout 上，没有它就只能靠测试。
@@ -3598,7 +3532,7 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
         await _ensureLoaded(_current);
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || epoch != _epoch) return;
       /*
        * ★ 真机读数：**接口未联通**必须在这里留下痕迹 ——
        *   `ffi.rs` 的默认分支会回
@@ -3621,6 +3555,7 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
   /// [channelId] 的渠道已经拉过 ⇒ **直接返回，一个请求都不发**。
   Future<void> _ensureLoaded(String channelId) async {
     if (channelId.isEmpty) return;
+    final epoch = _epoch;
     if (_loadedChannels.contains(channelId)) return;
     /*
      * ⚠️ 先登记、再 await：否则同一渠道被快速点两次（或渠道条重建触发
@@ -3633,7 +3568,7 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
     debugAggChannelHomeCalls.add(channelId);
     try {
       final home = await fetchAggChannelHome(channelId);
-      if (!mounted) return;
+      if (!mounted || epoch != _epoch) return;
       debugPrint(
         '[HOME] 按渠道取数完成（渠道=$channelId）: '
         '${home.sections.length} 个区块',
@@ -3651,11 +3586,11 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
        *    "区块骨架在、卡片还没回来"的中间态，判据变成时序彩票。
        */
       for (final s in home.sections) {
-        if (!mounted) return;
+        if (!mounted || epoch != _epoch) return;
         await widget.loadItems(s);
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || epoch != _epoch) return;
       debugPrint('[HOME] ★ 按渠道取数失败（渠道=$channelId）: $e');
       setState(() {
         // ★ 失败要**可查**、且**不连坐**：原因挂在这个渠道上，
@@ -3750,7 +3685,7 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
           horizontal: Layout.railPaddingOf(context),
         ),
         child: Text(
-          '还没有导入 TVBox 聚合源',
+          '没有已启用的聚合子源，可在源设置中管理',
           style: TextStyle(
             fontSize: FontSizes.sm,
             color: colors.onSurfaceVariant.withValues(alpha: 0.7),
@@ -3804,10 +3739,34 @@ class AggChannelsBlockState extends State<AggChannelsBlock> {
           )
         else
           for (final s in sections)
-            _Rail(
-              items: widget.itemsOf(widget.provider, s.id),
-              ranked: false,
-              onOpenDetail: widget.onOpenDetail,
+            Padding(
+              padding: const EdgeInsets.only(bottom: Sp.x6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: EdgeInsets.only(
+                      left: Layout.railPaddingOf(context),
+                      bottom: Sp.x3,
+                    ),
+                    child: Text(
+                      sourceDisplayLabel(s.title.split(' · ').last),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: FontSizes.base,
+                        fontWeight: FontWeight.w600,
+                        color: colors.onSurface,
+                      ),
+                    ),
+                  ),
+                  _Rail(
+                    items: widget.itemsOf(widget.provider, s.id),
+                    ranked: false,
+                    onOpenDetail: widget.onOpenDetail,
+                  ),
+                ],
+              ),
             ),
       ],
     );
@@ -3865,26 +3824,14 @@ class _AggChannelRail extends StatelessWidget {
             child: SourcePill(
               label: ch.name,
               active: active,
+              secondary: true,
               onTap: () => onSelect(ch.id),
             ),
           );
         },
       ),
     );
-
-    return Center(
-      child: ConstrainedBox(
-        // `max-width: 100%` —— 渠道很多时不要把屏幕撑破
-        //（与 `source_bar.dart:221` 同一个约束，值也一致：屏宽 - Sp.x8）
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width - Sp.x8,
-        ),
-        child: SizedBox(
-          height: 44,
-          child: miuix.MiuixCard(cornerRadius: Radii.full, child: rail),
-        ),
-      ),
-    );
+    return SizedBox(height: 44, child: rail);
   }
 }
 
@@ -3912,6 +3859,66 @@ class _MoreButton extends StatelessWidget {
           Text(label, style: const TextStyle(fontSize: FontSizes.sm)),
           const Icon(AppIcons.chevron_right, size: 15),
         ],
+      ),
+    );
+  }
+}
+
+class _SourceFailureCard extends StatelessWidget {
+  const _SourceFailureCard({
+    required this.count,
+    required this.message,
+    required this.retrying,
+    required this.onRetry,
+  });
+
+  final int count;
+  final String message;
+  final bool retrying;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Sp.x6),
+      child: miuix.MiuixCard(
+        child: Padding(
+          padding: const EdgeInsets.all(Sp.x4),
+          child: Row(
+            children: [
+              Icon(AppIcons.error_outline, color: colors.onSurfaceVariant),
+              const SizedBox(width: Sp.x3),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '$count 个分类暂时无法加载',
+                      style: const TextStyle(
+                        fontSize: FontSizes.base,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: Sp.x1),
+                    Text(
+                      message,
+                      style: TextStyle(
+                        fontSize: FontSizes.sm,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: Sp.x3),
+              ui.TextButton(
+                onPressed: retrying ? null : onRetry,
+                child: Text(retrying ? '正在重试' : '重试'),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -3976,7 +3983,7 @@ class _SkeletonSections extends StatelessWidget {
                 const SizedBox(height: Sp.x4),
                 SizedBox(
                   // 与 _SectionBlock 的轨道逐值相同（否则骨架→内容跳高）
-                  height: AppMetrics.railHeight(titleLines: 2),
+                  height: PosterCard.heightOf(context, hasSubtitle: true),
                   child: ListView.separated(
                     clipBehavior: Clip.antiAlias,
                     scrollDirection: Axis.horizontal,

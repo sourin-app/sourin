@@ -47,7 +47,7 @@ import 'dart:math' as math;
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter/services.dart';
 
-import 'widgets/settings_tabs.dart';
+import 'widgets/shelf_tabs.dart';
 
 import 'package:material_ui/material_ui.dart';
 
@@ -60,7 +60,6 @@ import '../ui/app_palette.dart';
 import '../ui/theme/app_colors.dart';
 import 'tokens.dart';
 import 'widgets/app_toast.dart';
-import 'widgets/cover_image.dart';
 import 'widgets/follow_update_notice.dart';
 import 'widgets/poster_card.dart';
 
@@ -200,6 +199,7 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   List<Favorite> _following = [];
   List<Favorite> _allFavs = [];
   List<Progress> _continueList = [];
+  int? _historyCount;
 
   /// ★★ task-74 ①：标题回填器（懒建一次，会话内复用 ⇒ `_tried` 去重集有效）
   ///
@@ -470,7 +470,7 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
 
   /// 拉取全部数据
   ///
-  /// 原版用 `Promise.all` 并发三个请求 —— 这里同样并发。
+  /// 列表与历史总数并发读取。
   ///
   /// ★ 这是**公开**方法：`shell.dart` 在切回本 tab 时通过
   /// `_followKey.currentState?.loadAll()` 调它。
@@ -501,7 +501,7 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   /// ```text
   /// ① 必须重拉        —— 否则"自动刷新"是假的
   /// ② 不能闪骨架      —— _load(silent: true) 不置 _loading
-  /// ③ 不能卡住交互    —— unawaited，不 await（_load 是 3 个并发 FFI）
+  /// ③ 不能卡住交互    —— unawaited，不 await（_load 的 FFI 并发执行）
   /// ```
   ///
   /// ★ 顺序：**先 setState 再刷新** —— tab 的视觉反馈必须立刻发生。
@@ -536,18 +536,25 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
     if (mounted && !silent) setState(() => _loading = true);
     try {
       /*
-       * ★ 并发拉三份（原版 `Promise.all`）
+       * ★ 并发拉三个列表与历史总数
        *
        * ```text
        * listFavorites(followingOnly: true)   追更列表
        * listFavorites(followingOnly: false)  收藏列表
        * continueWatching(20)                 继续观看
+       * continueWatchingCount()              完整历史总数
        * ```
        */
-      final results = await Future.wait([
+      final results = await Future.wait<Object?>([
         SourinApi.listFavorites(followingOnly: true),
         SourinApi.listFavorites(followingOnly: false),
         SourinApi.continueWatching(limit: 20),
+        SourinApi.continueWatchingCount().then<Object?>((v) => v).catchError((
+          e,
+        ) {
+          debugPrint('[FOLLOW-COUNT] 取历史总数失败（保留旧数据）: $e');
+          return null;
+        }),
       ]);
 
       if (!mounted) return;
@@ -564,13 +571,15 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
       final nextF = results[0] as List<Favorite>;
       final nextA = results[1] as List<Favorite>;
       final nextC = results[2] as List<Progress>;
+      final nextCount = (results[3] as int?) ?? _historyCount;
       final sigBefore = _followSignature(_following, _allFavs, _continueList);
       final sigAfter = _followSignature(nextF, nextA, nextC);
-      if (sigBefore != sigAfter || !_loadedOnce) {
+      if (sigBefore != sigAfter || nextCount != _historyCount || !_loadedOnce) {
         setState(() {
           _following = nextF;
           _allFavs = nextA;
           _continueList = nextC;
+          _historyCount = nextCount;
           _loadedOnce = true;
         });
       }
@@ -848,7 +857,10 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   /// 测试用：直接设定「继续观看」列表（`null` 语义同 `debugSetData`：不动）
   @visibleForTesting
   void debugSetContinueList(List<Progress> list) {
-    setState(() => _continueList = list);
+    setState(() {
+      _continueList = list;
+      _historyCount = list.length;
+    });
   }
 
   /// 测试用：手动跑一次标题回填并**等它结束**
@@ -1204,7 +1216,8 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
                   countOf: (t) => switch (t) {
                     _FollowTab.following => _following.length,
                     _FollowTab.all => _allFavs.length,
-                    _FollowTab.continueWatching => _continueList.length,
+                    _FollowTab.continueWatching =>
+                      _historyCount ?? _continueList.length,
                   },
                   onSelect: _selectTab,
                 ),
@@ -1254,6 +1267,13 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
             else if (_tab == 'continue')
               _ContinueList(
                 list: _continueList,
+                releaseStatuses: {
+                  for (final f in [..._allFavs, ..._following])
+                    '${f.provider}:${f.nativeId}': PosterCard.releaseStatusFor(
+                      note: f.lastEpisodeTitle,
+                      episodeCount: f.lastEpisodeCount,
+                    ),
+                },
                 remaining: _remaining,
                 onTap: _openDetailForProgress,
               )
@@ -1298,29 +1318,29 @@ class _FollowTabs extends StatelessWidget {
   final int Function(_FollowTab) countOf;
   final ValueChanged<_FollowTab> onSelect;
 
+  static const _order = [
+    _FollowTab.following,
+    _FollowTab.all,
+    _FollowTab.continueWatching,
+  ];
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final width = math.min(296.0, constraints.maxWidth);
-      return SizedBox(
-        width: width,
-        child: SettingsTabs(
-          labels: [
-            for (final tab in _FollowTab.values)
-              '${tab.label}${countOf(tab) > 0 ? ' ${countOf(tab)}' : ''}',
-          ],
-          selected: current.index,
-          onSelected: (index) => onSelect(_FollowTab.values[index]),
-        ),
-      );
-    },
+    builder: (context, constraints) => SizedBox(
+      width: math.min(ShelfTabs.widthOf(context), constraints.maxWidth),
+      child: ShelfTabs(
+        selected: _order.indexOf(current),
+        counts: [for (final tab in _order) countOf(tab)],
+        onSelected: (index) => onSelect(_order[index]),
+      ),
+    ),
   );
 }
 
 enum _FollowTab {
-  following('追更中', 'following'),
-  all('全部收藏', 'all'),
-  continueWatching('继续观看', 'continue');
+  following('追更', 'following'),
+  all('收藏', 'all'),
+  continueWatching('历史', 'continue');
 
   const _FollowTab(this.label, this.key);
 
@@ -1489,29 +1509,25 @@ int followGridColumns(double availableWidth) =>
 double _followBandFor(BuildContext context, double availableWidth) =>
     availableWidth + Layout.contentPaddingOf(context) * 2;
 
-/// 卡片网格的 `childAspectRatio`（三个 tab 共用）
-///
-/// ★★ 2026-10-03：标题从**一行**改成**两行**（对齐原版）。
-///    原版 `base.css:844-854` 的 `.poster-meta__title` 逐字写着
-///    `-webkit-line-clamp: 2` + 注释 `/* 固定两行：标题长短不一时卡片仍对齐 */`，
-///    而 headless Chrome 实测该元素盒高 **40.41px**（16px × 1.35 行高，两行）。
-///    原先这里只留了**单行**（`+ 44`）⇒ 长标题被压成省略号，与原版观感不符。
-///
-/// 算式（`posterMetaHeight` 的构成，见 `tokens.dart`）：
-/// ```text
-/// 海报              148 / (2/3)  = 222.0
-/// 标题区（titleLines: 2）          =  65.6   ← posterMetaOther 22.4 + 21.6×2
-///                                 ───────
-///                                  287.6
-/// childAspectRatio = 148 / 287.6 ≈ 0.5146
-/// ```
-/// ⚠️ 三个 tab 必须用**同一个** aspect —— 否则历史卡片会比追更的高/矮，
-///    滚动时"每行错位"，看起来就是没对齐。
-/// ⚠️ 骨架屏（`_FollowSkeleton`）必须用**同一个**函数 —— 否则骨架→内容跳高。
-double followGridAspect() =>
-    AppMetrics.posterWidth /
-    (AppMetrics.posterWidth / AppMetrics.posterAspect +
-        AppMetrics.posterMetaHeight(titleLines: 2));
+/// All library grids use the real cell width and one title line. The optional
+/// context keeps the public geometry helper usable outside a widget while
+/// production follows the current text scaler.
+double followGridAspect([BuildContext? context, double? width]) {
+  final cellWidth = width ?? AppMetrics.posterWidth;
+  final caption = context == null
+      ? Sp.x3 / 2 +
+            (FontSizes.sm * AppMetrics.cardTextScale * 1.35).ceilToDouble() +
+            2 +
+            (FontSizes.cap * AppMetrics.cardTextScale * 1.35).ceilToDouble()
+      : PosterCard.captionHeightOf(context, hasSubtitle: true);
+  return cellWidth / (cellWidth / AppMetrics.posterAspect + caption);
+}
+
+double _followCellWidth(BuildContext context, double available) {
+  final band = _followBandFor(context, available);
+  final cols = followGridColumns(band);
+  return (available - Layout.gapFor(band) * (cols - 1)) / cols;
+}
 
 /// 继续观看（历史）—— **卡片网格**（task-65 从"一行一个"改过来）
 ///
@@ -1547,11 +1563,13 @@ double followGridAspect() =>
 class _ContinueList extends StatelessWidget {
   const _ContinueList({
     required this.list,
+    this.releaseStatuses = const {},
     required this.remaining,
     required this.onTap,
   });
 
   final List<Progress> list;
+  final Map<String, String?> releaseStatuses;
   final String Function(Progress) remaining;
   final void Function(Progress) onTap;
 
@@ -1598,13 +1616,17 @@ class _ContinueList extends StatelessWidget {
               crossAxisCount: cols,
               crossAxisSpacing: gap,
               mainAxisSpacing: Sp.x6,
-              childAspectRatio: followGridAspect(),
+              childAspectRatio: followGridAspect(
+                context,
+                _followCellWidth(context, c.maxWidth),
+              ),
             ),
             itemCount: list.length,
             itemBuilder: (_, i) {
               final p = list[i];
               return _ContinueCard(
                 progress: p,
+                releaseStatus: releaseStatuses['${p.provider}:${p.nativeId}'],
                 remaining: remaining(p),
                 onTap: () => onTap(p),
                 /*
@@ -1638,177 +1660,52 @@ class _ContinueCard extends StatelessWidget {
     required this.remaining,
     required this.onTap,
     required this.coverWidth,
+    this.releaseStatus,
   });
 
   final Progress progress;
   final String remaining;
   final VoidCallback onTap;
-
-  /// ★ task-74⑤：封面**实际显示宽度**（逻辑像素），由 `_ContinueList` 的
-  /// `LayoutBuilder` 算好传下来。
-  ///
-  /// ⚠️ 必须**传下来**而不是在这里新加 `LayoutBuilder`：
-  ///    本页的列数与间距由外层 grid delegate 决定，卡片自己拿不到
-  ///    "我被分到多宽"（`AspectRatio` 只约束比例、不告诉你宽度）。
-  ///    自己套一个 `LayoutBuilder` 也能拿到，但会多一层布局节点，
-  ///    且 `provider_grid_responsive_test.dart:604-616` 那类断言钉着
-  ///    "同族网格里 `LayoutBuilder(` 恰好 1 个"的约定。
   final double coverWidth;
+  final String? releaseStatus;
 
   @override
   Widget build(BuildContext context) {
-    final colors = _followColors(context);
     final p = progress;
-
     return _FollowTapSurface(
       onTap: onTap,
-      borderRadius: Radii.rMd,
       semanticLabel: progressDisplayTitle(p),
-      /*
-       * ★ 2026-10-18（轨道 E · 玻璃化 M2）：`InkWell` → `_FollowTapSurface`
-       *
-       * 这一处与 tab chip 不同：它**不需要**玻璃底（卡片本身是封面图 +
-       * 两行文字，背景透明），所以只换"点击 + 焦点 + 语义"这一层。
-       *
-       * ⚠️ 取色从 `Theme.of(context).colorScheme` 改为
-       *    `AppTheme.of(context).colors` —— 这是本轨道 M1 建好的语义色层。
-       *    两者角色名逐个对齐（onSurface / onSurfaceVariant），
-       *    所以**下面 4 处 `colors.xxx` 一个字都不用改**。
-       */
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
+      child: Stack(
         children: [
-          // ── 封面 + 进度条 ──
-          AspectRatio(
-            aspectRatio: AppMetrics.posterAspect,
-            child: ClipRRect(
-              borderRadius: Radii.rMd,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  // 占位底色 —— 前景色 5%（task-37，与 poster_card 同一口径）
-                  Container(
-                    color: colors.onSurface.withValues(
-                      alpha: AppColors.posterPlaceholderAlpha,
-                    ),
-                  ),
-                  /*
-                   * ══════════════════════════════════════════════════════
-                   * ★★★ 封面区占位 —— 空标题**不画 '?'**（task-63 的收口）
-                   * ══════════════════════════════════════════════════════
-                   *
-                   * 改之前：
-                   * ```dart
-                   * p.title.isEmpty ? '?' : p.title.characters.first
-                   * ```
-                   * Owner 原话：
-                   * > 播放记录多了几个 显示 ？ 的记录，没有封面没有名字
-                   *
-                   * ★ 与 `poster_card.dart` 的处理**逐字同款**（那边 task-63 已改）：
-                   * ```text
-                   * 标题非空 ⇒ 首字占位（原版 `title.slice(0,1)` 的移植）
-                   * 标题为空 ⇒ 中性图标 `AppIcons.movie_outlined`
-                   * ```
-                   *
-                   * # 为什么"首字占位"在空标题下失效
-                   * ```text
-                   * 该策略的前提是"标题至少有一个字"。标题为空 ⇒ **没有首字可画**
-                   * ⇒ 三种做法都不对：
-                   *   · 什么都不画 ⇒ 看着像"图挂了"
-                   *   · 随便画一个字 ⇒ **假装是数据**（用户更困惑）
-                   *   · 画 '?'      ⇒ ★ UI 语义是"出错/未知"，而这里**没有出错**
-                   * ⇒ 用**中性图形**：语言无关、不假装、不像 bug。
-                   * ```
-                   *
-                   * ⚠️ 判据是 `p.title.isEmpty`（**原始** title），
-                   *    不是 `progressDisplayTitle(p).isEmpty` ——
-                   *    后者**永不返回空串**（空标题时给「（标题未知）」）
-                   *    ⇒ 若用它当判据，图标分支**永远走不到**，
-                   *      海报区会画「（」这个首字（因为占位串以全角括号开头）。
-                   *    ★ 这正是"兜底函数"与"渲染判据"必须分开的原因。
-                   */
-                  if (p.cover != null && p.cover!.isNotEmpty)
-                    coverImage(
-                      context,
-                      url: p.cover!,
-                      layoutWidth: coverWidth,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                    )
-                  else
-                    Center(
-                      child: p.title.isEmpty
-                          ? Icon(
-                              AppIcons.movie_outlined,
-                              size: FontSizes.display * 0.6,
-                              color: colors.onSurfaceVariant.withValues(
-                                alpha: 0.5,
-                              ),
-                            )
-                          : Text(
-                              // 原版 `title.slice(0, 1)` —— 中文一个字就是完整的字
-                              p.title.characters.first,
-                              style: TextStyle(
-                                fontSize: FontSizes.display * 0.6,
-                                fontWeight: FontWeight.w600,
-                                color: colors.onSurfaceVariant.withValues(
-                                  alpha: 0.5,
-                                ),
-                              ),
-                            ),
-                    ),
-                  // 进度条贴在封面**底部**（与改之前的位置一致）
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
+          IgnorePointer(
+            child: PosterCard(
+              title: progressDisplayTitle(p),
+              cover: p.cover,
+              width: coverWidth,
+              subtitle: '${progressDisplayEpisode(p)} · $remaining',
+              releaseStatus: releaseStatus,
+            ),
+          ),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: coverWidth / AppMetrics.posterAspect,
+            child: IgnorePointer(
+              child: ClipRRect(
+                borderRadius: Radii.rMd,
+                child: Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Semantics(
+                    label: '观看进度',
+                    value: '${p.percent}%',
                     child: _FollowProgressLine(
                       value: p.percent / 100.0,
                       minHeight: 3,
                       backgroundColor: Colors.black38,
                     ),
                   ),
-                ],
-              ),
-            ),
-          ),
-
-          // ── 标题 / 副标题（与 PosterCard 的排版一致）──
-          const SizedBox(height: Sp.x2),
-          /*
-           * ★ task-63 收口（第 2 层：传参）：
-           *   改之前是 `p.title` —— 空串会一路传到这里 ⇒ 卡片上**空白一行**
-           *   （比「？」更让人困惑：用户不知道是没加载还是没数据）。
-           *   ⇒ 走 `progressDisplayTitle`，**永不返回空串**。
-           */
-          Text(
-            progressDisplayTitle(p),
-            // ★ 与 PosterCard 的 titleLines: 2 同步 —— 两种卡片并排显示时
-            //   标题行数不一致会看起来没对齐（原版两处都是 line-clamp: 2）
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: FontSizes.base,
-              fontWeight: FontWeights.regular,
-              color: colors.onSurface,
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              /*
-               * ★ 用 `progressDisplayEpisode` 而**不是** `p.episodeTitle ?? "单集"`：
-               *   当标题为空、用 episodeTitle 兜底时，两者会是**同一句**
-               *   ⇒ 卡片上出现两遍同样的字（"第01集" / "第01集"）。
-               *   ★ 这是"加兜底"这个动作**自己引入**的新情况，必须一起处理。
-               */
-              '${progressDisplayEpisode(p)} · $remaining',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: FontSizes.cap,
-                color: colors.onSurfaceVariant,
+                ),
               ),
             ),
           ),
@@ -1884,34 +1781,11 @@ class _FavGrid extends StatelessWidget {
               _followBandFor(context, c.maxWidth),
             ),
             mainAxisSpacing: Sp.x6,
-            /*
-             * ★ 2026-09-25：`+ 78` → `+ 44`（删掉卡片下的操作按钮后同步收回）
-             *
-             * 用户原话：
-             * > 追更这里 下面的 这两个操作按钮很丑,直接删了吧
-             *
-             * # 那个 78 是干嘛的
-             *
-             * 它给「海报 + 标题 + 副标题」**之外**多留的高度 ——
-             * 原先卡片下面还有一行 `_MiniButton`（追更铃铛 / 标记已读 /
-             * 取消收藏），那行约占 78 − 44 = 34px。
-             *
-             * # 为什么删了按钮必须改这个数
-             *
-             * `childAspectRatio` 决定**每个格子多高**。按钮删了但格子
-             * 还是原来那么高 → 每张卡下面空出 34px 的**纯留白**，
-             * 一行 7 张就是一片空白（用户会以为"卡住了"）。
-             *
-             * # 为什么不再是 44
-             *
-             * 原来那句「`44` 是海报之外标题区的实测高度」是**单行**标题的
-             * 高度。★★ 2026-10-03 起标题改成**两行**（对齐原版
-             * `base.css:844-854` 的 `-webkit-line-clamp: 2`），
-             * 标题区变成 `posterMetaHeight(titleLines: 2)` = 65.6。
-             * ★ task-65 起这个算式提成 `followGridAspect()`，
-             *   与历史 tab /骨架屏共用（否则卡片高矮不同、每行错位）。
-             */
-            childAspectRatio: followGridAspect(),
+            // Same card geometry for favorites, history and the skeleton.
+            childAspectRatio: followGridAspect(
+              context,
+              _followCellWidth(context, c.maxWidth),
+            ),
           ),
           itemCount: list.length,
           itemBuilder: (_, i) {
@@ -1919,8 +1793,20 @@ class _FavGrid extends StatelessWidget {
             return PosterCard(
               title: f.title,
               cover: f.cover,
-              subtitle: f.lastEpisodeTitle,
-              titleLines: 2,
+              subtitle:
+                  PosterCard.releaseStatusFor(
+                        note: f.lastEpisodeTitle,
+                        episodeCount: f.lastEpisodeCount,
+                      ) ==
+                      null
+                  ? f.lastEpisodeTitle
+                  : null,
+              releaseStatus: PosterCard.releaseStatusFor(
+                note: f.lastEpisodeTitle,
+                episodeCount: f.lastEpisodeCount,
+              ),
+              width: _followCellWidth(context, c.maxWidth),
+              titleLines: 1,
               /*
                * ★★★ 卡片徽标 = **还剩几集没看**（task-40）
                *
@@ -2065,7 +1951,10 @@ class _FollowSkeleton extends StatelessWidget {
             ),
             mainAxisSpacing: Sp.x5,
             // ★ 必须与 followGridAspect() 逐值相同（否则骨架→内容卡跳位）
-            childAspectRatio: followGridAspect(),
+            childAspectRatio: followGridAspect(
+              context,
+              _followCellWidth(context, c.maxWidth),
+            ),
           ),
           itemCount: 8,
           itemBuilder: (_, __) => Column(

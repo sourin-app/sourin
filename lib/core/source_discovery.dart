@@ -55,28 +55,69 @@ class DiscoverySnapshot {
 abstract final class SourceDiscoveryService {
   static final current = ValueNotifier<DiscoverySnapshot?>(null);
   static Future<DiscoverySnapshot>? _pending;
+  static Future<void>? _updates;
+  static int _revision = 0;
   static Future<DiscoverySnapshot> _call(
     String command, [
     Map<String, dynamic>? args,
   ]) async {
     final response = await SourinCore.callAsync(command, args);
-    final snapshot = DiscoverySnapshot(
+    return DiscoverySnapshot(
       Map<String, dynamic>.from(response as Map),
     );
-    current.value = snapshot;
-    return snapshot;
   }
 
-  static Future<DiscoverySnapshot> refresh() =>
-      _pending ??= _call('source_discovery_status')
-          .whenComplete(() => _pending = null);
-  static Future<DiscoverySnapshot> configure(String proxy, bool automatic) =>
-      _call('source_discovery_configure', {
-        'proxy_url': proxy,
-        'automatic': automatic,
-      });
-  static Future<DiscoverySnapshot> scan() => _call('source_discovery_scan');
+  static Future<DiscoverySnapshot> refresh() {
+    if (_pending != null) return _pending!;
+    final revision = _revision;
+    late final Future<DiscoverySnapshot> request;
+    request = _call('source_discovery_status').then((snapshot) {
+      if (revision == _revision) current.value = snapshot;
+      return current.value ?? snapshot;
+    }).whenComplete(() {
+      if (identical(_pending, request)) _pending = null;
+    });
+    _pending = request;
+    return request;
+  }
+
+  static void _invalidateReads() {
+    _revision++;
+    _pending = null;
+  }
+
+  static Future<DiscoverySnapshot> _update(
+    String command, [
+    Map<String, dynamic>? args,
+  ]) {
+    // Reads issued before an action, or while it is still running, must not
+    // undo the result when their responses arrive after the action completes.
+    _invalidateReads();
+    final update = (_updates ?? Future<void>.value()).then((_) async {
+      // A new page can submit while a disposed page's action is outstanding.
+      // Order the actual commands so persisted state follows the user's order.
+      _invalidateReads();
+      try {
+        final snapshot = await _call(command, args);
+        current.value = snapshot;
+        return snapshot;
+      } finally {
+        _invalidateReads();
+      }
+    });
+    late final Future<void> pending;
+    void release() {
+      if (identical(_updates, pending)) _updates = null;
+    }
+    pending = update.then<void>((_) => release(), onError: (Object _) => release());
+    _updates = pending;
+    return update;
+  }
+
+  static Future<DiscoverySnapshot> configure(bool automatic) =>
+      _update('source_discovery_configure', {'automatic': automatic});
+  static Future<DiscoverySnapshot> scan() => _update('source_discovery_scan');
   static Future<DiscoverySnapshot> enable(String id) =>
-      _call('source_discovery_enable', {'id': id});
-  static Future<DiscoverySnapshot> markRead() => _call('source_discovery_read');
+      _update('source_discovery_enable', {'id': id});
+  static Future<DiscoverySnapshot> markRead() => _update('source_discovery_read');
 }

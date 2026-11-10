@@ -45,7 +45,9 @@
 // > 所以条件收紧成：**正在搜 且 目前一个结果都没有**。
 
 import 'dart:async';
+import 'dart:math' as math;
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
 
@@ -59,6 +61,7 @@ import 'home_page.dart' show kTvboxAggregateId, TvboxAggChannelApi;
 import 'tokens.dart';
 import 'widgets/fade_in_sliver.dart';
 import 'widgets/poster_card.dart';
+import 'widgets/shelf_tabs.dart';
 import 'widgets/settings_kit.dart';
 import '../design/icons/app_icons.dart';
 
@@ -390,6 +393,15 @@ class SearchPageState extends State<SearchPage> {
   @visibleForTesting
   static Future<Map<String, String>> Function()? debugAggChannelNamesFetcher;
 
+  @visibleForTesting
+  static Future<void> Function(String, bool Function(SearchStreamEvent))?
+  debugSearchStreamRunner;
+
+  int _providerEpoch = 0;
+  int _searchEpoch = 0;
+  Set<String>? _enabledProviderIds;
+  Future<void>? _providerLoad;
+
   static Future<Map<String, String>> _fetchAggChannelNames() async {
     final f = debugAggChannelNamesFetcher;
     if (f != null) return f();
@@ -400,9 +412,13 @@ class SearchPageState extends State<SearchPage> {
   }
 
   Future<void> _loadAggChannelNames() async {
+    final epoch = _providerEpoch;
     try {
       final m = await _fetchAggChannelNames();
-      if (mounted) setState(() => _aggChannelNames = m);
+      if (mounted && epoch == _providerEpoch) {
+        // Only incoming hits consume these names; their own update renders them.
+        _aggChannelNames = m;
+      }
     } catch (e) {
       debugPrint('[SEARCH] 子站名清单读取失败（组标题退回子站 id，不影响结果）: $e');
     }
@@ -417,77 +433,46 @@ class SearchPageState extends State<SearchPage> {
   @override
   void initState() {
     super.initState();
-    _loadProviderCount();
+    _providerLoad = _loadProviderCount();
     // ★ 聚合源"按源分组"的组标题（零网络命令；失败只退回子站 id）
     _loadAggChannelNames();
-    /*
-     * ★★★ 第 66 轮轨道 F / L2-c：让搜索框**看得出自己被聚焦**
-     *
-     * # 改之前的真缺陷（取证：`.probe/t66_l1g_inputs.txt`）
-     * ```text
-     * search_page.dart 原来把 InputDecoration 的**每一级**边框都压成 none：
-     *   border / enabledBorder / focusedBorder / errorBorder /
-     *   focusedErrorBorder / disabledBorder = InputBorder.none
-     * （原因见那段注释：全局主题给各级都设了 OutlineInputBorder，
-     *   不压掉就会在外层 Container 的描边里面**再多画一条**主色描边）
-     * ⇒ 副作用：**聚焦时零视觉变化**。用户点进搜索框，界面上什么都没发生。
-     * ```
-     * Owner 说「输入框太丑，什么都没有」—— 无焦点反馈是其中一项。
-     *
-     * # 改法：边框由**外层 Container** 画（这是它原本的职责，见 :520）
-     * ```text
-     * 外层 Container 的 border 颜色改为：
-     *   聚焦 ? colors.primary : colors.outlineVariant
-     * ⇒ 焦点态回到"一条主色描边"，且**仍然只有一条**（InputDecoration
-     *   那几级继续是 none）—— 不会重蹈"奇怪的边界线"。
-     * ```
-     *
-     * # 为什么用 `addListener` + `setState`，而不是 `Focus` widget / ValueListenable
-     * ```text
-     * ① 本页**已经**有 `_focusNode`（:119，给 TextField 用的）——
-     *    复用它是零新增状态。另建一个会变成两份焦点来源，必然不同步。
-     * ② `Focus` widget 会**再插一层**焦点节点，与 TextField 自带的那个
-     *    形成父子焦点，`hasFocus` 语义变复杂（要从 `FocusScope` 取）。
-     * ③ `setState` 的代价可忽略：焦点一进一出，一共两次重建。
-     * ⇒ 用最直接的：listener 里 setState，build 里读 `_focusNode.hasFocus`。
-     * ```
-     * ⚠️ 只在本页局部做 —— 没引任何全局 FocusNode 管理。
-     */
-    _focusNode.addListener(_onFocusChanged);
-  }
-
-  /// 焦点变化 ⇒ 重画搜索框描边（见 [initState] 的说明）
-  void _onFocusChanged() {
-    if (!mounted) return;
-    setState(() {});
+    // MiuixTextField owns the focus border animation. The page does not render
+    // focus-dependent state, so focus changes must not rebuild its result tree.
   }
 
   @override
   void dispose() {
     // 离开页面时取消 —— 别让搜索在后台白跑
     _cancelCurrent();
-    /*
-     * ★ 与 initState 的 addListener 成对（自己加的自己摘）
-     * ⚠️ 必须在 `_focusNode.dispose()` **之前**摘 —— dispose 之后
-     *    再 removeListener 会断言（listener 表已经释放了）。
-     */
-    _focusNode.removeListener(_onFocusChanged);
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
   Future<void> _loadProviderCount() async {
+    final epoch = _providerEpoch;
     try {
       final providers = await SourinApi.listProviders();
-      final enabled = providers.where((p) => p.enabled).length;
-      if (mounted) setState(() => _totalProviders = enabled);
+      final enabled = providers
+          .where((p) => p.enabled && !p.hidden && p.kind != 'declarative')
+          .map((p) => p.id)
+          .toSet();
+      if (mounted && epoch == _providerEpoch) {
+        // Membership must refresh even when the displayed count is unchanged.
+        _enabledProviderIds = enabled;
+        if (_totalProviders != enabled.length) {
+          setState(() => _totalProviders = enabled.length);
+        }
+      }
     } catch (e) {
       debugPrint('[SEARCH] 取源数失败: $e');
     }
   }
 
   void _cancelCurrent() {
+    // Returning false from the next stream event cancels native work; the
+    // epoch also rejects late events/completions when no native token exists.
+    _searchEpoch++;
     final t = _currentToken;
     if (t != null) {
       SourinCore.cancelStream(t);
@@ -495,12 +480,39 @@ class SearchPageState extends State<SearchPage> {
     }
   }
 
+  /// Refresh source metadata and invalidate results after a source preference
+  /// changes. Keep the input so the user can repeat the same search.
+  Future<void> providersChanged() async {
+    if (!mounted) return;
+    _cancelCurrent();
+    _providerEpoch++;
+    setState(() {
+      _hits = [];
+      _skipped = [];
+      _selectedSource = null;
+      _aggChannelNames = const {};
+      _searching = false;
+      _searched = false;
+      _settled = 0;
+      _lastKeyword = '';
+      _enabledProviderIds = const {};
+      _totalProviders = 0;
+    });
+    _providerLoad = _loadProviderCount();
+    await Future.wait([_providerLoad!, _loadAggChannelNames()]);
+  }
+
   Future<void> _doSearch() async {
     final kw = _controller.text.trim();
     if (kw.isEmpty) return;
+    final providerEpoch = _providerEpoch;
+    await _providerLoad;
+    if (!mounted || providerEpoch != _providerEpoch) return;
 
     // ★ 取消上一次（否则旧源的延迟结果会追加到新列表里）
     _cancelCurrent();
+
+    final epoch = _searchEpoch;
 
     setState(() {
       _searching = true;
@@ -520,8 +532,13 @@ class SearchPageState extends State<SearchPage> {
     });
 
     try {
-      await SourinApi.searchAllStream(kw, (ev) {
-        if (!mounted) return false;
+      if (_enabledProviderIds?.isEmpty ?? true) {
+        setState(() => _searching = false);
+        return;
+      }
+      final runSearch = debugSearchStreamRunner ?? SourinApi.searchAllStream;
+      await runSearch(kw, (ev) {
+        if (!mounted || epoch != _searchEpoch) return false;
 
         switch (ev.kind) {
           case SearchEventKind.hit:
@@ -565,7 +582,7 @@ class SearchPageState extends State<SearchPage> {
         return true;
       });
 
-      if (mounted) {
+      if (mounted && epoch == _searchEpoch) {
         setState(() {
           _searching = false;
           _currentToken = null;
@@ -573,7 +590,7 @@ class SearchPageState extends State<SearchPage> {
       }
     } catch (e) {
       debugPrint('[SEARCH] 搜索失败: $e');
-      if (mounted) {
+      if (mounted && epoch == _searchEpoch) {
         setState(() {
           _searching = false;
           _currentToken = null;
@@ -609,6 +626,9 @@ class SearchPageState extends State<SearchPage> {
   /// ⚠️ 用「新列表」而不是 `_hits.add(...)` —— 后者在某些情况下
   ///    不会触发重建（列表引用没变）。
   void _addHit(String keyword, SearchStreamEvent ev) {
+    if (_enabledProviderIds != null &&
+        !_enabledProviderIds!.contains(ev.provider))
+      return;
     setState(() {
       /*
        * ★★★ 2026-10-28：聚合源的事件要**先按子站拆开**再加进 `_hits`。
@@ -879,8 +899,10 @@ class SearchPageState extends State<SearchPage> {
                   SliverPersistentHeader(
                     pinned: true,
                     delegate: _StickySearchBar(
-                      minExtent: _searchBarHeight,
-                      maxExtent: _searchBarHeight + AppMetrics.homeTopPadding,
+                      minExtent: _searchBarHeightOf(context),
+                      maxExtent:
+                          _searchBarHeightOf(context) +
+                          AppMetrics.homeTopPadding,
                       background: colors.surface,
                       child: Padding(
                         padding: Layout.contentInsetOf(context),
@@ -916,6 +938,12 @@ class SearchPageState extends State<SearchPage> {
                */
                         child: miuix.MiuixCard(
                           key: _searchBoxKey,
+                          colors: miuix.MiuixCardColors(
+                            color: miuix.MiuixTheme.of(context).colors.surface,
+                            contentColor: miuix.MiuixTheme.of(context)
+                                .colors
+                                .onSurface,
+                          ),
                           insideMargin: const EdgeInsets.symmetric(
                             horizontal: Sp.x3,
                           ),
@@ -940,9 +968,12 @@ class SearchPageState extends State<SearchPage> {
                                   //   的每次组合更新只更新 controller，不重建全页；
                                   //   「空/非空」翻转时才 setState（见 _onSearchChanged）。
                                   onChanged: (_) => _onSearchChanged(),
-                                  decoration: const InputDecoration(
+                                  decoration: InputDecoration(
                                     isDense: true,
                                     hintText: '输入片名、剧名或关键词…',
+                                    fillColor: miuix.MiuixTheme.of(context)
+                                        .colors
+                                        .surface,
                                   ),
                                   style: const TextStyle(
                                     fontSize: FontSizes.base,
@@ -956,13 +987,29 @@ class SearchPageState extends State<SearchPage> {
                                   tooltip: '清空',
                                 ),
                               const SizedBox(width: Sp.x1),
-                              ui.FilledButton(
-                                onPressed:
-                                    (_searching ||
-                                        _controller.text.trim().isEmpty)
-                                    ? null
-                                    : _doSearch,
-                                child: Text(_searching ? '搜索中…' : '搜索'),
+                              SizedBox(
+                                width:
+                                    MediaQuery.textScalerOf(context)
+                                        .scale(FontSizes.base) *
+                                    5,
+                                height: _searchBarHeightOf(context) - 10,
+                                child: ui.FilledButton(
+                                  style: ui.FilledButton.styleFrom(
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  onPressed:
+                                      (_searching ||
+                                          _controller.text.trim().isEmpty)
+                                      ? null
+                                      : _doSearch,
+                                  child: Center(
+                                    child: Text(
+                                      _searching ? '搜索中…' : '搜索',
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ],
                           ),
@@ -1143,7 +1190,10 @@ class SearchPageState extends State<SearchPage> {
 /// ⚠️ `SliverPersistentHeader` 给子件的是**紧约束**：子件高度不等于 extent
 ///   就会报 `RenderFlex overflowed`。所以这个数字必须与真实高度一致 ——
 ///   `test/t75_search_pinned_test.dart` 会渲染整页并滚动，溢出会直接让测试变红。
-const double _searchBarHeight = 50;
+double _searchBarHeightOf(BuildContext context) => math.max(
+  50,
+  MediaQuery.textScalerOf(context).scale(FontSizes.base) * 1.4 + Sp.x4,
+);
 
 /// 搜索框的吸顶条
 class _StickySearchBar extends SliverPersistentHeaderDelegate {
@@ -1356,18 +1406,29 @@ class _ResultGroup extends StatelessWidget {
                     // ★ 宽档 16（原版 `--poster-gap`）/ 窄档 12，与列数同源
                     crossAxisSpacing: Layout.gapFor(band),
                     mainAxisSpacing: Sp.x5,
-                    // 高度 = 海报高 + 标题两行（原版 base.css:844-854 固定两行）
-                    childAspectRatio:
-                        AppMetrics.posterWidth /
-                        (AppMetrics.posterWidth / AppMetrics.posterAspect +
-                            AppMetrics.posterMetaHeight(titleLines: 2)),
+                    // Match the real cell width and a single title line at this text scale.
+                    mainAxisExtent: PosterCard.heightOf(
+                      context,
+                      width: Layout.cellWidthFor(band, cols),
+                      hasSubtitle: true,
+                    ),
                   ),
                   itemCount: group.items.length,
                   itemBuilder: (_, i) => PosterCard(
                     title: group.items[i].title,
                     cover: group.items[i].cover,
-                    subtitle: group.items[i].note,
-                    titleLines: 2,
+                    subtitle:
+                        PosterCard.releaseStatusFor(
+                              note: group.items[i].note,
+                            ) ==
+                            null
+                        ? group.items[i].note
+                        : null,
+                    releaseStatus: PosterCard.releaseStatusFor(
+                      note: group.items[i].note,
+                    ),
+                    width: Layout.cellWidthFor(band, cols),
+                    titleLines: 1,
                     onTap: () => onOpen(group.items[i]),
                   ),
                 ),
@@ -1585,10 +1646,11 @@ class _SearchSkeleton extends StatelessWidget {
                       crossAxisCount: cols,
                       crossAxisSpacing: gap,
                       mainAxisSpacing: Sp.x5,
-                      childAspectRatio:
-                          AppMetrics.posterWidth /
-                          (AppMetrics.posterWidth / AppMetrics.posterAspect +
-                              AppMetrics.posterMetaHeight(titleLines: 2)),
+                      mainAxisExtent: PosterCard.heightOf(
+                        context,
+                        width: Layout.cellWidthFor(band, cols),
+                        hasSubtitle: true,
+                      ),
                     ),
                     itemCount: cols * 2,
                     itemBuilder: (_, __) => DecoratedBox(
@@ -1682,24 +1744,56 @@ class _SourceRail extends StatelessWidget {
     required bool isAll,
     Key? rowKey,
   }) {
-    final c = Theme.of(context).colorScheme;
+    final c = miuix.MiuixTheme.of(context).colors;
     final isSel = isAll ? selected == null : selected == name;
     return Padding(
       key: rowKey ?? ValueKey<String>('search-source-row-$name'),
       padding: const EdgeInsets.only(bottom: Sp.x1),
-      child: miuix.MiuixCard(
-        colors: miuix.MiuixCardColors(
-          color: isSel ? c.primaryContainer : Colors.transparent,
-          contentColor: isSel ? c.onPrimaryContainer : c.onSurface,
-        ),
-        child: miuix.MiuixBasicComponent(
-          title: name,
-          insideMargin: const EdgeInsets.symmetric(
-            horizontal: Sp.x2,
-            vertical: Sp.x2,
+      child: Semantics(
+        selected: isSel,
+        child: Shortcuts(
+          shortcuts: const {
+            SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+          },
+          child: miuix.MiuixCard(
+            colors: miuix.MiuixCardColors(
+              color: isSel ? c.primaryVariant : c.surface,
+              contentColor: isSel ? c.onPrimaryVariant : c.onSurface,
+            ),
+            child: miuix.MiuixBasicComponent(
+              role: miuix.MiuixBasicComponentRole.tab,
+              content: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: FontSizes.sm,
+                    fontWeight: isSel ? FontWeight.w600 : FontWeight.w400,
+                    color: isSel ? c.onPrimaryVariant : c.onSurface,
+                  ),
+                ),
+              ],
+              insideMargin: const EdgeInsets.symmetric(
+                horizontal: Sp.x2,
+                vertical: Sp.x2,
+              ),
+              onClick: () => onSelect(isAll ? null : name),
+              endActions: [
+                miuix.MiuixBadge(
+                  containerColor: isSel ? c.primary : c.secondaryVariant,
+                  contentColor: isSel ? c.onPrimary : c.onSecondaryVariant,
+                  child: Text(
+                    ShelfTabs.displayCount(count),
+                    style: TextStyle(
+                      fontSize: FontSizes.cap,
+                      color: isSel ? c.onPrimary : c.onSecondaryVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-          onClick: () => onSelect(isAll ? null : name),
-          endActions: [Text('$count')],
         ),
       ),
     );
@@ -1721,42 +1815,21 @@ class _SourceChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget chip({
-      required String label,
-      required bool isSel,
-      required VoidCallback onTap,
-      Key? key,
-    }) => Padding(
-      key: key,
-      padding: const EdgeInsets.only(right: Sp.x2),
-      child: ui.ChoiceChip(
-        selected: isSel,
-        label: Text(label),
-        onSelected: (_) => onTap(),
-      ),
-    );
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      // ⚠️ contentPaddingOf 不是常量 ⇒ 这里不能 const（analyze E0067）
+    final names = [null, for (final source in sources) source.name];
+    final index = names.indexOf(selected);
+    return Padding(
       padding: EdgeInsets.symmetric(
         horizontal: Layout.contentPaddingOf(context),
         vertical: Sp.x2,
       ),
-      child: Row(
-        children: [
-          chip(
-            key: const ValueKey<String>('search-source-all'),
-            label: '全部',
-            isSel: selected == null,
-            onTap: () => onSelect(null),
-          ),
-          for (final s in sources)
-            chip(
-              label: '${s.name} ${s.count}',
-              isSel: selected == s.name,
-              onTap: () => onSelect(s.name),
-            ),
+      child: MiuixSegmentedTabs(
+        tabs: [
+          '全部',
+          for (final source in sources)
+            '${source.name} ${ShelfTabs.displayCount(source.count)}',
         ],
+        selected: index < 0 ? 0 : index,
+        onSelected: (value) => onSelect(names[value]),
       ),
     );
   }

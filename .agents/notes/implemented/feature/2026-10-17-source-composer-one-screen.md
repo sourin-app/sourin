@@ -2,6 +2,10 @@
 
 Status: implemented
 
+当前适用边界（2026-11-09）：共享编排器仍供 JS 个性化覆盖层使用；本文的声明式
+导入/编辑入口决策由[声明式源 UI 退役](../simplification/2026-11-09-declarative-source-ui-retirement.md)
+部分取代。以下 Decision 与验证记录保留为当时设计依据，不表示该声明式保存入口仍开放。
+
 ## Problem
 
 Owner 原话：

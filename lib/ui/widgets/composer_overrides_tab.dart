@@ -608,7 +608,7 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
         _busy = false;
         _status =
             '已保存到 overrides/${widget.targetId}.json'
-            '（只写覆盖层，原插件/原声明式源未改动）';
+            '（原插件未改动）';
         _statusIsError = false;
       });
       widget.onSaved?.call();
@@ -889,8 +889,8 @@ class ComposerOverridesTabState extends State<ComposerOverridesTab> {
           ),
           const SizedBox(height: Sp.x2),
           Text(
-            '它只写 <数据目录>/overrides/<源 id>.json，插件与声明式源文件一个字节都不动。'
-            '删除即完全恢复：点下面的「恢复默认」删掉这层文件，行为立刻回到原插件。',
+            '自定义规则单独保存，不修改原插件。'
+            '点击「恢复默认」即可移除这些规则，恢复原插件行为。',
             key: const ValueKey<String>('ov-safety-body'),
             textAlign: TextAlign.left,
             style: TextStyle(

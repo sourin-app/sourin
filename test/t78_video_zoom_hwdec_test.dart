@@ -30,6 +30,8 @@ import 'package:sourin_spike/ui/widgets/player_settings_sheet.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 
+import 'support/source_block.dart';
+
 // ═══════════════════════════════════════════════════════════════════════
 //  注释剥离器（逐字照抄 `player_capability_test.dart:61-110`）
 // ═══════════════════════════════════════════════════════════════════════
@@ -150,7 +152,6 @@ PlayerSettingsSheet _sheet({
     },
     endAction: PlayEndAction.autoNext,
     countdownBeforeNext: true,
-    keepSourceOnNext: true,
     autoSkip: true,
     rate: 1.0,
     isPlaying: true,
@@ -167,7 +168,6 @@ PlayerSettingsSheet _sheet({
     onSetMpvProperty: (_, __) {},
     onSetEndAction: (_) {},
     onSetCountdown: (_) {},
-    onSetKeepSource: (_) {},
     onSetAutoSkip: (_) {},
     onSetRate: (_) {},
     onClose: () {},
@@ -568,8 +568,25 @@ void main() {
       }
       expect(_page.contains('if (_bottomOccupied) {'), isTrue,
           reason: '★ 底栏渲染点必须读唯一真源 `_bottomOccupied` —— T27-13 的唯一真源');
-      // 自动收底栏时不能把滑条收掉（否则拖到一半条就没了）
-      expect(_page.contains('!_hintsOpen && !_zoomOpen'), isTrue);
+      // 验实际自动隐藏分支，换行不影响守卫；不接受别处同名条件充数。
+      final autoHide = sourceBlock(_page, 'void _autoHideNow() {');
+      final guard = sourceBlock(autoHide, 'if (');
+      expect(guard.contains('||'), isFalse,
+          reason: '自动隐藏的条件必须同时满足，不能用或连接绕过浮层保护');
+      final terms = guard
+          .split('&&')
+          .map((term) => term.replaceAll(RegExp(r'\s+'), ''))
+          .toSet();
+      expect(terms, containsAll([
+        'mounted',
+        '_playing',
+        '!_hintsOpen',
+        '!_zoomOpen',
+        '_popover.openId==null',
+      ]));
+      final hideBranch = sourceBlock(autoHide, 'if ($guard) {');
+      expect(hideBranch.contains('setState(() => _controlsVisible = false);'),
+          isTrue, reason: '上述守卫必须包住真实隐藏状态的写入');
     });
 
     test('⑤ 缩放滑条：量程 50–200，挂在底栏层且在 compactRow 之外', () {

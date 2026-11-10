@@ -10,7 +10,7 @@
 // ```text
 // 已缓存    → 直接显示，不做淡入（图已在缓存里，再淡入是多余噪声）
 // 首次加载  → 先显示占位底色，加载完淡入
-// 加载失败  → 显示首字占位，不留破图
+// 加载失败  → 显示小型中性图标，不留破图
 // ```
 //
 // # ★ 关于原版的 `referrerpolicy="no-referrer"`
@@ -62,6 +62,7 @@ class PosterCard extends StatefulWidget {
     required this.title,
     this.cover,
     this.subtitle,
+    this.releaseStatus,
     this.badge,
     this.unread = 0,
     this.onTap,
@@ -76,6 +77,9 @@ class PosterCard extends StatefulWidget {
 
   /// 副标题（如「更新至 12 集」）
   final String? subtitle;
+
+  /// Source release state, kept separate from a watched episode or progress.
+  final String? releaseStatus;
 
   /// 右上角角标（如「1080P」「直播中」）
   final String? badge;
@@ -110,6 +114,57 @@ class PosterCard extends StatefulWidget {
   final int titleLines;
   final bool showCaption;
 
+  // Paragraph layout rounds line metrics. Reserve whole logical pixels so
+  // scaled subtitle text cannot exceed the height promised to a grid or rail.
+  static double _captionLineHeightOf(BuildContext context, double fontSize) =>
+      (MediaQuery.textScalerOf(context).scale(fontSize) * 1.35).ceilToDouble();
+
+  static double captionHeightOf(
+    BuildContext context, {
+    bool hasSubtitle = false,
+  }) {
+    return Sp.x3 / 2 +
+        _captionLineHeightOf(context, FontSizes.sm) +
+        (hasSubtitle ? 2 + _captionLineHeightOf(context, FontSizes.cap) : 0);
+  }
+
+  static double heightOf(
+    BuildContext context, {
+    double? width,
+    bool hasSubtitle = false,
+  }) =>
+      (width ?? AppMetrics.posterWidth) / AppMetrics.posterAspect +
+      captionHeightOf(context, hasSubtitle: hasSubtitle);
+
+  /// Only explicit source episode metadata can establish completion.
+  /// A watched episode's `finished` flag and user notes never enter this API.
+  static String? releaseStatusFor({String? note, int episodeCount = 0}) {
+    final latest = (note ?? '')
+        .replaceAllMapped(
+          RegExp(r'[０-９]'),
+          (m) => String.fromCharCode(m.group(0)!.codeUnitAt(0) - 0xFEE0),
+        )
+        .replaceAll(RegExp(r'\s+'), '');
+    final full = RegExp(r'^全(\d+)[集话話](?:[·・/|｜（(]?(?:已)?完结[）)]?)?$')
+        .firstMatch(latest);
+    final completed = RegExp(r'^(?:已)?完结(?:[·・/|｜]?全(\d+)[集话話])?$')
+        .firstMatch(latest);
+    final lastCompleted = RegExp(r'^第(\d+)[集话話][（(]?(?:已)?完结[）)]?$')
+        .firstMatch(latest);
+    if (full != null || completed != null || lastCompleted != null) {
+      final count = int.tryParse(
+        full?.group(1) ?? completed?.group(1) ?? lastCompleted?.group(1) ?? '',
+      );
+      final total = count ?? episodeCount;
+      return total > 0 ? '已完结·全$total集' : '已完结';
+    }
+    final numbered = RegExp(r'^(?:更新[至到])?(?:第)?(\d+)[集话話]$')
+        .firstMatch(latest);
+    final count = numbered == null ? null : int.tryParse(numbered.group(1)!);
+    final available = count ?? episodeCount;
+    return available > 0 ? '更新至$available集' : null;
+  }
+
   @override
   State<PosterCard> createState() => _PosterCardState();
 }
@@ -118,7 +173,7 @@ class _PosterCardState extends State<PosterCard> {
   /// 图片是否已加载成功
   bool _loaded = false;
 
-  /// 是否加载失败（失败后不再重试，显示首字占位）
+  /// 是否加载失败（显示中性占位，并有限重试）
   bool _failed = false;
   Timer? _retryTimer;
   int _retryCount = 0;
@@ -192,6 +247,8 @@ class _PosterCardState extends State<PosterCard> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final releaseStatus = widget.releaseStatus;
+    final subtitle = widget.subtitle;
     /*
      * ★★ 宽度**不许超过父级给的约束** —— 原版 `.poster { max-width: 100% }`
      *    （`base.css:687-744`，`:704-708` 那段注释就是为这个问题写的）。
@@ -261,7 +318,7 @@ class _PosterCardState extends State<PosterCard> {
        */
       child: PressFeedback(
         enabled: widget.onTap != null && !_hasPressAncestor,
-        child: ui.InkWell(
+        child: _PosterTapSurface(
           onTap: widget.onTap,
           onFocusChange: (f) {
             if (f != _focused) setState(() => _focused = f);
@@ -372,8 +429,9 @@ class _PosterCardState extends State<PosterCard> {
                                   if (!_loaded) {
                                     WidgetsBinding.instance
                                         .addPostFrameCallback((_) {
-                                          if (mounted)
+                                          if (mounted) {
                                             setState(() => _loaded = true);
+                                          }
                                         });
                                   }
                                   return child;
@@ -381,122 +439,66 @@ class _PosterCardState extends State<PosterCard> {
                                 return const SizedBox.shrink();
                               },
                               errorBuilder: (context, error, stack) {
-                                // 加载失败 → 记下来，改用首字占位
+                                // 加载失败 → 记下来，显示中性占位
                                 _imageFailed(widget.cover);
                                 return const SizedBox.shrink();
                               },
                             ),
 
-                          /*
-                           * ══════════════════════════════════════════════════
-                           * ★★★ task-63：空标题时画**中性图标**，绝不画 `'?'`
-                           * ══════════════════════════════════════════════════
-                           *
-                           * # Owner 原话（逐字）
-                           * ```text
-                           * > 还有，播放记录多了几个 显示 ？ 的记录，
-                           * > 没有封面没有名字点进去才知道是什么
-                           * ```
-                           * ★ 他看到的那个「？」**就是这一行**（旧代码 `? '?'`）。
-                           *
-                           * # 为什么"首字占位"策略在空标题下**不适用**
-                           * ```text
-                           * 本占位的前提是"标题至少有一个字"（原版 `title.slice(0,1)`）。
-                           * 标题为空 ⇒ **没有首字可画** ⇒ 这个策略本身失效。
-                           * ★ 此时三种做法都不对：
-                           *   · 什么都不画 ⇒ 看着像"图挂了"
-                           *   · 随便画一个字 ⇒ **假装是数据**（用户更困惑）
-                           *   · 画 `'?'`      ⇒ ★ UI 语义是"出错/未知"，
-                           *     而这里**没有出错**（就是数据里没标题）
-                           *     ⇒ 正是 Owner 反感的那个观感
-                           * ⇒ 用**中性图形**：语言无关、不假装、不像 bug。
-                           * ```
-                           *
-                           * # 为什么是 `movie_outlined` 而不是别的
-                           * ```text
-                           * 这是**视频**应用的海报位 ⇒ 胶片/影片图标是"这里本来
-                           * 该有一张影视封面"的最直接表达，且**不暗示任何具体内容**。
-                           * ⚠️ 不用 `AppIcons.broken_image`（那是"加载失败"的语义，
-                           *    而空标题与"图挂了"是两件事 —— 见下面 `_failed` 分支，
-                           *    那种情况仍走首字占位）。
-                           * ```
-                           *
-                           * # ★ 本组件是**共享**的（5 个调用点）
-                           * ```text
-                           * home:980 / search:492 / follow:1373 / browse:294 / my_shelf:785
-                           * ⇒ 别处传空标题时同样是"没信息" ⇒ 这个改动对**全部**安全
-                           *   （而不是只对播放记录那一处打补丁）。
-                           * ```
-                           *
-                           * ⚠️ 与 `_failed` 的关系（两条不同的路，别混）
-                           * ```text
-                           * 标题非空 + 图加载失败 ⇒ 仍走**首字占位**（有字可画）✓
-                           * 标题为空             ⇒ 走**中性图标**（无字可画）✓
-                           * ```
-                           */
+                          // 旧 `? '?'` 与大号首字都不再作为封面内容。
+                          // 标题留在海报下方，占位只用不参与朗读的小图标。
                           if (!_loaded || _failed)
-                            Center(
-                              child: widget.title.isEmpty
-                                  ? Icon(
-                                      AppIcons.movie_outlined,
-                                      size: FontSizes.display * 0.6,
-                                      color: colors.onSurfaceVariant.withValues(
-                                        alpha: 0.5,
-                                      ),
-                                    )
-                                  : Text(
-                                      // 原版 `title.slice(0, 1)` —— 中文一个字就是完整的字
-                                      widget.title.characters.first,
-                                      style: TextStyle(
-                                        fontSize: FontSizes.display * 0.6,
-                                        fontWeight: FontWeight.w600,
-                                        color: colors.onSurfaceVariant
-                                            .withValues(alpha: 0.5),
-                                      ),
-                                    ),
+                            ExcludeSemantics(
+                              child: Center(
+                                child: Icon(
+                                  AppIcons.movie_outlined,
+                                  size: Sp.x6,
+                                  color: colors.onSurfaceVariant.withValues(
+                                    alpha: 0.4,
+                                  ),
+                                ),
+                              ),
                             ),
 
-                          // 右上角角标
-                          if (widget.badge != null && widget.badge!.isNotEmpty)
-                            Positioned(
-                              top: Sp.x2,
-                              right: Sp.x2,
-                              child: _Chip(text: widget.badge!),
-                            ),
-
-                          // 左上角未读
-                          if (widget.unread > 0)
+                          // 评分 / 状态贴在海报角落，未读数保留红底白字。
+                          // Row 为未读数留实际宽度，放大文字时也不与评分重叠。
+                          if (widget.unread > 0 ||
+                              (widget.badge != null &&
+                                  widget.badge!.isNotEmpty))
                             Positioned(
                               top: Sp.x2,
                               left: Sp.x2,
-                              child: _Chip(
-                                // 原版：`unread > 99 ? "99+" : unread`
-                                text: widget.unread > 99
-                                    ? '99+'
-                                    : '${widget.unread}',
-                                color: AppColors.badge,
-                                /*
-                                 * ★ 未读数走「实心强调」而不是玻璃 —— 这是**修一个
-                                 *   我自己刚造出来的对比度缺陷**（截图抓到）。
-                                 *
-                                 * # 缺陷（`.probe/shots/t66/t66_card_after_chip.png`）
-                                 * ```text
-                                 * 第一版我把两个角标都换成玻璃，未读数把红色当**文字色**：
-                                 *   深色玻璃底 + AppColors.badge（红）文字
-                                 * ⇒ 截图里那个「7」几乎看不见（深红压深灰）。
-                                 *   原来是"红底白字"，对比度很高 ⇒ 这是我的改动造成的**功能退化**，
-                                 *   不是美化取舍。
-                                 * ```
-                                 * # 修法：未读数保留**不透明红底 + 白字**（不走玻璃）
-                                 * ```text
-                                 * 未读数是**功能性信号**（有多少集没看），不是装饰。
-                                 * 玻璃的价值是"背景透过来"，但这里**可读性 > 通透感**。
-                                 * ⇒ 角标（badge，纯装饰性）走玻璃；未读数（unread，功能性）保留实心。
-                                 * ```
-                                 * ★ 这条也回答 Owner 的「全部玻璃」：**不是所有元素都该玻璃**，
-                                 *   功能性数字的对比度优先。我在交付说明里会写明这一点。
-                                 */
-                                solid: true,
+                              right: Sp.x2,
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (widget.unread > 0)
+                                    _Chip(
+                                      text: widget.unread > 99
+                                          ? '99+'
+                                          : '${widget.unread}',
+                                      color: AppColors.badge,
+                                      solid: true,
+                                    ),
+                                  if (widget.unread > 0 &&
+                                      widget.badge != null &&
+                                      widget.badge!.isNotEmpty)
+                                    const SizedBox(width: Sp.x1),
+                                  if (widget.badge != null &&
+                                      widget.badge!.isNotEmpty)
+                                    Expanded(
+                                      child: LayoutBuilder(
+                                        builder: (context, constraints) =>
+                                            Align(
+                                              alignment: Alignment.topRight,
+                                              child: _Chip(
+                                                text: widget.badge!,
+                                                maxWidth: constraints.maxWidth,
+                                              ),
+                                            ),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
 
@@ -543,6 +545,21 @@ class _PosterCardState extends State<PosterCard> {
                            * 是同一个理由（见上面候选 A 的注释）。
                            * ```
                            */
+                          if (releaseStatus != null && releaseStatus.isNotEmpty)
+                            Positioned(
+                              left: Sp.x2,
+                              right: Sp.x2,
+                              bottom: Sp.x2,
+                              child: LayoutBuilder(
+                                builder: (context, constraints) => Align(
+                                  alignment: Alignment.bottomRight,
+                                  child: _ReleaseStatusBadge(
+                                    text: releaseStatus,
+                                    maxWidth: constraints.maxWidth,
+                                  ),
+                                ),
+                              ),
+                            ),
                           if (widget.onTap != null)
                             Positioned.fill(
                               child: IgnorePointer(
@@ -625,32 +642,10 @@ class _PosterCardState extends State<PosterCard> {
                 ],
               ),
 
-              // ── 标题 / 副标题 ──
+              // Release state stays on the cover; captions describe the item.
               if (widget.showCaption) ...[
-                const SizedBox(height: Sp.x2),
-                /*
-               * ★★★ 2026-10-09（Owner：「已缓存的视频高度不一致,名字会换行,
-               *                高度不一致不好看需要统一」）
-               *
-               * # 根因：`maxLines` 只是"最多两行"，**不是**"固定两行高"
-               * ```text
-               * 一行标题的卡片比两行标题的矮一整个行高 ⇒ 同一行网格里
-               * 卡片底边参差（用户截图里就是这个）。
-               * ```
-               *
-               * # 修法：把标题区**撑到** `titleLines` 行的高度
-               * ```text
-               * 用 `SizedBox` 包住标题，高度 = 行高 × titleLines，
-               * 并让文本顶对齐 ⇒ 一行标题也占两行的位置，底边就齐了。
-               * ```
-               *
-               * ⚠️ 只对 `titleLines > 1` 生效：`titleLines == 1` 是默认值，
-               *    改它会动到首页/搜索页等**所有**海报卡（那些页面的承载高度
-               *    是按 1 行算的）⇒ 必须逐字节保持原行为。
-               *
-               * ⚠️ 高度算式与 `AppMetrics.posterMetaHeight` **同源** ——
-               *    那个函数是承载高度（含副标题等）的权威，这里只取标题那几行。
-               */
+                const SizedBox(height: Sp.x3 / 2),
+                // 高度继续与轨道 / 网格使用的 AppMetrics 同源。
                 if (widget.titleLines > 1)
                   SizedBox(
                     height:
@@ -663,71 +658,50 @@ class _PosterCardState extends State<PosterCard> {
                         widget.title,
                         maxLines: widget.titleLines,
                         overflow: TextOverflow.ellipsis,
-                        /*
-                       * ★★★ `height` 这一行是**必须的**，不是装饰（实测定的）
-                       *
-                       * # 不写它会怎样（我第一版就漏了，实测抓出来）
-                       * ```text
-                       * 上面那个 SizedBox 的高度算式用的是 `posterTitleLine`
-                       * （= `FontSizes.base × 1.35` = **21.6**）。
-                       * 但**字体自己的行高不是 1.35** —— 实测 16px 中文两行
-                       * 需要 **46.0px**（即 23.0/行，比 21.6 多 1.4）。
-                       *
-                       * ⇒ 2 行的文字要 46.0，我给的盒子只有 43.2
-                       * ⇒ **第二行被裁掉 2.8px**（字的底边被切），
-                       *   而且外层 Column 报 "overflowed by 3.6 pixels"。
-                       * ```
-                       *
-                       * # 修法：把行高**钉成** 1.35，让字体服从算式
-                       * ```text
-                       * TextStyle.height 是"行高 = fontSize × height"的**倍数**，
-                       * 它**覆盖**字体自带的 ascent/descent ⇒ 行高恰好 21.6，
-                       * 与 `posterTitleLine` 逐位一致 ⇒ 盒子刚好装得下。
-                       *
-                       * ★ 顺带修掉一个**早就存在**的问题：
-                       *   全仓所有 `railHeight(titleLines: 2)` 的承载高度
-                       *   都是按 21.6/行 算的，而真实 2 行标题要 23.0/行
-                       *   ⇒ 那些卡片一直矮 2.8px（表现为轻微溢出/底边贴太紧）。
-                       *   钉住行高之后，算式与渲染**第一次真正对齐**。
-                       * ```
-                       *
-                       * ⚠️ 倍数写成 `posterTitleLine / FontSizes.base` 而不是
-                       *    字面量 1.35 —— 两个常量各改各的迟早漂移，
-                       *    这样写它们**在结构上不可能不一致**。
-                       * ⚠️ 只在 `titleLines > 1` 这条分支里加：
-                       *    `titleLines == 1` 是默认值，必须逐字节保持原行为。
-                       */
                         style: TextStyle(
-                          fontSize: FontSizes.base,
+                          fontSize: FontSizes.sm,
                           fontWeight: FontWeights.regular,
                           color: colors.onSurface,
-                          height: AppMetrics.posterTitleLine / FontSizes.base,
+                          height: AppMetrics.posterTitleLine / FontSizes.sm,
                         ),
                       ),
                     ),
                   ),
                 if (widget.titleLines <= 1)
-                  Text(
-                    widget.title,
-                    // ★ 行数由调用点决定（默认 1 ⇒ 与旧代码逐位相同）
-                    maxLines: widget.titleLines,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: FontSizes.base,
-                      fontWeight: FontWeights.regular,
-                      color: colors.onSurface,
+                  SizedBox(
+                    height: PosterCard._captionLineHeightOf(
+                      context,
+                      FontSizes.sm,
                     ),
-                  ),
-                if (widget.subtitle != null && widget.subtitle!.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
                     child: Text(
-                      widget.subtitle!,
+                      widget.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: FontSizes.cap,
-                        color: colors.onSurfaceVariant,
+                        fontSize: FontSizes.sm,
+                        height: 1.35,
+                        fontWeight: FontWeights.regular,
+                        color: colors.onSurface,
+                      ),
+                    ),
+                  ),
+                if (subtitle != null && subtitle.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: SizedBox(
+                      height: PosterCard._captionLineHeightOf(
+                        context,
+                        FontSizes.cap,
+                      ),
+                      child: Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          height: 1.35,
+                          color: colors.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ),
@@ -806,13 +780,75 @@ class _PosterCardState extends State<PosterCard> {
   }
 }
 
+class _PosterTapSurface extends StatelessWidget {
+  const _PosterTapSurface({
+    required this.onTap,
+    required this.onFocusChange,
+    required this.borderRadius,
+    required this.child,
+  });
+
+  final VoidCallback? onTap;
+  final ValueChanged<bool> onFocusChange;
+  final BorderRadius borderRadius;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => onTap == null
+      ? child
+      : ui.InkWell(
+          onTap: onTap,
+          onFocusChange: onFocusChange,
+          borderRadius: borderRadius,
+          child: child,
+        );
+}
+
+class _ReleaseStatusBadge extends StatelessWidget {
+  const _ReleaseStatusBadge({required this.text, required this.maxWidth});
+
+  final String text;
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) => miuix.MiuixBadge(
+    key: const ValueKey('poster-release-status'),
+    containerColor: Colors.black.withValues(alpha: .76),
+    contentColor: Colors.white,
+    child: ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: (maxWidth - 12).clamp(0.0, double.infinity),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            height: 1.2,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// Actual Miuix badges preserve readable labels over arbitrary poster images.
 /// Unread counts keep their explicit solid semantic color.
 class _Chip extends StatelessWidget {
-  const _Chip({required this.text, this.color, this.solid = false});
+  const _Chip({
+    required this.text,
+    this.color,
+    this.solid = false,
+    this.maxWidth,
+  });
   final String text;
   final Color? color;
   final bool solid;
+  final double? maxWidth;
 
   @override
   Widget build(BuildContext context) => miuix.MiuixBadge(
@@ -821,13 +857,25 @@ class _Chip extends StatelessWidget {
         : Colors.black.withValues(alpha: .72),
     contentColor: solid ? Colors.white : color ?? Colors.white,
     child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x1, vertical: 2),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: FontSizes.cap,
-          fontWeight: FontWeight.w600,
-          color: solid ? Colors.white : color ?? Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+      // MiuixBadge measures its child without horizontal constraints. Keep the
+      // bound inside it so a long source label cannot cover the whole poster.
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: maxWidth == null
+              ? double.infinity
+              : (maxWidth! - Sp.x3).clamp(0.0, double.infinity).toDouble(),
+        ),
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            fontWeight: FontWeight.w600,
+            height: 1.2,
+            color: solid ? Colors.white : color ?? Colors.white,
+          ),
         ),
       ),
     ),

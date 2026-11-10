@@ -1,184 +1,236 @@
-// CR-06 回归测试：代理模式下 download 不传 proxyPort（发往 PROXY host:0）、
-// 头部注释承诺的「代理失败回退直连」没实现、_open() 的 HttpClient 从不 close。
-//
-// 三条独立断言：
-//   A 代理端口真的被用上 —— 假代理收到的是绝对形式的请求行；
-//   B 代理不可用时自动回退直连 —— 文件照样完整落盘；
-//   C 每个 HttpClient 用完都被关闭 —— keep-alive 连接数 == 已结束连接数。
-//
-// 全部走 loopback，不访问外网。A/B 用 IPv6 回环 ::1 当「远端」：dart:io 的
-// findProxy 回调拿到的 host 是 ::1，不等于 127.0.0.1/localhost，所以代码里
-// 那个 local?DIRECT 的短路判断不会生效，代理真的会被用到。
+// 更新统一代理回归：核心决定上游路由，Dart 只读取返回的本机流地址。
+// A：保留原始 URL 交给核心，旧更新代理字段不会自行改路由，文件字节完整。
+// B：核心代理失败时不直连原站，不产生目标文件或临时文件。
+// C：实际 HTTP keep-alive 连接由客户端在每次文本请求/下载后关闭。
+// 所有 HTTP/TCP 端点均在 IPv4 loopback；只替代核心 IPC，不调用原生核心。
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sourin_spike/core/app_log.dart';
 import 'package:sourin_spike/core/app_update/client.dart';
 import 'package:sourin_spike/core/app_update/route.dart';
+import 'package:sourin_spike/core/ffi.dart';
 
 List<int> _payload(int n) => List<int>.generate(n, (i) => i % 251);
 
-typedef _Responder = Future<void> Function(
-    String head, Socket socket, void Function(List<int>) send);
-
 class _Raw {
   _Raw(this.server);
+
   final ServerSocket server;
+  final Set<Socket> sockets = {};
+  final StreamController<int> _finishedCounts =
+      StreamController<int>.broadcast();
   int accepted = 0;
   int finished = 0;
-  final List<String> requestLines = <String>[];
-  int get port => server.port;
-  Future<void> shutdown() => server.close();
+  final List<String> requestLines = [];
+
+  Uri url(String path) => Uri(
+    scheme: 'http',
+    host: InternetAddress.loopbackIPv4.address,
+    port: server.port,
+    path: path,
+  );
+
+  void connectionFinished(Socket socket) {
+    sockets.remove(socket);
+    finished++;
+    if (!_finishedCounts.isClosed) _finishedCounts.add(finished);
+  }
+
+  Future<void> waitForFinished(int count) async {
+    if (finished >= count) return;
+    await _finishedCounts.stream
+        .firstWhere((value) => value >= count)
+        .timeout(const Duration(seconds: 3));
+  }
+
+  Future<void> shutdown() async {
+    await server.close();
+    for (final socket in sockets.toList()) {
+      socket.destroy();
+    }
+    await _finishedCounts.close();
+  }
 }
 
-/// 起一个原始 TCP 服务器，按 HTTP/1.1 应答；不发 Connection: close，
-/// 所以连接会一直挂着，直到**客户端主动关闭**（这正是 CR-06 的探测点）。
-Future<_Raw> _startRaw(_Responder responder) async {
-  final sock = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-  final r = _Raw(sock);
-  sock.listen((Socket socket) async {
-    r.accepted++;
-    var buf = '';
+/// 不发 Connection: close，等客户端结束连接后才计数并清理服务端 socket。
+Future<_Raw> _startRaw(List<int> body) async {
+  final listener = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final raw = _Raw(listener);
+  listener.listen((socket) async {
+    raw.accepted++;
+    raw.sockets.add(socket);
+    var buffer = '';
     try {
       await for (final chunk in socket) {
-        buf += utf8.decode(chunk, allowMalformed: true);
-        var idx = buf.indexOf('\r\n\r\n');
-        while (idx >= 0) {
-          final head = buf.substring(0, idx);
-          buf = buf.substring(idx + 4);
-          r.requestLines.add(head.split('\r\n').first);
-          await responder(head, socket, socket.add);
+        buffer += utf8.decode(chunk, allowMalformed: true);
+        var end = buffer.indexOf('\r\n\r\n');
+        while (end >= 0) {
+          final head = buffer.substring(0, end);
+          buffer = buffer.substring(end + 4);
+          raw.requestLines.add(head.split('\r\n').first);
+          socket.add([
+            ...utf8.encode(
+              'HTTP/1.1 200 OK\r\n'
+              'Content-Type: application/octet-stream\r\n'
+              'Content-Length: ${body.length}\r\n\r\n',
+            ),
+            ...body,
+          ]);
           await socket.flush();
-          idx = buf.indexOf('\r\n\r\n');
+          end = buffer.indexOf('\r\n\r\n');
         }
       }
-    } catch (_) {
-      // 对端掐断连接是本测试的正常结局，不算失败
+    } on SocketException {
+      // 客户端主动断开也会以 reset 结束读取。
+    } finally {
+      raw.connectionFinished(socket);
+      socket.destroy();
     }
-    r.finished++;
   });
-  return r;
-}
-
-Future<void> _serveBytes(List<int> body, String status, Socket socket,
-    void Function(List<int>) send) async {
-  send(<int>[
-    ...utf8.encode(status
-        + 'Content-Type: application/octet-stream\r\n'
-        'Content-Length: ' + body.length.toString() + '\r\n\r\n'),
-    ...body,
-  ]);
+  return raw;
 }
 
 void main() {
-  test('CR-06A 代理端口必须真的用上（缺陷码发往 PROXY host:0，必然失败）', () async {
+  setUp(() {
+    AppLog.debugClear();
+    AppLog.debugSetEnabled(false);
+  });
+
+  tearDown(() {
+    SourinCore.debugCallAsyncTransport = null;
+    AppLog.debugClear();
+    AppLog.debugSetEnabled(true);
+  });
+
+  test('CR-06A 下载原地址交给核心，旧代理字段不改变本机桥接路由', () async {
     final body = _payload(16 * 1024);
-    final proxy = await _startRaw((h, s, send) =>
-        _serveBytes(body, 'HTTP/1.1 200 OK\r\n', s, send));
+    final origin = await _startRaw(_payload(7));
+    addTearDown(origin.shutdown);
+    final legacyProxy = await _startRaw(_payload(11));
+    addTearDown(legacyProxy.shutdown);
+    final bridge = await _startRaw(body);
+    addTearDown(bridge.shutdown);
     final dir = await Directory.systemTemp.createTemp('zz_cr_upd_06a_');
-    final dest = File(dir.path + '/pkg.bin');
+    addTearDown(() => dir.delete(recursive: true));
+    final dest = File('${dir.path}/pkg.bin');
+    final upstream = origin.url('/original/pkg.bin');
+    final local = bridge.url('/bridge/pkg.bin');
+    final calls = <Map<String, dynamic>>[];
+    SourinCore.debugCallAsyncTransport = (command, args) async {
+      expect(command, 'global_proxy_open_download');
+      calls.add(Map<String, dynamic>.from(args!));
+      return {'url': local.toString()};
+    };
 
-    Object? caught;
-    try {
-      await UpdateHttp(UpdateRouteConfig(
+    final downloaded = await UpdateHttp(
+      UpdateRouteConfig(
         route: UpdateRoute.proxy,
-        proxyHost: '127.0.0.1',
-        proxyPort: proxy.port,
-      )).download(Uri.parse('http://[::1]:1/pkg.bin'), dest);
-    } catch (e) {
-      caught = e;
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    final lines = List<String>.from(proxy.requestLines);
-    await proxy.shutdown();
+        proxyHost: InternetAddress.loopbackIPv4.address,
+        proxyPort: legacyProxy.server.port,
+      ),
+    ).download(upstream, dest);
 
-    // ignore: avoid_print
-    print('[CR-06A] 代理收到的请求行=' + lines.toString()
-        + '\n         抛出=' + caught.toString()
-        + '\n         dest 落盘=' + dest.existsSync().toString()
-        + ', 大小=' + (dest.existsSync() ? dest.lengthSync() : -1).toString());
-
-    expect(lines, isNotEmpty,
-        reason: '假代理一个请求都没收到 —— 请求根本没走代理：' + caught.toString());
-    expect(lines.first, 'GET http://[::1]:1/pkg.bin HTTP/1.1',
-        reason: '经代理时请求行必须是绝对形式');
-    expect(caught, isNull, reason: '代理可用时不该失败，实际：' + caught.toString());
-    expect(dest.existsSync(), isTrue, reason: '代理可用时文件应落盘');
-    expect(dest.lengthSync(), body.length);
-    await dir.delete(recursive: true);
+    expect(downloaded, same(dest));
+    expect(calls, [
+      {'url': upstream.toString(), 'headers': <String, String>{}},
+    ]);
+    expect(bridge.requestLines, ['GET /bridge/pkg.bin HTTP/1.1']);
+    expect(origin.accepted, 0, reason: 'Dart 不应绕过核心访问原站');
+    expect(legacyProxy.accepted, 0, reason: '旧更新私有代理不应自行建立连接');
+    expect(await dest.readAsBytes(), body);
+    expect(await File('${dest.path}.part').exists(), isFalse);
   });
 
-  test('CR-06B 代理不可用必须自动回退直连（头部注释承诺的行为）', () async {
-    final body = _payload(12 * 1024);
-    // 源站：IPv6 回环，findProxy 回调拿到 ::1，绕不开代理判断。
-    final origin = await HttpServer.bind(InternetAddress.loopbackIPv6, 0);
-    final originUrl = 'http://[::1]:' + origin.port.toString() + '/pkg.bin';
-    origin.listen((req) async {
-      req.response.headers.contentType = ContentType.binary;
-      req.response.contentLength = body.length;
-      req.response.add(body);
-      await req.response.close();
-    });
-    // 假代理：接了连接立刻掐断（等价于代理进程崩了）。
-    final dead = await _startRaw((h, s, send) async { s.destroy(); });
-
+  test('CR-06B 核心代理失败时禁止直连原站或留下下载文件', () async {
+    final origin = await _startRaw(_payload(12 * 1024));
+    addTearDown(origin.shutdown);
+    final legacyProxy = await _startRaw(_payload(11));
+    addTearDown(legacyProxy.shutdown);
     final dir = await Directory.systemTemp.createTemp('zz_cr_upd_06b_');
-    final dest = File(dir.path + '/pkg.bin');
-    Object? caught;
-    try {
-      await UpdateHttp(UpdateRouteConfig(
-        route: UpdateRoute.proxy,
-        proxyHost: '127.0.0.1',
-        proxyPort: dead.port,
-      )).download(Uri.parse(originUrl), dest);
-    } catch (e) {
-      caught = e;
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    final proxyHits = dead.accepted;
-    await dead.shutdown();
-    await origin.close(force: true);
+    addTearDown(() => dir.delete(recursive: true));
+    final dest = File('${dir.path}/pkg.bin');
+    final upstream = origin.url('/original/pkg.bin');
+    final failure = StateError('Synthetic global proxy unavailable');
+    final calls = <Map<String, dynamic>>[];
+    SourinCore.debugCallAsyncTransport = (command, args) async {
+      expect(command, 'global_proxy_open_download');
+      calls.add(Map<String, dynamic>.from(args!));
+      throw failure;
+    };
 
-    // ignore: avoid_print
-    print('[CR-06B] 代理被尝试=' + proxyHits.toString()
-        + ', 抛出=' + caught.toString()
-        + ', dest 落盘=' + dest.existsSync().toString()
-        + ', 大小=' + (dest.existsSync() ? dest.lengthSync() : -1).toString());
+    await expectLater(
+      UpdateHttp(
+        UpdateRouteConfig(
+          route: UpdateRoute.proxy,
+          proxyHost: InternetAddress.loopbackIPv4.address,
+          proxyPort: legacyProxy.server.port,
+        ),
+      ).download(upstream, dest),
+      throwsA(
+        isA<UpdateNetworkException>().having(
+          (error) => error.cause,
+          'cause',
+          same(failure),
+        ),
+      ),
+    );
 
-    expect(proxyHits, greaterThan(0), reason: '必须先试代理');
-    expect(caught, isNull,
-        reason: '代理挂了应回退直连，而不是把异常抛给用户：' + caught.toString());
-    expect(dest.existsSync(), isTrue, reason: '回退直连后文件应完整落盘');
-    expect(dest.lengthSync(), body.length);
-    await dir.delete(recursive: true);
+    expect(calls, [
+      {'url': upstream.toString(), 'headers': <String, String>{}},
+    ]);
+    expect(origin.accepted, 0, reason: '全局代理不可用不能回退到原站直连');
+    expect(origin.requestLines, isEmpty);
+    expect(legacyProxy.accepted, 0);
+    expect(await dest.exists(), isFalse);
+    expect(await File('${dest.path}.part').exists(), isFalse);
   });
 
-  test('CR-06C 每个 HttpClient 用完必须 close（否则每次请求泄漏一个连接）', () async {
-    // 纯 ASCII：getText 会把 body 当 UTF-8 解码。
-    final body = utf8.encode('sourin-' + 'x' * 4095);
-    final srv = await _startRaw((h, s, send) =>
-        _serveBytes(body, 'HTTP/1.1 200 OK\r\n', s, send));
-    final url = Uri.parse('http://127.0.0.1:' + srv.port.toString() + '/pkg.bin');
+  test('CR-06C 每次本机桥接请求完成后客户端关闭 keep-alive 连接', () async {
+    final content = 'sourin-${'x' * 4095}';
+    final body = utf8.encode(content);
+    final origin = await _startRaw(_payload(7));
+    addTearDown(origin.shutdown);
+    final bridge = await _startRaw(body);
+    addTearDown(bridge.shutdown);
     final dir = await Directory.systemTemp.createTemp('zz_cr_upd_06c_');
-    final http = UpdateHttp(const UpdateRouteConfig());
-    final t1 = await http.getText(url);
-    final t2 = await http.getText(url);
-    await http.download(url, File(dir.path + '/pkg.bin'));
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    final accepted = srv.accepted;
-    final finished = srv.finished;
-    await srv.shutdown();
+    addTearDown(() => dir.delete(recursive: true));
+    final upstream = origin.url('/original/pkg.bin');
+    final calls = <Map<String, dynamic>>[];
+    SourinCore.debugCallAsyncTransport = (command, args) async {
+      expect(command, 'global_proxy_open_download');
+      calls.add(Map<String, dynamic>.from(args!));
+      return {'url': bridge.url('/bridge/${calls.length}').toString()};
+    };
+    final client = UpdateHttp(const UpdateRouteConfig());
 
-    // ignore: avoid_print
-    print('[CR-06C] 服务端 accept=' + accepted.toString()
-        + ', 客户端已结束连接=' + finished.toString()
-        + ', 文本长度=' + t1.length.toString() + '/' + t2.length.toString());
+    expect(await client.getText(upstream), content);
+    expect(await client.getText(upstream), content);
+    final dest = File('${dir.path}/pkg.bin');
+    await client.download(upstream, dest);
+    expect(await dest.readAsBytes(), body);
+    await bridge.waitForFinished(3);
 
-    expect(accepted, greaterThan(0));
-    expect(finished, accepted,
-        reason: '有 ' + accepted.toString()
-        + ' 个 keep-alive 连接没被客户端关闭 —— HttpClient 泄漏');
-    await dir.delete(recursive: true);
+    expect(
+      calls,
+      List.generate(
+        3,
+        (_) => {'url': upstream.toString(), 'headers': <String, String>{}},
+      ),
+    );
+    expect(bridge.requestLines, [
+      'GET /bridge/1 HTTP/1.1',
+      'GET /bridge/2 HTTP/1.1',
+      'GET /bridge/3 HTTP/1.1',
+    ]);
+    expect(origin.accepted, 0);
+    expect(bridge.accepted, 3);
+    expect(
+      bridge.finished,
+      bridge.accepted,
+      reason: '三个 keep-alive 连接都必须由客户端在请求完成后关闭',
+    );
   });
 }

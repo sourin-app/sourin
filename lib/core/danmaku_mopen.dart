@@ -66,12 +66,10 @@ class MopenDanmuClient {
     DateTime Function()? clock,
     this.cacheTtl = const Duration(minutes: 10),
     this.cooldown = const Duration(seconds: 30),
-  }) : _transport = transport ??
-            IoDanmakuTransport(
-              timeout: const Duration(seconds: 20),
-              findProxy: currentDanmakuFindProxy(),
-            ),
-        _clock = clock ?? DateTime.now;
+  }) : _transport =
+           transport ??
+           CoreDanmakuTransport(timeout: const Duration(seconds: 20)),
+       _clock = clock ?? DateTime.now;
 
   // ── 取证常量（逐字，dump-core.txt n6 段；主机名按 t98 行级豁免保留）──
 
@@ -165,9 +163,10 @@ class MopenDanmuClient {
 
   /// 拉取 URL（n6 两个 URL 前缀串逐字拼接，中段是 `t=<ts>`；probe 实测形态）
   static Uri buildUri({required int t, required String sign}) => Uri.parse(
-      '$endpoint?jsv=2.7.0&appKey=$appKey&t=$t&api=$apiName&v=1.0'
-      '&type=originaljson&dataType=jsonp&timeout=20000'
-      '&jsonpIncPrefix=utility&sign=$sign');
+    '$endpoint?jsv=2.7.0&appKey=$appKey&t=$t&api=$apiName&v=1.0'
+    '&type=originaljson&dataType=jsonp&timeout=20000'
+    '&jsonpIncPrefix=utility&sign=$sign',
+  );
 
   /// 从用户输入里提取 vid：站源播放链接（`…id_X…` 段）取其 vid，裸 vid 原样收。
   ///
@@ -205,8 +204,7 @@ class MopenDanmuClient {
     final now = _clock();
     if (_cooldownUntil != null && now.isBefore(_cooldownUntil!)) {
       final left = _cooldownUntil!.difference(now).inSeconds;
-      throw DanmakuException(
-          '站源弹幕处于风控冷却中（$left 秒后再试）。上次失败：$_lastError');
+      throw DanmakuException('站源弹幕处于风控冷却中（$left 秒后再试）。上次失败：$_lastError');
     }
     final key = '$v|$mat';
     final hit = _cache[key];
@@ -336,9 +334,7 @@ class MopenDanmuClient {
     //   泛化探测不对上（元素级字段未取证）——把首个元素原文带出去排障。
     final count = _intOf(innerData is Map ? innerData['count'] : null) ?? 0;
     if (count > 0 && out.isEmpty) {
-      final sample = list.isEmpty
-          ? ''
-          : _clip(jsonEncode(list.first), 600);
+      final sample = list.isEmpty ? '' : _clip(jsonEncode(list.first), 600);
       throw DanmakuException(
         '站源弹幕网关报 $count 条，但元素字段形态未对上（元素级字段未取证），'
         '解析结果 0 条。首元素原文：$sample',

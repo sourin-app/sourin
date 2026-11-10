@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart' as sdk;
 import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
@@ -19,6 +20,65 @@ Widget host(Widget child, {Brightness brightness = Brightness.light}) =>
     );
 
 void main() {
+  for (final brightness in [Brightness.light, Brightness.dark]) {
+    testWidgets(
+      'list typography and disabled colors follow Miuix in $brightness',
+      (tester) async {
+        var activations = 0;
+        await tester.pumpWidget(
+          host(
+            DefaultTextStyle(
+              style: const TextStyle(fontSize: 11, color: Colors.red),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ui.ListTile(
+                    title: const Text('可用标题'),
+                    subtitle: const Text('可用说明'),
+                    leading: const Text('1'),
+                    onTap: () => activations++,
+                  ),
+                  ui.ListTile(
+                    title: const Text('禁用标题'),
+                    subtitle: const Text('禁用说明'),
+                    leading: const Text('2'),
+                    enabled: false,
+                    onTap: () => activations++,
+                  ),
+                  const ui.ListTile(
+                    title: Text(
+                      '定制标题',
+                      style: TextStyle(fontSize: 20, color: Colors.green),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            brightness: brightness,
+          ),
+        );
+        await tester.pumpAndSettle();
+        TextStyle rendered(String text) =>
+            tester.renderObject<RenderParagraph>(find.text(text)).text.style!;
+        expect(find.byType(miuix.MiuixBasicComponent), findsNWidgets(3));
+        expect(rendered('可用标题').fontSize, 17);
+        expect(rendered('可用标题').fontWeight, FontWeight.w500);
+        expect(rendered('可用说明').fontSize, 14);
+        expect(rendered('禁用标题').fontSize, 17);
+        expect(rendered('可用标题').color, isNot(Colors.red));
+        expect(rendered('禁用标题').color, isNot(rendered('可用标题').color));
+        expect(rendered('禁用说明').color, rendered('禁用标题').color);
+        expect(rendered('1').color, rendered('可用标题').color);
+        expect(rendered('2').color, rendered('禁用标题').color);
+        expect(rendered('定制标题').color, Colors.green);
+        expect(rendered('定制标题').fontSize, 20);
+        await tester.tap(find.text('可用标题'));
+        await tester.tap(find.text('禁用标题'));
+        expect(activations, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
   testWidgets(
     'nested dark input uses its local palette and keeps separate label and hint',
     (tester) async {

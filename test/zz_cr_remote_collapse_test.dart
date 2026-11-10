@@ -73,7 +73,7 @@ const String kBodyMark = '遥控正文标记-不该在收起态出现';
 
 /// 认领 pump 期间积压的环境异常（无核心环境的 FFI 异常等）
 void _claim(WidgetTester tester) {
-  while (tester.takeException() != null) {}
+  expect(tester.takeException(), isNull);
 }
 
 /// 偏好文件所在的临时「数据目录」
@@ -105,10 +105,7 @@ void main() {
           AppThemeHost(data: theme, child: c ?? const SizedBox()),
       home: mui.Scaffold(
         body: mui.SingleChildScrollView(
-          child: mui.Padding(
-            padding: const EdgeInsets.all(24),
-            child: child,
-          ),
+          child: mui.Padding(padding: const EdgeInsets.all(24), child: child),
         ),
       ),
     );
@@ -194,19 +191,31 @@ void main() {
     await pumpBlock(t, running: true, key: const ValueKey('a'));
 
     // 前置：遥控在跑 ⇒ 默认是展开态（画面上能看到地址 / 配对码）
-    expect(find.text('收起'), findsOneWidget, reason: '前置：running ⇒ 默认展开');
+    expect(
+      find.byKey(const ValueKey('settings-disclosure-header')),
+      findsOneWidget,
+      reason: '展开时保留同一个标题行',
+    );
     expect(find.text(kBodyMark), findsOneWidget, reason: '前置：展开态才画 child');
 
-    await tapNoClock(t, find.text('收起'));
+    await tapNoClock(
+      t,
+      find.byKey(const ValueKey('settings-disclosure-header')),
+    );
 
     // ★ 缺陷版本：`widget.running` 为 true ⇒ `_shouldOpen` 仍为 true
     //   ⇒ 按钮和 child 原地不动，这三条全部失败。
-    expect(find.text('收起'), findsNothing,
-        reason: '★ 点「收起」后不该还有「收起」按钮');
-    expect(find.text(kBodyMark), findsNothing,
-        reason: '★ 点「收起」后 child 必须从树上消失（真的收起，而不是换个文案）');
-    expect(find.textContaining('运行中'), findsOneWidget,
-        reason: '★ 收起态那一行要如实显示「运行中」');
+    expect(find.text('收起'), findsNothing, reason: '★ 点「收起」后不该还有「收起」按钮');
+    expect(
+      find.text(kBodyMark),
+      findsNothing,
+      reason: '★ 点「收起」后 child 必须从树上消失（真的收起，而不是换个文案）',
+    );
+    expect(
+      find.textContaining('运行中'),
+      findsOneWidget,
+      reason: '★ 收起态那一行要如实显示「运行中」',
+    );
 
     await drainPrefs(t);
   });
@@ -215,7 +224,10 @@ void main() {
 
   testWidgets('★★★② 重开客户端后仍是收起（偏好要落盘）', (t) async {
     await pumpBlock(t, running: true, key: const ValueKey('a'));
-    await tapNoClock(t, find.text('收起'));
+    await tapNoClock(
+      t,
+      find.byKey(const ValueKey('settings-disclosure-header')),
+    );
     expect(find.text(kBodyMark), findsNothing, reason: '前置：先收起一次');
 
     // ★ 真的换进程：落盘 → 清内存 → 重新 load
@@ -223,19 +235,29 @@ void main() {
 
     // ★★ 磁盘上的证据（不经内存）：key 必须真的写进 ui-prefs.json
     final onDisk = await readPrefsFromDisk(t);
-    expect(onDisk[kOpenKey], '0',
-        reason: '★★★ 收起这个事实必须落进 ui-prefs.json（key=$kOpenKey，值 \'0\'）；'
-            '否则「下次重新打开也要记住」做不到。文件内容=' +
-            jsonEncode(onDisk));
-    expect(UiPrefs.get(kOpenKey), '0',
-        reason: '★★★ 重新 load 之后内存里也要读得回来');
+    expect(
+      onDisk[kOpenKey],
+      '0',
+      reason:
+          '★★★ 收起这个事实必须落进 ui-prefs.json（key=$kOpenKey，值 \'0\'）；'
+              '否则「下次重新打开也要记住」做不到。文件内容=' +
+          jsonEncode(onDisk),
+    );
+    expect(UiPrefs.get(kOpenKey), '0', reason: '★★★ 重新 load 之后内存里也要读得回来');
 
     await pumpBlock(t, running: true, key: const ValueKey('b'));
-    expect(find.text(kBodyMark), findsNothing,
-        reason: '★★★ 重开客户端 + 遥控仍在运行 ⇒ 仍保持收起'
-            '（用户手动收起过，记忆优先于 running）');
-    expect(find.textContaining('运行中'), findsOneWidget,
-        reason: '★★★ 收起态如实说「运行中」');
+    expect(
+      find.text(kBodyMark),
+      findsNothing,
+      reason:
+          '★★★ 重开客户端 + 遥控仍在运行 ⇒ 仍保持收起'
+          '（用户手动收起过，记忆优先于 running）',
+    );
+    expect(
+      find.textContaining('运行中'),
+      findsOneWidget,
+      reason: '★★★ 收起态如实说「运行中」',
+    );
 
     await drainPrefs(t);
   });
@@ -246,38 +268,53 @@ void main() {
     await pumpBlock(t, running: true, key: const ValueKey('a'));
 
     expect(UiPrefs.get(kOpenKey), isNull, reason: '前置：本用例不做任何手动操作');
-    expect(find.text(kBodyMark), findsOneWidget,
-        reason: '★★★ 首次进入本页时遥控已在运行 ⇒ 必须默认展开'
-            '（否则用户以为功能没了）');
-    expect(find.textContaining('运行中'), findsNothing,
-        reason: '前置：这是展开态，不该出现收起态的状态行');
+    expect(
+      find.text(kBodyMark),
+      findsOneWidget,
+      reason:
+          '★★★ 首次进入本页时遥控已在运行 ⇒ 必须默认展开'
+          '（否则用户以为功能没了）',
+    );
+    expect(
+      find.textContaining('运行中'),
+      findsOneWidget,
+      reason: '展开和收起都显示同一标题与状态',
+    );
   });
 
   testWidgets('★ 从未手动操作过 + 没在运行 ⇒ 默认收起', (t) async {
     await pumpBlock(t, running: false, key: const ValueKey('a'));
 
     expect(find.text(kBodyMark), findsNothing, reason: '低频功能默认收起');
-    expect(find.textContaining('没开启'), findsOneWidget,
-        reason: '收起态要如实显示「没开启」');
+    expect(find.textContaining('没开启'), findsOneWidget, reason: '收起态要如实显示「没开启」');
   });
 
   // 手动点开 ⇒ 记忆成「展开」（下次进入即便没在运行也是展开）
 
   testWidgets('★★ 手动点开一次后，记忆里是「展开」', (t) async {
     await pumpBlock(t, running: true, key: const ValueKey('a'));
-    await tapNoClock(t, find.text('收起'));
+    await tapNoClock(
+      t,
+      find.byKey(const ValueKey('settings-disclosure-header')),
+    );
 
     await tapNoClock(t, find.text('局域网遥控')); // 点收起态那一行展开
     expect(find.text(kBodyMark), findsOneWidget, reason: '前置：点开了');
 
     await restartClient(t);
     final onDisk = await readPrefsFromDisk(t);
-    expect(onDisk[kOpenKey], '1',
-        reason: '★★ 点开也要记住：磁盘上应是 \'1\'，文件内容=' + jsonEncode(onDisk));
+    expect(
+      onDisk[kOpenKey],
+      '1',
+      reason: '★★ 点开也要记住：磁盘上应是 \'1\'，文件内容=' + jsonEncode(onDisk),
+    );
 
     await pumpBlock(t, running: false, key: const ValueKey('b'));
-    expect(find.text(kBodyMark), findsOneWidget,
-        reason: '★★ 用户手动点开过 ⇒ 记住展开；重启后即便没在运行也保持展开');
+    expect(
+      find.text(kBodyMark),
+      findsOneWidget,
+      reason: '★★ 用户手动点开过 ⇒ 记住展开；重启后即便没在运行也保持展开',
+    );
 
     await drainPrefs(t);
   });
@@ -291,14 +328,25 @@ void main() {
 
     // 记住收起（这样 running=true 时才轮得到「收起态 + 运行中」这一格）
     await tapNoClock(t, find.text('局域网遥控'));
-    await tapNoClock(t, find.text('收起'));
+    await tapNoClock(
+      t,
+      find.byKey(const ValueKey('settings-disclosure-header')),
+    );
 
+    await drainPrefs(t);
     await pumpBlock(t, running: true, key: const ValueKey('b'));
-    expect(find.textContaining('运行中'), findsOneWidget,
-        reason: '★★★ running 时收起态必须说「运行中」—— '
-            '写死「没开启」会让用户以为遥控没开');
-    expect(find.textContaining('没开启'), findsNothing,
-        reason: 'running 时不该再显示「没开启」');
+    expect(
+      find.textContaining('运行中'),
+      findsOneWidget,
+      reason:
+          '★★★ running 时收起态必须说「运行中」—— '
+          '写死「没开启」会让用户以为遥控没开',
+    );
+    expect(
+      find.textContaining('没开启'),
+      findsNothing,
+      reason: 'running 时不该再显示「没开启」',
+    );
 
     await drainPrefs(t);
   });

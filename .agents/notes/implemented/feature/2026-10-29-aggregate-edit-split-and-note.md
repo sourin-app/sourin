@@ -3,7 +3,11 @@
 Status: implemented
 
 后续局部扩展：[源筛选与多模板管理](2026-11-04-settings-owned-html-home-library-and-source-filters.md)
-增加筛选范围内批选和排序，保留屏外选择；本文独立编辑入口、源身份和扇出决定不变。
+增加筛选范围内批选，保留屏外选择。2026-11-10 的当前产品入口由
+[平铺 Miuix 源管理](2026-11-08-miuix-source-discovery-and-search-controls.md)
+接管：源行编辑所属订阅主备地址，提供方弹窗管理同一上游的选择，排序独立成页。
+本文的聚合页与两类旧弹窗保留为共享组件，旧设置页路由已删除；
+历史聚合配置、源身份、去重和扇出决定仍适用，不授权清理用户配置。
 
 Independent: 与 `2026-10-29-restore-auto-disabled-sources.md`（谁参与搜索）不同：
 本篇只改**配置入口与配置项**（弹窗结构、备注、去重、列表过滤），不改扇出、不改搜索。

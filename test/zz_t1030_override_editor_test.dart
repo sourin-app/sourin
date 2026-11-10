@@ -38,6 +38,7 @@ import 'dart:io';
 import 'package:flutter_localizations/flutter_localizations.dart'
     show GlobalCupertinoLocalizations, GlobalWidgetsLocalizations;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/sourin_api.dart';
@@ -47,6 +48,7 @@ import 'package:sourin_spike/design/widgets/app_text_button.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart' show showAppDialog;
 import 'package:sourin_spike/ui/widgets/override_editor_dialog.dart';
+import 'package:sourin_spike/ui/widgets/settings_dropdown.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  桩：只替换 FFI 边界
@@ -151,7 +153,17 @@ Future<void> _open(
     ),
   );
   await t.pump();
-  await t.pump(const Duration(milliseconds: 800));
+  // The Miuix popup host mounts its content after registering the overlay.
+  // Advancing time once can stop on that content's initial loading frame.
+  await t.pumpAndSettle(const Duration(milliseconds: 100),
+      EnginePhase.sendSemanticsUpdate, const Duration(seconds: 5));
+  expect(find.text('正在读取覆盖层…'), findsNothing,
+      reason: 'Fixture must reach the completed load before inspecting fields');
+  expect(
+    find.byKey(ValueKey<String>(h.failLoad ? 'ov-load-error' : 'ov-js-hook')),
+    findsOneWidget,
+    reason: 'The actual dialog must render either the loaded editor or its error',
+  );
 }
 
 /// 点一下（先滚到可见 —— 弹窗内容区是会滚的）
@@ -161,30 +173,56 @@ Future<void> _tap(WidgetTester t, String key) async {
   await t.ensureVisible(f);
   await t.pump();
   await t.tap(f);
-  await t.pump();
+  await t.pumpAndSettle();
 }
 
+Finder _editable(String key) => find.descendant(
+      of: find.byKey(ValueKey<String>(key)),
+      matching: find.byType(EditableText),
+    );
+
 Future<void> _type(WidgetTester t, String key, String text) async {
-  final f = find.byKey(ValueKey<String>(key));
+  final f = _editable(key);
   expect(f, findsOneWidget, reason: '找不到输入框 $key —— 判据本身失效了');
+  await t.ensureVisible(f);
+  await t.pumpAndSettle();
   await t.enterText(f, text);
   await t.pump();
 }
 
 /// 把某个下拉框切到指定 op
 Future<void> _pickOp(WidgetTester t, String key, String label) async {
+  final dropdown = find.byKey(ValueKey<String>(key));
+  final expected = t
+      .widget<SettingsDropdown<String>>(dropdown)
+      .options
+      .singleWhere((option) => option.label == label)
+      .value;
   await _tap(t, key);
-  await t.pump(const Duration(milliseconds: 400));
-  final item = find.text(label).last;
+  final item = find.ancestor(
+    of: find.text(label),
+    matching: find.byType(miuix.MiuixBasicComponent),
+  );
   expect(item, findsOneWidget, reason: '下拉框里找不到「$label」');
+  await t.ensureVisible(item);
+  await t.pumpAndSettle();
+  expect(item.hitTestable(), findsOneWidget,
+      reason: 'The selected operation must be reachable by a real menu click');
   await t.tap(item);
-  await t.pump(const Duration(milliseconds: 400));
+  // The click starts Miuix dismissal. The selection reaches SettingsDropdown
+  // only after onDismissFinished pops the menu and its awaited Future resumes.
+  await t.pumpAndSettle(const Duration(milliseconds: 100),
+      EnginePhase.sendSemanticsUpdate, const Duration(seconds: 5));
+  expect(find.byType(miuix.MiuixWindowListPopup), findsNothing,
+      reason: 'The menu must finish dismissal before reading the form');
+  expect(_opOf(t, key), expected,
+      reason: 'Clicking "$label" must apply the selected operation to $key');
 }
 
 String _text(WidgetTester t, String key) {
-  final f = find.byKey(ValueKey<String>(key));
+  final f = _editable(key);
   expect(f, findsOneWidget, reason: '找不到 $key');
-  return t.widget<TextField>(f).controller!.text;
+  return t.widget<EditableText>(f).controller.text;
 }
 
 bool _switchValue(WidgetTester t, String key) {
@@ -200,7 +238,26 @@ bool _switchValue(WidgetTester t, String key) {
 String _opOf(WidgetTester t, String key) {
   final f = find.byKey(ValueKey<String>(key));
   expect(f, findsOneWidget, reason: '找不到下拉框 $key');
-  return t.widget<DropdownButton<String>>(f).value!;
+  return t.widget<SettingsDropdown<String>>(f).value!;
+}
+
+void _expectLeftAligned(WidgetTester t, String key) {
+  final finder = _editable(key);
+  final field = t.widget<EditableText>(finder);
+  final direction = field.textDirection ?? Directionality.of(t.element(finder));
+  // Miuix uses direction-aware start alignment. Resolve it to the same physical
+  // left edge tested before; center/right and a wrong direction still fail.
+  final physicalAlignment = switch (field.textAlign) {
+    TextAlign.start => direction == TextDirection.ltr
+        ? TextAlign.left
+        : TextAlign.right,
+    TextAlign.end => direction == TextDirection.ltr
+        ? TextAlign.right
+        : TextAlign.left,
+    final alignment => alignment,
+  };
+  expect(physicalAlignment, TextAlign.left,
+      reason: 'The editable text must stay left aligned inside the centered dialog');
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -722,21 +779,18 @@ void main() {
               '这是 AppGlassDialog 零 Material 宿主下的既定补法（见 zz_dialog18 仪器自检）');
     });
 
-    testWidgets('多行 JS 框显式左对齐（外壳内容区写死 center）', (t) async {
+    testWidgets('多行 JS 框实际左对齐（外壳内容区写死 center）', (t) async {
       final h = _Hooks();
       final key = await _mount(t);
       await _open(t, key, h);
 
-      final w = t.widget<TextField>(find.byKey(const ValueKey<String>('ov-js-hook')));
-      expect(w.textAlign, TextAlign.left,
-          reason: '★ 外壳内容区 DefaultTextStyle 是 textAlign:center ⇒ '
-              '不显式写 left，用户写 JS 时每行都在中间');
+      final w = t.widget<EditableText>(_editable('ov-js-hook'));
+      _expectLeftAligned(t, 'ov-js-hook');
       expect(w.maxLines, greaterThan(1), reason: '★ L3 必须是多行框');
 
       // 普通输入框同理（同一类缺陷，一起守）
       await _tap(t, 'ov-map-add');
-      final f2 = t.widget<TextField>(find.byKey(const ValueKey<String>('ov-map-0-from')));
-      expect(f2.textAlign, TextAlign.left);
+      _expectLeftAligned(t, 'ov-map-0-from');
     });
 
     testWidgets('安全提示与「恢复默认」按钮都在（不用滚也能看到标题）', (t) async {
@@ -748,8 +802,8 @@ void main() {
           reason: '★ 用户对"个性化"最怕的就是"会不会把插件弄坏"，这句话必须在按下任何按钮之前就在');
       expect(
         t.widget<Text>(find.byKey(const ValueKey<String>('ov-safety-body'))).data ?? '',
-        allOf(contains('overrides'), contains('完全恢复')),
-        reason: '★ 要说清两件事：只写 overrides 目录 + 删除即完全恢复',
+        allOf(contains('不修改原插件'), contains('恢复原插件行为')),
+        reason: '说明自定义规则不改插件，并能恢复原插件行为',
       );
       expect(find.byKey(const ValueKey<String>('ov-restore')), findsOneWidget);
     });

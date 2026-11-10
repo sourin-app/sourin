@@ -95,9 +95,14 @@ Future<double> _whiteThumbCenter(WidgetTester tester) async {
   expect(size.height, PlayerProgressSlider.trackHeight);
   final center = await tester.runAsync(() async {
     final recorder = raster.PictureRecorder();
-    paint.painter!.paint(raster.Canvas(recorder), size);
+    // The intentional 4px track has a roughly 3px thumb. Sample its actual
+    // painter at 4x to avoid rounding its white disk to only 3-4 opaque pixels.
+    // All geometry below remains in logical pixels.
+    const scale = 4.0;
+    final canvas = raster.Canvas(recorder)..scale(scale);
+    paint.painter!.paint(canvas, size);
     final picture = recorder.endRecording();
-    final image = await picture.toImage(size.width.ceil(), size.height.ceil());
+    final image = await picture.toImage((size.width * scale).ceil(), (size.height * scale).ceil());
     final pixels = (await image.toByteData(format: raster.ImageByteFormat.rawRgba))!;
     var count = 0;
     var sum = 0.0;
@@ -114,7 +119,7 @@ Future<double> _whiteThumbCenter(WidgetTester tester) async {
     image.dispose();
     picture.dispose();
     expect(count, greaterThan(30), reason: 'Actual Miuix thumb must paint visible opaque white pixels.');
-    return sum / count;
+    return sum / count / scale;
   });
   return center!;
 }

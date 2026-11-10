@@ -1,17 +1,18 @@
-import 'package:material_ui/material_ui.dart';
-import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter/services.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:material_ui/material_ui.dart';
 
 import '../tokens.dart';
 import 'poster_card.dart';
 
-/// A short library card leaves room for discovery on the home screen.
+/// A compact library poster with a single-line title below the cover.
 class CompactShelfCard extends StatelessWidget {
   const CompactShelfCard({
     super.key,
     required this.title,
     this.cover,
     this.subtitle,
+    this.releaseStatus,
     this.percent,
     this.unread = 0,
     required this.onTap,
@@ -20,17 +21,32 @@ class CompactShelfCard extends StatelessWidget {
   final String title;
   final String? cover;
   final String? subtitle;
+  final String? releaseStatus;
   final int? percent;
   final int unread;
   final VoidCallback onTap;
 
-  // Smaller text must not shrink the fixed poster or its vertical padding.
+  static const double width = 132;
+  static const double _posterWidth = width - Sp.x2 * 2;
+  static const double _lineHeight = 1.35;
+
+  static double _titleHeightOf(BuildContext context) =>
+      (MediaQuery.textScalerOf(context).scale(FontSizes.sm) * _lineHeight)
+          .ceilToDouble();
+
+  static double _subtitleHeightOf(BuildContext context) =>
+      (MediaQuery.textScalerOf(context).scale(FontSizes.cap) * _lineHeight)
+          .ceilToDouble();
+
+  // Reserve the same caption space for every item, including empty subtitles.
+  // Text scaling changes only this space; the complete cover stays visible.
   static double heightOf(BuildContext context) =>
-      Sp.x16 / AppMetrics.posterAspect +
-      Sp.x6 +
-      (MediaQuery.textScalerOf(context).scale(FontSizes.base) - FontSizes.base)
-              .clamp(0.0, double.infinity) *
-          4;
+      Sp.x2 * 2 +
+      _posterWidth / AppMetrics.posterAspect +
+      Sp.x2 +
+      _titleHeightOf(context) +
+      Sp.x1 +
+      _subtitleHeightOf(context);
 
   @override
   Widget build(BuildContext context) {
@@ -46,79 +62,86 @@ class CompactShelfCard extends StatelessWidget {
         ),
         cornerRadius: Radii.lg,
         onPressed: onTap,
-        child: ClipRRect(
-          borderRadius: Radii.rLg,
-          child: Padding(
-            padding: const EdgeInsets.all(Sp.x3),
-            child: Row(
-              children: [
-                ExcludeSemantics(
-                  child: IgnorePointer(
-                    child: PosterCard(
-                      title: title,
-                      cover: cover,
-                      width: Sp.x16,
-                      showCaption: false,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: Sp.x3),
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: FontSizes.base,
-                          fontWeight: FontWeight.w600,
-                          color: colors.onSurface,
+        child: Padding(
+          padding: const EdgeInsets.all(Sp.x2),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ClipRRect(
+                borderRadius: Radii.rMd,
+                child: Stack(
+                  children: [
+                    Semantics(
+                      label: [
+                        if (unread > 0) '$unread 集待看',
+                        if (releaseStatus?.isNotEmpty ?? false) releaseStatus!,
+                      ].join('，'),
+                      child: ExcludeSemantics(
+                        child: ExcludeFocus(
+                          child: IgnorePointer(
+                            child: PosterCard(
+                              title: title,
+                              cover: cover,
+                              width: _posterWidth,
+                              unread: unread,
+                              releaseStatus: releaseStatus,
+                              showCaption: false,
+                            ),
+                          ),
                         ),
                       ),
-                      if (subtitle?.isNotEmpty ?? false) ...[
-                        const SizedBox(height: Sp.x1),
-                        Text(
-                          subtitle!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                      if (unread > 0) ...[
-                        const SizedBox(height: Sp.x1),
-                        Text(
-                          '$unread 集待看',
-                          style: TextStyle(
-                            fontSize: FontSizes.cap,
-                            color: colors.primary,
-                          ),
-                        ),
-                      ],
-                      if (percent != null && percent! > 0) ...[
-                        const SizedBox(height: Sp.x2),
-                        ClipRRect(
-                          borderRadius: Radii.rSm,
+                    ),
+                    if (percent != null && percent! > 0)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: IgnorePointer(
                           child: Semantics(
                             label: '观看进度',
-                            value: '${percent!.round()}%',
+                            value: '${percent!.clamp(0, 100)}%',
                             child: miuix.MiuixLinearProgressIndicator(
                               progress: (percent! / 100).clamp(0.0, 1.0),
                               height: Sp.x1,
                             ),
                           ),
                         ),
-                      ],
-                    ],
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: Sp.x2),
+              SizedBox(
+                height: _titleHeightOf(context),
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: FontSizes.sm,
+                    height: _lineHeight,
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
                   ),
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(height: Sp.x1),
+              SizedBox(
+                height: _subtitleHeightOf(context),
+                child: subtitle?.isNotEmpty ?? false
+                    ? Text(
+                        subtitle!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: FontSizes.cap,
+                          height: _lineHeight,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      )
+                    : null,
+              ),
+            ],
           ),
         ),
       ),

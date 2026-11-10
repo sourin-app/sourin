@@ -29,9 +29,9 @@
 // ⇒ `sendKeyEvent` 真的能打到 `_onEarlyKey` → `_onHardwareKey`。
 // ★ 这不是"绕过门控"：那三条门控的代码一行都没改，走的就是它们的放行分支。
 // ```
-
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -60,14 +60,27 @@ final _channels = <LiveChannel>[
 Set<String> _highlighted() {
   const prefix = 'live-channel-highlight-';
   final out = <String>{};
-  for (final e in find.byType(Container).evaluate()) {
-    final w = e.widget;
-    if (w is! Container) continue;
-    final d = w.decoration;
-    if (d is! BoxDecoration || d.color == null) continue;
+  for (final e in find.byType(miuix.MiuixCard).evaluate()) {
+    final w = e.widget as miuix.MiuixCard;
     final k = w.key;
     if (k is! ValueKey<String>) continue;
     if (!k.value.startsWith(prefix)) continue;
+    var selected = false;
+    e.visitAncestorElements((ancestor) {
+      final widget = ancestor.widget;
+      if (widget is Semantics && widget.properties.selected != null) {
+        selected = widget.properties.selected!;
+        return false;
+      }
+      return true;
+    });
+    if (!selected) continue;
+    final palette = miuix.MiuixTheme.of(e).colors;
+    expect(
+      w.colors?.color,
+      palette.primary.withValues(alpha: 0.12),
+      reason: '选中语义必须对应实际高亮卡片',
+    );
     // key = live-channel-highlight-<provider>:<id>
     final row = k.value.substring(prefix.length);
     out.add(row.split(':').last);
@@ -91,8 +104,8 @@ Future<LivePageState> _pumpPage(WidgetTester t) async {
 void main() {
   setUp(() {
     LivePageState.debugLiveGroupsFetcher = () async => [
-          LiveGroup(provider: _p, providerName: 'IPTV 直播', channels: _channels),
-        ];
+      LiveGroup(provider: _p, providerName: 'IPTV 直播', channels: _channels),
+    ];
   });
   tearDown(() {
     LivePageState.debugLiveGroupsFetcher = null;
@@ -102,14 +115,17 @@ void main() {
     await _pumpPage(t);
 
     // loadAll 会默认选中第一个频道
-    expect(_highlighted(), {'c1'},
-        reason: '前提：进页面默认选中第一个台（不然下面的"切台"无从判断）');
+    expect(_highlighted(), {'c1'}, reason: '前提：进页面默认选中第一个台（不然下面的"切台"无从判断）');
 
     await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     await t.pump();
-    expect(_highlighted(), {'c2'},
-        reason: '★★★ 按 ↓ 没切到下一个台 ⇒ `_onHardwareKey` 的 ArrowDown 分支'
-            '（live_page.dart:1354）没生效，或高亮没跟着选中走');
+    expect(
+      _highlighted(),
+      {'c2'},
+      reason:
+          '★★★ 按 ↓ 没切到下一个台 ⇒ `_onHardwareKey` 的 ArrowDown 分支'
+          '（live_page.dart:1354）没生效，或高亮没跟着选中走',
+    );
 
     await t.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     await t.pump();
@@ -117,8 +133,7 @@ void main() {
 
     await t.sendKeyEvent(LogicalKeyboardKey.arrowUp);
     await t.pump();
-    expect(_highlighted(), {'c2'},
-        reason: '★ 按 ↑ 没回到上一个台');
+    expect(_highlighted(), {'c2'}, reason: '★ 按 ↑ 没回到上一个台');
 
     // 高亮必须**只有一个**（切台不许留下两处选中）
     expect(_highlighted().length, 1);
@@ -142,22 +157,25 @@ void main() {
      * ⚠️ 回绕到**哪一个**不由这里定：那是设计选择（首个 ⇄ 末个），
      *    把具体目标写死会把"改回绕方向"这种合法调整误判成回归。
      */
-    expect(after.length, 1,
-        reason: '★★ 回绕后没有任何台被高亮 ⇒ 用户按 ↑ 到了列表外（黑屏风险）');
-    expect(after, isNot(before),
-        reason: '★★★ 按 ↑ 什么都没发生 ⇒ 回绕分支没生效（本条与 ① 一起才能把'
-            '"切台失效"和"切到列表外"分开）');
+    expect(after.length, 1, reason: '★★ 回绕后没有任何台被高亮 ⇒ 用户按 ↑ 到了列表外（黑屏风险）');
+    expect(
+      after,
+      isNot(before),
+      reason:
+          '★★★ 按 ↑ 什么都没发生 ⇒ 回绕分支没生效（本条与 ① 一起才能把'
+          '"切台失效"和"切到列表外"分开）',
+    );
 
     await t.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('⑤ 空格 = 播放/暂停（共享动作入口，不是本页自己判键）', (t) async {
     final page = await _pumpPage(t);
-    final emb =
-        t.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer));
+    final emb = t.state<LiveEmbeddedPlayerState>(
+      find.byType(LiveEmbeddedPlayer),
+    );
 
-    expect(page.lastPlaybackActionForProbe, isNull,
-        reason: '前提：还没派发过任何动作');
+    expect(page.lastPlaybackActionForProbe, isNull, reason: '前提：还没派发过任何动作');
 
     await t.sendKeyEvent(LogicalKeyboardKey.space);
     await t.pump();
@@ -168,40 +186,50 @@ void main() {
      *   而"动作被派发到 LivePlaybackTarget"正是**共享入口**这一层的契约：
      *   内嵌与全屏都实现同一个 `LivePlaybackTarget`，判定表只有一份。
      */
-    expect(page.lastPlaybackActionForProbe, LivePlaybackAction.togglePlayPause,
-        reason: '★★★ 空格没有派发播放/暂停 ⇒ `livePlaybackActionForKey` 或'
-            '`_onHardwareKey` 的接线断了（第 16 项"快捷键"缺失）');
+    expect(
+      page.lastPlaybackActionForProbe,
+      LivePlaybackAction.togglePlayPause,
+      reason:
+          '★★★ 空格没有派发播放/暂停 ⇒ `livePlaybackActionForKey` 或'
+          '`_onHardwareKey` 的接线断了（第 16 项"快捷键"缺失）',
+    );
     // 按键后控件必须被唤起（否则"按了没反应"）
-    expect(emb.controlsVisibleForProbe, isTrue,
-        reason: '★ 按键后控件没有出现 ⇒ 用户不知道状态变了');
+    expect(
+      emb.controlsVisibleForProbe,
+      isTrue,
+      reason: '★ 按键后控件没有出现 ⇒ 用户不知道状态变了',
+    );
 
     await t.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('⑥ M = 静音/取消静音（真实状态翻转）', (t) async {
     final page = await _pumpPage(t);
-    final emb =
-        t.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer));
+    final emb = t.state<LiveEmbeddedPlayerState>(
+      find.byType(LiveEmbeddedPlayer),
+    );
     final before = emb.muted;
 
     await t.sendKeyEvent(LogicalKeyboardKey.keyM);
     await t.pump();
 
     expect(page.lastPlaybackActionForProbe, LivePlaybackAction.toggleMute);
-    expect(emb.muted, isNot(before),
-        reason: '★★★ 按 M 静音位没变 ⇒ 动作没被真正执行（只派发没调用）');
+    expect(
+      emb.muted,
+      isNot(before),
+      reason: '★★★ 按 M 静音位没变 ⇒ 动作没被真正执行（只派发没调用）',
+    );
 
     await t.sendKeyEvent(LogicalKeyboardKey.keyM);
     await t.pump();
-    expect(emb.muted, before,
-        reason: '★★ 再按一次必须切回来（toggle 语义）');
+    expect(emb.muted, before, reason: '★★ 再按一次必须切回来（toggle 语义）');
 
     await t.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('⑦ 打字态按空格 / M **不许**抢键（门控③对播放键同样生效）', (t) async {
     final page = await _pumpPage(t);
-    final field = find.byType(TextField).first;
+    final field = find.byType(EditableText).first;
     await t.enterText(field, '频道');
     await t.pump();
 
@@ -219,21 +247,28 @@ void main() {
 
     await t.sendKeyEvent(LogicalKeyboardKey.space);
     await t.pump();
-    expect(page.lastPlaybackActionForProbe, isNull,
-        reason: '★★★ 打字时按空格被本页抢去当播放/暂停 ⇒ 用户在输入框里打不出空格'
-            '（门控③ `live_page.dart:1300 if (_isTypingInField()) return false;` 被绕过）');
+    expect(
+      page.lastPlaybackActionForProbe,
+      isNull,
+      reason:
+          '★★★ 打字时按空格被本页抢去当播放/暂停 ⇒ 用户在输入框里打不出空格'
+          '（门控③ `live_page.dart:1300 if (_isTypingInField()) return false;` 被绕过）',
+    );
 
     await t.sendKeyEvent(LogicalKeyboardKey.keyM);
     await t.pump();
-    expect(page.lastPlaybackActionForProbe, isNull,
-        reason: '★★ 打字时按 M 也不许抢（否则英文单词里带 m 就会触发静音）');
+    expect(
+      page.lastPlaybackActionForProbe,
+      isNull,
+      reason: '★★ 打字时按 M 也不许抢（否则英文单词里带 m 就会触发静音）',
+    );
 
     await t.pumpWidget(const SizedBox.shrink());
   });
 
   testWidgets('③ 输入框有焦点时 Esc 被放行（不抢用户正在打的字）', (t) async {
     await _pumpPage(t);
-    final field = find.byType(TextField).first;
+    final field = find.byType(EditableText).first;
     await t.enterText(field, '频道二');
     await t.pump();
 
@@ -248,16 +283,18 @@ void main() {
      * ⚠️ 我第一版就写成"Esc 一定清词"，实测红在这里（`Actual: '频道二'`）
      *    —— 那不是产品 bug，是我把门控顺序想当然了。
      */
-    expect(t.widget<TextField>(field).controller!.text, '频道二',
-        reason: '★ 打字时 Esc 被页抢走 ⇒ 用户没法用 Esc 取消输入法/选区');
+    expect(
+      t.widget<EditableText>(field).controller.text,
+      '频道二',
+      reason: '★ 打字时 Esc 被页抢走 ⇒ 用户没法用 Esc 取消输入法/选区',
+    );
 
     await t.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('④ 焦点离开输入框后 Esc 清搜索词（真实分支 live_page.dart:1318）',
-      (t) async {
+  testWidgets('④ 焦点离开输入框后 Esc 清搜索词（真实分支 live_page.dart:1318）', (t) async {
     await _pumpPage(t);
-    final field = find.byType(TextField).first;
+    final field = find.byType(EditableText).first;
     await t.enterText(field, '频道二');
     await t.pump();
 
@@ -300,17 +337,28 @@ void main() {
       }
       return true;
     });
-    expect(stillTyping, isFalse,
-        reason: '前置未成立：焦点仍在输入框里（primaryFocus=${primary?.debugLabel}）'
-            ' ⇒ 门控 ③ 会放行 Esc，测不出 ④ 要验的分支');
-    expect(primary?.context?.widget.runtimeType.toString(), isNot('EditableText'));
+    expect(
+      stillTyping,
+      isFalse,
+      reason:
+          '前置未成立：焦点仍在输入框里（primaryFocus=${primary?.debugLabel}）'
+          ' ⇒ 门控 ③ 会放行 Esc，测不出 ④ 要验的分支',
+    );
+    expect(
+      primary?.context?.widget.runtimeType.toString(),
+      isNot('EditableText'),
+    );
 
     await t.sendKeyEvent(LogicalKeyboardKey.escape);
     await t.pump();
 
-    expect(t.widget<TextField>(field).controller!.text, isEmpty,
-        reason: '★★★ 焦点不在输入框、搜索词非空时，Esc 必须清词'
-            '（`live_page.dart:1318` 那条分支；否则用户以为搜索坏了）');
+    expect(
+      t.widget<EditableText>(field).controller.text,
+      isEmpty,
+      reason:
+          '★★★ 焦点不在输入框、搜索词非空时，Esc 必须清词'
+          '（`live_page.dart:1318` 那条分支；否则用户以为搜索坏了）',
+    );
     // 清完搜索后列表回到全量（不是停在"筛不出来"的空态）
     expect(find.byKey(liveChannelTileKey(_p, 'c1')), findsOneWidget);
 

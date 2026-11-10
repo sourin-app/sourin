@@ -1,6 +1,6 @@
 import 'package:flutter_miuix/miuix.dart' as miuix;
 
-import '../lib/ui/widgets/miuix_controls.dart' as ui;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 
 import 'support/miuix_dialog_host.dart';
 import 'support/miuix_finders.dart';
@@ -8,10 +8,10 @@ import 'support/miuix_finders.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../lib/core/danmaku.dart';
-import '../lib/ui/danmaku_search_page.dart';
-import '../lib/ui/widgets/danmaku_settings_dialog.dart';
-import '../lib/ui/widgets/bili_import_dialog.dart';
+import 'package:sourin_spike/core/danmaku.dart';
+import 'package:sourin_spike/ui/danmaku_search_page.dart';
+import 'package:sourin_spike/ui/widgets/danmaku_settings_dialog.dart';
+import 'package:sourin_spike/ui/widgets/bili_import_dialog.dart';
 
 Finder _keywordEditor() => find.descendant(
   of: find.byType(miuix.MiuixTextField),

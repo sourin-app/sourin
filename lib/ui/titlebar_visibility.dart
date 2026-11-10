@@ -80,6 +80,47 @@ final titleBarVisible = ValueNotifier<bool>(true);
 ///    `dispose` 置回 false —— 否则返回首页后标题栏一直是黑的。
 final titleBarDark = ValueNotifier<bool>(false);
 
+/// A mounted player's claim on the shared title bar. Publishing after the
+/// frame keeps initState/dispose from notifying the Navigator's ancestors
+/// during build. Releasing an older page cannot reset a newer player's claim.
+class PlayerTitleBarSession {
+  PlayerTitleBarSession() {
+    _sessions.add(this);
+    _schedulePublish();
+  }
+
+  static final _sessions = <PlayerTitleBarSession>[];
+  static bool _publishScheduled = false;
+  bool _released = false;
+  bool _fullscreen = false;
+
+  void setFullscreen(bool fullscreen) {
+    if (_released || _fullscreen == fullscreen) return;
+    _fullscreen = fullscreen;
+    _schedulePublish();
+  }
+
+  void release() {
+    if (_released) return;
+    _released = true;
+    _sessions.remove(this);
+    _schedulePublish();
+  }
+
+  static void _schedulePublish() {
+    if (_publishScheduled) return;
+    _publishScheduled = true;
+    final binding = WidgetsBinding.instance;
+    binding.addPostFrameCallback((_) {
+      _publishScheduled = false;
+      final active = _sessions.isEmpty ? null : _sessions.last;
+      titleBarDark.value = active != null;
+      titleBarVisible.value = !(active?._fullscreen ?? false);
+    });
+    binding.ensureVisualUpdate();
+  }
+}
+
 /// 交付实测用：真实渲染树里**当前有没有**可拖动的标题栏
 ///
 /// # 为什么需要（2026-09-24 用户反馈）

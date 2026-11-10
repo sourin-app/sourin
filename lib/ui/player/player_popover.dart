@@ -135,6 +135,7 @@ class PopoverController extends ChangeNotifier {
   ///    同步唤醒监听者会在帧中途再排一次 build。改成**帧后**通知，
   ///    且只在矩形**真的变了**时才排（否则每帧都通知 = 每帧都重建）。
   void reportAnchorRect(String id, Object owner, Rect globalRect) {
+    if (_disposed) return;
     final layer = _layerBox;
     final rect = layer == null
         ? globalRect
@@ -146,7 +147,11 @@ class PopoverController extends ChangeNotifier {
   }
 
   RenderBox? get _layerBox {
-    final ro = _layerKey.currentContext?.findRenderObject();
+    // This key belongs to CustomSingleChildLayout, a RenderObjectElement.
+    // It remains registered briefly while deactivated; findRenderObject()
+    // would assert before we could reject its detached render object.
+    final element = _layerKey.currentContext;
+    final ro = element is RenderObjectElement ? element.renderObject : null;
     return ro is RenderBox && ro.attached ? ro : null;
   }
 
@@ -359,8 +364,8 @@ class PlayerPopoverSurface extends StatelessWidget {
       child: miuix.MiuixTheme(
         data: miuixThemeData(Brightness.dark),
         child: miuix.MiuixCard(
-          cornerRadius: Radii.sm,
-          insideMargin: const EdgeInsets.symmetric(vertical: Sp.x1),
+          cornerRadius: Radii.lg,
+          insideMargin: const EdgeInsets.symmetric(vertical: Sp.x2),
           child: child,
         ),
       ),
@@ -390,53 +395,60 @@ class PopoverRow extends StatelessWidget {
     return MergeSemantics(
       child: Semantics(
         selected: checked,
-        child: miuix.MiuixPressable(
+        child: ui.TextButton(
           focusNode: focusNode,
           onPressed: onTap,
-          child: Padding(
+          style: ui.TextButton.styleFrom(
+            minimumSize: const Size(0, 38),
             padding: const EdgeInsets.symmetric(
               horizontal: Sp.x3,
               vertical: Sp.x2,
             ),
-            child: Row(
-              children: [
-                // ★ 固定宽度的对勾槽：勾与不勾时文字**不左右跳**
-                SizedBox(
-                  width: 18,
-                  child: checked
-                      ? const Icon(
-                          AppIcons.check,
-                          size: 15,
-                          color: Color(0xFF32C7FF),
-                        )
-                      : null,
-                ),
-                const SizedBox(width: Sp.x1),
-                Expanded(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: onTap == null
-                          ? const Color(0xFF7A7A7A)
-                          : const Color(0xFFF2F2F2),
-                      fontSize: FontSizes.sm,
-                    ),
+            shape: RoundedRectangleBorder(borderRadius: Radii.rSm),
+            backgroundColor: checked
+                ? const Color(0x1832C7FF)
+                : Colors.transparent,
+            foregroundColor: const Color(0xFFF2F2F2),
+            disabledForegroundColor: const Color(0xFF7A7A7A),
+          ),
+          child: Row(
+            children: [
+              // ★ 固定宽度的对勾槽：勾与不勾时文字**不左右跳**
+              SizedBox(
+                width: 18,
+                child: checked
+                    ? const Icon(
+                        AppIcons.check,
+                        size: 15,
+                        color: Color(0xFF32C7FF),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: Sp.x1),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: onTap == null
+                        ? const Color(0xFF7A7A7A)
+                        : const Color(0xFFF2F2F2),
+                    fontSize: FontSizes.sm,
                   ),
                 ),
-                if (hint != null && hint!.isNotEmpty) ...[
-                  const SizedBox(width: Sp.x2),
-                  Text(
-                    hint!,
-                    style: const TextStyle(
-                      color: Color(0xFF8C8C8C),
-                      fontSize: FontSizes.cap,
-                    ),
+              ),
+              if (hint != null && hint!.isNotEmpty) ...[
+                const SizedBox(width: Sp.x2),
+                Text(
+                  hint!,
+                  style: const TextStyle(
+                    color: Color(0xFF8C8C8C),
+                    fontSize: FontSizes.cap,
                   ),
-                ],
+                ),
               ],
-            ),
+            ],
           ),
         ),
       ),

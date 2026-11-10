@@ -40,17 +40,15 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/settings/pan_settings_page.dart';
 import 'package:sourin_spike/ui/settings_page.dart';
 
-Widget host(Widget child) => MaterialApp(
-      theme: AppTheme.themeFor(Brightness.dark),
-      home: Scaffold(body: SingleChildScrollView(child: child)),
-    );
+import 'support/flat_source_address_entry.dart';
 
-ProviderManifest p(String id, String kind) => ProviderManifest(
-      id: id,
-      name: id,
-      version: '1',
-      kind: kind,
-    );
+Widget host(Widget child) => MaterialApp(
+  theme: AppTheme.themeFor(Brightness.dark),
+  home: Scaffold(body: SingleChildScrollView(child: child)),
+);
+
+ProviderManifest p(String id, String kind) =>
+    ProviderManifest(id: id, name: id, version: '1', kind: kind);
 
 void main() {
   tearDown(() {
@@ -84,30 +82,46 @@ void main() {
       expect(visible.isNotEmpty, isTrue, reason: '★ 真数据里列表非空（37 条可见）');
 
       // 旧入口 A：空态
-      expect(visible.isEmpty, isFalse,
-          reason: '★★ 列表非空 ⇒ SourcesEmptyState 零尺寸 ⇒ 入口 A 不可达');
+      expect(
+        visible.isEmpty,
+        isFalse,
+        reason: '★★ 列表非空 ⇒ SourcesEmptyState 零尺寸 ⇒ 入口 A 不可达',
+      );
 
       // 旧入口 B：TVBox 折叠组头 —— ⚠️ 它的**渲染条件不是 `tvboxGroupCount > 0`**，
       //   而是"`cls == SourceClass.tvboxDirect` 这一分类非空"（见 settings_page.dart:4402）
       //   `tvboxGroupCount` 只是它**内部**再判一次（那个数用 `kind=='tvbox'`，**含** tvbox_agg）。
       //   ★ 这个区别正是坑所在：只有 tvbox_agg 时 `tvboxGroupCount == 1`，
       //     但 tvboxDirect 分类为空 ⇒ 整个 `if` 分支不执行 ⇒ 组头照样不画。
-      final tvboxDirect =
-          visible.where((e) => sourceClassOf(e) == SourceClass.tvboxDirect);
-      expect(tvboxDirect, isEmpty,
-          reason: '★★★ 真数据里 tvboxDirect == 0（子站全 hidden）'
-              '⇒ `if (cls == tvboxDirect)` 分支不执行 ⇒ 入口 B 不可达');
-      expect(tvboxGroupCount(visible), greaterThan(0),
-          reason: '★★ 反面对照：`tvboxGroupCount` **确实 > 0**（它数 kind==tvbox，'
-              '含 tvbox_agg 那条）—— 若有人以为"count>0 就会有入口"，本条说明为什么没有：'
-              '组头嵌在 tvboxDirect 分支里，外层的分类为空 ⇒ 根本没走到那个判断');
+      final tvboxDirect = visible.where(
+        (e) => sourceClassOf(e) == SourceClass.tvboxDirect,
+      );
+      expect(
+        tvboxDirect,
+        isEmpty,
+        reason:
+            '★★★ 真数据里 tvboxDirect == 0（子站全 hidden）'
+            '⇒ `if (cls == tvboxDirect)` 分支不执行 ⇒ 入口 B 不可达',
+      );
+      expect(
+        tvboxGroupCount(visible),
+        greaterThan(0),
+        reason:
+            '★★ 反面对照：`tvboxGroupCount` **确实 > 0**（它数 kind==tvbox，'
+            '含 tvbox_agg 那条）—— 若有人以为"count>0 就会有入口"，本条说明为什么没有：'
+            '组头嵌在 tvboxDirect 分支里，外层的分类为空 ⇒ 根本没走到那个判断',
+      );
 
       // 但聚合源这一类**确实存在** ⇒ 展示与入口的错配正是 Owner 看到的现象
-      final aggGroups =
-          groupSourcesByClass(visible).where((g) => g.$1 == SourceClass.tvboxAggregate);
-      expect(aggGroups, isNotEmpty,
-          reason: '★★ 聚合源那一类非空 ⇒ 用户**看得见**卡片，却没有任何入口 ⇒ '
-              '正是「看到了，但是…还是不能编辑链接」');
+      final aggGroups = groupSourcesByClass(visible)
+          .where((g) => g.$1 == SourceClass.tvboxAggregate);
+      expect(
+        aggGroups,
+        isNotEmpty,
+        reason:
+            '★★ 聚合源那一类非空 ⇒ 用户**看得见**卡片，却没有任何入口 ⇒ '
+            '正是「看到了，但是…还是不能编辑链接」',
+      );
     });
 
     test('★★ 折叠不影响「TVBox 聚合源」这一类（入口必须与折叠无关）', () {
@@ -116,14 +130,21 @@ void main() {
         p('t1', 'tvbox'),
       ];
       final groups = groupSourcesByClass(real);
-      final agg = groups.firstWhere((g) => g.$1 == SourceClass.tvboxAggregate).$2;
+      final agg = groups
+          .firstWhere((g) => g.$1 == SourceClass.tvboxAggregate)
+          .$2;
       expect(agg.length, 1, reason: '★ 聚合源那一类恰好 1 个成员（只有 tvbox_agg）');
       expect(sourceClassOf(agg.first), SourceClass.tvboxAggregate);
       // 折叠只作用在 tvboxDirect 那类的**条目**上（`tvboxGroupOrder`），
       // 聚合源这一类从不经过它 ⇒ 入口恒在。
-      final direct = groups.firstWhere((g) => g.$1 == SourceClass.tvboxDirect).$2;
-      expect(tvboxGroupOrder(direct, expanded: false), isEmpty,
-          reason: '★ 折叠确实清空了 tvboxDirect 的**条目**（对照组）');
+      final direct = groups
+          .firstWhere((g) => g.$1 == SourceClass.tvboxDirect)
+          .$2;
+      expect(
+        tvboxGroupOrder(direct, expanded: false),
+        isEmpty,
+        reason: '★ 折叠确实清空了 tvboxDirect 的**条目**（对照组）',
+      );
     });
   });
 
@@ -133,26 +154,40 @@ void main() {
   group('② #2 修法：聚合源组头有随时可达的入口', () {
     testWidgets('★★★ onConfigure 非空 ⇒ 画「配置」按钮；点击真的回调宿主', (t) async {
       var taps = 0;
-      await t.pumpWidget(host(const SourceClassHeader(
-        label: 'TVBox 聚合源',
-        count: 1,
-        onConfigure: null,
-      )));
+      await t.pumpWidget(
+        host(
+          const SourceClassHeader(
+            label: 'TVBox 聚合源',
+            count: 1,
+            onConfigure: null,
+          ),
+        ),
+      );
       await t.pump();
       /*
        * ⚠️ 负面对照放在最前：`onConfigure: null` 时**不许**出现「配置」。
        *    若实现写成"无条件画按钮"，下面那条就成了恒真（假绿）。
        */
-      expect(find.byKey(const ValueKey<String>('source-class-configure')), findsNothing,
-          reason: '★ 没给回调就不许画入口（否则是假入口）');
-      expect(find.text('TVBox 聚合源（1 个源）'), findsOneWidget,
-          reason: '★ 文案逐字：分类名 + 条目数');
+      expect(
+        find.byKey(const ValueKey<String>('source-class-configure')),
+        findsNothing,
+        reason: '★ 没给回调就不许画入口（否则是假入口）',
+      );
+      expect(
+        find.text('TVBox 聚合源（1 个源）'),
+        findsOneWidget,
+        reason: '★ 文案逐字：分类名 + 条目数',
+      );
 
-      await t.pumpWidget(host(SourceClassHeader(
-        label: 'TVBox 聚合源',
-        count: 1,
-        onConfigure: () => taps++,
-      )));
+      await t.pumpWidget(
+        host(
+          SourceClassHeader(
+            label: 'TVBox 聚合源',
+            count: 1,
+            onConfigure: () => taps++,
+          ),
+        ),
+      );
       await t.pump();
       final btn = find.byKey(const ValueKey<String>('source-class-configure'));
       expect(btn, findsOneWidget, reason: '★★ 给了回调必须画出来');
@@ -163,38 +198,20 @@ void main() {
     });
 
     testWidgets('★★ 无 onConfigure 的其他类：版式与既有 SettingsGroupLabel 一致', (t) async {
-      await t.pumpWidget(host(const SourceClassHeader(label: 'JS 插件', count: 32)));
+      await t.pumpWidget(
+        host(const SourceClassHeader(label: 'JS 插件', count: 32)),
+      );
       await t.pump();
       expect(find.text('JS 插件（32 个源）'), findsOneWidget);
-      expect(find.byKey(const ValueKey<String>('source-class-configure')), findsNothing,
-          reason: '★ 其余四类不该被顺手加上第二入口');
+      expect(
+        find.byKey(const ValueKey<String>('source-class-configure')),
+        findsNothing,
+        reason: '★ 其余四类不该被顺手加上第二入口',
+      );
     });
 
-    test('★★★ 源码锚点：聚合源那一类**真的**把 onConfigure 接上了', () {
-      final src = File('lib/ui/settings_page.dart').readAsStringSync();
-      // 只有 tvboxAggregate 那类传 onConfigure（其余传 null）
-      expect(
-        RegExp(r'onConfigure:\s*cls == SourceClass\.tvboxAggregate')
-            .hasMatch(src),
-        isTrue,
-        reason: '★★★ 修法本体的锚点：必须**按分类**给入口，而不是所有类都加。'
-            '注入「把判断去掉」⇒ 本条立刻红',
-      );
-      // 入口必须指向聚合二级页
-      expect(
-        RegExp(r'onConfigure:\s*cls == SourceClass\.tvboxAggregate[\s\S]{0,220}?'
-                r'const TvboxAggregatePage\(\)')
-            .hasMatch(src),
-        isTrue,
-        reason: '★★ 入口必须打开聚合二级页（那才是"链接可改"的地方）',
-      );
-      // 源码注释剥离后仍能匹配（防"只写在注释里"）
-      expect(
-        RegExp(r'SourceClassHeader\(\s*label: cls\.label')
-            .hasMatch(src.replaceAll(RegExp(r'/\*[\s\S]*?\*/'), '')),
-        isTrue,
-        reason: '★ 组头调用本身还在（不是只把判断写进了注释）',
-      );
+    testWidgets('★★★ 当前平铺入口在类型、来源和搜索筛选后仍可编辑停用源地址', (tester) async {
+      await exerciseFlatSourceAddressEntry(tester, filtered: true);
     });
   });
 
@@ -205,11 +222,14 @@ void main() {
     test('★★★ unsupported + 「还没有接入」⇒ true（能力缺失）', () {
       final e = SourinCoreException(
         '这个功能（`pan_qr_login_start`）在当前版本还没有接入，请更新到较新版本；'
-        '若一直如此，请把日志发给我们。',
+            '若一直如此，请把日志发给我们。',
         'unsupported',
       );
-      expect(panCommandMissing(e), isTrue,
-          reason: '★★ 这是 `.probe/r2-pan-qr-reading.log` 的**真实字样**（真核心实测）');
+      expect(
+        panCommandMissing(e),
+        isTrue,
+        reason: '★★ 这是 `.probe/r2-pan-qr-reading.log` 的**真实字样**（真核心实测）',
+      );
     });
 
     test('★★★ 负面对照：普通失败 ⇒ false（不许一次抖动就关掉整区）', () {
@@ -224,15 +244,16 @@ void main() {
         StateError('boom'),
         'plain string',
       ]) {
-        expect(panCommandMissing(e), isFalse,
-            reason: '★ 非"未接线"档不许被认成能力缺失：$e');
+        expect(panCommandMissing(e), isFalse, reason: '★ 非"未接线"档不许被认成能力缺失：$e');
       }
     });
 
     test('★★ 只有 kind=unsupported **或** 文案含「还没有接入」才算（两条各自独立）', () {
       // 只有 kind
-      expect(panCommandMissing(SourinCoreException('随便什么原因', 'unsupported')),
-          isTrue);
+      expect(
+        panCommandMissing(SourinCoreException('随便什么原因', 'unsupported')),
+        isTrue,
+      );
       // 只有文案（老核心可能只给文案不给 kind）
       expect(
         panCommandMissing(SourinCoreException('这个功能还没有接入', 'other')),
@@ -265,8 +286,11 @@ void main() {
       await t.pump();
 
       // 首屏：还没探测过 ⇒ 入口照常画（否则后端接上那天就恢复不了）
-      expect(find.byKey(const ValueKey<String>('pan-qr-start')), findsOneWidget,
-          reason: '★ 首屏必须画入口 —— 判据来自**真命令返回**，不是写死的常量');
+      expect(
+        find.byKey(const ValueKey<String>('pan-qr-start')),
+        findsOneWidget,
+        reason: '★ 首屏必须画入口 —— 判据来自**真命令返回**，不是写死的常量',
+      );
 
       await t.tap(find.byKey(const ValueKey<String>('pan-qr-start')));
       await t.pump();
@@ -286,43 +310,66 @@ void main() {
       await t.pump();
 
       // 拿到 unsupported ⇒ 换成如实说明
-      expect(find.byKey(const ValueKey<String>('pan-qr-unavailable')), findsOneWidget,
-          reason: '★★★ 命令缺失必须变成一句实话（注入「不置 _qrBackendAvailable」⇒ 本条红）');
+      expect(
+        find.byKey(const ValueKey<String>('pan-qr-unavailable')),
+        findsOneWidget,
+        reason: '★★★ 命令缺失必须变成一句实话（注入「不置 _qrBackendAvailable」⇒ 本条红）',
+      );
       expect(
         find.byKey(const ValueKey<String>('pan-qr-unavailable-text')),
         findsOneWidget,
       );
       final txt = t
-          .widget<Text>(find.byKey(const ValueKey<String>('pan-qr-unavailable-text')))
+          .widget<Text>(
+            find.byKey(const ValueKey<String>('pan-qr-unavailable-text')),
+          )
           .data;
-      expect(txt, contains('还没有接入'),
-          reason: '★★ 文案要如实说"没接入"（与 pan_auth.rs 头部自述同口径）');
+      expect(
+        txt,
+        contains('还没有接入'),
+        reason: '★★ 文案要如实说"没接入"（与 pan_auth.rs 头部自述同口径）',
+      );
       // 不留假入口
-      expect(find.byKey(const ValueKey<String>('pan-qr-start')), findsNothing,
-          reason: '★★★ 点了只会报错的入口不许留着（本仓对假入口的纪律，先例 t1061 ④）');
-      expect(find.byKey(const ValueKey<String>('pan-qr-view')), findsNothing,
-          reason: '★ 没拿到二维码不许画占位框');
+      expect(
+        find.byKey(const ValueKey<String>('pan-qr-start')),
+        findsNothing,
+        reason: '★★★ 点了只会报错的入口不许留着（本仓对假入口的纪律，先例 t1061 ④）',
+      );
+      expect(
+        find.byKey(const ValueKey<String>('pan-qr-view')),
+        findsNothing,
+        reason: '★ 没拿到二维码不许画占位框',
+      );
       await t.pumpWidget(const SizedBox());
     });
 
-    testWidgets('★★★ 负面对照：真实网络失败 ⇒ **保留**入口（可重试），不许变成"没接入"',
-        (t) async {
+    testWidgets('★★★ 负面对照：真实网络失败 ⇒ **保留**入口（可重试），不许变成"没接入"', (t) async {
       debugPanCredentialStatusFetcher = () async => const <PanAccountStatus>[];
-      debugPanQrLoginStarter =
-          (kind) async => throw SourinCoreException('网络不可用', 'network');
+      debugPanQrLoginStarter = (kind) async =>
+          throw SourinCoreException('网络不可用', 'network');
       await t.pumpWidget(host(const PanSettingsBody()));
       await t.pump();
       await t.tap(find.byKey(const ValueKey<String>('pan-qr-start')));
       await t.pump();
       await t.pump();
 
-      expect(find.byKey(const ValueKey<String>('pan-qr-unavailable')), findsNothing,
-          reason: '★★★ 网络失败**不是**"能力缺失" —— 误判会把这一区永久关掉，'
-              '而用户只需要重试（注入「panCommandMissing 恒 true」⇒ 本条红）');
-      expect(find.byKey(const ValueKey<String>('pan-qr-start')), findsOneWidget,
-          reason: '★★ 入口必须留着让人重试');
-      expect(find.byKey(const ValueKey<String>('pan-qr-error')), findsOneWidget,
-          reason: '★ 如实报这次失败');
+      expect(
+        find.byKey(const ValueKey<String>('pan-qr-unavailable')),
+        findsNothing,
+        reason:
+            '★★★ 网络失败**不是**"能力缺失" —— 误判会把这一区永久关掉，'
+            '而用户只需要重试（注入「panCommandMissing 恒 true」⇒ 本条红）',
+      );
+      expect(
+        find.byKey(const ValueKey<String>('pan-qr-start')),
+        findsOneWidget,
+        reason: '★★ 入口必须留着让人重试',
+      );
+      expect(
+        find.byKey(const ValueKey<String>('pan-qr-error')),
+        findsOneWidget,
+        reason: '★ 如实报这次失败',
+      );
       await t.pumpWidget(const SizedBox());
     });
   });
@@ -332,12 +379,13 @@ void main() {
   // ───────────────────────────────────────────────────────────────
   group('⑤ #3 页面文案不许再暗示「能扫码」', () {
     test('★★ 源码里不再有"以实际结果为准"这种把能力说成可用的措辞', () {
-      final src =
-          File('lib/ui/settings/pan_settings_page.dart').readAsStringSync();
+      final src = File('lib/ui/settings/pan_settings_page.dart')
+          .readAsStringSync();
       expect(
         src.contains('各网盘是否支持扫码以实际结果为准'),
         isFalse,
-        reason: '★★★ 改前这句读起来像"可以扫码，只是看盘支不支持" ⇒ '
+        reason:
+            '★★★ 改前这句读起来像"可以扫码，只是看盘支不支持" ⇒ '
             '用户点了才撞 unsupported。注入「把这句改回去」⇒ 本条红',
       );
       expect(
@@ -348,15 +396,19 @@ void main() {
     });
 
     test('★★ 命令名一个都没删（后端接上时能自动恢复）', () {
-      final src = File('lib/ui/settings/pan_settings_page.dart').readAsStringSync();
+      final src = File('lib/ui/settings/pan_settings_page.dart')
+          .readAsStringSync();
       for (final cmd in const [
         'pan_auth_status',
         'pan_qr_login_start',
         'pan_qr_login_poll',
         'pan_logout',
       ]) {
-        expect(src.contains("'$cmd'"), isTrue,
-            reason: '★ 命令调用必须留着（删掉就等于永久放弃这条能力）`$cmd`');
+        expect(
+          src.contains("'$cmd'"),
+          isTrue,
+          reason: '★ 命令调用必须留着（删掉就等于永久放弃这条能力）`$cmd`',
+        );
       }
     });
   });

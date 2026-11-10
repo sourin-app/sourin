@@ -46,14 +46,12 @@ ancestor inside the existing glass dialog, as required by `material_ui`.
 The home WebView key includes selected identity and body hash so a selection or
 active-body replacement recreates the view.
 
-Source management filters by name/id, enabled state and existing source class.
-Hidden providers remain excluded; filtering never changes ids or capabilities.
-Import and ordering are persistent actions; existing advanced menu operations
-remain. Search/filter changes notify the pushed route through its existing data
-revision mechanism. Card arrows and drag operations use the current filtered
-class subset with the existing `reorderSubsetIds` semantics: the moved item is
-placed relative to its visible anchor, while other items retain relative order.
-No new global fixed-slot ordering contract is introduced.
+The source-management layout and filtered-card sorting part of this decision is
+superseded by [flat Miuix source management](2026-11-08-miuix-source-discovery-and-search-controls.md).
+Filtering remains local and never changes provider ids or capabilities. Hidden
+providers stay excluded. The separate ordering page edits the full managed list,
+shows provenance, and retains the manager filter on return. The homepage-template
+storage, lifecycle and mutation decisions above remain in force.
 
 Aggregate-site search and selected/unselected filters use the existing selection
 set. Select/clear-current-results changes only visible implemented site ids,

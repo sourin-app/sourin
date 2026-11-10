@@ -54,6 +54,8 @@ import 'package:sourin_spike/ui/widgets/player_settings_sheet.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 
+import 'support/source_block.dart';
+
 // ═══════════════════════════════════════════════════════════════════════
 //  注释剥离器（逐字照抄 player_capability_test.dart:61-110）
 // ═══════════════════════════════════════════════════════════════════════
@@ -210,7 +212,6 @@ PlayerSettingsSheet makeSheet() {
     },
     endAction: PlayEndAction.autoNext,
     countdownBeforeNext: true,
-    keepSourceOnNext: true,
     autoSkip: true,
     rate: 1.0,
     isPlaying: true,
@@ -227,7 +228,6 @@ PlayerSettingsSheet makeSheet() {
     onSetMpvProperty: (_, __) {},
     onSetEndAction: (_) {},
     onSetCountdown: (_) {},
-    onSetKeepSource: (_) {},
     onSetAutoSkip: (_) {},
     onSetRate: (_) {},
     onClose: () {},
@@ -398,17 +398,22 @@ void main() {
        */
       indexOfExactly(
         _page,
-        'OverlayPortal(',
+        'PlayerSettingsPortal(',
         want: 1,
         why: '★ 只该有**一处** OverlayPortal —— 多一处说明面板被挂了两次',
       );
-      indexOfExactly(
-        _page,
-        'overlayLocation: OverlayChildLocation.rootOverlay,',
+      final portal = stripComments(
+        File('lib/ui/player/player_settings_portal.dart').readAsStringSync(),
       );
-      indexOfExactly(_page, 'controller: _settingsPortal,');
+      final portalArgs = sourceBlock(portal, 'OverlayPortal(');
+      indexOfExactly(portalArgs,
+          'overlayLocation: OverlayChildLocation.rootOverlay,');
+      indexOfExactly(portalArgs, 'controller: _controller,');
+      indexOfExactly(portalArgs, 'overlayChildBuilder: widget.overlayChildBuilder,');
+      final mountedPortal = sourceBlock(_page, 'PlayerSettingsPortal(');
+      indexOfExactly(mountedPortal, 'visible: _settingsOpen,');
       indexOfExactly(
-        _page,
+        mountedPortal.replaceAll(RegExp(r'\s+'), ' '),
         'overlayChildBuilder: (ctx) => _buildSettingsPortalChild(ctx),',
       );
       // 门控：`_settingsOpen == false` 时 portal child 不渲染
@@ -436,7 +441,8 @@ void main() {
         _page,
         'PlayerSettingsSheet(',
         want: 1,
-        why: '★ 面板应只在 `_buildSettingsPortalChild` 里构造一次；'
+        why:
+            '★ 面板应只在 `_buildSettingsPortalChild` 里构造一次；'
             '找不到 ⇒ 本测试的前提失效，必须重新审视',
       );
       final args = sliceBalanced(
@@ -449,7 +455,8 @@ void main() {
       expect(
         closeInArgs,
         greaterThanOrEqualTo(0),
-        reason: '★ `PlayerSettingsSheet(...)` 的实参区里没有 `onClose:` ⇒ '
+        reason:
+            '★ `PlayerSettingsSheet(...)` 的实参区里没有 `onClose:` ⇒ '
             '设置面板没绑关闭回调 ⇒ 点 X / 关面板的动作不会回写真值源',
       );
       // 从 `onClose:` 起、到实参区末尾（onClose 是最后一个参数，见调用点）
@@ -701,12 +708,14 @@ void main() {
       expect(
         body.contains("label: '下一集'"),
         isFalse,
-        reason: '★★「更多」里不得再有「下一集」——它与底栏 ⎓ 重复'
+        reason:
+            '★★「更多」里不得再有「下一集」——它与底栏 ⎓ 重复'
             '（两处都调 _gotoNextEpisode）',
       );
       // ★ 底栏那一枚在 `lib/ui/player/player_bottom_bar.dart`里（本测试不引用它，直接读文件）。
       expect(
-        stripComments(File(_barPath).readAsStringSync()).contains('Icons.skip_next'),
+        stripComments(File(_barPath).readAsStringSync())
+            .contains('Icons.skip_next'),
         isTrue,
         reason: '★★ 底栏 ⎓ 仍须在（入口唯一 ≠ 功能没了）',
       );
@@ -789,7 +798,8 @@ void main() {
       indexOfExactly(
         _page,
         'const double _kPlayerBottomBarHeight = 106;',
-        why: '★ 面板定位用的底栏高度必须是命名常量（两处要能对得上）。'
+        why:
+            '★ 面板定位用的底栏高度必须是命名常量（两处要能对得上）。'
             '★★ 2026-10-13（Owner「悬浮窗距离底部太多」）：这个数从 96 修正为 **106**'
             '—— 实测底栏真实高度是 106（`getRect(PlayerBottomBar)` = '
             'Rect(0,794,1280,900)），而常量一直填着 96（本文件另一半的注释也写着'

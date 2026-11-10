@@ -40,7 +40,9 @@ import 'dart:io';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
+
 import 'widgets/miuix_controls.dart' as ui;
+
 import 'package:flutter/foundation.dart' show ValueListenable;
 
 import '../core/app_log.dart';
@@ -56,7 +58,12 @@ import 'widgets/overlay_motion.dart';
 // ★ task-12 ⑤：只取一个常量（kLocalProvider）—— 本地命名空间必须**只有一处定义**，
 //   在本文件里再写一份字面量就是第二个契约（本仓反复踩过这个形态）。
 import 'cache_page.dart'
-    show CachedDelete, CachedWork, canonicalLocalPath, humanBytes, kLocalProvider;
+    show
+        CachedDelete,
+        CachedWork,
+        canonicalLocalPath,
+        humanBytes,
+        kLocalProvider;
 import 'media_session.dart';
 import '../core/network_status.dart';
 import '../design/widgets/app_glass_dialog.dart';
@@ -368,10 +375,7 @@ const double kEpsViewportH = 148;
 ///
 /// ⚠️ `availH` 为 null/非有限（= 外层没给确定高度，如放进可滚列表里）
 ///    ⇒ 退回 `kEpsViewportH`（= 改动前的行为）—— 那时"剩余空间"无意义。
-double episodeViewportHeight({
-  required double topH,
-  required double? availH,
-}) {
+double episodeViewportHeight({required double topH, required double? availH}) {
   if (availH == null || !availH.isFinite) return kEpsViewportH;
   final rest = availH - topH - Sp.x6 - Sp.x16;
   return rest > kEpsViewportH ? rest : kEpsViewportH;
@@ -703,16 +707,17 @@ class DetailPage extends StatefulWidget {
 
   /// 换源后跳到新源的详情页（整页重新加载）
   /// ★★★ N2（2026-10-27）：跨源换源回调。
-///
-/// `resumeFrom` / `episodeIndex` 是**可选**的续播信息（弹层算好的那份）。
-/// 只有合并页换源（`MediaPage._onDetailSwitchSource`）会消费它们；
-/// 其余 8 个调用方（打开某个源的某个内容）忽略即可 —— 行为一字不变。
-final void Function(
-      String provider,
-      String id, {
-      Duration? resumeFrom,
-      int? episodeIndex,
-    })? onOpenDetail;
+  ///
+  /// `resumeFrom` / `episodeIndex` 是**可选**的续播信息（弹层算好的那份）。
+  /// 只有合并页换源（`MediaPage._onDetailSwitchSource`）会消费它们；
+  /// 其余 8 个调用方（打开某个源的某个内容）忽略即可 —— 行为一字不变。
+  final void Function(
+    String provider,
+    String id, {
+    Duration? resumeFrom,
+    int? episodeIndex,
+  })?
+  onOpenDetail;
 
   /// ★ task-58：详情加载完成 ⇒ 通知外层
   ///
@@ -1030,7 +1035,8 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   /// 右侧选集网格实际渲染的那份（本线路的集；单线路源 = 全集）
-  List<Episode> get _lineEpisodes => episodesForLine(_episodes, _currentLineFlag);
+  List<Episode> get _lineEpisodes =>
+      episodesForLine(_episodes, _currentLineFlag);
 
   /// 多线路源才 > 1（徽标「本线路 N 集 · 共 M 条线路」的 M 判据）
   int get _lineCount => lineCountOf(_episodes);
@@ -1094,8 +1100,7 @@ class _DetailPageState extends State<DetailPage> {
   ///    重新挂载整棵子树（闪烁 + 丢状态）。
   final Map<String, GlobalKey> _epKeys = <String, GlobalKey>{};
 
-  GlobalKey _epKeyFor(String id) =>
-      _epKeys.putIfAbsent(id, () => GlobalKey());
+  GlobalKey _epKeyFor(String id) => _epKeys.putIfAbsent(id, () => GlobalKey());
 
   /// ★ task-12 ⑤：本地行（「已下载」那段）的 key，按**绝对路径**索引
   ///
@@ -1167,9 +1172,11 @@ class _DetailPageState extends State<DetailPage> {
     );
     if (want == null) return; // 已可见 / 无需动
 
-    debugPrint('[DETAIL] 选集自动滚动: $id '
-        '（offset ${_epsCtrl.offset.toStringAsFixed(0)} → '
-        '${want.toStringAsFixed(0)}，dy=${dy.toStringAsFixed(0)}）');
+    debugPrint(
+      '[DETAIL] 选集自动滚动: $id '
+      '（offset ${_epsCtrl.offset.toStringAsFixed(0)} → '
+      '${want.toStringAsFixed(0)}，dy=${dy.toStringAsFixed(0)}）',
+    );
 
     // ★ 只滚**选集**控制器 —— 外层 ListView 不受影响（见 [_epsCtrl]）
     _epsCtrl.animateTo(
@@ -1219,7 +1226,9 @@ class _DetailPageState extends State<DetailPage> {
 
   void _observePlaybackProgress() {
     final progress = widget.playbackProgress?.value;
-    if (!mounted || progress == null || progress.provider != widget.provider ||
+    if (!mounted ||
+        progress == null ||
+        progress.provider != widget.provider ||
         progress.id != widget.id ||
         progress.generation < _playbackGeneration) {
       return;
@@ -1323,7 +1332,8 @@ class _DetailPageState extends State<DetailPage> {
     return i >= 0 ? i + 1 : 0;
   }
 
-  bool get _hasMultiSource => _sourceNodes.expand((s) => s.flattened).length > 1;
+  bool get _hasMultiSource =>
+      _sourceNodes.expand((s) => s.flattened).length > 1;
 
   /// ★★★ 触发路径 ③：播放器切集（上一集/下一集/自动连播）
   ///
@@ -1410,8 +1420,10 @@ class _DetailPageState extends State<DetailPage> {
      * ★ 打一行日志 —— 与 `[MEDIA] build:` 同一用途：让**真机**能读到
      *   布局判据的实际取值（否则只能靠截图量像素，而锁屏时截不到）。
      */
-    debugPrint('[DETAIL] 选集之上实测高 = ${h.toStringAsFixed(1)}px'
-        ' ⇒ 选集视口 ${_epsHFor(h).toStringAsFixed(1)}px');
+    debugPrint(
+      '[DETAIL] 选集之上实测高 = ${h.toStringAsFixed(1)}px'
+      ' ⇒ 选集视口 ${_epsHFor(h).toStringAsFixed(1)}px',
+    );
     setState(() => _topH = h);
   }
 
@@ -1532,10 +1544,6 @@ class _DetailPageState extends State<DetailPage> {
 
   /// 本地模式下「那几枚操作按钮」画不画（Owner ⑬：没网就不显示）
   bool get _showLocalActions => !widget.isLocalFile || _online;
-
-
-
-
 
   /// ★★★ OPS-9：**这一集磁盘上已经有可播文件** ⇒ 不画那枚「换源」
   ///
@@ -1688,7 +1696,10 @@ class _DetailPageState extends State<DetailPage> {
        */
       final c = hit.cover;
       final cur = _detail;
-      if (c != null && c.isNotEmpty && cur != null && (cur.cover ?? '').isEmpty) {
+      if (c != null &&
+          c.isNotEmpty &&
+          cur != null &&
+          (cur.cover ?? '').isEmpty) {
         _detail = MediaDetail(
           id: cur.id,
           title: cur.title,
@@ -1761,8 +1772,7 @@ class _DetailPageState extends State<DetailPage> {
   Future<LocalOriginHit?> _resolveLocalOrigin() async {
     final want = _normalizeTitle(widget.localTitle ?? widget.id);
     if (want.isEmpty) {
-      AppLog.write(
-          'LOCAL', '来源匹配放弃：标题为空（${widget.provider}:${widget.id}）');
+      AppLog.write('LOCAL', '来源匹配放弃：标题为空（${widget.provider}:${widget.id}）');
       return null;
     }
 
@@ -2026,11 +2036,7 @@ class _DetailPageState extends State<DetailPage> {
        * 原版这里写的是重新调一次 `detail()` —— 那是**取不到指定源的剧集**的
        * （detail 返回的是默认源的剧集）。正确的命令是 get_episodes。
        */
-      final eps = await SourinApi.getEpisodes(
-        widget.provider,
-        widget.id,
-        code,
-      );
+      final eps = await SourinApi.getEpisodes(widget.provider, widget.id, code);
       if (mounted) {
         setState(() {
           _episodes = eps;
@@ -2319,8 +2325,9 @@ class _DetailPageState extends State<DetailPage> {
     if (d == null) return;
 
     final target = ep ?? _episodeById(_activeEpisodeId);
-    final idx =
-        target != null ? _episodes.indexWhere((e) => e.id == target.id) : -1;
+    final idx = target != null
+        ? _episodes.indexWhere((e) => e.id == target.id)
+        : -1;
 
     /*
      * ★ 记住用户手动点的这一集 —— 选集区据此高亮。
@@ -2449,9 +2456,11 @@ class _DetailPageState extends State<DetailPage> {
     );
     final added = DownloadQueue.enqueue(task);
     if (!quiet) {
-      _flash(added
-          ? '已加入下载队列（${_episodes.length > 1 ? '共 ${_episodes.length} 集，' : ''}后台串行下载）'
-          : '这一集已经在下载队列里了');
+      _flash(
+        added
+            ? '已加入下载队列（${_episodes.length > 1 ? '共 ${_episodes.length} 集，' : ''}后台串行下载）'
+            : '这一集已经在下载队列里了',
+      );
     }
     return added;
   }
@@ -2523,8 +2532,10 @@ class _DetailPageState extends State<DetailPage> {
      * 若不在这里留一行，判据⑤就**无法从日志判定**
      * （只能靠"导航日志没有增加"这种**否定证据**，那不够）。
      */
-    debugPrint('[DETAIL] 打开换源弹层：当前=${widget.provider}:${widget.id} '
-        '站名=${_activeSourceName ?? "(未知)"} epIdx=$epIdx pos=${pos}s');
+    debugPrint(
+      '[DETAIL] 打开换源弹层：当前=${widget.provider}:${widget.id} '
+      '站名=${_activeSourceName ?? "(未知)"} epIdx=$epIdx pos=${pos}s',
+    );
 
     final pick = await showSourceSwitchDialog(
       context,
@@ -2539,8 +2550,10 @@ class _DetailPageState extends State<DetailPage> {
       return;
     }
 
-    debugPrint('[DETAIL] 换源弹层选中 ⇒ ${pick.provider}:${pick.id} '
-        '⇒ 交给外层（合并页里 = 页内换源，不 push 路由）');
+    debugPrint(
+      '[DETAIL] 换源弹层选中 ⇒ ${pick.provider}:${pick.id} '
+      '⇒ 交给外层（合并页里 = 页内换源，不 push 路由）',
+    );
 
     /*
      * ★ 跳到新源 —— 两种用法在这一行的**语义不同**（同一个回调）：
@@ -2654,7 +2667,8 @@ class _DetailPageState extends State<DetailPage> {
              */
             onBack: widget.embedded ? null : () => Navigator.pop(context),
           )
-        else if (_detail != null) _buildBody(context, _detail!),
+        else if (_detail != null)
+          _buildBody(context, _detail!),
         // ★ 2026-10-18（Owner 第 12 条）：本页不再画 toast ——
         //   统一由 shell 层的 `ToastHost` 承担（见 `_flash` 的说明）。
       ],
@@ -2849,11 +2863,7 @@ class _DetailPageState extends State<DetailPage> {
   ///   （这个数不是拍的：96+16+188 = 300，188px 是标题不换行到离谱的下限。）
   ///
   /// ★ 侧栏 409 ⇒ 可用 361 ≥ 300 ⇒ **窄档并排** ⇒ 封面右边不再有 273px 空洞 ✓
-  Widget _buildHeader(
-    BuildContext context,
-    MediaDetail d,
-    int sourceCount,
-  ) {
+  Widget _buildHeader(BuildContext context, MediaDetail d, int sourceCount) {
     /// `_Info` 的实参（分档里要复用，避免重复 12 行）
     ///
     /// ★ 2026-09-27：拆成 [infoHead] / [infoRest] 两个**同参**的构造器 ——
@@ -2898,25 +2908,25 @@ class _DetailPageState extends State<DetailPage> {
         // ★ task-12 ⑤：本地模式下"集数"换成**已下载集数**（Owner：除了集数的展示）
         episodeCount: lineN,
         episodeBadge: badge,
-          localCount: widget.isLocalFile ? widget.localEpisodeCount : 0,
-          sourceCount: sourceCount,
-          // ★ task-12 ⑤：本地模式的"来源"是 _localOrigin（站点名 / 「本地」）；
-          //   在线模式仍是 _providerName —— 逐字不变。
-          providerName: widget.isLocalFile ? _localOrigin : _providerName,
-          localMode: widget.isLocalFile,
-          showActions: _showLocalActions,
-          // ★★★ OPS-9：这一集磁盘上有没有可播文件 ⇒ 只决定那枚「换源」画不画
-          hasLocalFile: _hasLocalPlayable,
-          isFav: _isFav,
-          following: _following,
-          resume: _resume,
-          resumeTitle: _resume == null ? '' : _resumeTitle(_resume!),
-          resumeRemaining: _resume == null ? '' : _resumeRemaining(_resume!),
-          onToggleFav: _toggleFav,
-          onToggleFollow: _toggleFollow,
-          onSwitchSource: _openSwitchSource,
-          onDownloadCurrent: _downloadCurrent,
-          onDownloadAll: _downloadAll,
+        localCount: widget.isLocalFile ? widget.localEpisodeCount : 0,
+        sourceCount: sourceCount,
+        // ★ task-12 ⑤：本地模式的"来源"是 _localOrigin（站点名 / 「本地」）；
+        //   在线模式仍是 _providerName —— 逐字不变。
+        providerName: widget.isLocalFile ? _localOrigin : _providerName,
+        localMode: widget.isLocalFile,
+        showActions: _showLocalActions,
+        // ★★★ OPS-9：这一集磁盘上有没有可播文件 ⇒ 只决定那枚「换源」画不画
+        hasLocalFile: _hasLocalPlayable,
+        isFav: _isFav,
+        following: _following,
+        resume: _resume,
+        resumeTitle: _resume == null ? '' : _resumeTitle(_resume!),
+        resumeRemaining: _resume == null ? '' : _resumeRemaining(_resume!),
+        onToggleFav: _toggleFav,
+        onToggleFollow: _toggleFollow,
+        onSwitchSource: _openSwitchSource,
+        onDownloadCurrent: _downloadCurrent,
+        onDownloadAll: _downloadAll,
       );
     }
 
@@ -3252,7 +3262,7 @@ class _DetailPageState extends State<DetailPage> {
   /// `_buildBody` 里**选集之上**的全部内容（抽出来是为了能被测量）
   List<Widget> _bodyTop(BuildContext context, MediaDetail d, int sourceCount) {
     return [
-        /*
+      /*
          * ── 返回 ──
          *
          * ★ task-58：**合并页里不画这个按钮** —— 返回的语义变了：
@@ -3263,12 +3273,12 @@ class _DetailPageState extends State<DetailPage> {
          * 合并页的返回由 `MediaPage` 顶层统一处理（含标题栏/手势），
          * 这里再画一个会让用户看到**两个返回入口**、而且语义不一致。
          */
-        if (!widget.embedded)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(Sp.x2, Sp.x4, Sp.x2, 0),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              /*
+      if (!widget.embedded)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Sp.x2, Sp.x4, Sp.x2, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            /*
                * ★ 2026-10-18（轨道 E · 玻璃化 M2 第 2 步）：IconButton → AppIconButton
                *
                * # 为什么用 AppIconButton 而不是 GlassIconButton
@@ -3286,8 +3296,8 @@ class _DetailPageState extends State<DetailPage> {
                *    ⇒ 读屏器仍能念出「返回」，但鼠标悬停不出气泡。
                *    这是"暂时收窄"，不是"做完了"。
                */
-              child: SizedBox(
-                /*
+            child: SizedBox(
+              /*
                  * ★★★ 为什么必须显式 48×48（实测，不是猜的）
                  *
                  * 实测原 Material `IconButton(tooltip:)` 的真实尺寸 = **48×48**
@@ -3298,18 +3308,18 @@ class _DetailPageState extends State<DetailPage> {
                  *   但**缩小**本身就是回归 —— 且 48 是 iOS/Material 的通用最小热区。
                  * ⇒ 显式锁 48，与替换前逐值一致。
                  */
-                width: 48,
-                height: 48,
-                child: AppIconButton(
-                  onPressed: () => Navigator.of(context).maybePop(),
-                  icon: const Icon(AppIcons.chevron_left),
-                  tooltip: '返回',
-                ),
+              width: 48,
+              height: 48,
+              child: AppIconButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+                icon: const Icon(AppIcons.chevron_left),
+                tooltip: '返回',
               ),
             ),
           ),
+        ),
 
-        /*
+      /*
          * ── 头部：海报 + 元信息 ──
          *
          * ★ task-60 ②：分档判据从「窗口宽度」改成「**本区可用宽度**」
@@ -3347,64 +3357,71 @@ class _DetailPageState extends State<DetailPage> {
          *    所以那时**本来就有**间距 —— 本修复只影响 embedded（合并页）。
          *    ⇒ 用条件内边距，**不动**独立详情页的既有观感（冻结契约）。
          */
-        Padding(
-          padding: EdgeInsets.fromLTRB(
-            AppMetrics.contentPadding,
-            // ★ embedded（合并页）：标题栏下要留呼吸空间
-            widget.embedded ? Sp.x4 : 0,
-            AppMetrics.contentPadding,
-            0,
-          ),
-          child: _buildHeader(context, d, sourceCount),
+      Padding(
+        padding: EdgeInsets.fromLTRB(
+          AppMetrics.contentPadding,
+          // ★ embedded（合并页）：标题栏下要留呼吸空间
+          widget.embedded ? Sp.x4 : 0,
+          AppMetrics.contentPadding,
+          0,
         ),
+        child: _buildHeader(context, d, sourceCount),
+      ),
 
-          const SizedBox(height: Sp.x8),
+      const SizedBox(height: Sp.x8),
 
-          // ── 一级：播放源（单选项时隐藏）──
-          //
-          // ⚠️ 这里用 [DetailSourcePicker] 而不是手写的横向 ListView
-          //
-          // # 为什么必须换掉（两个缺口叠在一起）
-          //
-          // 原版 `DetailView.vue:666-673` 用的是 `SourcePicker` 组件，
-          // 而那个组件的核心能力是**递归**（`SourcePicker.vue:74-80`
-          // 自己渲染自己），用于「线路里还有线路」的源。
-          //
-          // 我们原来的实现是**单层** `ListView`，两个问题：
-          // ```text
-          // ① 没有嵌套概念 → 嵌套线路永远看不到（PlaySource 连 nested 字段都没有）
-          // ② 标题读的是 name（后端发 title）→ 永远显示成 code（cychub / cdn）
-          // ```
-          // 现在换成 DetailSourcePicker：既递归渲染嵌套层，又读真标题与集数。
-          // ★ task-12 ⑤：本地模式**不画「播放源」** ——
-          //   本地文件不属于任何站点，"站内换线路"这件事在它身上没有意义
-          //   （Owner 把"换源"归在"那些操作按钮不显示"里）。
-          if (!widget.isLocalFile && _hasMultiSource) ...[
-            const _BlockTitle(text: '播放源'),
-            DetailSourcePicker(
-              sources: _sourceNodes,
-              active: _activeSource,
-              onPick: _pickSource,
-            ),
-            const SizedBox(height: Sp.x6),
+      // ── 一级：播放源（单选项时隐藏）──
+      //
+      // ⚠️ 这里用 [DetailSourcePicker] 而不是手写的横向 ListView
+      //
+      // # 为什么必须换掉（两个缺口叠在一起）
+      //
+      // 原版 `DetailView.vue:666-673` 用的是 `SourcePicker` 组件，
+      // 而那个组件的核心能力是**递归**（`SourcePicker.vue:74-80`
+      // 自己渲染自己），用于「线路里还有线路」的源。
+      //
+      // 我们原来的实现是**单层** `ListView`，两个问题：
+      // ```text
+      // ① 没有嵌套概念 → 嵌套线路永远看不到（PlaySource 连 nested 字段都没有）
+      // ② 标题读的是 name（后端发 title）→ 永远显示成 code（cychub / cdn）
+      // ```
+      // 现在换成 DetailSourcePicker：既递归渲染嵌套层，又读真标题与集数。
+      // ★ task-12 ⑤：本地模式**不画「播放源」** ——
+      //   本地文件不属于任何站点，"站内换线路"这件事在它身上没有意义
+      //   （Owner 把"换源"归在"那些操作按钮不显示"里）。
+      if (!widget.isLocalFile && _hasMultiSource) ...[
+        const _BlockTitle(text: '播放源'),
+        DetailSourcePicker(
+          sources: _sourceNodes,
+          active: _activeSource,
+          onPick: _pickSource,
+        ),
+        const SizedBox(height: Sp.x6),
+      ],
+      if (!widget.isLocalFile && _lineCount > 1) ...[
+        const _BlockTitle(text: '播放线路'),
+        DetailSourcePicker(
+          sources: [
+            for (final flag
+                in _episodes
+                    .map((e) => e.flag)
+                    .whereType<String>()
+                    .where((s) => s.isNotEmpty)
+                    .toSet())
+              PlaySource(
+                code: flag,
+                title: flag,
+                count: _episodes.where((e) => e.flag == flag).length,
+              ),
           ],
-          if (!widget.isLocalFile && _lineCount > 1) ...[
-            const _BlockTitle(text: '播放线路'),
-            DetailSourcePicker(
-              sources: [
-                for (final flag in _episodes.map((e) => e.flag)
-                    .whereType<String>().where((s) => s.isNotEmpty).toSet())
-                  PlaySource(code: flag, title: flag,
-                    count: _episodes.where((e) => e.flag == flag).length),
-              ],
-              active: effectiveFlag(_episodes, _currentLineFlag) ?? '',
-              onPick: (line) {
-                setState(() => _browsedLineFlag = line.code);
-                widget.onPickLine?.call(line.code);
-              },
-            ),
-            const SizedBox(height: Sp.x6),
-          ],
+          active: effectiveFlag(_episodes, _currentLineFlag) ?? '',
+          onPick: (line) {
+            setState(() => _browsedLineFlag = line.code);
+            widget.onPickLine?.call(line.code);
+          },
+        ),
+        const SizedBox(height: Sp.x6),
+      ],
     ];
   }
 
@@ -3527,8 +3544,9 @@ class _DetailPageState extends State<DetailPage> {
     for (final ref in refs) {
       final name = ref.fileName;
       // ① 队列里还有这条任务 ⇒ 走正规删除路径（含"先停再删"）
-      final task =
-          DownloadQueue.tasks.value.where((t) => t.fileName == name).toList();
+      final task = DownloadQueue.tasks.value
+          .where((t) => t.fileName == name)
+          .toList();
       for (final t in task) {
         await DownloadQueue.remove(t.id);
       }
@@ -3546,9 +3564,7 @@ class _DetailPageState extends State<DetailPage> {
      */
     widget.onLocalEpisodesChanged?.call();
     AppLog.write('LOCAL', '本地删除：${refs.length} 集，实际删掉 $deleted 个文件');
-    _flash(deleted > 0
-        ? '已删除 $deleted 个文件'
-        : '没有删除任何文件（文件可能已经不在了）');
+    _flash(deleted > 0 ? '已删除 $deleted 个文件' : '没有删除任何文件（文件可能已经不在了）');
   }
 
   /// 本地会话所在的**作品目录**（拿不到 ⇒ 不许删）
@@ -3585,7 +3601,8 @@ class _DetailPageState extends State<DetailPage> {
     final progress = _resume;
     final eps = [
       for (final ref in widget.localEpisodes)
-        if (progress != null && progress.provider == kLocalProvider &&
+        if (progress != null &&
+            progress.provider == kLocalProvider &&
             progress.nativeId == canonicalLocalPath(ref.absolutePath) &&
             progress.duration > 0)
           LocalEpisodeRef(
@@ -3595,7 +3612,8 @@ class _DetailPageState extends State<DetailPage> {
             bytes: ref.bytes,
             watchRatio: (progress.position / progress.duration).clamp(0, 1),
           )
-        else ref,
+        else
+          ref,
     ];
     return [
       // ── 标题行：普通态是「已下载」，选择态变成一整条操作栏 ──
@@ -3645,22 +3663,20 @@ class _DetailPageState extends State<DetailPage> {
                              */
                             onTap: _localSelectMode
                                 ? () => setState(() {
-                                      if (!_localChecked
-                                          .remove(e.absolutePath)) {
-                                        _localChecked.add(e.absolutePath);
-                                      }
-                                    })
+                                    if (!_localChecked.remove(e.absolutePath)) {
+                                      _localChecked.add(e.absolutePath);
+                                    }
+                                  })
                                 : (widget.onPlayLocalEpisode == null
-                                    ? null
-                                    : () => widget.onPlayLocalEpisode!(e)),
+                                      ? null
+                                      : () => widget.onPlayLocalEpisode!(e)),
                             checked: _localSelectMode
                                 ? _localChecked.contains(e.absolutePath)
                                 : null,
                             onDelete: _localSelectMode
                                 ? null
-                                : () => unawaited(
-                                      _confirmDeleteLocalEpisode(e),
-                                    ),
+                                : () =>
+                                      unawaited(_confirmDeleteLocalEpisode(e)),
                           ),
                       ],
                     ),
@@ -3754,18 +3770,18 @@ class _DetailPageState extends State<DetailPage> {
      */
     if (widget.isLocalFile) return _localEpisodesSection();
     return [
-          // ── 二级：剧集 ──
-          if (_episodes.isNotEmpty || _epsLoading) ...[
-            const _BlockTitle(text: '选集'),
-            if (_epsLoading)
-              const Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: AppMetrics.contentPadding,
-                ),
-                child: _EpsSkeleton(),
-              )
-            else
-              /*
+      // ── 二级：剧集 ──
+      if (_episodes.isNotEmpty || _epsLoading) ...[
+        const _BlockTitle(text: '选集'),
+        if (_epsLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: AppMetrics.contentPadding,
+            ),
+            child: _EpsSkeleton(),
+          )
+        else
+          /*
                * ★★★ task-64：包一层 `Flexible` —— **溢出安全网**（必须）
                *
                * # 为什么 ListView 不需要它、Column 必须要有
@@ -3800,12 +3816,12 @@ class _DetailPageState extends State<DetailPage> {
                *     那就破坏了"固定高度"这个已验收契约
                *     （`t61_panel_scroll_test.dart` B 组：`height: epsH`）。
                */
-              Flexible(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppMetrics.contentPadding,
-                  ),
-                /*
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppMetrics.contentPadding,
+              ),
+              /*
                  * ══════════════════════════════════════════════════════════
                  * ★★★ 2026-09-26 第二轮：选集改成**固定高度的独立可滚区**
                  * ══════════════════════════════════════════════════════════
@@ -3835,19 +3851,19 @@ class _DetailPageState extends State<DetailPage> {
                  * （本仓 task-3 同族事故）⇒ 这里只动 `_epsCtrl`。
                  * 滚动逻辑见 `_scrollEpisodesIntoView`。
                  */
-                child: SizedBox(
-                  key: _epsViewportKey,
-                  height: epsH,
-                  child: Scrollbar(
+              child: SizedBox(
+                key: _epsViewportKey,
+                height: epsH,
+                child: Scrollbar(
+                  controller: _epsCtrl,
+                  child: SingleChildScrollView(
+                    clipBehavior: Clip.antiAlias,
                     controller: _epsCtrl,
-                    child: SingleChildScrollView(
-                      clipBehavior: Clip.antiAlias,
-                      controller: _epsCtrl,
-                      child: Wrap(
-                        spacing: Sp.x2,
-                        runSpacing: Sp.x2,
-                        children: [
-                          /*
+                    child: Wrap(
+                      spacing: Sp.x2,
+                      runSpacing: Sp.x2,
+                      children: [
+                        /*
                            * ★★★ 2026-10-30（现场反馈批次 1.1）：
                            * 原来遍历 [_episodes]（全集）—— 多线路源（17 线路 × 27 集）
                            * 会把 459 条全部平铺，「第01集」出现 17 次
@@ -3858,17 +3874,17 @@ class _DetailPageState extends State<DetailPage> {
                            * ⚠️ 高亮/滚动按 episode id 查 key 表，
                            *    当前集必然属于本线路 ⇒ 两个行为都不受影响。
                            */
-                          for (final ep in _lineEpisodes)
-                            KeyedSubtree(
-                              /*
+                        for (final ep in _lineEpisodes)
+                          KeyedSubtree(
+                            /*
                                * ★ 每一集要有**稳定的 key** ——
                                *   `_scrollEpisodesIntoView` 靠它拿到按钮的
                                *   RenderBox 来算该滚多少。
                                */
-                              key: _epKeyFor(ep.id),
-                              child: _EpisodeButton(
-                                title: ep.title,
-                                /*
+                            key: _epKeyFor(ep.id),
+                            child: _EpisodeButton(
+                              title: ep.title,
+                              /*
                                  * ★ 两个状态**语义不同，都要有**（Owner 要求）：
                                  * ```text
                                  * active  当前**选中**的那一集（默认上次观看的，否则第一集）
@@ -3877,21 +3893,21 @@ class _DetailPageState extends State<DetailPage> {
                                  * ⚠️ 不能只留 active：用户想看到"哪几集看过"这个信息。
                                  *    也不能只留 played：没观看记录时整片灰着，像没选中。
                                  */
-                                active: _activeEpisodeId == ep.id,
-                                played: _resume?.episodeId == ep.id,
-                                onTap: () => _play(ep),
-                              ),
+                              active: _activeEpisodeId == ep.id,
+                              played: _resume?.episodeId == ep.id,
+                              onTap: () => _play(ep),
                             ),
-                        ],
-                      ),
+                          ),
+                      ],
                     ),
                   ),
                 ),
               ),
-              ),
-            const SizedBox(height: Sp.x6),
-          ] else ...[
-            /*
+            ),
+          ),
+        const SizedBox(height: Sp.x6),
+      ] else ...[
+        /*
              * ══════════════════════════════════════════════════════════════
              * ★★★ 2026-09-27：无剧集分支的「播放」按钮**也删掉了**
              * ══════════════════════════════════════════════════════════════
@@ -3931,7 +3947,7 @@ class _DetailPageState extends State<DetailPage> {
              * ③ 「换源」按钮（在 `_Info` 的操作行里，无论有没有剧集都在）
              * ```
              */
-          ],
+      ],
     ];
   }
 }
@@ -3996,7 +4012,8 @@ class _Cover extends StatelessWidget {
   ///      无 scheme（`cover.jpg` 这类相对名）⇒ 本地。
   static bool _isLocalCover(String? cover) {
     if (cover == null || cover.isEmpty) return false;
-    if (cover.startsWith('http://') || cover.startsWith('https://')) return false;
+    if (cover.startsWith('http://') || cover.startsWith('https://'))
+      return false;
     // ★ CR-11：盘符（正则只认前缀，`C:\\` 与 `C:/` 两种写法都算）
     if (_driveLetter.hasMatch(cover)) return true;
     // UNC：两个反斜杠开头
@@ -4069,7 +4086,9 @@ class _Cover extends StatelessWidget {
                   ),
                   errorBuilder: (_, __, ___) => Center(
                     child: Text(
-                      detail.title.isEmpty ? '?' : detail.title.characters.first,
+                      detail.title.isEmpty
+                          ? '?'
+                          : detail.title.characters.first,
                       style: TextStyle(
                         fontSize: FontSizes.display * 0.6,
                         color: colors.onSurfaceVariant.withValues(alpha: 0.5),
@@ -4094,7 +4113,9 @@ class _Cover extends StatelessWidget {
                   //   那条分支表现不同，同一件事两种 UI。
                   errorBuilder: (_, __, ___) => Center(
                     child: Text(
-                      detail.title.isEmpty ? '?' : detail.title.characters.first,
+                      detail.title.isEmpty
+                          ? '?'
+                          : detail.title.characters.first,
                       style: TextStyle(
                         fontSize: FontSizes.display * 0.6,
                         color: colors.onSurfaceVariant.withValues(alpha: 0.5),
@@ -4417,7 +4438,6 @@ class _Info extends StatelessWidget {
     );
   }
 
-
   /// ★ 其余「简介 + 操作 + 续播」—— 窄档里**通栏**
   ///
   /// ⚠️ 与 [_head] 之间**没有**额外间距 —— 简介自己带 `Sp.x4` 的顶部间距
@@ -4461,13 +4481,13 @@ class _Info extends StatelessWidget {
          * ⚠️ 所以这里**不是"藏起来"**，而是它们本就无处可落。
          */
         if (showActions) ...[
-        // ── 操作 ──
-        const SizedBox(height: Sp.x4),
-        Wrap(
-          spacing: Sp.x2,
-          runSpacing: Sp.x2,
-          children: [
-            /*
+          // ── 操作 ──
+          const SizedBox(height: Sp.x4),
+          Wrap(
+            spacing: Sp.x2,
+            runSpacing: Sp.x2,
+            children: [
+              /*
              * ══════════════════════════════════════════════════════════════
              * ★★★ 2026-09-27：删掉「继续观看 / 播放」按钮
              * ══════════════════════════════════════════════════════════════
@@ -4514,7 +4534,7 @@ class _Info extends StatelessWidget {
              * ⇒ 三个真实入口都在，删掉的是**唯一那个假的**。
              * ```
              */
-            /*
+              /*
              * ══════════════════════════════════════════════════════════════
              * ★★★ 2026-10-13（Owner）：**本地文件不画「收藏」**
              * ══════════════════════════════════════════════════════════════
@@ -4539,21 +4559,21 @@ class _Info extends StatelessWidget {
              * ⚠️ 只摘这两枚，**不动** `showActions`（那样会把"下载"等也一起摘掉），
              *    也不动"换源"那枚（它有自己的 `_hasLocalPlayable` 判据）。
              */
-            if (!localMode)
-              _ToggleButton(
-                /*
+              if (!localMode)
+                _ToggleButton(
+                  /*
                  * ★ 轨道 E M2 第 3 步：给四枚按钮各自一个**语义位置 Key**。
                  * 门禁（t27_w3）从此按 Key 定位，不再靠 `find.byType(OutlinedButton)`
                  * —— 判据守的是「四枚同源同档」这个产品契约，不是"它们内部
                  * 是不是 Material 的 ButtonStyleButton"这个实现细节。
                  */
-                key: const ValueKey('detail-action-favorite'),
-                icon: isFav ? AppIcons.star : AppIcons.star_border,
-                label: isFav ? '已收藏' : '收藏',
-                on: isFav,
-                onTap: onToggleFav,
-              ),
-            /*
+                  key: const ValueKey('detail-action-favorite'),
+                  icon: isFav ? AppIcons.star : AppIcons.star_border,
+                  label: isFav ? '已收藏' : '收藏',
+                  on: isFav,
+                  onTap: onToggleFav,
+                ),
+              /*
              * ★ 追更按钮（与收藏**完全独立**）
              *
              * Owner 的纠正：
@@ -4563,16 +4583,18 @@ class _Info extends StatelessWidget {
              *
              * ⚠️ 同理，本地文件不画（它与收藏同属"需要 provider:id"的一类）。
              */
-            if (!localMode)
-              _ToggleButton(
-                key: const ValueKey('detail-action-follow'),
-                icon: following ? AppIcons.notifications : AppIcons.notifications_none,
-                label: following ? '追更中' : '追更',
-                on: following,
-                onTap: onToggleFollow,
-              ),
+              if (!localMode)
+                _ToggleButton(
+                  key: const ValueKey('detail-action-follow'),
+                  icon: following
+                      ? AppIcons.notifications
+                      : AppIcons.notifications_none,
+                  label: following ? '追更中' : '追更',
+                  on: following,
+                  onTap: onToggleFollow,
+                ),
 
-            /*
+              /*
              * ★★★ 跨源换源入口（与「播放源」是**两个不同层级**的功能）
              *
              * 原版 `DetailView.vue:639-652` 的注释：
@@ -4583,7 +4605,7 @@ class _Info extends StatelessWidget {
              * 原版的位置是**头部操作行**（与播放/收藏/追更并排），
              * 我们原先放在选集区下方，有剧集时要滚下去才看得到 —— 已挪回这里。
              */
-            /*
+              /*
              * ★★★ OPS-9：**这一集磁盘上已经有可播文件 ⇒ 这一枚不画**
              *
              * Owner 原话（逐字）：
@@ -4594,13 +4616,13 @@ class _Info extends StatelessWidget {
              *    与"整条行画不画"的 [showActions] 是**两件事**，
              *    别把它并进上面那个 `if (showActions)`（那样三枚会一起消失）。
              */
-            if (!hasLocalFile) ...[
-              AppOutlinedButton.icon(
-                key: const ValueKey('detail-action-switch-source'),
-                // ★ 轨道 E M2 第 3 步：OutlinedButton.icon → AppOutlinedButton.icon
-                //   （几何由组件内复刻 Material 密度策略保证，实测两平台逐值相同）
-                onPressed: onSwitchSource,
-                /*
+              if (!hasLocalFile) ...[
+                AppOutlinedButton.icon(
+                  key: const ValueKey('detail-action-switch-source'),
+                  // ★ 轨道 E M2 第 3 步：OutlinedButton.icon → AppOutlinedButton.icon
+                  //   （几何由组件内复刻 Material 密度策略保证，实测两平台逐值相同）
+                  onPressed: onSwitchSource,
+                  /*
                  * ══════════════════════════════════════════════════════════
                  * ★★★ Owner 1011 反馈③：这一枚**原来没有 style** ⇒ 文字色脱离同组
                  * ══════════════════════════════════════════════════════════
@@ -4633,18 +4655,18 @@ class _Info extends StatelessWidget {
                  *    `_pillForeground(colors, on: false)` —— 不许在这里手写色值，
                  *    否则又变成"第二处实现"（本仓反复踩过这个形态）。
                  */
-                icon: Icon(
-                  AppIcons.swap_horiz,
-                  size: 16,
-                  color: _pillForeground(colors, on: false),
+                  icon: Icon(
+                    AppIcons.swap_horiz,
+                    size: 16,
+                    color: _pillForeground(colors, on: false),
+                  ),
+                  label: const Text('换源'),
+                  foregroundColor: _pillForeground(colors, on: false),
+                  borderColor: _pillBorderStyle(colors, on: false).color,
                 ),
-                label: const Text('换源'),
-                foregroundColor: _pillForeground(colors, on: false),
-                borderColor: _pillBorderStyle(colors, on: false).color,
-              ),
-            ],
+              ],
 
-            /*
+              /*
              * ══════════════════════════════════════════════════════════
              * ★★★ 2026-10-08（Owner 第 4 条）：下载入口**挪到这里**
              * ══════════════════════════════════════════════════════════
@@ -4666,25 +4688,21 @@ class _Info extends StatelessWidget {
              *    且有 6 个测试文件盯着它）。两个入口的语义在按钮文案上
              *    已经区分开：那边是「到缓存」，这边是「下载」。
              */
-            _DownloadButton(
-              key: const ValueKey('detail-action-download'),
-              episodeCount: episodeCount,
-              onDownloadCurrent: onDownloadCurrent,
-              onDownloadAll: onDownloadAll,
-            ),
-          ],
-        ),
+              _DownloadButton(
+                key: const ValueKey('detail-action-download'),
+                episodeCount: episodeCount,
+                onDownloadCurrent: onDownloadCurrent,
+                onDownloadAll: onDownloadAll,
+              ),
+            ],
+          ),
         ],
-
 
         // ── 续播提示 ──
         if (resume != null && resume!.position > 5) ...[
           const SizedBox(height: Sp.x4),
           Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: Sp.x4,
-              vertical: 7,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: Sp.x4, vertical: 7),
             decoration: BoxDecoration(
               borderRadius: Radii.rFull,
               border: Border.all(color: colors.outlineVariant),
@@ -4772,21 +4790,22 @@ class _Chip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: 4),
-      decoration: BoxDecoration(
-        color: brand ? colors.primary.withValues(alpha: 0.16) : null,
-        borderRadius: Radii.rFull,
-        border: Border.all(
-          color: brand ? colors.primary : colors.outlineVariant,
-        ),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: FontSizes.cap,
-          color: brand ? colors.primary : colors.onSurfaceVariant,
+    final colors = miuix.MiuixTheme.of(context).colors;
+    return miuix.MiuixBadge(
+      containerColor: brand
+          ? colors.primary.withValues(alpha: 0.14)
+          : colors.secondaryVariant,
+      contentColor: brand ? colors.primary : colors.onSurfaceVariantSummary,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x1, vertical: Sp.x1),
+        child: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: brand ? colors.primary : colors.onSurfaceVariantSummary,
+          ),
         ),
       ),
     );
@@ -4935,10 +4954,8 @@ class _DownloadButton extends StatelessWidget {
     // ★ 与 `showMenu` 用的是**同一个** navigator（它默认 useRootNavigator=true，
     //   但从 `context` 起的 `Navigator.of` 在本应用里指向同一条根 Navigator；
     //   若将来 `showMenu` 显式传 useRootNavigator，这里要一起对齐）。
-    final overlay = Navigator.of(context)
-        .overlay
-        ?.context
-        .findRenderObject() as RenderBox?;
+    final overlay =
+        Navigator.of(context).overlay?.context.findRenderObject() as RenderBox?;
     if (box == null || overlay == null || !box.hasSize) return;
     // 防御：锚点与 overlay 必须同层可达 —— 否则 localToGlobal(ancestor:)
     // 会抛（不在同一条渲染树）。不同就放弃弹菜单，绝不按错坐标系硬弹。
@@ -4949,8 +4966,10 @@ class _DownloadButton extends StatelessWidget {
     final position = RelativeRect.fromRect(
       Rect.fromPoints(
         box.localToGlobal(under, ancestor: overlay),
-        box.localToGlobal(box.size.bottomRight(Offset.zero) + under,
-            ancestor: overlay),
+        box.localToGlobal(
+          box.size.bottomRight(Offset.zero) + under,
+          ancestor: overlay,
+        ),
       ),
       Offset.zero & overlay.size,
     );
@@ -4977,10 +4996,7 @@ class _DownloadButton extends StatelessWidget {
       items: <AppMenuItem<String>>[
         const AppMenuItem<String>(value: 'one', label: '下载本集'),
         if (all != null)
-          AppMenuItem<String>(
-            value: 'all',
-            label: '下载全部集（$episodeCount 集）',
-          ),
+          AppMenuItem<String>(value: 'all', label: '下载全部集（$episodeCount 集）'),
       ],
     );
     // ⚠️ `await` 之后页面可能已经关掉/重建了（lint
@@ -5031,7 +5047,6 @@ class _DownloadButton extends StatelessWidget {
     );
   }
 }
-
 
 /// ★ task-12 ⑤ + task-17 ③：本地模式的一行「已下载的一集」
 ///
@@ -5123,10 +5138,16 @@ class _LocalEpisodeRow extends StatelessWidget {
                     if (ref.watched) ...[
                       const SizedBox(width: Sp.x2),
                       // 已看标记：看过（不是当前在播）
-                      Icon(AppIcons.check_circle, size: 13, color: colors.primary),
+                      Icon(
+                        AppIcons.check_circle,
+                        size: 13,
+                        color: colors.primary,
+                      ),
                       const SizedBox(width: 3),
                       Text(
-                        ref.watchRatio >= 0.995 ? '已看完' : '已看 ${(ref.watchRatio * 100).round()}%',
+                        ref.watchRatio >= 0.995
+                            ? '已看完'
+                            : '已看 ${(ref.watchRatio * 100).round()}%',
                         style: TextStyle(
                           fontSize: FontSizes.cap,
                           color: colors.primary,
@@ -5181,11 +5202,7 @@ class _LocalEpisodeRow extends StatelessWidget {
      * 换成 AppInkWell 后高亮是**自绘**的（画在自己身上），
      * 不再需要祖先 Material ⇒ 整层删除，行为不变。
      */
-    return AppInkWell(
-      onTap: onTap,
-      borderRadius: Radii.rSm,
-      child: row,
-    );
+    return AppInkWell(onTap: onTap, borderRadius: Radii.rSm, child: row);
   }
 }
 
@@ -5292,14 +5309,20 @@ class _LocalEmptyHint extends StatelessWidget {
       children: [
         Text(
           '这台机器上还没有下好这一部',
-          style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.sm,
+            color: colors.onSurfaceVariant,
+          ),
         ),
         const SizedBox(height: Sp.x1),
         Text(
           file,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurfaceVariant),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
         ),
       ],
     );
@@ -5333,10 +5356,7 @@ class _EpisodeButton extends StatelessWidget {
       borderRadius: Radii.rSm,
       child: Container(
         constraints: const BoxConstraints(minWidth: 64),
-        padding: const EdgeInsets.symmetric(
-          horizontal: Sp.x3,
-          vertical: Sp.x2,
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
         decoration: BoxDecoration(
           color: active ? colors.primary.withValues(alpha: 0.16) : null,
           borderRadius: Radii.rSm,

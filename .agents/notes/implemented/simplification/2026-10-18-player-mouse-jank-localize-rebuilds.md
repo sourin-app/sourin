@@ -59,6 +59,16 @@ zz_t66_player_jank_test.dart（569 行）钉住重建计数上界
 但它的代价是**子树整个重建**（state 丢失、动画重置、图片重新解码）。
 这类代价在代码里完全看不出来 —— 只有计数才能暴露。
 
+### ③ 原生缓冲采样与局部进度更新
+
+适用：2026-11-10，PlayerPage 与 PlayerBufferPoller。
+
+原生缓冲轮询每 500ms 最多执行一轮串行读取。停止轮询使在途结果失效；每次 await 后核对代次，避免暂停、退出或恢复时回灌旧样本。比较终点、百分比与缓存时长三项；只比较终点会在文件已全部缓存时把区间起点冻住。缓存秒数必须非负且转换成毫秒后仍有限，无法使用的值按缺失处理。
+
+PlayerPage 用 ValueNotifier 只更新 PlayerProgressSlider。相同区间不通知；清空移除缓存绘制；不改变位置、总时长或 seek。PlayerPage 和底栏动作不随缓冲区间重建。原生属性与播放位置仍执行既有两秒一致性检查，不能用可见缓存区间推断解码器已就绪。
+
+`player_buffer_poller_test.dart` 覆盖固定终点、串行读取、停止与恢复、无效数值；`player_buffer_local_rebuild_test.dart` 观察实际 PlayerPage dirty 标志、底栏 widget 身份和真实绘制矩形。旧回调使整页 dirty 的反证必须失败。实机使用现有播放回调验证暂停、恢复和返回；这些判据证明更新范围与生命周期，不提供帧耗时改善比例。
+
 ## Alternatives considered
 
 - **加 `RepaintBoundary` 挡住重绘** —— 它最强的论据是改动极小（一行包裹），

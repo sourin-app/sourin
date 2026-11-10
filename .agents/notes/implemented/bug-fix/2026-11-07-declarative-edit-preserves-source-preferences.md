@@ -4,6 +4,13 @@ Status: implemented
 
 Applies to the declaration import/edit command from 2026-11-07.
 
+Current scope from 2026-11-09: the UI save path is superseded by
+[declarative source UI retirement](../simplification/2026-11-09-declarative-source-ui-retirement.md).
+The Decision below records the preference-retention rationale; it does not imply
+that declarative editing remains available. Existing configuration, history and
+backups remain intact. General registry preference behavior continues under
+[search source scope](2026-11-08-search-respects-source-scope.md).
+
 ## Problem
 
 The source composer saves edits through `import_declarative_provider`.

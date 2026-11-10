@@ -40,6 +40,9 @@
 //    但两者**读写同一对偏好键**，所以改哪边都立刻生效。
 
 import 'package:material_ui/material_ui.dart';
+
+import 'global_proxy_settings_page.dart';
+
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter/services.dart';
 
@@ -121,16 +124,6 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
 
   bool get _running => _runningSeq != null;
 
-  /// 弹幕代理：当前模式（三态）
-  ///
-  /// ★ 独立于 [_url]（自建服务地址）—— 两件事：
-  ///   `_url` 决定「连哪个弹幕服务器」，本项决定「怎么连到它」。
-  ///   一个网络的屏蔽可能只针对前者，也可能只针对后者，必须分开配。
-  late DanmakuProxyMode _proxyMode;
-
-  /// 自定义代理地址（仅 [_proxyMode] == custom 时有意义）
-  late final TextEditingController _proxyUrl;
-
   // ── 站源弹幕（T8）──
   // 开关默认关（MopenDanmuConfig 缺省 false）⇒ 不配置时这条路根本不存在，
   // 既有来源的一切行为零变化（Owner 批复的默认行为零变化门禁）。
@@ -162,9 +155,6 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     // 打开时用**已保存**的值初始化 ⇒ 用户能看到自己上次配的是什么
     _url = TextEditingController(text: UiPrefs.danmakuEndpoint);
     _token = TextEditingController(text: UiPrefs.danmakuToken);
-    final proxy = currentDanmakuProxySetting();
-    _proxyMode = proxy.mode;
-    _proxyUrl = TextEditingController(text: proxy.url);
     _mopenEnabled = MopenDanmuConfig.enabled;
     _mopenVid = TextEditingController(text: MopenDanmuConfig.vid);
     _mopenClient = MopenDanmuClient();
@@ -174,29 +164,9 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
   void dispose() {
     _url.dispose();
     _token.dispose();
-    _proxyUrl.dispose();
     _mopenVid.dispose();
     _mopenClient.close();
     super.dispose();
-  }
-
-  /// 切换代理模式并**立即落盘**
-  ///
-  /// ★ 为什么不用"保存"按钮：这个页面其它项（地址/令牌）走的是显式保存，
-  ///   但那是因为它们需要"测试连接"这个动作配合。
-  ///   代理三态是**单选**，选中即生效最符合直觉，
-  ///   而且切换后要**立刻**影响下一次弹幕请求（不需要重开页面）。
-  void _setProxy(DanmakuProxyMode? m) {
-    if (m == null) return;
-    _proxyMode = m;
-    UiPrefs.setDanmakuProxy(mode: m.name, url: _proxyUrl.text);
-    _invalidate();
-  }
-
-  /// 地址输入变化 ⇒ 落盘（仅 custom 模式时才有输入框）
-  void _saveProxyUrl() {
-    UiPrefs.setDanmakuProxy(mode: _proxyMode.name, url: _proxyUrl.text);
-    _invalidate();
   }
 
   /// 输入一变 ⇒ 上次的测试结果立刻作废（否则会显示与当前输入无关的结论）
@@ -464,7 +434,7 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
     final colors = Theme.of(context).colorScheme;
     const builtins = kDanmakuPublicInstances;
     final savedRaw = UiPrefs.danmakuEndpoint.trim();
-    final usingBuiltin = savedRaw.isEmpty && builtins.isNotEmpty;
+    final savedEndpoint = savedRaw.replaceFirst(RegExp(r'/+$'), '');
     return SettingsSubPage(
       title: '弹幕源',
       subtitle: 'dan-api（内置公共实例 · 免凭证）· 连不上时自动回退',
@@ -484,11 +454,20 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
               for (final p in builtins) ...[
                 _BuiltinTile(
                   instance: p,
-                  selected: usingBuiltin && _isFirst(p),
+                  selected: savedRaw.isEmpty
+                      ? _isFirst(p)
+                      : savedEndpoint ==
+                            p.baseUrl.replaceFirst(RegExp(r'/+$'), ''),
                   onTap: () => _pickBuiltin(p),
                 ),
                 const SizedBox(height: Sp.x2),
               ],
+              _hint(
+                savedRaw.isEmpty
+                    ? '当前使用：${builtins.first.label}（自动选择，连接失败时回退）'
+                    : '当前使用：${builtins.where((p) => p.baseUrl.replaceFirst(RegExp(r'/+$'), '') == savedEndpoint).map((p) => p.label).firstOrNull ?? '自定义服务'}',
+              ),
+              const SizedBox(height: Sp.x2),
               _hint(
                 '公共服务器：会慢（冷启动几秒）、也可能临时不可用。'
                 '点一下即选中；想用别的就填下面那一栏，填了就压过内置。',
@@ -680,61 +659,19 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
         SettingsBlock(
           title: '网络代理',
           children: [
-            _hint(
-              '弹幕服务器在某些网络下会被屏蔽或连不上。'
-              '这里决定弹幕请求怎么走 —— 与视频源自己的代理是两回事。',
-            ),
+            _hint('弹幕与视频源、GitHub 发现共用全局代理。本机服务始终直连。'),
             const SizedBox(height: Sp.x3),
-            Column(
-              children: [
-                for (final (mode, title, description) in const [
-                  (DanmakuProxyMode.direct, '直连', '不经过代理，也不受系统代理设置影响'),
-                  (
-                    DanmakuProxyMode.system,
-                    '跟随系统代理',
-                    '读取环境变量里的 HTTP_PROXY / HTTPS_PROXY',
+            ui.OutlinedButton.icon(
+              onPressed: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const GlobalProxySettingsPage(),
                   ),
-                  (
-                    DanmakuProxyMode.custom,
-                    '自定义代理',
-                    '只让弹幕请求走这个地址（填 HTTP 代理，不支持 socks）',
-                  ),
-                ])
-                  ui.RadioListTile<DanmakuProxyMode>(
-                    value: mode,
-                    groupValue: _proxyMode,
-                    onChanged: _setProxy,
-                    title: Text(title),
-                    subtitle: Text(description),
-                    dense: true,
-                  ),
-              ],
-            ),
-            // ★ 地址框**只在自定义**时出现 ——
-            //   其它模式留着它会让用户以为"填了就生效"，而实际没被用上
-            if (_proxyMode == DanmakuProxyMode.custom) ...[
-              const SizedBox(height: Sp.x2),
-              ui.TextField(
-                controller: _proxyUrl,
-                decoration: const InputDecoration(
-                  labelText: '代理地址',
-                  hintText: 'http://127.0.0.1:7890',
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: (_) => _saveProxyUrl(),
-              ),
-            ],
-            const SizedBox(height: Sp.x2),
-            /*
-             * ★ 诊断行必须在**三种模式下都显示**
-             *
-             * 存在的理由：`custom` 但地址写坏时，解析会**退回显式直连**
-             * （见 danmaku.dart 的 `resolveDanmakuFindProxy`）。
-             * 若不显示，用户看到的是"我配了代理却没生效"，
-             * 而这种失败和"代理本身不通"表现完全不同，没法排查。
-             */
-            _hint(
-              '当前：${diagnoseDanmakuProxy(mode: _proxyMode, url: _proxyUrl.text)}',
+                );
+                if (mounted) _invalidate();
+              },
+              icon: const Icon(Icons.vpn_lock_outlined),
+              label: const Text('全局代理设置'),
             ),
           ],
         ),

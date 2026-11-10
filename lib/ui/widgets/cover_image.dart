@@ -1,4 +1,233 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+
+final _doubanImageHost = RegExp(r'^img[0-9]+\.doubanio\.com$');
+const _doubanCoverHeaders = <String, String>{
+  'Referer': 'https://movie.douban.com/',
+  'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+};
+
+Map<String, String>? _coverHeaders(String url) {
+  final uri = Uri.tryParse(url);
+  if (uri == null ||
+      (uri.scheme != 'http' && uri.scheme != 'https') ||
+      !_doubanImageHost.hasMatch(uri.host)) {
+    return null;
+  }
+  // CSP recommendations expose public Douban URLs without cover_headers.
+  // These CDNs reject both a missing Referer and Dart's default User-Agent.
+  // Keep the policy on the exact image hosts; local proxies carry source headers.
+  return _doubanCoverHeaders;
+}
+
+/// Replaces CDN headers rather than appending a second default User-Agent,
+/// and routes empty transparent image sentinels to the caller's errorBuilder.
+/// Small visible icons and animated images remain valid.
+class _CoverNetworkImage extends ImageProvider<NetworkImage>
+    implements NetworkImage {
+  const _CoverNetworkImage(this.url);
+
+  // Covers are finite downloads. Keep this deadline independent of the core's
+  // intentionally unbounded video-body transport. Every received body chunk
+  // resets the idle timer, so a progressing large image remains supported.
+  static const _networkWait = Duration(seconds: 20);
+  static final HttpClient _client = HttpClient()
+    ..autoUncompress = false
+    ..connectionTimeout = _networkWait;
+
+  Future<HttpClientRequest> _open(Uri uri) {
+    var expired = false;
+    final opening = _client.getUrl(uri).then((request) {
+      if (expired) {
+        // DNS/connection completion can arrive after our deadline. Consume its
+        // abort error and release that request without sending image headers.
+        request.done.ignore();
+        request.abort();
+      }
+      return request;
+    });
+    return opening.timeout(
+      _networkWait,
+      onTimeout: () {
+        expired = true;
+        throw TimeoutException('Cover connection timed out', _networkWait);
+      },
+    );
+  }
+
+  Future<Uint8List> _readResponse(
+    HttpClientResponse response,
+    StreamController<ImageChunkEvent> chunks,
+  ) async {
+    final length = response.contentLength;
+    final expected =
+        length < 0 ||
+            response.compressionState ==
+                HttpClientResponseCompressionState.decompressed
+        ? null
+        : length;
+    var received = 0;
+    Stream<List<int>> body = response.timeout(_networkWait).map((chunk) {
+      received += chunk.length;
+      chunks.add(
+        ImageChunkEvent(
+          cumulativeBytesLoaded: received,
+          expectedTotalBytes: expected,
+        ),
+      );
+      return chunk;
+    });
+    if (response.compressionState ==
+        HttpClientResponseCompressionState.compressed) {
+      body = body.transform(gzip.decoder);
+    }
+    final output = BytesBuilder(copy: false);
+    // await-for cancels the subscription on timeout/decoder errors. In contrast,
+    // merely timing out a consolidation Future leaves its body consuming bytes.
+    await for (final chunk in body) {
+      output.add(chunk);
+    }
+    return output.takeBytes();
+  }
+
+  @override
+  final String url;
+
+  @override
+  double get scale => 1.0;
+
+  @override
+  Map<String, String>? get headers => _coverHeaders(url);
+
+  @override
+  WebHtmlElementStrategy get webHtmlElementStrategy =>
+      WebHtmlElementStrategy.never;
+
+  @override
+  Future<NetworkImage> obtainKey(ImageConfiguration configuration) =>
+      SynchronousFuture<NetworkImage>(this);
+
+  @override
+  ImageStreamCompleter loadImage(
+    NetworkImage key,
+    ImageDecoderCallback decode,
+  ) => _load(key, decode);
+
+  ImageStreamCompleter _load(
+    NetworkImage key,
+    Future<ui.Codec> Function(ui.ImmutableBuffer) decode,
+  ) {
+    final chunks = StreamController<ImageChunkEvent>();
+    return MultiFrameImageStreamCompleter(
+      codec: _loadBytes(key, decode, chunks),
+      chunkEvents: chunks.stream,
+      scale: key.scale,
+      debugLabel: key.url,
+    );
+  }
+
+  Future<ui.Codec> _loadBytes(
+    NetworkImage key,
+    Future<ui.Codec> Function(ui.ImmutableBuffer) decode,
+    StreamController<ImageChunkEvent> chunks,
+  ) async {
+    try {
+      final uri = Uri.base.resolve(key.url);
+      final request = await _open(uri);
+      headers?.forEach((name, value) => request.headers.set(name, value));
+      final response = await request.close().timeout(
+        _networkWait,
+        onTimeout: () {
+          final error = TimeoutException(
+            'Cover response timed out',
+            _networkWait,
+          );
+          request.abort(error);
+          throw error;
+        },
+      );
+      if (response.statusCode != HttpStatus.ok) {
+        // Preserve the known HTTP error even if its optional body never ends.
+        await response.listen(null, onError: (Object _) {}).cancel();
+        throw NetworkImageLoadException(
+          statusCode: response.statusCode,
+          uri: uri,
+        );
+      }
+      final bytes = await _readResponse(response, chunks);
+      if (bytes.isEmpty) throw StateError('Cover image response is empty');
+      final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+      try {
+        // Real posters do not need an additional pixel decode. Tiny CDN
+        // sentinels are small responses; inspect their intrinsic size before
+        // ResizeImage can turn a large, valid poster into a small thumbnail.
+        if (bytes.length <= 4096) await _rejectTransparentSentinel(buffer);
+      } catch (_) {
+        buffer.dispose();
+        rethrow;
+      }
+      return await decode(buffer);
+    } catch (_) {
+      scheduleMicrotask(() => PaintingBinding.instance.imageCache.evict(key));
+      rethrow;
+    } finally {
+      unawaited(chunks.close());
+    }
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is _CoverNetworkImage &&
+      url == other.url &&
+      scale == other.scale &&
+      mapEquals(headers, other.headers);
+
+  @override
+  int get hashCode => Object.hash(
+    runtimeType,
+    url,
+    scale,
+    Object.hashAllUnordered(
+      headers?.entries.map((header) => Object.hash(header.key, header.value)) ??
+          const <int>[],
+    ),
+  );
+}
+
+Future<void> _rejectTransparentSentinel(ui.ImmutableBuffer buffer) async {
+  final descriptor = await ui.ImageDescriptor.encoded(buffer);
+  try {
+    if (descriptor.width > 8 || descriptor.height > 8) return;
+    final codec = await descriptor.instantiateCodec();
+    try {
+      if (codec.frameCount != 1) return;
+      final frame = await codec.getNextFrame();
+      try {
+        final pixels = await frame.image.toByteData(
+          format: ui.ImageByteFormat.rawRgba,
+        );
+        if (pixels == null) return;
+        for (var alpha = 3; alpha < pixels.lengthInBytes; alpha += 4) {
+          if (pixels.getUint8(alpha) != 0) return;
+        }
+        throw StateError('Cover image contains only a transparent placeholder');
+      } finally {
+        frame.image.dispose();
+      }
+    } finally {
+      codec.dispose();
+    }
+  } finally {
+    descriptor.dispose();
+  }
+}
 
 /// 网络图片解码宽度的**上限**（物理像素）。
 ///
@@ -151,7 +380,7 @@ int coverDecodeHeightFor(
 ///
 /// `fit` / `frameBuilder` / `loadingBuilder` / `errorBuilder` 原样
 /// 透传（默认值与 `Image.network` 逐字相同 = 都不传）：本函数
-/// **只**决定解码尺寸，不参与占位、加载中、失败时的表现。
+/// 决定解码尺寸并补充公开图片 CDN 所需请求头，不参与占位、加载中、失败时的表现。
 ///
 /// ⚠️ 需要 `MediaQuery` 祖先（`devicePixelRatioOf` 找不到会抛）。
 ///    `MaterialApp` 自带一个，本仓的调用点都在其下。
@@ -188,22 +417,36 @@ Image coverImage(
   ImageErrorWidgetBuilder? errorBuilder,
   double? layoutHeight,
 }) {
-  final useHeight = layoutHeight != null &&
-      layoutHeight.isFinite &&
-      layoutHeight > 0;
+  final useHeight =
+      layoutHeight != null && layoutHeight.isFinite && layoutHeight > 0;
+  final cacheWidth = useHeight ? null : coverDecodeWidth(context, layoutWidth);
+  final cacheHeight = useHeight
+      ? coverDecodeHeightFor(
+          context,
+          layoutWidth: layoutWidth,
+          layoutHeight: layoutHeight,
+        )
+      : null;
+
+  if (!kIsWeb) {
+    return Image(
+      image: ResizeImage.resizeIfNeeded(
+        cacheWidth,
+        cacheHeight,
+        _CoverNetworkImage(url),
+      ),
+      fit: fit,
+      frameBuilder: frameBuilder,
+      loadingBuilder: loadingBuilder,
+      errorBuilder: errorBuilder,
+    );
+  }
 
   return Image.network(
     url,
     fit: fit,
-    cacheWidth:
-        useHeight ? null : coverDecodeWidth(context, layoutWidth),
-    cacheHeight: useHeight
-        ? coverDecodeHeightFor(
-            context,
-            layoutWidth: layoutWidth,
-            layoutHeight: layoutHeight,
-          )
-        : null,
+    cacheWidth: cacheWidth,
+    cacheHeight: cacheHeight,
     frameBuilder: frameBuilder,
     loadingBuilder: loadingBuilder,
     errorBuilder: errorBuilder,

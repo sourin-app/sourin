@@ -405,21 +405,42 @@ void main() {
       );
     });
 
-    test('★ 滚动定位的下标也按过滤后的列表算', () {
-      /*
-       * 用未过滤的列表数下标，只要前面有被停用的源，下标就会偏大 →
-       * 选中项被滚过头。
-       */
+    testWidgets('★ 停用和不可用源不影响选中项的实际滚动位置', (t) async {
+      final items = [
+        for (var i = 0; i < 20; i++) _p('disabled-$i', enabled: false),
+        for (var i = 0; i < 10; i++) _p('broken-$i', working: false),
+        for (var i = 0; i < 35; i++) _p('visible-$i'),
+      ];
+      await t.pumpWidget(
+        _host(
+          SizedBox(
+            width: 480,
+            child: SourceBar(
+              sources: items,
+              current: 'visible-28',
+              onSelect: (_) {},
+            ),
+          ),
+        ),
+      );
+      await t.pumpAndSettle();
+      final selected = find.widgetWithText(SourcePill, 'visible-28');
+      final list = find.descendant(
+        of: find.byType(SourceBar),
+        matching: find.byType(ListView),
+      );
+      expect(selected.hitTestable(), findsOneWidget);
+      expect(t.widget<SourcePill>(selected).active, isTrue);
       expect(
-        barCode.contains('_visible.indexWhere('),
-        isTrue,
-        reason: '★ `_scrollToCurrent` 的下标必须按可见列表算',
+        t.getRect(selected).left,
+        greaterThanOrEqualTo(t.getRect(list).left - .5),
       );
       expect(
-        barCode.contains('widget.sources.indexWhere('),
-        isFalse,
-        reason: '★ 不得按未过滤的列表算下标（会滚偏）',
+        t.getRect(selected).right,
+        lessThanOrEqualTo(t.getRect(list).right + .5),
       );
+      expect(t.widget<ListView>(list).semanticChildCount, 35);
+      expect(t.takeException(), isNull);
     });
 
     test('★ 判据是 working **与** enabled 的合取（不是只看一个）', () {

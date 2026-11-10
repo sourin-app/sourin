@@ -31,9 +31,11 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
-import '../widgets/miuix_controls.dart' as ui;
 
-import '../../core/danmaku.dart' show DanmakuConfig;
+import '../widgets/miuix_controls.dart' as ui;
+import '../widgets/miuix_tooltip_host.dart' show MiuixTooltipVisibility;
+
+import '../../core/danmaku.dart' show DanmakuConfig, DanmakuMatch;
 import '../../core/models.dart' show StreamCandidate;
 import '../../core/ffi.dart';
 import '../tokens.dart';
@@ -146,9 +148,7 @@ class _BarAction {
 ///   ⇒ 这三个字段**声明了但一次都没读过**，属于死接线。
 ///   删掉，免得下一个人以为「改这里就能改投屏行为」。
 class PlayerMoreMenuData {
-  const PlayerMoreMenuData({
-    required this.groups,
-  });
+  const PlayerMoreMenuData({required this.groups});
 
   final List<MoreMenuGroup> groups;
 }
@@ -313,6 +313,13 @@ class DanmakuQuickPanelData {
     this.onOpenSearch,
     this.onSearch,
     this.searchKeyword = '',
+    this.loadNotice = '',
+    this.searchResults = const [],
+    this.searchLoading = false,
+    this.searchSearched = false,
+    this.searchStale = false,
+    this.searchFailed = false,
+    this.onPickMatch,
     this.onAreaGuide,
     this.live,
   });
@@ -362,6 +369,10 @@ class DanmakuQuickPanelData {
   final VoidCallback? onOpenSearch;
   final ValueChanged<String>? onSearch;
   final String searchKeyword;
+  final String loadNotice;
+  final List<DanmakuMatch> searchResults;
+  final bool searchLoading, searchSearched, searchStale, searchFailed;
+  final ValueChanged<DanmakuMatch>? onPickMatch;
 
   /// ★ 2026-10-14（卡顿修复）：四根**可拖动**滑杆的实时值载体。
   ///
@@ -431,6 +442,7 @@ class PlayerBottomBar extends StatelessWidget {
     this.onZoomToggle,
     this.fade,
     this.buffered,
+    this.bufferedListenable,
     this.bufferBarKey,
   });
 
@@ -523,6 +535,9 @@ class PlayerBottomBar extends StatelessWidget {
 
   final Animation<double>? fade;
   final PlayerBufferedRange? buffered;
+
+  /// Native cache updates rebuild the progress slider, not the action bar.
+  final ValueListenable<PlayerBufferedRange?>? bufferedListenable;
   final Key? bufferBarKey;
 
   static String _fmt(Duration d) {
@@ -550,8 +565,9 @@ class PlayerBottomBar extends StatelessWidget {
   /// 免得测试靠 tooltip（开关那枚是普通 `TextButton`，没有 `Tooltip` 祖先，
   /// `find.byTooltip` 找不到）。见 test/t27_w14_danmaku_bar_form_test.dart。
   static const Key danmakuToggleKey = ValueKey<String>('t27-danmaku-toggle');
-  static const Key danmakuSettingsKey =
-      ValueKey<String>('t27-danmaku-settings');
+  static const Key danmakuSettingsKey = ValueKey<String>(
+    't27-danmaku-settings',
+  );
 
   List<PopoverOption<double>> rateOptions() => [
     for (final r in kRates)
@@ -684,7 +700,9 @@ class PlayerBottomBar extends StatelessWidget {
           // what the streaming sites pair with the danmaku toggle.
           icon: AppIcons.settings,
           tooltip: '弹幕设置',
-          popoverId: danmakuQuick == null ? null : PlayerPopoverIds.danmakuQuick,
+          popoverId: danmakuQuick == null
+              ? null
+              : PlayerPopoverIds.danmakuQuick,
           onTap: danmakuQuick == null ? onDanmakuSettings : null,
         ),
       ],
@@ -773,9 +791,12 @@ class PlayerBottomBar extends StatelessWidget {
          *   这里用 `clipBehavior: Clip.none` + `Stack`，面板可以自由地
          *   长到条的上方去。
          */
-        child: miuix.MiuixTheme(
-          data: miuixThemeData(Brightness.dark),
-          child: _body(context),
+        child: MiuixTooltipVisibility(
+          visibility: anim,
+          child: miuix.MiuixTheme(
+            data: miuixThemeData(Brightness.dark),
+            child: _body(context),
+          ),
         ),
       ),
     );
@@ -858,129 +879,153 @@ class PlayerBottomBar extends StatelessWidget {
   //  真正的关面板交给宿主的 `_openDanmakuSettings`（它会先把控制条收起来、
   //  再挂全屏大卡片）。
   //  ```
-  static const Key danmakuQuickPanelKey =
-      ValueKey<String>('t27-danmaku-quick-panel');
-  static const Key danmakuQuickAdvancedKey =
-      ValueKey<String>('t27-danmaku-quick-advanced');
+  static const Key danmakuQuickPanelKey = ValueKey<String>(
+    't27-danmaku-quick-panel',
+  );
+  static const Key danmakuQuickAdvancedKey = ValueKey<String>(
+    't27-danmaku-quick-advanced',
+  );
   static const Key danmakuQuickSearchKey = ValueKey('danmaku-quick-search');
 
   /// 三类弹幕「一键开关」的 key（门禁抓手，按 id 对齐）
-  static const Key danmakuQuickScrollKey =
-      ValueKey<String>('t27-danmaku-quick-scroll');
-  static const Key danmakuQuickTopKey =
-      ValueKey<String>('t27-danmaku-quick-top');
-  static const Key danmakuQuickBottomKey =
-      ValueKey<String>('t27-danmaku-quick-bottom');
+  static const Key danmakuQuickScrollKey = ValueKey<String>(
+    't27-danmaku-quick-scroll',
+  );
+  static const Key danmakuQuickTopKey = ValueKey<String>(
+    't27-danmaku-quick-top',
+  );
+  static const Key danmakuQuickBottomKey = ValueKey<String>(
+    't27-danmaku-quick-bottom',
+  );
 
   /// ★ 2026-10-11（Owner 第 1 条续）：第四枚类型开关「彩色」
   /// （= 只显示彩色弹幕，对应 `DanmakuConfig.colorOnly`）
-  static const Key danmakuQuickColorOnlyKey =
-      ValueKey<String>('t27-danmaku-quick-coloronly');
+  static const Key danmakuQuickColorOnlyKey = ValueKey<String>(
+    't27-danmaku-quick-coloronly',
+  );
 
   /// 四根滑杆的 key（门禁抓手）
-  static const Key danmakuQuickFontScaleKey =
-      ValueKey<String>('t27-danmaku-quick-fontscale');
-  static const Key danmakuQuickOpacityKey =
-      ValueKey<String>('t27-danmaku-quick-opacity');
-  static const Key danmakuQuickSpeedKey =
-      ValueKey<String>('t27-danmaku-quick-speed');
-  static const Key danmakuQuickAreaKey =
-      ValueKey<String>('t27-danmaku-quick-area');
+  static const Key danmakuQuickFontScaleKey = ValueKey<String>(
+    't27-danmaku-quick-fontscale',
+  );
+  static const Key danmakuQuickOpacityKey = ValueKey<String>(
+    't27-danmaku-quick-opacity',
+  );
+  static const Key danmakuQuickSpeedKey = ValueKey<String>(
+    't27-danmaku-quick-speed',
+  );
+  static const Key danmakuQuickAreaKey = ValueKey<String>(
+    't27-danmaku-quick-area',
+  );
 
   /// 弹幕轻量悬浮窗的本体
   Widget _danmakuQuickPanel(DanmakuQuickPanelData d) => PlayerPopoverSurface(
-    width: 300,
-    child: Column(
-      key: danmakuQuickPanelKey,
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (d.onOpenSearch != null) ...[
-          PopoverRow(
-            key: danmakuQuickSearchKey,
-            label: '搜索弹幕',
-            hint: '搜索 / 选集绑定',
-            onTap: d.onOpenSearch!,
-          ),
-          if (d.onSearch != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x3),
-              child: _QuickDanmakuSearch(
-                keyword: d.searchKeyword, onSearch: d.onSearch!),
+    width: 340,
+    child: SingleChildScrollView(
+      child: Column(
+        key: danmakuQuickPanelKey,
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (d.onOpenSearch != null) ...[
+            PopoverRow(
+              key: danmakuQuickSearchKey,
+              label: '搜索弹幕',
+              hint: '详情 / 批量绑定',
+              onTap: d.onOpenSearch!,
             ),
-          const PopoverDivider(),
-        ],
-        const PopoverGroupLabel('显示哪几类'),
-        // ① 按类型过滤 —— 四枚一键开关（滚动 / 顶部 / 底部 / 彩色）
-        //
-        // ★ 2026-10-11（Owner 第 1 条续）：补上第四枚「彩色」。
-        //   某视频站图 1 里就是四枚；本项目的 `DanmakuComment.color` **有**颜色字段，
-        //   所以「彩色」是**有数据支持**的真开关（不是假开关）——
-        //   语义 = 只显示彩色弹幕（白色弹幕隐藏），见 `DanmakuConfig.colorOnly`。
-        //   ⚠️ 「高级」这一枚**不做**：`DanmakuComment` 里没有任何能区分
-        //   "高级弹幕"的字段（无样式/定位/动画信息）⇒ 无数据支持，如实不画。
-        Padding(
-          padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x1),
-          child: Row(
-            children: [
-              _quickTypeChip(
-                key: danmakuQuickScrollKey,
-                label: '滚动',
-                on: d.showScroll,
-                onTap: () => d.onSetShowScroll(!d.showScroll),
+            if (d.loadNotice.isNotEmpty) PopoverGroupLabel(d.loadNotice),
+            if (d.onSearch != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x3),
+                child: _QuickDanmakuSearch(
+                  keyword: d.searchKeyword,
+                  loading: d.searchLoading,
+                  onSearch: d.onSearch!,
+                ),
               ),
-              const SizedBox(width: Sp.x2),
-              _quickTypeChip(
-                key: danmakuQuickTopKey,
-                label: '顶部',
-                on: d.showTop,
-                onTap: () => d.onSetShowTop(!d.showTop),
-              ),
-              const SizedBox(width: Sp.x2),
-              _quickTypeChip(
-                key: danmakuQuickBottomKey,
-                label: '底部',
-                on: d.showBottom,
-                onTap: () => d.onSetShowBottom(!d.showBottom),
-              ),
-              const SizedBox(width: Sp.x2),
-              _quickTypeChip(
-                key: danmakuQuickColorOnlyKey,
-                label: '彩色',
-                on: d.colorOnly,
-                onTap: () => d.onSetColorOnly(!d.colorOnly),
-              ),
-            ],
+            DanmakuQuickSearchResults(
+              results: d.searchResults,
+              loading: d.searchLoading,
+              searched: d.searchSearched,
+              stale: d.searchStale,
+              failed: d.searchFailed,
+              onPickMatch: d.onPickMatch,
+            ),
+            const PopoverDivider(),
+          ],
+          const PopoverGroupLabel('显示哪几类'),
+          // ① 按类型过滤 —— 四枚一键开关（滚动 / 顶部 / 底部 / 彩色）
+          //
+          // ★ 2026-10-11（Owner 第 1 条续）：补上第四枚「彩色」。
+          //   某视频站图 1 里就是四枚；本项目的 `DanmakuComment.color` **有**颜色字段，
+          //   所以「彩色」是**有数据支持**的真开关（不是假开关）——
+          //   语义 = 只显示彩色弹幕（白色弹幕隐藏），见 `DanmakuConfig.colorOnly`。
+          //   ⚠️ 「高级」这一枚**不做**：`DanmakuComment` 里没有任何能区分
+          //   "高级弹幕"的字段（无样式/定位/动画信息）⇒ 无数据支持，如实不画。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x1),
+            child: Row(
+              children: [
+                _quickTypeChip(
+                  key: danmakuQuickScrollKey,
+                  label: '滚动',
+                  on: d.showScroll,
+                  onTap: () => d.onSetShowScroll(!d.showScroll),
+                ),
+                const SizedBox(width: Sp.x2),
+                _quickTypeChip(
+                  key: danmakuQuickTopKey,
+                  label: '顶部',
+                  on: d.showTop,
+                  onTap: () => d.onSetShowTop(!d.showTop),
+                ),
+                const SizedBox(width: Sp.x2),
+                _quickTypeChip(
+                  key: danmakuQuickBottomKey,
+                  label: '底部',
+                  on: d.showBottom,
+                  onTap: () => d.onSetShowBottom(!d.showBottom),
+                ),
+                const SizedBox(width: Sp.x2),
+                _quickTypeChip(
+                  key: danmakuQuickColorOnlyKey,
+                  label: '彩色',
+                  on: d.colorOnly,
+                  onTap: () => d.onSetColorOnly(!d.colorOnly),
+                ),
+              ],
+            ),
           ),
-        ),
-        const PopoverDivider(),
-        const PopoverGroupLabel('显示'),
-        // ② 四根滑杆 —— **直接拖**（拖动中每一帧都回调，实时生效）
-        //
-        // ★★★ 2026-10-14（卡顿修复）：四根滑杆**只包这一小块**。
-        //
-        // # 为什么只包「滑杆」、不包整个面板
-        // ```text
-        // 拖动中每一帧都回调 ⇒ 若把它包在面板外层，四枚类型开关 / 分隔线 /
-        // 「高级设置」行都会跟着逐帧重建（那又是「整块重建」的老毛病，只是
-        // 从整页缩小到整面板）。这里给出的 builder 只渲染这四根滑杆一行都不多
-        // ⇒ 逐帧重建的**只有四根滑杆**。
-        // ```
-        //
-        // # 为 null 分支（老调用点 / 测试夹具）
-        //   直接读 `d` 的静态字段，与改前**逐字一致**：
-        //   拖动中宿主若走老路 setState 更新 `d` ⇒ 读数照样实时刷新。
-        //   生产宿主改用 `live`（见 player_page），不会再整页 setState。
-        _quickSliders(d),
-        const PopoverDivider(),
-        // ③ 高级设置 ⇒ 进全屏大卡片（AppId / 屏蔽词 / 重新获取…都在那）
-        PopoverRow(
-          key: danmakuQuickAdvancedKey,
-          label: '高级设置',
-          hint: '凭证 / 屏蔽词',
-          onTap: d.onOpenAdvanced,
-        ),
-      ],
+          const PopoverDivider(),
+          const PopoverGroupLabel('显示'),
+          // ② 四根滑杆 —— **直接拖**（拖动中每一帧都回调，实时生效）
+          //
+          // ★★★ 2026-10-14（卡顿修复）：四根滑杆**只包这一小块**。
+          //
+          // # 为什么只包「滑杆」、不包整个面板
+          // ```text
+          // 拖动中每一帧都回调 ⇒ 若把它包在面板外层，四枚类型开关 / 分隔线 /
+          // 「高级设置」行都会跟着逐帧重建（那又是「整块重建」的老毛病，只是
+          // 从整页缩小到整面板）。这里给出的 builder 只渲染这四根滑杆一行都不多
+          // ⇒ 逐帧重建的**只有四根滑杆**。
+          // ```
+          //
+          // # 为 null 分支（老调用点 / 测试夹具）
+          //   直接读 `d` 的静态字段，与改前**逐字一致**：
+          //   拖动中宿主若走老路 setState 更新 `d` ⇒ 读数照样实时刷新。
+          //   生产宿主改用 `live`（见 player_page），不会再整页 setState。
+          _quickSliders(d),
+          const PopoverDivider(),
+          // ③ 高级设置 ⇒ 进全屏大卡片（AppId / 屏蔽词 / 重新获取…都在那）
+          PopoverRow(
+            key: danmakuQuickAdvancedKey,
+            label: '高级设置',
+            hint: '凭证 / 屏蔽词',
+            onTap: d.onOpenAdvanced,
+          ),
+        ],
+      ),
     ),
   );
 
@@ -1051,8 +1096,9 @@ class PlayerBottomBar extends StatelessWidget {
           onGuideStart: d.onAreaGuide == null
               ? null
               : () => d.onAreaGuide!(true),
-          onGuideEnd:
-              d.onAreaGuide == null ? null : () => d.onAreaGuide!(false),
+          onGuideEnd: d.onAreaGuide == null
+              ? null
+              : () => d.onAreaGuide!(false),
         ),
       ],
     );
@@ -1091,9 +1137,7 @@ class PlayerBottomBar extends StatelessWidget {
           decoration: BoxDecoration(
             color: on ? accent.withValues(alpha: 0.18) : Colors.transparent,
             borderRadius: Radii.rSm,
-            border: Border.all(
-              color: on ? accent : const Color(0x33FFFFFF),
-            ),
+            border: Border.all(color: on ? accent : const Color(0x33FFFFFF)),
           ),
           child: Text(
             label,
@@ -1160,6 +1204,8 @@ class PlayerBottomBar extends StatelessWidget {
               onPointerCancel: onGuideEnd == null ? null : (_) => onGuideEnd(),
               child: ui.Slider(
                 key: key,
+                height: 32,
+                trackHeight: 6,
                 value: value.clamp(min, max),
                 min: min,
                 max: max,
@@ -1329,7 +1375,8 @@ class PlayerBottomBar extends StatelessWidget {
             collapsedTo[tierOf(qualityOptions[i])] == i)
           _row(
             qualityOptions[i],
-            labelOverride: collapsedTo[tierOf(qualityOptions[i])] == null &&
+            labelOverride:
+                collapsedTo[tierOf(qualityOptions[i])] == null &&
                     (byTier[tierOf(qualityOptions[i])]?.length ?? 0) > 1
                 // 同档多条且能分开 ⇒ 附来源名消歧（`label` 就是来源名）。
                 ? '${tierOf(qualityOptions[i])} · ${qualityOptions[i].label}'
@@ -1388,7 +1435,7 @@ class PlayerBottomBar extends StatelessWidget {
               onDone: (v) => onVideoZoom?.call(v),
               onClose: () => onZoomToggle?.call(),
             ),
-          if (!isLive) _progressRow(),
+          if (!isLive) ...[_progressRow(), const SizedBox(height: Sp.x1)],
           /*
            * ★★★ 2026-10-18（第 66 轮 Owner 第 1 条）：弹幕发送栏**内嵌进底栏**
            *
@@ -1434,6 +1481,15 @@ class PlayerBottomBar extends StatelessWidget {
   ///
   /// ★ 时间与滑杆**同一行**（进度条占 Expanded）：手机上时间让位给滑杆，
   ///   桌面两端对齐 —— 两种形态都只需要这一行，字号同样取 `FontSizes.cap`。
+  Widget _progressSlider(Duration position, PlayerBufferedRange? range) =>
+      PlayerProgressSlider(
+        position: position,
+        duration: duration,
+        buffered: range,
+        onSeek: onSeek,
+        barKey: bufferBarKey,
+      );
+
   Widget _progressRow() {
     final total = Text(
       _fmt(duration),
@@ -1454,13 +1510,12 @@ class PlayerBottomBar extends StatelessWidget {
           ),
           const SizedBox(width: Sp.x2),
           Expanded(
-            child: PlayerProgressSlider(
-              position: position,
-              duration: duration,
-              buffered: buffered,
-              onSeek: onSeek,
-              barKey: bufferBarKey,
-            ),
+            child: bufferedListenable == null
+                ? _progressSlider(position, buffered)
+                : ValueListenableBuilder<PlayerBufferedRange?>(
+                    valueListenable: bufferedListenable!,
+                    builder: (_, range, __) => _progressSlider(position, range),
+                  ),
           ),
           const SizedBox(width: Sp.x2),
           total,
@@ -1574,7 +1629,9 @@ class PlayerBottomBar extends StatelessWidget {
                 ...primary,
                 const Spacer(),
                 _BarIconButton(
-                  icon: fullscreen ? AppIcons.fullscreen_exit : AppIcons.fullscreen,
+                  icon: fullscreen
+                      ? AppIcons.fullscreen_exit
+                      : AppIcons.fullscreen,
                   tooltip: fullscreen ? '退出全屏' : '全屏',
                   onTap: onToggleFullscreen,
                 ),
@@ -2129,6 +2186,7 @@ class _VolumeControl extends StatelessWidget {
         SizedBox(
           width: 72,
           child: ui.Slider(
+            trackHeight: 6,
             value: muted ? 0 : volume,
             max: 100,
             onChanged: onVolume,
@@ -2170,6 +2228,7 @@ class PlayerZoomSliderCard extends StatelessWidget {
         ),
         Expanded(
           child: ui.Slider(
+            trackHeight: 6,
             value: zoom.clamp(50.0, 200.0),
             min: 50,
             max: 200,
@@ -2208,7 +2267,8 @@ class PlayerBufferedRange {
 class PlayerProgressSlider extends StatefulWidget {
   static const Key sliderKey = ValueKey<String>('player-progress-miuix-slider');
   static const Key bufferKey = ValueKey<String>('player-progress-buffer');
-  static const double trackHeight = 18;
+  static const double trackHeight = 4;
+  static const double hitHeight = 28;
   static const Color thumbColor = Colors.white;
 
   const PlayerProgressSlider({
@@ -2243,14 +2303,19 @@ class _PlayerProgressSliderState extends State<PlayerProgressSlider> {
       builder: (context, constraints) {
         const height = PlayerProgressSlider.trackHeight;
         const radius = height / 2;
-        final trackWidth = (constraints.maxWidth - height)
-            .clamp(0.0, double.infinity);
+        final trackWidth = (constraints.maxWidth - height).clamp(
+          0.0,
+          double.infinity,
+        );
         final start = (widget.buffered?.start.inMilliseconds ?? 0)
-            .toDouble().clamp(0.0, total);
-        final end = (widget.buffered?.end.inMilliseconds ?? 0)
-            .toDouble().clamp(start, total);
+            .toDouble()
+            .clamp(0.0, total);
+        final end = (widget.buffered?.end.inMilliseconds ?? 0).toDouble().clamp(
+          start,
+          total,
+        );
         return SizedBox(
-          height: height,
+          height: PlayerProgressSlider.hitHeight,
           child: Stack(
             // MiuixSlider paints without a child; loose constraints would let
             // its CustomPaint collapse to zero width inside this buffer stack.
@@ -2260,8 +2325,8 @@ class _PlayerProgressSliderState extends State<PlayerProgressSlider> {
                 Positioned(
                   left: radius + start / total * trackWidth,
                   width: (end - start) / total * trackWidth,
-                  top: 0,
-                  bottom: 0,
+                  top: (PlayerProgressSlider.hitHeight - height) / 2,
+                  height: height,
                   child: IgnorePointer(
                     child: DecoratedBox(
                       key: widget.barKey ?? PlayerProgressSlider.bufferKey,
@@ -2274,7 +2339,8 @@ class _PlayerProgressSliderState extends State<PlayerProgressSlider> {
                 ),
               ui.Slider(
                 key: PlayerProgressSlider.sliderKey,
-                height: height,
+                height: PlayerProgressSlider.hitHeight,
+                trackHeight: height,
                 value: shown,
                 max: total,
                 activeColor: const Color(0xFF32C7FF),
@@ -2282,13 +2348,17 @@ class _PlayerProgressSliderState extends State<PlayerProgressSlider> {
                 thumbColor: PlayerProgressSlider.thumbColor,
                 semanticFormatterCallback: (value) =>
                     PlayerBottomBar._fmt(Duration(milliseconds: value.round())),
-                onChanged: totalMs <= 0 ? null : (value) {
-                  setState(() => _previewMs = value);
-                },
-                onChangeEnd: totalMs <= 0 ? null : (value) {
-                  widget.onSeek(Duration(milliseconds: value.round()));
-                  if (mounted) setState(() => _previewMs = null);
-                },
+                onChanged: totalMs <= 0
+                    ? null
+                    : (value) {
+                        setState(() => _previewMs = value);
+                      },
+                onChangeEnd: totalMs <= 0
+                    ? null
+                    : (value) {
+                        widget.onSeek(Duration(milliseconds: value.round()));
+                        if (mounted) setState(() => _previewMs = null);
+                      },
                 onChangeCancel: () {
                   if (mounted) setState(() => _previewMs = null);
                 },
@@ -2516,9 +2586,14 @@ class _DanmakuSendInlineState extends State<DanmakuSendInline> {
 }
 
 class _QuickDanmakuSearch extends StatefulWidget {
-  const _QuickDanmakuSearch({required this.keyword, required this.onSearch});
+  const _QuickDanmakuSearch({
+    required this.keyword,
+    required this.onSearch,
+    this.loading = false,
+  });
   final String keyword;
   final ValueChanged<String> onSearch;
+  final bool loading;
   @override
   State<_QuickDanmakuSearch> createState() => _QuickDanmakuSearchState();
 }
@@ -2526,11 +2601,26 @@ class _QuickDanmakuSearch extends StatefulWidget {
 class _QuickDanmakuSearchState extends State<_QuickDanmakuSearch> {
   late final _controller = TextEditingController(text: widget.keyword);
   @override
-  void dispose() { _controller.dispose(); super.dispose(); }
+  void didUpdateWidget(_QuickDanmakuSearch oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.keyword != widget.keyword &&
+        _controller.text == oldWidget.keyword) {
+      _controller.text = widget.keyword;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   void _submit() {
+    if (widget.loading) return;
     final keyword = _controller.text.trim();
     if (keyword.isNotEmpty) widget.onSearch(keyword);
   }
+
   @override
   Widget build(BuildContext context) => ui.TextFormField(
     controller: _controller,
@@ -2538,10 +2628,81 @@ class _QuickDanmakuSearchState extends State<_QuickDanmakuSearch> {
     onFieldSubmitted: (_) => _submit(),
     style: const TextStyle(color: Colors.white, fontSize: FontSizes.sm),
     decoration: InputDecoration(
-      hintText: '输入片名', hintStyle: const TextStyle(color: Colors.white60),
-      isDense: true, contentPadding: const EdgeInsets.all(Sp.x3),
-      suffixIcon: ui.IconButton(tooltip: '搜索弹幕', onPressed: _submit,
-        icon: const Icon(AppIcons.search, color: Colors.white)),
+      hintText: '输入片名',
+      hintStyle: const TextStyle(color: Colors.white60),
+      isDense: true,
+      contentPadding: const EdgeInsets.all(Sp.x3),
+      suffixIcon: ui.IconButton(
+        tooltip: '搜索弹幕',
+        onPressed: widget.loading ? null : _submit,
+        icon: const Icon(AppIcons.search, color: Colors.white),
+      ),
     ),
   );
+}
+
+/// The same search results owned by the player, presented in its quick panel.
+/// Choosing a result uses the existing binding path and never changes pages.
+class DanmakuQuickSearchResults extends StatelessWidget {
+  const DanmakuQuickSearchResults({
+    super.key,
+    required this.results,
+    required this.loading,
+    required this.searched,
+    required this.stale,
+    required this.failed,
+    required this.onPickMatch,
+  });
+
+  final List<DanmakuMatch> results;
+  final bool loading, searched, stale, failed;
+  final ValueChanged<DanmakuMatch>? onPickMatch;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: Sp.x3, vertical: Sp.x2),
+        child: ui.LinearProgressIndicator(minHeight: 3),
+      );
+    }
+    final message = failed
+        ? '搜索失败，可重试或打开搜索详情'
+        : stale
+        ? '播放内容已变化，请重新搜索'
+        : searched && results.isEmpty
+        ? '没有找到弹幕，试试更短的片名'
+        : null;
+    if (message != null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x2),
+        child: Text(
+          message,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: FontSizes.cap,
+          ),
+        ),
+      );
+    }
+    if (results.isEmpty) return const SizedBox.shrink();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 152),
+      child: ListView.builder(
+        key: const ValueKey('danmaku-quick-search-results'),
+        shrinkWrap: true,
+        primary: false,
+        itemCount: results.length,
+        itemBuilder: (_, index) {
+          final match = results[index];
+          return PopoverRow(
+            key: ValueKey('danmaku-quick-match-${match.episodeId}'),
+            label: match.displayName,
+            hint: '绑定',
+            onTap: onPickMatch == null ? null : () => onPickMatch!(match),
+          );
+        },
+      ),
+    );
+  }
 }

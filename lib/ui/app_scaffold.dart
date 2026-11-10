@@ -1,7 +1,6 @@
 // Miuix scaffold owns page surfaces and header/footer layout. The app keeps
 // keyboard inset handling explicit because the product also hosts native video.
 
-import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
 
@@ -51,7 +50,9 @@ class AppScaffold extends StatelessWidget {
     );
 
     Widget column = miuix.MiuixScaffold(
-      containerColor: backgroundColor,
+      // MiuixScaffold defaults to a surface; page gutters use the background.
+      containerColor:
+          backgroundColor ?? miuix.MiuixTheme.of(context).colors.background,
       contentWindowInsets: EdgeInsets.zero,
       topBar: header,
       bottomBar: footer,
@@ -67,7 +68,12 @@ class AppScaffold extends StatelessWidget {
       );
     }
 
-    return column;
+    // Miuix surfaces publish MiuixContentColor for MiuixText. Existing Flutter
+    // Text children also need a theme-aware default, including list contents.
+    return DefaultTextStyle.merge(
+      style: TextStyle(color: miuix.MiuixTheme.of(context).colors.onSurface),
+      child: column,
+    );
   }
 }
 

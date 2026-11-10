@@ -23,6 +23,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/ui/widgets/cover_image.dart';
+import 'package:sourin_spike/core/disk_cache.dart';
+import 'package:sourin_spike/core/ffi.dart';
+import 'package:sourin_spike/core/sourin_api.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/follow_page.dart';
 
 /// 取一个带指定 DPR 的 `BuildContext`。
 ///
@@ -399,12 +406,11 @@ void main() {
   group('D. 生产调用点', () {
     const sites = <String>[
       'lib/ui/widgets/poster_card.dart',
-      'lib/ui/follow_page.dart',
       'lib/ui/detail_page.dart',
       'lib/ui/live_page.dart',
     ];
 
-    test('D1 四个调用点都走 coverImage，且都不再直接 Image.network', () {
+    test('D1 三个直接调用点都走 coverImage，追更页由 D4 验证', () {
       for (final p in sites) {
         // ★ 同 D3：剥掉注释再看。判据问的是「这些页面**代码里**还有没有
         //   直接 Image.network」，而 detail_page.dart 的注释里恰好写了那个
@@ -459,43 +465,60 @@ void main() {
               '新增第三处必须显式讨论后加白名单');
     });
 
-    test('D4 follow_page 的 cell 宽是从 LayoutBuilder 传下去的，不是卡片自己量的', () {
-      // ★ 必须剥注释：切片里我写了 8 行注释**提到** `LayoutBuilder(`，
-      //   不剥就会数成 2 个（第一版实测就是这个假红）。
-      final code = _stripComments(_src('lib/ui/follow_page.dart'));
-      final start = code.indexOf('class _ContinueList');
-      final end = code.indexOf('class _FavGrid', start);
-      expect(start, greaterThan(0));
-      expect(end, greaterThan(start));
-      final body = code.substring(start, end);
-
-      expect(body.contains('required this.coverWidth'), isTrue);
-      expect(body.contains('coverWidth:'), isTrue);
-      /*
-       * ★★ 2026-10 二次修正：这里原来钉的是 followGridColumns(c.maxWidth)，
-       *   但那是**错的** —— Padding 在 LayoutBuilder 外面 ⇒ c.maxWidth
-       *   已经减过一次内边距，而 Layout.columnsForBand 的入参是
-       *   **没减过**的内容带宽度，内部还会再减一次（1400px 附近少一列）。
-       * ⇒ 现在钉的是包装层 _followBandFor：它负责把那 48 加回去。
-       *   （判据仍是「不许卡片自己量宽度」—— 宽度依旧从 LayoutBuilder 传下去。）
-       */
-      expect(body.contains('_followBandFor(context, c.maxWidth)'), isTrue,
-          reason: '★ 列数/间距必须经 _followBandFor 换算成内容带宽度');
-      expect(body.contains('followGridColumns(c.maxWidth)'), isFalse,
-          reason: '★★ 不许再直接把 c.maxWidth 交给 followGridColumns —— '
-              '那是「减两次内边距」的坑（1400px 窗口会少算一列）');
-      // ★ 本切片里只能有 1 个 LayoutBuilder —— 就是 `_ContinueList.build`
-      //   里那个现成的。卡片必须靠构造参数拿到宽度，不许自己再量一次
-      //   （`provider_grid_responsive_test.dart:604-616` 钉的是同类约束）。
-      expect('LayoutBuilder('.allMatches(body).length, 1);
-
-      // ★ 卡片里必须真的**用**了那个参数：定义了却不用 == 没传
-      //   （本仓 t61/t65 都踩过「定义了但没被调用」的假通过）。
-      final cardStart = code.indexOf('class _ContinueCard', start);
-      expect(cardStart, greaterThan(0));
-      final card = code.substring(cardStart);
-      expect(card.contains('layoutWidth: coverWidth'), isTrue,
-          reason: 'coverWidth 传进来了却没交给 coverImage');
+    testWidgets('D4 history cover decode size follows real responsive layout', (tester) async {
+      final previousTransport = SourinCore.debugCallAsyncTransport;
+      final previousCache = DiskCache.dataDir;
+      UiPrefs.debugResetForTest();
+      DiskCache.debugResetForTest(null);
+      const history = Progress(
+        key: 'fixture:series:e1', provider: 'fixture', nativeId: 'series',
+        title: 'History fixture', episodeId: 'e1', episodeTitle: 'Episode 1',
+        position: 40, duration: 100, cover: 'https://cover.invalid/history.png',
+      );
+      SourinCore.debugCallAsyncTransport = (command, args) async {
+        switch (command) {
+          case 'continue_watching': return [history.toJson()];
+          case 'continue_watching_count': return 1;
+          case 'list_favorites': case 'list_following_for_ui':
+          case 'list_all_progress': case 'list_providers': case 'check_updates': return <dynamic>[];
+          case 'total_unread': case 'repair_library_covers': return 0;
+          default: throw StateError('Unexpected command: $command');
+        }
+      };
+      addTearDown(() {
+        SourinCore.debugCallAsyncTransport = previousTransport;
+        DiskCache.debugResetForTest(previousCache);
+        UiPrefs.debugResetForTest();
+        tester.view.reset();
+      });
+      tester.view.devicePixelRatio = 2;
+      final theme = AppTheme.themeFor(Brightness.light);
+      final heights = <int>[];
+      for (final width in [360.0, 1100.0]) {
+        tester.view.physicalSize = Size(width * 2, 1800);
+        await tester.pumpWidget(MaterialApp(
+          theme: theme,
+          builder: (_, child) => AppThemeHost(data: theme, child: child!),
+          home: const Scaffold(body: FollowPage(initialTab: 'continue')),
+        ));
+        await tester.pump();
+        await tester.pump();
+        final finder = find.descendant(of: find.byType(FollowPage), matching: find.byType(Image));
+        expect(finder, findsOneWidget);
+        final actual = tester.widget<Image>(finder).image;
+        expect(actual, isA<ResizeImage>());
+        final resized = actual as ResizeImage;
+        final bounds = tester.getSize(finder);
+        expect(bounds.height, greaterThan(0));
+        expect(resized.height, (bounds.height * 2).round());
+        expect(resized.width, isNull);
+        expect((resized.imageProvider as NetworkImage).url, history.cover);
+        heights.add(resized.height!);
+      }
+      expect(heights.toSet(), hasLength(2), reason: 'resizing the real grid must change decode dimensions');
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 25));
+      expect(tester.takeException(), isNull);
     });
 
     test('D5 ★ 剥注释器自检（否则 D4 的计数可能是瞎数）', () {

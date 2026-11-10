@@ -23,12 +23,22 @@ import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/danmaku.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/settings/danmaku_source_page.dart';
 
 Widget _app(Widget home) => MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: AppTheme.themeFor(Brightness.dark),
+      builder: (_, child) => AppThemeHost(
+        data: AppTheme.themeFor(Brightness.dark),
+        child: child!,
+      ),
       home: Scaffold(body: home),
+    );
+
+Finder _endpointEditor() => find.byWidgetPredicate(
+      (widget) => widget is EditableText && widget.keyboardType == TextInputType.url,
+      description: 'rendered service URL editor',
     );
 
 /// 假探针：立刻返回给定结果，零联网
@@ -100,7 +110,7 @@ void main() {
     )));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField).first, 'http://127.0.0.1:9321');
+    await tester.enterText(_endpointEditor(), 'http://127.0.0.1:9321');
     await tester.pumpAndSettle();
     // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
     //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
@@ -127,7 +137,7 @@ void main() {
     )));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField).first, 'http://127.0.0.1:9321');
+    await tester.enterText(_endpointEditor(), 'http://127.0.0.1:9321');
     await tester.pumpAndSettle();
     // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
     //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
@@ -148,7 +158,7 @@ void main() {
     )));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField).first, 'http://127.0.0.1:9999');
+    await tester.enterText(_endpointEditor(), 'http://127.0.0.1:9999');
     await tester.pumpAndSettle();
     // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
     //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
@@ -174,7 +184,7 @@ void main() {
     await tester.pumpWidget(_app(DanmakuSourcePage(probeOverride: slow)));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField).first, 'http://10.0.0.1:9321');
+    await tester.enterText(_endpointEditor(), 'http://10.0.0.1:9321');
     await tester.pumpAndSettle();
     // ⚠️ 2026-10-18（round-65 批次 B）：页面顶部新增了「内置实例」区块，
     //    按钮被推到 800x600 测试视口之外 ⇒ 先滚进可视区再 tap。
@@ -185,7 +195,7 @@ void main() {
     await tester.pump();
 
     // 在途时改地址 ⇒ 序号前进 ⇒ 旧结果作废
-    await tester.enterText(find.byType(TextField).first, 'http://10.0.0.2:9321');
+    await tester.enterText(_endpointEditor(), 'http://10.0.0.2:9321');
     await tester.pumpAndSettle();
 
     // 旧请求现在成功返回

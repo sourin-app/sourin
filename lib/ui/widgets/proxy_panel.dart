@@ -106,6 +106,7 @@ class ProxyPanel extends StatefulWidget {
     required this.providerId,
     required this.providerName,
     this.defaultOpen = false,
+    this.onSaved,
   });
 
   /// 源 / 插件的 id
@@ -124,6 +125,9 @@ class ProxyPanel extends StatefulWidget {
   ///
   /// ⚠️ 与「已配置的自动展开」是**两件事**，取或的关系。
   final bool defaultOpen;
+
+  /// 配置保存成功后通知外层页面；保存失败时不会调用。
+  final VoidCallback? onSaved;
 
   @override
   State<ProxyPanel> createState() => _ProxyPanelState();
@@ -249,7 +253,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
   /// 传 ""             → 后端存 Some("")  ✗ 会落一个空 URL 进库
   /// ```
   /// 而用户清空输入框拿到的是空串，所以必须在这里归一化。
-  Future<void> _save({bool notify = true}) async {
+  Future<bool> _save({bool notify = true}) async {
     final mode = _cfg?.mode ?? ProxyMode.direct;
     String? orNull(String s) => s.trim().isEmpty ? null : s.trim();
 
@@ -266,15 +270,19 @@ class _ProxyPanelState extends State<ProxyPanel> {
     );
     try {
       await SourinApi.setProxyConfig(widget.providerId, cfg);
-      if (!mounted) return;
+      if (!mounted) return true;
       setState(() {
         // 保留原来的 hasPassword 标记（密码不走这里，见 _savePassword）
         _cfg = cfg.copyWith(hasPassword: _cfg?.hasPassword ?? false);
         if (notify) _err = '';
       });
+      widget.onSaved?.call();
+      return true;
     } catch (e) {
-      if (!mounted) return;
-      setState(() => _err = '保存代理失败：${userErrorText(e, fallback: '请稍后重试')}');
+      if (mounted) {
+        setState(() => _err = '保存代理失败：${userErrorText(e, fallback: '请稍后重试')}');
+      }
+      return false;
     }
   }
 
@@ -305,11 +313,14 @@ class _ProxyPanelState extends State<ProxyPanel> {
       if (!mounted) return;
       setState(() {
         _cfg = const ProxyConfig();
+        _err = '';
         _urlCtrl.clear();
         _userCtrl.clear();
+        _passCtrl.clear();
         _bypassCtrl.clear();
         _testResult = null;
       });
+      widget.onSaved?.call();
     } catch (e) {
       if (!mounted) return;
       setState(() => _err = '清除失败：${userErrorText(e, fallback: '请稍后重试')}');
@@ -324,7 +335,10 @@ class _ProxyPanelState extends State<ProxyPanel> {
     });
     try {
       // 测试前先保存（否则测的是旧配置 —— 用户刚填完地址就点测试会困惑）
-      await _save(notify: false);
+      if (!await _save(notify: false)) {
+        if (mounted) setState(() => _testing = false);
+        return;
+      }
       final out = await SourinApi.testProxy(widget.providerId);
       if (!mounted) return;
       setState(() {
@@ -445,7 +459,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
             ],
           ),
 
-          // ── 自定义才显示地址/凭据/范围 ──
+          // ── 自定义才显示地址、凭据与绕过列表 ──
           if (cfg.mode == ProxyMode.custom) ...[
             const SizedBox(height: Sp.x3),
             _label('代理地址', colors),
@@ -507,34 +521,6 @@ class _ProxyPanelState extends State<ProxyPanel> {
               ),
 
             const SizedBox(height: Sp.x3),
-            _label('作用范围', colors),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 6,
-              children: [
-                for (final s in ProxyScope.values)
-                  _modePill2(s.label, cfg.scope == s, colors, () {
-                    setState(() {
-                      _cfg = cfg.copyWith(scope: s);
-                    });
-                    _save();
-                  }),
-              ],
-            ),
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                cfg.scope == ProxyScope.apiOnly
-                    ? '只让取数据走代理，视频直连更流畅（推荐）'
-                    : '视频分片也走代理 —— 流量大，除非接口被墙否则不必',
-                style: TextStyle(
-                  fontSize: FontSizes.cap,
-                  color: colors.mutedForeground,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: Sp.x3),
             _label('不走代理的主机（逗号分隔，可选）', colors),
             const SizedBox(height: 4),
             _input(
@@ -561,11 +547,46 @@ class _ProxyPanelState extends State<ProxyPanel> {
             ),
           ],
 
+          if (cfg.mode != ProxyMode.direct) ...[
+            const SizedBox(height: Sp.x3),
+            _label('作用范围', colors),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (final s in ProxyScope.values)
+                  _modePill2(s.label, cfg.scope == s, colors, () {
+                    setState(() {
+                      _cfg = cfg.copyWith(scope: s);
+                    });
+                    _save();
+                  }),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                cfg.scope == ProxyScope.apiOnly
+                    ? '只让取数据走代理，视频直连更流畅（推荐）'
+                    : '视频分片也走代理 —— 流量大，除非接口被墙否则不必',
+                style: TextStyle(
+                  fontSize: FontSizes.cap,
+                  color: colors.mutedForeground,
+                ),
+              ),
+            ),
+          ],
+
           const SizedBox(height: Sp.x3),
 
           // ── 动作行 ──
           Row(
             children: [
+              ui.FilledButton(
+                onPressed: _testing ? null : () => _save(),
+                child: const Text('保存设置'),
+              ),
+              const SizedBox(width: Sp.x2),
               ui.OutlinedButton.icon(
                 onPressed: (_testing || cfg.mode == ProxyMode.direct)
                     ? null

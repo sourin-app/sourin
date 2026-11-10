@@ -8,8 +8,8 @@ import '../tokens.dart';
 import '../widgets/app_logo.dart';
 import '../widgets/app_menu.dart';
 
-/// The package allows at most five bottom destinations. Secondary destinations
-/// remain directly available in the desktop rail and in the compact overflow.
+/// The desktop dock exposes all destinations; narrow windows keep secondary
+/// destinations in the overflow menu. Interaction and motion are owned by Miuix.
 class MiuixShellNavigation extends StatelessWidget {
   const MiuixShellNavigation({
     super.key,
@@ -41,14 +41,27 @@ class MiuixShellNavigation extends StatelessWidget {
         )
       : null;
 
-  Future<void> _showMore(BuildContext context) async {
+  Future<void> _showMore(BuildContext context, {int itemCount = 1}) async {
     final anchor = context.findRenderObject()! as RenderBox;
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     final bounds = Rect.fromPoints(
-      anchor.localToGlobal(Offset.zero, ancestor: overlay),
       anchor.localToGlobal(
-        anchor.size.bottomRight(Offset.zero),
+        Offset(
+          Directionality.of(context) == TextDirection.rtl
+              ? 0
+              : anchor.size.width * (itemCount - 1) / itemCount,
+          0,
+        ),
+        ancestor: overlay,
+      ),
+      anchor.localToGlobal(
+        Offset(
+          Directionality.of(context) == TextDirection.rtl
+              ? anchor.size.width / itemCount
+              : anchor.size.width,
+          anchor.size.height,
+        ),
         ancestor: overlay,
       ),
     );
@@ -115,51 +128,90 @@ class MiuixShellNavigation extends StatelessWidget {
       );
     }
 
-    return miuix.MiuixNavigationBar(
-      key: const ValueKey('shell-navigation-bar'),
-      defaultWindowInsetsPadding: false,
-      children: [
-        for (final tab in _primaryTabs)
-          _NavigationFocus(
-            key: ValueKey('shell-nav-${tab.name}'),
-            selected: tab == current,
-            onActivate: () => onSelect(tab),
-            child: miuix.MiuixNavigationBarItem(
-              selected: tab == current,
-              onPressed: () => onSelect(tab),
-              icon: Icon(
-                tab.icon(active: tab == current),
-                color: tab == current
-                    ? miuix.MiuixTheme.of(context).colors.primary
-                    : miuix.MiuixTheme.of(context).colors.onSurfaceSecondary,
-                size: Sp.x6,
-              ),
-              label: tab.label,
-              badge: _badge(tab),
-            ),
-          ),
-        Builder(
-          builder: (anchorContext) => _NavigationFocus(
-            key: const ValueKey('shell-nav-more'),
-            selected: _secondaryTabs.contains(current),
-            onActivate: () => _showMore(anchorContext),
-            child: miuix.MiuixNavigationBarItem(
-              selected: _secondaryTabs.contains(current),
-              onPressed: () => _showMore(anchorContext),
-              icon: Icon(
-                _secondaryTabs.contains(current)
-                    ? current.icon(active: true)
-                    : AppIcons.more_horiz,
-                color: _secondaryTabs.contains(current)
-                    ? miuix.MiuixTheme.of(context).colors.primary
-                    : miuix.MiuixTheme.of(context).colors.onSurfaceSecondary,
-                size: Sp.x6,
-              ),
-              label: _secondaryTabs.contains(current) ? current.label : '更多',
-            ),
+    final colors = miuix.MiuixTheme.of(context).colors;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Sp.x3, 0, Sp.x3, Sp.x4),
+      child: Align(
+        alignment: Alignment.bottomCenter,
+        heightFactor: 1,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 440;
+              final tabs = compact ? _primaryTabs : AppTab.values;
+              final secondary = compact && _secondaryTabs.contains(current);
+              final selectedIndex = secondary
+                  ? tabs.length
+                  : tabs.indexOf(current);
+              final itemCount = tabs.length + (compact ? 1 : 0);
+              Widget iconFor(AppTab tab) {
+                final badge = _badge(tab);
+                return Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.center,
+                  children: [
+                    Icon(
+                      tab.icon(active: tab == current),
+                      color: tab == current
+                          ? colors.primary
+                          : colors.onSurfaceSecondary,
+                      size: Sp.x6,
+                    ),
+                    if (badge != null)
+                      Positioned(top: -Sp.x1, right: -Sp.x1, child: badge),
+                  ],
+                );
+              }
+
+              return Shortcuts(
+                shortcuts: const <ShortcutActivator, Intent>{
+                  SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+                  SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+                  SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+                },
+                child: miuix.MiuixGlassNavigationBar(
+                  key: const ValueKey('shell-navigation-bar'),
+                  height: Sp.x16,
+                  selectedIndex: selectedIndex,
+                  selectedColor: colors.onSurface,
+                  unselectedColor: colors.onSurfaceSecondary,
+                  indicatorColor: colors.primary.withValues(alpha: .12),
+                  indicatorPressedColor: colors.primary.withValues(alpha: .20),
+                  onSelect: (index) {
+                    if (index < tabs.length) {
+                      onSelect(tabs[index]);
+                    } else {
+                      _showMore(context, itemCount: itemCount);
+                    }
+                  },
+                  items: [
+                    for (final tab in tabs)
+                      miuix.MiuixGlassNavigationItem(
+                        icon: iconFor(tab),
+                        label: tab.label,
+                      ),
+                    if (compact)
+                      miuix.MiuixGlassNavigationItem(
+                        icon: Icon(
+                          secondary
+                              ? current.icon(active: true)
+                              : AppIcons.more_horiz,
+                          color: secondary
+                              ? colors.primary
+                              : colors.onSurfaceSecondary,
+                          size: Sp.x6,
+                        ),
+                        label: secondary ? current.label : '更多',
+                        isAction: true,
+                      ),
+                  ],
+                ),
+              );
+            },
           ),
         ),
-      ],
+      ),
     );
   }
 }

@@ -94,9 +94,13 @@ void main() {
       expect(page.contains('enabled: s.isPlayable && !isPanDead'), isTrue,
           reason: 'bad（死链）行必须不可点；字面前缀保留 `s.isPlayable` '
               '（zz_t33_drm_ui_verify_test ④ 按它钉 DRM 行）');
-      expect(page.contains('onTap: s.isPlayable && !isPanDead ?'), isTrue);
+      expect(
+        RegExp(r'onTap:\s*s\.isPlayable\s*&&\s*!isPanDead\s*\?')
+            .hasMatch(page),
+        isTrue,
+      );
       // ★ 防"退回只看 isPlayable" ⇒ 那会让死链重新可点
-      expect(page.contains('onTap: s.isPlayable ? '), isFalse,
+      expect(RegExp(r'onTap:\s*s\.isPlayable\s*\?').hasMatch(page), isFalse,
           reason: '★ 退回 onTap: s.isPlayable ? 会让死链行重新可点');
     });
   });
@@ -112,9 +116,19 @@ void main() {
     });
 
     test('★★ items 是**序列化成字符串**传的（FFI 参数解析器的硬约束）', () {
-      expect(api.contains("{'items': payload}"), isTrue,
-          reason: 'ffi.rs 的参数解析器只有 a.str(，没有数组方法 ⇒ '
-              '传 List 会让 Rust 报「items 不是 JSON 数组」');
+      // 实际序列化、provider 传递与旧调用兼容由 pan_precheck_origin_test.dart 验证。
+      expect(
+        RegExp(
+          r"SourinCore\.callAsync\(\s*'tvbox_pan_check'\s*,\s*\{\s*"
+          r"'items'\s*:\s*payload\s*,\s*"
+          r"if\s*\(\s*provider\s*!=\s*null\s*\)\s*"
+          r"'provider'\s*:\s*provider\s*,?\s*\}\s*,?\s*\)",
+        ).hasMatch(api),
+        isTrue,
+        reason: 'tvbox_pan_check 必须传序列化的 items，且仅在非 null 时传 provider；'
+            'ffi.rs 的参数解析器只有 a.str(，没有数组方法 ⇒ '
+            '传 List 会让 Rust 报「items 不是 JSON 数组」',
+      );
       expect(api.contains('jsonEncode('), isTrue);
     });
   });
@@ -167,7 +181,8 @@ void main() {
       final m = RegExp(r'void _armPanPrecheck\(').firstMatch(page);
       expect(m, isNotNull);
       final body = page.substring(m!.end, (m.end + 3200).clamp(0, page.length));
-      expect(body.contains("AppLog.write('PLAY', '网盘预检失败"), isTrue,
+      expect(RegExp(r"AppLog\.write\(\s*'PLAY'\s*,\s*'网盘预检失败")
+          .hasMatch(body), isTrue,
           reason: '★ 预检失败不许静默（它只是不显示标注，但必须是留痕的）');
       expect(body.contains('_panFailLoggedKeys.add(key)'), isTrue,
           reason: '预检失败同样要防刷屏（lead 批复 B）');
@@ -179,11 +194,11 @@ void main() {
   // ═══════════════════════════════════════════════════════════════════
   group('④ 仪器自检与边界', () {
     test('★★ 剥注释本身有效（注释里的串不算命中）', () {
-      final doctored = '// _armPanPrecheck(list)\nvoid f(){}';
+      const doctored = '// _armPanPrecheck(list)\nvoid f(){}';
       expect(stripComments(doctored).contains('_armPanPrecheck(list)'), isFalse,
           reason: '★ 这道缝就是本批踩过的假绿来源 —— 仪器自己必须先堵上');
       // URL 里的 // 不许被当注释（那会削掉真代码 ⇒ 假红）
-      final withUrl = "const u = 'https://x.invalid/a.m3u8';\nvoid g(){}";
+      const withUrl = "const u = 'https://x.invalid/a.m3u8';\nvoid g(){}";
       expect(stripComments(withUrl).contains('https://x.invalid/a.m3u8'), isTrue,
           reason: '字符串字面量必须保住 —— 否则真代码被削掉变成假红');
     });

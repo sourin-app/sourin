@@ -59,7 +59,7 @@ import '../../core/library_cover_recovery.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'settings_tabs.dart';
+import 'shelf_tabs.dart';
 
 import 'package:material_ui/material_ui.dart';
 
@@ -124,6 +124,9 @@ void abLegacyShelfDidChangeDependencies(BuildContext context) {
 @visibleForTesting
 Future<(List<Favorite>?, List<Favorite>?, List<Progress>?)> Function()?
 debugShelfLoadOverride;
+
+@visibleForTesting
+Future<CacheEntry?> Function()? debugShelfPreloadOverride;
 
 /// ★★★ Owner 2026-10-11 第 2 条：「从播放页返回还是非常卡顿」
 ///
@@ -284,6 +287,11 @@ class MyShelfState extends State<MyShelf> {
   List<Favorite> _following = [];
   List<Favorite> _favorites = [];
   List<Progress> _history = [];
+  int? _historyCount;
+  bool _freshFavorites = false;
+  bool _freshFollowing = false;
+  bool _freshHistory = false;
+  bool _freshHistoryCount = false;
 
   /// 「清空历史」的二次确认态
   ///
@@ -382,18 +390,29 @@ class MyShelfState extends State<MyShelf> {
   ///    `[SHELF]` 日志仪器（本方法不打那个 tag）⇒ 那些用例逐字不变。
   Future<void> _preloadFromDisk() async {
     try {
-      final e = await DiskCache.read(kShelfCacheFile);
+      final e =
+          await (debugShelfPreloadOverride?.call() ??
+              DiskCache.read(kShelfCacheFile));
       final m = jmapOrNull(e?.data);
       if (m == null) return;
       final fav = _favListFrom(m['favorites']);
       final fol = _favListFrom(m['following']);
       final his = _progListFrom(m['history']);
+      final count = (m['historyCount'] as num?)?.toInt();
       if (!mounted) return;
       if (fav.isEmpty && fol.isEmpty && his.isEmpty) return;
+      // A disk read can finish after the core has already returned current
+      // proxy URLs (or an intentionally empty list). Never replace that data.
+      final useFav = !_freshFavorites && fav.isNotEmpty;
+      final useFol = !_freshFollowing && fol.isNotEmpty;
+      final useHis = !_freshHistory && his.isNotEmpty;
+      final useCount = !_freshHistoryCount && count != null;
+      if (!useFav && !useFol && !useHis && !useCount) return;
       setState(() {
-        if (fav.isNotEmpty) _favorites = fav;
-        if (fol.isNotEmpty) _following = fol;
-        if (his.isNotEmpty) _history = his;
+        if (useFav) _favorites = fav;
+        if (useFol) _following = fol;
+        if (useHis) _history = his;
+        if (useCount) _historyCount = count;
         // ★ 有数据就算"加载过" ⇒ 骨架不闪（用户已经看到内容了）
         _loadedOnce = true;
         _loading = false;
@@ -443,6 +462,7 @@ class MyShelfState extends State<MyShelf> {
       'favorites': [for (final f in _favorites) f.toJson()],
       'following': [for (final f in _following) f.toJson()],
       'history': [for (final p in _history) p.toJson()],
+      'historyCount': _historyCount,
     });
   }
 
@@ -497,7 +517,10 @@ class MyShelfState extends State<MyShelf> {
     setState(() {
       if (following != null) _following = following;
       if (favorites != null) _favorites = favorites;
-      if (history != null) _history = history;
+      if (history != null) {
+        _history = history;
+        _historyCount = history.length;
+      }
       if (tab != null) _tab = tab;
       if (remaining != null) _remainingByKey = remaining;
       _loading = false;
@@ -662,7 +685,7 @@ class MyShelfState extends State<MyShelf> {
       final ov = debugShelfLoadOverride;
       if (ov != null) {
         final (f, fo, h) = await ov();
-        results = <Object?>[f, fo, h];
+        results = <Object?>[f, fo, h, h?.length];
       } else {
         results = await Future.wait<Object?>([
           SourinApi.listFavorites(followingOnly: false)
@@ -683,6 +706,12 @@ class MyShelfState extends State<MyShelf> {
                 debugPrint('[SHELF] 取历史失败（保留旧数据）: $e');
                 return null;
               }),
+          SourinApi.continueWatchingCount().then<Object?>((v) => v).catchError((
+            e,
+          ) {
+            debugPrint('[SHELF-COUNT] 取历史总数失败（保留旧数据）: $e');
+            return null;
+          }),
         ]);
       }
 
@@ -737,6 +766,11 @@ class MyShelfState extends State<MyShelf> {
       final fav = results[0] as List<Favorite>?;
       final fol = results[1] as List<Favorite>?;
       final his = results[2] as List<Progress>?;
+      final count = results[3] as int?;
+      _freshFavorites = _freshFavorites || fav != null;
+      _freshFollowing = _freshFollowing || fol != null;
+      _freshHistory = _freshHistory || his != null;
+      _freshHistoryCount = _freshHistoryCount || count != null;
       // 只有成功的那几路才参与比对（null = 失败 = 保留旧值，那不影响"变没变"）
       final nextFav = fav ?? _favorites;
       final nextFol = fol ?? _following;
@@ -755,7 +789,8 @@ class MyShelfState extends State<MyShelf> {
         _remainingByKey,
         _tab,
       );
-      final dataChanged = sigBefore != sigAfter;
+      final nextCount = count ?? _historyCount;
+      final dataChanged = sigBefore != sigAfter || nextCount != _historyCount;
       final loadedOnceWillSet =
           (fav != null || fol != null || his != null) && !_loadedOnce;
       if (dataChanged || loadedOnceWillSet) {
@@ -763,6 +798,7 @@ class MyShelfState extends State<MyShelf> {
           if (fav != null) _favorites = fav;
           if (fol != null) _following = fol;
           if (his != null) _history = his;
+          _historyCount = nextCount;
           /*
            * ⚠️ 后端已各自过滤好了，这里**不需要再 filter** ——
            *    多加一层 `!deleted` 只会掩盖问题
@@ -787,7 +823,7 @@ class MyShelfState extends State<MyShelf> {
        *    （load() 的语义就是保留旧值），此时写盘等于把旧值又抄一遍 ——
        *    无害但没意义。更重要的是**绝不能**写成空（见 _persistToDisk 注释）。
        */
-      if (fav != null || fol != null || his != null) {
+      if (fav != null || fol != null || his != null || count != null) {
         unawaited(_persistToDisk());
       }
       /*
@@ -955,7 +991,7 @@ class MyShelfState extends State<MyShelf> {
   ///   而追更分支**不读** `kind` ⇒ 两条循环的字段清单**必须分开列**
   ///   （这正是 `kind` 一度漏掉的原因：把两条循环当成"同一份字段"了）。
   ///   ★ 本仓实现：两个 tab 各走一个写函数（`_writeFavs` 的 `withKind` 开关）。
-  static String _shelfSignature(
+  String _shelfSignature(
     List<Favorite> favs,
     List<Favorite> fols,
     List<Progress> his,
@@ -994,6 +1030,13 @@ class MyShelfState extends State<MyShelf> {
         _writeFavs(b, favs, withKind: true);
       case ShelfTab.history:
         _writeProgress(b, his);
+        if (widget.compact) {
+          for (final p in his) {
+            b
+              ..write(_historyReleaseStatus(p, favs, fols) ?? '')
+              ..write('\u0002');
+          }
+        }
     }
     /*
      * ★ `remaining`（"还剩几集"徽标）**只在 following tab** 被渲染
@@ -1132,7 +1175,12 @@ class MyShelfState extends State<MyShelf> {
 
     try {
       await SourinApi.clearHistory();
-      if (mounted) setState(() => _history = []);
+      if (mounted) {
+        setState(() {
+          _history = [];
+          _historyCount = 0;
+        });
+      }
       /*
        * ⚠️ 清完要**重新拉一次**而不是只清本地数组 ——
        *    后端可能保留了部分记录（比如其它设备同步过来的），
@@ -1161,6 +1209,7 @@ class MyShelfState extends State<MyShelf> {
               (f) => _Card(
                 title: f.title,
                 cover: f.cover,
+                releaseStatus: _favoriteReleaseStatus(f),
                 /*
                    * ★★★ 副标题 = 「最近一集的标题」，**没有就不画**（task-40）
                    *
@@ -1212,6 +1261,7 @@ class MyShelfState extends State<MyShelf> {
                 cover: f.cover,
                 // 收藏的副标题是类型
                 subtitle: f.kind == 'series' ? '剧集' : '影片',
+                releaseStatus: _favoriteReleaseStatus(f),
                 provider: f.provider,
                 id: f.nativeId,
               ),
@@ -1261,6 +1311,7 @@ class MyShelfState extends State<MyShelf> {
                    *    ★ 这是我加兜底时**新引入**的边角情况，必须一起处理。
                    */
                 subtitle: _historySubtitle(p),
+                releaseStatus: _historyReleaseStatus(p, _favorites, _following),
                 pct: p.percent,
                 provider: p.provider,
                 id: p.nativeId,
@@ -1269,6 +1320,30 @@ class MyShelfState extends State<MyShelf> {
             )
             .toList();
     }
+  }
+
+  // These values describe source updates. Favorite.note is a user note and
+  // Progress.finished describes one watched episode, so neither is used here.
+  static String? _favoriteReleaseStatus(Favorite f) =>
+      PosterCard.releaseStatusFor(
+        note: f.lastEpisodeTitle,
+        episodeCount: f.lastEpisodeCount,
+      );
+
+  static String? _historyReleaseStatus(
+    Progress p,
+    List<Favorite> favorites,
+    List<Favorite> following,
+  ) {
+    for (final entries in [following, favorites]) {
+      for (final f in entries) {
+        if (f.provider == p.provider && f.nativeId == p.nativeId) {
+          final status = _favoriteReleaseStatus(f);
+          if (status != null) return status;
+        }
+      }
+    }
+    return null;
   }
 
   /// ★★★ task-63：播放记录的**显示标题**（逐级兜底，永不返回空串）
@@ -1380,7 +1455,7 @@ class MyShelfState extends State<MyShelf> {
       case ShelfTab.favorites:
         return _favorites.length;
       case ShelfTab.history:
-        return _history.length;
+        return _historyCount ?? _history.length;
     }
   }
 
@@ -1398,26 +1473,7 @@ class MyShelfState extends State<MyShelf> {
     final colors = Theme.of(context).colorScheme;
     final cards = _cards;
 
-    /*
-     * ★ 窄屏（手机）判定 —— 断点 640dp，取自原版 Vue 的同一条 media query：
-     *   `@media (max-width: 640px) { ... }`（MyShelf.vue:503）
-     *
-     * 用 `maybeOf` 而不是 `of` 是刻意的：单测里 `MyShelf` 是**裸 pump** 的，
-     * 外面不一定有 `MediaQuery`；取不到时退化成「宽屏」
-     * ⇒ 与改动前的行为**完全一致**（旧代码没有任何宽度判断）。
-     */
-    final narrow =
-        (MediaQuery.maybeOf(context)?.size.width ?? double.infinity) < 640;
-
-    /*
-     * ★ 「清空历史」只在历史 tab 显示
-     *
-     * 二次确认的按钮文案会变 —— 这是原版的设计
-     *（不用弹窗，少一次打断）。
-     *
-     * ★ 抽成局部变量是因为**两个位置**要用它（宽屏=标题行内，
-     *   窄屏=第二行右对齐）—— 见下面 `narrow` 的两处注释。
-     */
+    // History clearing keeps its existing two-step confirmation.
     final clearHistoryButton = (_tab == ShelfTab.history && _history.isNotEmpty)
         ? ui.TextButton.icon(
             onPressed: _clearHistory,
@@ -1573,249 +1629,65 @@ class MyShelfState extends State<MyShelf> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        /*
-         * ══════════════════════════════════════════════════════════════
-         * ★★★ 2026-10-03【内容带】「我的」这一整块**归零横向内边距**
-         * ══════════════════════════════════════════════════════════════
-         *
-         * # 原版层级（`src/components/MyShelf.vue`）
-         * ```text
-         * div.container            ← 横向 --sp-6 = 24（TV 档 = max(24, 5vw)）
-         *  └ div.mine
-         *     ├ div.mine__head    ← :430-437 **无**横向 padding
-         *     └ div.mine__rail    ← :495-501 **无**横向 padding（只有 padding-bottom）
-         * ```
-         * ⇒ 「我的」在整条链上**只吃容器那一层**（×1）。
-         *
-         * # 这里原来是什么
-         * `MyShelf` 是首页的一个 sliver，而首页此前**没有**容器那层
-         * ⇒ 它只好**自己扮演** `.container`（5 处写死 24）。
-         * 现在页根补上了 `Layout.horizontalInsetOf(context)`（见 `home_page.dart`）
-         * ⇒ 这 5 处必须归零，否则「我的」变成 ×2，会与下方分区轨道的**卡宽**
-         *   错开 —— 而原版注释明确说过这件事不能错：
-         * > ★ 与内容区的 `.section__rail` **用同一套令牌**，这样「我的」与
-         * > 下方内容区的封面尺寸完全一致（此前这里是 132px、内容区是 165px，
-         * > 被批评「又大又小」）   —— `MyShelf.vue:491-494`
-         *
-         * ★ 真浏览器权威读数（`.probe/_m4_readings.txt`）：
-         * ```text
-         * d1904  mineItem l=256.00   （容器 232 + 24，第二层 0）
-         * tv1904 mineItem l= 95.19   （容器 95.2，第二层 0）
-         * tv960  mineItem l= 48.00   （容器 48，第二层 0）
-         * n500   mineItem l= 16.00   （容器 16，第二层 0）
-         * ```
-         * 四条都验证「`.mine__rail` 的 paddingLeft = **0px**」。
-         */
-        // ── 标题行 + tabs ──
-        Padding(
-          padding: EdgeInsets.zero,
-          child: Row(
-            children: [
-              /*
-               * ★★★ 2026-10-06（Owner 新诉求）：
-               * > 手机端可以把左上角的 我的 这两个文字隐藏吧
-               *
-               * ⇒ 窄屏（`narrow` = 逻辑宽 < 640dp）**不画**这个标题。
-               *
-               * # 为什么是「隐藏」而不是「改小 / 换位置」
-               *
-               * 手机这一页的版块名是**纯开销**：标题 39.6dp + 间距 16dp
-               * = 55.6dp 的横向预算，换来的信息量为 0（底栏上方的分段控件
-               * 自己就说明了这是什么版块）。拿掉之后 tabs 可用宽从
-               * 324.4dp 涨到 380dp（412 − 32）——
-               * 三个 tab 的 96dp **上限**仍然吃得下（3×96+8 = 296）
-               * ⇒ `t36_cache_refresh_test.dart:539` 的
-               *   「412dp 下 tab InkWell 宽 = 96.00」契约**不受影响**。
-               *
-               * ⚠️ 宽屏（≥640dp）**一个字都不改** —— 桌面/TV 上标题是版块
-               *   结构的一部分（原版 `MyShelf.vue` 的 `.mine__head` 就有它），
-               *   而且 `t65_follow_cards_test.dart` 的 1280dp 档要看这一行。
-               */
-              if (!narrow)
-                Text(
-                  '我的',
-                  style: TextStyle(
-                    fontSize: FontSizes.lg,
-                    fontWeight: FontWeight.w600,
-                    color: colors.onSurface,
-                  ),
-                ),
-              // ⚠️ 间距跟着标题一起收 —— 否则窄屏 tabs 左边会凭空多 16dp。
-              if (!narrow) const SizedBox(width: Sp.x4),
-              /*
-               * ══════════════════════════════════════════════════════════
-               * ★★★ 内联 tabs —— **一个玻璃容器装三个 tab**（2026-09-24 修正）
-               * ══════════════════════════════════════════════════════════
-               *
-               * 用户指出：
-               * > 上面那两个液态玻璃,跟底部的液态玻璃样式根本就不一样
-               *
-               * # 根因：结构错了（不是参数错了）
-               *
-               * 我第一版给**每个 tab** 各套一块 `GlassContainer` ——
-               * 于是屏幕上出现三个独立的小玻璃胶囊。
-               *
-               * 原版 `MyShelf.vue` 是**两层**：
-               * ```css
-               * .mine__tabs {          /* ← 一个玻璃容器 */
-               *   display: flex; gap: 4px; padding: 4px;
-               *   border-radius: var(--r-full);
-               *   background: var(--surface-1);      /* 玻璃底 */
-               *   outline: 1px solid var(--glass-stroke);
-               * }
-               * .mtab {                 /* ← 单个 tab 是**透明**的 */
-               *   background: transparent;
-               *   color: var(--text-tertiary);
-               * }
-               * .mtab.is-active {       /* ← 只有选中那个有底 */
-               *   background: var(--surface-4);      /* 比周围更亮一层 */
-               *   color: var(--text-primary);
-               *   box-shadow: var(--shadow-sm);
-               * }
-               * ```
-               * 这**正是底栏的结构**（一条玻璃 + 一个滑动选中药丸）——
-               * 所以两者观感自然一致。
-               *
-               * ★ 教训：**"看起来不像"时先怀疑结构，不要先调参数**。
-               *   我第一版一直在调 tint/quality，方向就错了。
-               */
-              Expanded(
-                child: LayoutBuilder(
-                  /*
-                   * ★★ 2026-10-05：`LayoutBuilder` 必须在这里 ——
-                   *   **横向 `SingleChildScrollView` 的外面**。
-                   *
-                   * # 为什么（探针实测 + SDK 源码，双证据）
-                   *
-                   * 我第一版把 `LayoutBuilder` 放在 `GlassContainer` 里面
-                   *（即 SCV 的子树里），结果 360dp 上钳制**完全没生效**：
-                   * ```text
-                   * 探针实测 360dp：SCV 视口 w=272.00
-                   *                 GlassContainer 内容宽 296.00（= 4+3×96+4）
-                   *                 tab 宽仍是 96.00（期望 88.00）
-                   *                 末 tab 右沿 364 > 视口右沿 344 ⇒ 被裁 20dp
-                   * ```
-                   * 根因在 `_RenderSingleChildViewport._getInnerConstraints`：
-                   * ```dart
-                   * Axis.horizontal => constraints.heightConstraints(),
-                   * Axis.vertical   => constraints.widthConstraints(),
-                   * ```
-                   * 横向 SCV 给子树的约束里 **width 是 unbounded**（0..∞）
-                   * ⇒ `LayoutBuilder` 拿到的 `maxWidth` 是 `∞`
-                   * ⇒ `min(96, (∞ − 8)/3)` 恒等于 96，钳制形同虚设。
-                   *
-                   * ⇒ 唯一能看到**视口真宽**的位置，就是 SCV 外面这一层。
-                   *   （`Expanded` 给的是 tight 约束，`maxWidth` = 视口宽）
-                   */
-                  builder: (context, constraints) {
-                    final tabWidth = _shelfTabWidthFor(constraints.maxWidth);
-                    return Align(
-                      alignment: Alignment.centerLeft,
-                      child: SizedBox(
-                        width: tabWidth * ShelfTab.values.length + Sp.x2,
-                        child: _ShelfTabs(
-                          tabWidth: tabWidth,
-                          current: _tab,
-                          countOf: _countOf,
-                          onSelect: _selectTab,
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final tabsWidth = ShelfTabs.widthOf(context);
+            final seeAllWidth = seeAllButton == null ? 0.0 : 44.0 + Sp.x2;
+            final clearWidth = clearHistoryButton == null
+                ? 0.0
+                : MediaQuery.textScalerOf(context).scale(FontSizes.cap) * 9 +
+                      Sp.x12;
+            final wrapSeeAll = constraints.maxWidth < tabsWidth + seeAllWidth;
+            final wrapClear =
+                constraints.maxWidth < tabsWidth + seeAllWidth + clearWidth;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: SizedBox(
+                          width: math.min(tabsWidth, constraints.maxWidth),
+                          child: ShelfTabs(
+                            selected: _tab.index,
+                            counts: [
+                              for (final tab in ShelfTab.values) _countOf(tab),
+                            ],
+                            onSelected: (index) =>
+                                _selectTab(ShelfTab.values[index]),
+                          ),
                         ),
                       ),
-                    );
-                  },
+                    ),
+                    if (!wrapClear && clearHistoryButton != null)
+                      clearHistoryButton,
+                    if (!wrapSeeAll && seeAllButton != null) ...[
+                      const SizedBox(width: Sp.x2),
+                      seeAllButton,
+                    ],
+                  ],
                 ),
-              ),
-
-              /*
-               * ★ 「清空历史」只在历史 tab 显示
-               *
-               * 二次确认的按钮文案会变 —— 这是原版的设计
-               *（不用弹窗，少一次打断）。
-               */
-              if (!narrow && clearHistoryButton != null) clearHistoryButton,
-
-              /*
-               * ★★★ 「查看更多」放在**标题行最右侧**
-               *
-               * 完整论证（为什么只有一个按钮 / 为什么改常驻胶囊 /
-               * 为什么不用 `GlassContainer` / 为什么包 `PressFeedback`）
-               * 见上面构造 `seeAllButton` 处的那一整块注释 ——
-               * ★ **单一真源**，这里不重复，免得两处注释将来漂移。
-               */
-              /*
-               * ⚠️ **不要**加 `Spacer()` —— 上面那个 tabs 已经是
-               *    `Expanded`（flex 1），`Spacer` 也是 flex 1
-               *    ⇒ 两者会**平分**剩余空间 ⇒ tabs 区被压到一半宽。
-               *    `Expanded` 自己就会把后面的按钮**推到最右**，
-               *    所以直接放按钮即可。
-               */
-              if (!narrow && seeAllButton != null) seeAllButton,
-            ],
-          ),
-        ),
-        /*
-         * ══════════════════════════════════════════════════════════════
-         * ★★★ 窄屏（手机）：两个次要操作**换行**到自己的一行
-         * ══════════════════════════════════════════════════════════════
-         *
-         * # 症状（2026-10-02 手机 emulator-5556 实测，逻辑宽 411.43dp）
-         *
-         * 「我的」这一行里 tabs 是 `Expanded`，右侧还挂着「清空历史」
-         * 和「查看更多」⇒ tabs 只剩 ~205dp，而三个 tab 需要
-         * `3 × 96 + 8(容器内边距) = 296dp`
-         * ⇒ 「播放历史」整块被推出可视区（`SingleChildScrollView` 虽然
-         *   横向可滚，但一个三格分段控件要**横滑**才看得全 = 不可用）。
-         *
-         * # 根因：不是参数不对，是**结构**不对
-         *
-         * 原版 `MyShelf.vue` 里：
-         *   · 「清空历史」(`.mine__clear`) 是 head **下面**的独立块
-         *     （`margin-top: var(--sp-2)`），**不在** 我的/tabs 这一行里；
-         *   · 原版**根本没有**「查看更多」（是 task-65 Owner 新加的）；
-         *   · `.mine__head` 带 `flex-wrap: wrap`，`.mine__tabs` 带
-         *     `max-width: 100%` ⇒ 挤不下时**换行**，而不是压 tabs。
-         * ⇒ 我们往这一行多塞了两个按钮，却没有原版的换行能力。
-         *
-         * # 处方
-         *
-         * 640dp 断点（与原版 `@media (max-width:640px)` 同）以下，把这两个
-         * 按钮换到第二行右对齐 ⇒ tabs 独占首行
-         *（`412 − 32(页面内边距 Sp.x4×2) − 我的(39.6) − 16(Sp.x4) = 324.4dp`
-         *  `≥ 296dp = 3×96 + 8` ⇒ 三个 tab 全部可见，无需横滑；
-         *  ★ 2026-10-05 补 **360dp** 的账：`360 − 32 − 39.6 − 16 = 272.4dp`
-         *  `≥ 272dp = 3×88 + 8` —— 靠 `_shelfTabWidthFor` 收到 88.00 才成立，
-         *  硬值 96 在这一档溢出 24dp（Owner m24232 报的「缺口」）。
-         *  ⚠️ 原注释写的 `48(页面内边距)` 是错账：窄档是 `Sp.x4(16)`×2 = 32）。
-         *
-         * # 为什么**不**照抄原版窄屏的「隐藏 tab 文字只留图标」
-         *
-         * 原版窄屏把 `span` 藏掉只留 svg + count。照抄**解决不了**本症状，
-         * 且会引入新问题：
-         *   · `t36_cache_refresh_test.dart:539` 冻结了 412dp 下三个 tab 的
-         *     InkWell 宽度**必须**是 96.00（±0.5）—— 那是**上限**生效的档位
-         *     （钳制只在真装不下时才收窄）
-         *     ⇒ 文字藏了宽度也不会变，一点宽度都省不出来；
-         *   · 代价是**丢掉中文标签**（`t36` 还要求 `find.text('最近收藏')`
-         *     这类标签在宽屏下可寻）；
-         *   · 挤压**不是** tab 太宽造成的（96dp × 3 本来就够），
-         *     是**我们自己**多塞了两个按钮 ⇒ 该动的是按钮，不是 tab。
-         *
-         * ⚠️ 宽屏路径**一行都没动**：`t65_follow_cards_test.dart` 要求
-         *    1280dp 下「查看更多」**恰好一个**且可点；`t36` 的阳性对照是
-         *    `Size(1280, 800)`。两者都走宽屏分支。
-         */
-        if (narrow && (clearHistoryButton != null || seeAllButton != null))
-          Padding(
-            // ★ 内容带：窄屏这一行同样只吃容器那层 ⇒ 横向归零，只留 top。
-            padding: const EdgeInsets.only(top: Sp.x1),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (clearHistoryButton != null) clearHistoryButton,
-                if (seeAllButton != null) seeAllButton,
+                if ((wrapClear && clearHistoryButton != null) ||
+                    (wrapSeeAll && seeAllButton != null))
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Wrap(
+                      alignment: WrapAlignment.end,
+                      spacing: Sp.x1,
+                      children: [
+                        if (wrapClear && clearHistoryButton != null)
+                          clearHistoryButton,
+                        if (wrapSeeAll && seeAllButton != null) seeAllButton,
+                      ],
+                    ),
+                  ),
               ],
-            ),
-          ),
-        const SizedBox(height: Sp.x4),
+            );
+          },
+        ),
+        const SizedBox(height: Sp.x3),
 
         // ── 内容 ──
         if (_loading)
@@ -1871,14 +1743,15 @@ class MyShelfState extends State<MyShelf> {
                 itemBuilder: (context, i) {
                   final c = cards[i];
                   return SizedBox(
-                    width: (MediaQuery.sizeOf(context).width - Sp.x12).clamp(
-                      Sp.x16 * 3,
-                      Sp.x16 * 5,
-                    ),
+                    width: CompactShelfCard.width,
                     child: CompactShelfCard(
                       title: c.title,
                       cover: c.cover,
-                      subtitle: c.subtitle,
+                      subtitle:
+                          _tab == ShelfTab.following && c.releaseStatus != null
+                          ? null
+                          : c.subtitle,
+                      releaseStatus: c.releaseStatus,
                       percent: c.pct,
                       unread: c.unread ?? 0,
                       onTap: () {
@@ -1894,9 +1767,7 @@ class MyShelfState extends State<MyShelf> {
           )
         else
           SizedBox(
-            height:
-                AppMetrics.posterWidth / AppMetrics.posterAspect +
-                _shelfCardHeight,
+            height: PosterCard.heightOf(context, hasSubtitle: true),
             /*
              * N3（2026-10-27）：三条横向轨道（最近追更 / 最近收藏 / 播放历史）
              * 补鼠标拖拽 —— 与 `home_page._Rail` 同款：包一层
@@ -1924,7 +1795,12 @@ class MyShelfState extends State<MyShelf> {
                         PosterCard(
                           title: c.title,
                           cover: c.cover,
-                          subtitle: c.subtitle,
+                          subtitle:
+                              _tab == ShelfTab.following &&
+                                  c.releaseStatus != null
+                              ? null
+                              : c.subtitle,
+                          releaseStatus: c.releaseStatus,
                           unread: c.unread ?? 0,
                           onTap: () {
                             /*
@@ -2062,6 +1938,7 @@ class _Card {
     required this.id,
     this.cover,
     this.subtitle,
+    this.releaseStatus,
     this.pct,
     this.unread,
     this.episodeId,
@@ -2070,6 +1947,7 @@ class _Card {
   final String title;
   final String? cover;
   final String? subtitle;
+  final String? releaseStatus;
 
   /// 进度百分比（仅历史有）
   final int? pct;
@@ -2079,67 +1957,6 @@ class _Card {
   final String id;
   final String? episodeId;
 }
-
-/// 单个 tab 的宽度**上限**
-///
-/// # 为什么要等宽（而不是让内容自己撑）
-///
-/// 滑动药丸的位置是**纯算术**算出来的（`index * 宽度`）——
-/// 这要求三个 tab **等宽**。让它按内容自适应的话：
-/// ```text
-/// · 未设角标时"最近追更"比"最近追更 2"窄 → 药丸算出来会**错位**
-/// · 想修就得去量真实布局（LayoutBuilder/GlobalKey），
-///   而那要等一帧，首帧药丸会闪一下
-/// ```
-/// 等宽最直接、也最可预测 —— **与底栏用的是同一个办法**
-///（`shell.dart` 的 `_tabWidth` + `_pillLeft`）。
-///
-/// ★ 2026-10-05：96 从「硬值」改成「**上限**」—— 360dp 上三个 96 装不进
-///   272.4dp 的视口（`3×96+8 = 296 > 272`），末 tab 的计数角标
-///   被玻璃容器右沿切掉（真机取证 `.probe/phone/ck109_badge_zoom.png`）。
-///   实际宽度 = `min(96, (可用宽 − 8) / 3)`，见 `_shelfTabWidthFor`：
-///   412dp 仍是 96.00、1280dp 仍是 96.00，只有**真的装不下**时才收窄。
-///
-/// 宽度算账（三个标签都是 4 个全角汉字，宽度恒定）：
-/// ```text
-/// 标签   4 字 × 12px(cap)  = 48
-/// 间距                     =  4
-/// 角标   ~3 位 × 10px      = 18
-/// 内边距  8 × 2 (Sp.x2)    = 16
-/// ─────────────────────────────
-/// 合计                     ≈ 86  →  上限取 96 留一点余量
-/// ```
-/// ⚠️ 横向内边距从 `Sp.x3(12)` 收到 `Sp.x2(8)` 就是为了给窄屏
-///   让出这 6dp（`86 ≤ 88`）；**纵向仍是 `Sp.x3`** —— 那是
-///   ≥34dp 触控目标契约，不许动。
-///
-/// tab 宽度**上限**（药丸位置靠纯算术算，所以必须等宽）
-const double _shelfTabWidth = 96;
-
-/// 实际使用的 tab 宽度 = `min(上限, 可用宽三等分)`
-///
-/// `avail` 是 **`Padding(all(4))` 之外**的可用宽（即玻璃容器内沿宽），
-/// 所以先扣掉左右各 4dp 的内边距（共 8）再三等分。
-///
-/// ★ 为什么不能直接用常量：360dp 上容器只有 272.4dp，三个 96 需要 296
-///   ⇒ 溢出 24dp（Owner m24232 报的「缺口」）。钳制后：
-/// ```text
-/// 360dp  → (272.4 − 8)/3 = 88.13 → 88.00   3×88 + 8 = 272 ≤ 272.4  ✓
-/// 412dp  → (324.4 − 8)/3 = 105.47 → min(96) = 96.00  （不变）
-/// 1280dp → (1232  − 8)/3 = 408    → min(96) = 96.00  （不变）
-/// ```
-///
-/// ⚠️ `avail` 必须是**视口**宽，不是玻璃容器的内容宽。两个坑：
-///   · 放到 `Padding(all(4))` **里面** ⇒ 4dp 内边距扣两次
-///     （360dp 算出 85.33 而不是 88.00）；
-///   · 放到**横向 `SingleChildScrollView` 的子树里** ⇒ 宽约束是
-///     unbounded（`_RenderSingleChildViewport._getInnerConstraints`），
-///     `maxWidth` = ∞ ⇒ `min(96, ∞)` 恒等于 96，钳制**完全失效**。
-///     探针实测（`.probe/phone/probe_tabfit_run.txt`）：放里面时
-///     360dp 的 tab 宽仍是 96.00、末 tab 右沿 364 > 视口右沿 344。
-///     唯一正确的位置 = SCV **外面**那一层（`Expanded` 下）。
-double _shelfTabWidthFor(double avail) =>
-    math.min(_shelfTabWidth, (avail - 8.0) / 3);
 
 /// 卡片轨道的高度 = 海报 + 文字区预留
 ///
@@ -2162,37 +1979,6 @@ double _shelfTabWidthFor(double avail) =>
 ///
 /// ⚠️ 只在有副标题时才需要 50。没有副标题的卡片用不满，
 ///    但轨道高度必须按**最高**的那种卡片给 —— 否则混排时矮的撑不住高的。
-const double _shelfCardHeight = 50;
-
-/// The bounded shelf rail hosts the shared Miuix tab row and count labels.
-class _ShelfTabs extends StatelessWidget {
-  const _ShelfTabs({
-    required this.tabWidth,
-    required this.current,
-    required this.countOf,
-    required this.onSelect,
-  });
-
-  final double tabWidth;
-  final ShelfTab current;
-  final int Function(ShelfTab) countOf;
-  final ValueChanged<ShelfTab> onSelect;
-
-  @override
-  Widget build(BuildContext context) => SettingsTabs(
-    labels: [
-      for (final tab in ShelfTab.values)
-        '${switch (tab) {
-          ShelfTab.following => '最近追更',
-          ShelfTab.favorites => '最近收藏',
-          ShelfTab.history => '播放历史',
-        }}${countOf(tab) > 0 ? ' ${countOf(tab)}' : ''}',
-    ],
-    selected: current.index,
-    onSelected: (index) => onSelect(ShelfTab.values[index]),
-  );
-}
-
 class _ShelfSkeleton extends StatelessWidget {
   const _ShelfSkeleton();
 
@@ -2200,8 +1986,7 @@ class _ShelfSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return SizedBox(
-      height:
-          AppMetrics.posterWidth / AppMetrics.posterAspect + _shelfCardHeight,
+      height: PosterCard.heightOf(context, hasSubtitle: true),
       child: ListView.separated(
         clipBehavior: Clip.antiAlias,
         scrollDirection: Axis.horizontal,

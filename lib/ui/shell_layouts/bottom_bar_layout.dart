@@ -1,4 +1,4 @@
-// Responsive placement for the shell's real Miuix navigation. The body remains
+// Floating bottom placement for the shell's real Miuix navigation. The body remains
 // owned by ShellPage, which preserves each page and its scroll state.
 import 'package:flutter/widgets.dart';
 
@@ -6,19 +6,16 @@ import '../../shell.dart' show AppTab;
 import 'shell_layout.dart';
 
 class BottomBarShellLayout extends ShellLayout {
-  const BottomBarShellLayout({required this.nav, this.rail});
+  const BottomBarShellLayout({required this.nav});
 
-  /// Compact navigation, injected by ShellPage.
+  /// Floating navigation, injected by ShellPage at every window width.
   final Widget nav;
-  final Widget? rail;
-
-  static const double railBreakpoint = 900;
 
   @override
   String get id => 'bottomBar';
 
   @override
-  String get label => '底栏式';
+  String get label => '底部悬浮栏';
 
   @override
   Widget build({
@@ -28,15 +25,7 @@ class BottomBarShellLayout extends ShellLayout {
     required Widget body,
     required List<AppTab> tabs,
   }) {
-    if (rail != null && MediaQuery.sizeOf(context).width >= railBreakpoint) {
-      return Row(
-        children: [
-          rail!,
-          Expanded(child: body),
-        ],
-      );
-    }
-    // Compact navigation overlays scrolling content. Pages retain their shared
+    // Floating navigation overlays scrolling content. Pages retain their shared
     // bottom inset; the system navigation inset is consumed exactly once here.
     return Stack(
       children: [
@@ -45,7 +34,11 @@ class BottomBarShellLayout extends ShellLayout {
           left: 0,
           right: 0,
           bottom: MediaQuery.paddingOf(context).bottom,
-          child: nav,
+          child: MediaQuery.removeViewPadding(
+            context: context,
+            removeBottom: true,
+            child: nav,
+          ),
         ),
       ],
     );

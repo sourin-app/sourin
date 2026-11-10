@@ -30,6 +30,10 @@ PopoverAnchorButton cancels its pending hover-open timer from an outer `Listener
 
 The note audit also found the [send capability decision](2026-10-17-player-danmaku-send-entry.md), which is independent of the control implementation: capability gating remains, and this change does not reinstate its historical floating placement. The [rejected buffering-spinner proposal](../../rejected/bug-fix/2026-10-18-buffering-spinner-despite-cached-range.md) stays rejected; a visible buffer interval does not establish decoder readiness.
 
+Buffered progress is delivered through a ValueListenable scoped to PlayerProgressSlider. Native cache polling includes span and percent in change detection; unchanged endpoints still update a shrinking interval. Stop invalidates pending reads, and non-finite or negative time values are unavailable. Position, duration, seek throttling and the live progress omission retain their existing contracts.
+
+The 4px track and 28px hit area are deliberately independent. Thumb pixel checks render the actual Miuix painter at 4x and convert centroids back to logical coordinates. A 1x white-pixel area threshold inherited from the thicker legacy thumb is not appropriate to this geometry. The pixel count threshold stays intact at 4x; making the thumb transparent must fail. Endpoint, drag, cancel, buffer-bound and live-omission assertions remain.
+
 ## Alternatives considered
 
 - Repaint the old controls to resemble Miuix: does not satisfy the requested actual component migration.
@@ -39,7 +43,7 @@ The note audit also found the [send capability decision](2026-10-17-player-danma
 
 ## Consequences
 
-Behavior tests read the actual Miuix slider painter, exercise tap/drag/cancel/keyboard paths, and retain failure, pending-input, focus and line/episode assertions. Tooltip tests locate MiuixTooltipBox and verify the rendered tooltip content. Surface tests compare real pixels, not just input color constants. These tests require the product theme bridge when mounting actual Miuix text inputs.
+Behavior tests read the actual Miuix slider painter, exercise tap/drag/cancel/keyboard paths, and retain failure, pending-input, focus and line/episode assertions. Tooltip tests locate the application MiuixTooltipHost and verify rendered MiuixPlainTooltip content; [anchor visibility and overlay ownership](../bug-fix/2026-11-10-tooltip-clipped-scroll-anchors.md) governs their lifecycle. Surface tests compare real pixels, not just input color constants. These tests require the product theme bridge when mounting actual Miuix text inputs.
 
 The scaffold regression checks actual nested Miuix shells, content geometry and an unkeyed stateful child's lifetime across keyboard inset changes. Embedded layout/theme tests retain their existing contracts while locating the Miuix shell. The player capability import allowlist now explicitly includes flutter_miuix while preserving the rule that the settings panel does not own mpv or playback.
 

@@ -117,10 +117,13 @@ void main() {
      */
     test('★★ loadAll 的加载态只对「真正的首次」生效（显式 _firstLoadDone）', () {
       expect(
-        code.contains(
-            'if (mounted && !_firstLoadDone) setState(() => _loading = true);'),
+        RegExp(
+          r'if \(mounted && !_firstLoadDone && !_loading\)\s*\{\s*'
+          r'setState\(\(\) => _loading = true\);',
+        ).hasMatch(code),
         isTrue,
-        reason: '★ 刷新时不能把整页换成转圈 —— 那会销毁 ListView、滚动归零。'
+        reason:
+            '★ 刷新时不能把整页换成转圈 —— 那会销毁 ListView、滚动归零。'
             '判据必须是显式的「首次加载完成」标志，'
             '不能是 `_providers.isEmpty` 这个代理（加载过但结果为空时会误判）',
       );
@@ -129,9 +132,11 @@ void main() {
     test('★★ 代理判据 `_providers.isEmpty` 不得再出现在 loadAll 的转圈条件里', () {
       expect(
         code.contains(
-            'if (mounted && _providers.isEmpty) setState(() => _loading = true);'),
+          'if (mounted && _providers.isEmpty) setState(() => _loading = true);',
+        ),
         isFalse,
-        reason: '★ 代理判据必须消失 —— 它会在「加载过但列表为空」时误判成首次，'
+        reason:
+            '★ 代理判据必须消失 —— 它会在「加载过但列表为空」时误判成首次，'
             '于是每次刷新都销毁 ListView、滚动归零',
       );
     });
@@ -148,9 +153,13 @@ void main() {
       final before = code.substring(0, i);
       final lastFinally = before.lastIndexOf('finally');
       final lastCatch = before.lastIndexOf('} catch');
-      expect(lastFinally, greaterThan(lastCatch),
-          reason: '★ 置位必须在 finally 里（在 catch 之后）—— '
-              '否则首次加载失败后，每次刷新都会整页转圈，比原来更糟');
+      expect(
+        lastFinally,
+        greaterThan(lastCatch),
+        reason:
+            '★ 置位必须在 finally 里（在 catch 之后）—— '
+            '否则首次加载失败后，每次刷新都会整页转圈，比原来更糟',
+      );
     });
 
     test('★★ 旧的「每次都转圈」写法在**代码**里必须消失', () {
@@ -193,13 +202,17 @@ void main() {
      * ```
      */
     test('★ 转圈分支仍在（首次加载时要有加载态，不能为了修 bug 把它删了）', () {
-      final oldForm =
-          code.contains('return const Center(child: CircularProgressIndicator());');
-      final newForm = code.contains('return const Center(child: AppLoading());');
+      final oldForm = code.contains(
+        'return const Center(child: CircularProgressIndicator());',
+      );
+      final newForm = code.contains(
+        'return const Center(child: AppLoading());',
+      );
       expect(
         oldForm || newForm,
         isTrue,
-        reason: '★ 别修一个坏一个 —— 首次加载仍需转圈'
+        reason:
+            '★ 别修一个坏一个 —— 首次加载仍需转圈'
             '（旧写法 CircularProgressIndicator 或新共享组件 AppLoading，二者必居其一；'
             '两个都没有 ⇒ 说明转圈被删了）',
       );
@@ -212,7 +225,8 @@ void main() {
       expect(
         seg.contains('CircularProgressIndicator') || seg.contains('AppLoading'),
         isTrue,
-        reason: '★ _loading 分支里必须真的画一个转圈'
+        reason:
+            '★ _loading 分支里必须真的画一个转圈'
             '（AppLoading 内部仍渲染 CircularProgressIndicator）',
       );
     });
@@ -288,8 +302,10 @@ void main() {
       for (final m in assigns) {
         final lineStart = code.lastIndexOf('\n', m.start) + 1;
         final lineEnd = code.indexOf('\n', m.end);
-        final line =
-            code.substring(lineStart, lineEnd < 0 ? code.length : lineEnd);
+        final line = code.substring(
+          lineStart,
+          lineEnd < 0 ? code.length : lineEnd,
+        );
         if (RegExp(r'\bbool\s+_loading\s*=\s*true\s*;').hasMatch(line)) {
           declLines.add(line.trim());
           continue;
@@ -298,8 +314,10 @@ void main() {
       }
 
       // ignore: avoid_print
-      print('T3INV|_loading=true 总匹配=${assigns.length} '
-          '其中字段声明=${declLines.length} 刷新赋值=${refreshAssigns.length}');
+      print(
+        'T3INV|_loading=true 总匹配=${assigns.length} '
+        '其中字段声明=${declLines.length} 刷新赋值=${refreshAssigns.length}',
+      );
       for (final l in declLines) {
         // ignore: avoid_print
         print('T3INV|  声明: $l');
@@ -308,7 +326,8 @@ void main() {
       expect(
         refreshAssigns.length,
         1,
-        reason: '★★★ `_loading = true` 的**刷新赋值**必须恰好 1 处。\n'
+        reason:
+            '★★★ `_loading = true` 的**刷新赋值**必须恰好 1 处。\n'
             '若变成 2 处 ⇒ task-3 的不变量 '
             '「_loading=true ⟹ _firstLoadDone=false」**破裂**\n'
             '⇒ `build()` 里那句裸 `if (_loading)` 就会在刷新时走转圈分支\n'
@@ -322,16 +341,21 @@ void main() {
         final m = refreshAssigns.first;
         final lineStart = code.lastIndexOf('\n', m.start) + 1;
         final lineEnd = code.indexOf('\n', m.end);
-        final line =
-            code.substring(lineStart, lineEnd < 0 ? code.length : lineEnd);
+        final line = code.substring(
+          lineStart,
+          lineEnd < 0 ? code.length : lineEnd,
+        );
 
         // ignore: avoid_print
         print('T3INV|  刷新赋值: ${line.trim()}');
 
         expect(
-          line.contains('_firstLoadDone'),
+          code
+              .substring(code.lastIndexOf('if (', m.start), m.start)
+              .contains('!_firstLoadDone'),
           isTrue,
-          reason: '★★ 唯一的刷新赋值必须带 `!_firstLoadDone` 守卫 —— '
+          reason:
+              '★★ 唯一的刷新赋值必须带 `!_firstLoadDone` 守卫 —— '
               '否则刷新时会把整页换成转圈、销毁 ListView、滚动归零。\n'
               '实测行：${line.trim()}',
         );
@@ -346,8 +370,11 @@ void main() {
       //   若 _loading 无条件为 true → build 返回 Center → ListView 不在树里 → 位置丢失
       final listExistsWhenLoading = false; // 因为 return Center(...) 短路了
       final pixelsAfterReload = listExistsWhenLoading ? 3000.0 : 0.0;
-      expect(pixelsAfterReload, 0.0,
-          reason: '★ ListView 被替换掉之后，位置必然是 0 —— 这就是 bug 的机制');
+      expect(
+        pixelsAfterReload,
+        0.0,
+        reason: '★ ListView 被替换掉之后，位置必然是 0 —— 这就是 bug 的机制',
+      );
     });
   });
 }

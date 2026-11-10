@@ -24,5 +24,6 @@ Future<dynamic> followFixtureTransport(
   'list_providers' ||
   'check_updates' => <dynamic>[],
   'total_unread' || 'repair_library_covers' => 0,
+  'continue_watching_count' => 1,
   _ => throw UnsupportedError('Unexpected fixture command: $command'),
 };

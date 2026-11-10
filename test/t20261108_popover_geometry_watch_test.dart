@@ -29,6 +29,41 @@ class _RenderTransformReads extends RenderProxyBox {
 }
 
 void main() {
+  testWidgets('late anchor report cannot read an inactive layer element', (
+    tester,
+  ) async {
+    final controller = PopoverController();
+    addTearDown(controller.dispose);
+    var reportedDuringDeactivate = false;
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: Column(
+          children: [
+            SizedBox(key: controller.layerKey, width: 100, height: 40),
+            _ReportOnDeactivate(
+              onDeactivate: () {
+                reportedDuringDeactivate = true;
+                // The first sibling is inactive but its GlobalKey has not
+                // been unregistered by the end-of-frame unmount pass yet.
+                expect(controller.layerKey.currentContext, isNotNull);
+                controller.reportAnchorRect(
+                  'retiring',
+                  Object(),
+                  const Rect.fromLTWH(0, 0, 40, 20),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(reportedDuringDeactivate, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('panel switches keep one geometry read per existing frame', (
     tester,
   ) async {
@@ -121,4 +156,23 @@ void main() {
     controller.close();
     await tester.pumpWidget(const SizedBox.shrink());
   });
+}
+
+class _ReportOnDeactivate extends StatefulWidget {
+  const _ReportOnDeactivate({required this.onDeactivate});
+  final VoidCallback onDeactivate;
+
+  @override
+  State<_ReportOnDeactivate> createState() => _ReportOnDeactivateState();
+}
+
+class _ReportOnDeactivateState extends State<_ReportOnDeactivate> {
+  @override
+  void deactivate() {
+    widget.onDeactivate();
+    super.deactivate();
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }

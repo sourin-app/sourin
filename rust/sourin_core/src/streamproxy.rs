@@ -2723,7 +2723,9 @@ async fn forward_request(
      * 下面的单连接透传 —— 也就是今天的行为。
      */
     if let Some(plan) = plan_prefetch(
-        proxy.prefetch_is_disabled(),
+        // Generic Range fan-out does not retain the scoped redirect policy.
+        // Keep declared-source media on its guarded upstream connection.
+        proxy.prefetch_is_disabled() || hls_query_policy.is_some(),
         status,
         &up_headers,
         &path_only,
@@ -3103,6 +3105,10 @@ mod global_proxy_tests;
 #[cfg(test)]
 #[path = "streamproxy_hls_query_tests.rs"]
 mod hls_query_tests;
+
+#[cfg(test)]
+#[path = "streamproxy_scoped_prefetch_tests.rs"]
+mod scoped_prefetch_tests;
 
 #[cfg(test)]
 #[path = "streamproxy_cover_diagnostics_tests.rs"]

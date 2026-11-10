@@ -523,6 +523,7 @@ impl StreamProxy {
         // ★ 只覆盖**回退用**的 `proxied`；主 client 仍是 .no_proxy()（默认直连）
         me.proxied = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))
+            .referer(false)
             .proxy(reqwest::Proxy::all(proxy_url).expect("test proxy url"))
             .build()
             .expect("test proxied client");
@@ -553,6 +554,7 @@ impl StreamProxy {
          */
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))
+            .referer(false)
             .no_proxy()
             .build()
             .expect("流代理无法创建 HTTP 客户端（TLS 后端初始化失败）");
@@ -562,6 +564,7 @@ impl StreamProxy {
          */
         let proxied = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(UPSTREAM_CONNECT_SECS))
+            .referer(false)
             .build()
             .expect("流代理无法创建（经代理）HTTP 客户端");
         Self {
@@ -2479,6 +2482,9 @@ async fn forward_request(
         }
     };
 
+    // Relative HLS resources belong to the response after redirects, including
+    // nested playlists whose CDN changes their directory.
+    let final_upstream_url = upstream.url().clone();
     let status = upstream.status();
     let up_headers = upstream.headers().clone();
     /*
@@ -2613,7 +2619,9 @@ async fn forward_request(
     let is_playlist = ctype.contains("mpegurl")
         || ctype.contains("m3u")
         || path_only.ends_with(".m3u8")
-        || path_only.ends_with(".m3u");
+        || path_only.ends_with(".m3u")
+        || final_upstream_url.path().to_ascii_lowercase().ends_with(".m3u8")
+        || final_upstream_url.path().to_ascii_lowercase().ends_with(".m3u");
 
     if is_playlist {
         let text = match read_playlist_text(upstream).await {
@@ -2640,7 +2648,7 @@ async fn forward_request(
          *    于是分片请求查不到头 → 「代理地址已失效」→ 全部播不了。
          */
         let local_base = format!("http://127.0.0.1:{}/p/{hdr_token}/", proxy.port());
-        let rewritten = rewrite_playlist(&text, upstream_url, &local_base);
+        let rewritten = rewrite_playlist(&text, final_upstream_url.as_str(), &local_base);
 
         // 改写后长度会变，必须去掉上游的 Content-Length（否则截断）
         return Response::builder()

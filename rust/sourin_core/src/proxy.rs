@@ -454,6 +454,8 @@ impl ProxyStore {
         );
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(3))
+            // Media headers belong to the source, including across redirects.
+            .referer(false)
             .default_headers(headers)
             .no_gzip()
             .no_deflate()

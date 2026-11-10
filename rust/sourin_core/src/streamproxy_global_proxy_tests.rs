@@ -612,3 +612,109 @@ async fn rewritten_hls_signed_segment_key_and_relative_queries_reach_upstream_in
     }
     server.abort();
 }
+
+async fn redirected_playlist_case(extensionless: bool, mode: Option<ProxyMode>) {
+    let (origin, trap) = endpoint("unexpected-direct-request", None).await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let records = seen.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_url = format!("http://{}", listener.local_addr().unwrap());
+    let origin = if mode == Some(ProxyMode::Custom) { origin } else { proxy_url.clone() };
+    let origin_for_server = origin.clone();
+    let server = tokio::spawn(async move {
+        let app = Router::new().fallback(move |request: Request<Body>| {
+            let uri = if request.uri().scheme().is_some() { request.uri().to_string() }
+                else { format!("{origin_for_server}{}", request.uri()) };
+            records.lock().unwrap().push((uri, request.headers().clone()));
+            let path = request.uri().path();
+            let redirect = match path {
+                "/entry" | "/entry.m3u8" => Some("/edge/master.m3u8?root=kept"),
+                "/edge/level.m3u8" => Some("/cdn/rendition/live.m3u8?level=kept"),
+                _ => None,
+            };
+            let response = if let Some(target) = redirect {
+                Response::builder().status(StatusCode::FOUND)
+                    .header(header::LOCATION, format!("{origin_for_server}{target}"))
+                    .body(Body::empty()).unwrap()
+            } else if path == "/edge/master.m3u8" {
+                Response::builder().header(header::CONTENT_TYPE,
+                    if extensionless { "application/octet-stream" } else { "application/vnd.apple.mpegurl" })
+                    .body(Body::from("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlevel.m3u8?variant=a%2Bb\n")).unwrap()
+            } else if path == "/cdn/rendition/live.m3u8" {
+                Response::builder().header(header::CONTENT_TYPE, "application/vnd.apple.mpegurl")
+                    .body(Body::from("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"../key.bin?sig=k%2Bv\"\n#EXTINF:7,\nseg.ts?sig=s%2Fv\n#EXT-X-ENDLIST\n")).unwrap()
+            } else if path == "/cdn/key.bin" || path == "/cdn/rendition/seg.ts" {
+                Response::builder().body(Body::from("expected-child")).unwrap()
+            } else {
+                Response::builder().status(StatusCode::NOT_FOUND).body(Body::from("wrong-playlist-base")).unwrap()
+            };
+            async move { response }
+        });
+        axum::serve(listener, app).await.unwrap();
+    });
+    let stream = Arc::new(if let Some(mode) = mode {
+        let store = Arc::new(ProxyStore::new());
+        let mut cfg = config(&proxy_url, ProxyScope::All);
+        cfg.mode = mode;
+        store.set(GLOBAL_PROXY, cfg).unwrap();
+        StreamProxy::with_proxy_store(store)
+    } else { StreamProxy::new() });
+    stream.ensure_started().await.unwrap();
+    let entry = format!("{origin}/{}", if extensionless { "entry" } else { "entry.m3u8" });
+    let local = stream.register(&entry, vec![("Referer".into(), "https://fixture.invalid/watch".into())]);
+    let client = direct_client();
+    let response = client.get(local).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "application/vnd.apple.mpegurl");
+    let master = response.text().await.unwrap();
+    let child = master.lines().find(|line| !line.starts_with('#') && !line.is_empty()).unwrap();
+    assert!(child.starts_with(&format!("http://127.0.0.1:{}/p/", stream.port())), "redirected HLS must be rewritten");
+    assert!(child.ends_with("/edge/level.m3u8?variant=a%2Bb"), "relative variant uses final response directory: {child}");
+    let response = client.get(child).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let media = response.text().await.unwrap();
+    let key = media.split("URI=\"").nth(1).unwrap().split('"').next().unwrap();
+    let segment = media.lines().find(|line| line.starts_with("http")).unwrap();
+    // The HTTP client normalizes parent-directory segments before sending.
+    // The upstream request assertion below still checks the exact target.
+    assert!(reqwest::Url::parse(key).unwrap().as_str().ends_with("/cdn/key.bin?sig=k%2Bv"));
+    assert!(segment.ends_with("/cdn/rendition/seg.ts?sig=s%2Fv"));
+    for url in [key, segment] {
+        let response = client.get(url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "expected-child");
+    }
+    assert!(trap.seen.lock().unwrap().is_empty(), "all redirect and child requests retain the configured proxy");
+    let observed = seen.lock().unwrap();
+    let expected = [entry, format!("{origin}/edge/master.m3u8?root=kept"),
+        format!("{origin}/edge/level.m3u8?variant=a%2Bb"),
+        format!("{origin}/cdn/rendition/live.m3u8?level=kept"),
+        format!("{origin}/cdn/key.bin?sig=k%2Bv"),
+        format!("{origin}/cdn/rendition/seg.ts?sig=s%2Fv")];
+    assert_eq!(observed.len(), expected.len());
+    for ((uri, headers), expected) in observed.iter().zip(expected) {
+        assert_eq!(uri, &expected);
+        assert_eq!(headers.get(header::REFERER).unwrap(), "https://fixture.invalid/watch");
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn redirected_hls_resolves_variant_key_and_segment_from_each_final_response() {
+    redirected_playlist_case(false, Some(ProxyMode::Custom)).await;
+}
+
+#[tokio::test]
+async fn redirected_hls_uses_final_extension_for_octet_stream_entry() {
+    redirected_playlist_case(true, Some(ProxyMode::Custom)).await;
+}
+
+#[tokio::test]
+async fn redirected_hls_preserves_source_referer_with_direct_policy() {
+    redirected_playlist_case(false, Some(ProxyMode::Direct)).await;
+}
+
+#[tokio::test]
+async fn redirected_hls_preserves_source_referer_without_proxy_store() {
+    redirected_playlist_case(false, None).await;
+}

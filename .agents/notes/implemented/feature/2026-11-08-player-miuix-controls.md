@@ -37,6 +37,10 @@ arrives immediately before the entering ticker's last frame must not let that
 old entrance callback remove the retained body. The exact duration edge can
 evaluate opacity to zero while the floating-point ticker is still forward;
 regressions observe the following normal frame before requiring unmount.
+The danmaku session helpers first rebuild the changed visibility, verify that
+the retained closing panel blocks pointer, focus and semantics interaction,
+then advance Motion.fast and one normal completion frame before requiring
+removal. Their search, binding and session assertions remain in place.
 
 MediaPage, standalone DetailPage and PlayerPage use AppScaffold, which mounts the actual MiuixScaffold. Windowed surfaces keep the current theme color and the fullscreen/video surfaces keep their black background. AppScaffold consumes keyboard viewInsets after applying their bottom padding, so nested media/player shells subtract the inset once. Its Padding and MediaQuery wrappers stay mounted at zero inset to preserve page state when the keyboard opens or closes.
 

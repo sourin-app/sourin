@@ -15,8 +15,10 @@ import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/danmaku_search_page.dart';
 import 'package:sourin_spike/ui/media_session.dart';
 import 'package:sourin_spike/ui/player/player_bottom_bar.dart';
+import 'package:sourin_spike/ui/player/player_popover.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
+import 'package:sourin_spike/ui/tokens.dart';
 import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 
 const _episodes = [
@@ -173,16 +175,49 @@ Future<DanmakuSearchPage> _mountSearch(WidgetTester tester) async {
   );
   expect(gear, findsOneWidget);
   tester.widget<ui.TextButton>(gear).onPressed!();
-  await tester.pump(const Duration(milliseconds: 300));
-  expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsOneWidget);
+  await tester.pump();
+  await tester.pump(Motion.fast);
+  final quickPanel = find.byKey(PlayerBottomBar.danmakuQuickPanelKey);
+  expect(quickPanel, findsOneWidget);
   final details = find.descendant(
     of: find.byKey(PlayerBottomBar.danmakuQuickSearchKey),
     matching: find.byType(ui.TextButton),
   );
   expect(details, findsOneWidget);
   tester.widget<ui.TextButton>(details).onPressed!();
-  await tester.pump(const Duration(milliseconds: 300));
-  expect(find.byKey(PlayerBottomBar.danmakuQuickPanelKey), findsNothing);
+  await tester.pump();
+  expect(quickPanel, findsOneWidget);
+  final closingMotion = find.ancestor(
+    of: quickPanel,
+    matching: find.byType(PopoverMotion),
+  );
+  expect(closingMotion, findsOneWidget);
+  expect(tester.widget<PopoverMotion>(closingMotion).visible, isFalse);
+  expect(
+    tester.widget<IgnorePointer>(find.descendant(
+      of: closingMotion,
+      matching: find.byType(IgnorePointer),
+    ).first).ignoring,
+    isTrue,
+  );
+  expect(
+    tester.widget<ExcludeFocus>(find.descendant(
+      of: closingMotion,
+      matching: find.byType(ExcludeFocus),
+    ).first).excluding,
+    isTrue,
+  );
+  expect(
+    tester.widget<ExcludeSemantics>(find.descendant(
+      of: closingMotion,
+      matching: find.byType(ExcludeSemantics),
+    ).first).excluding,
+    isTrue,
+  );
+  await tester.pump(Motion.fast);
+  // Observe the completion frame after the exact animation-duration edge.
+  await tester.pump(const Duration(milliseconds: 16));
+  expect(quickPanel, findsNothing);
   expect(find.byType(DanmakuSearchPage), findsOneWidget);
   return tester.widget<DanmakuSearchPage>(find.byType(DanmakuSearchPage));
 }

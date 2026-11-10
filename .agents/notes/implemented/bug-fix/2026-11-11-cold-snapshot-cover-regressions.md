@@ -58,6 +58,11 @@ and clear generations after native registration. Its revision metadata is
 released when the last pending preload completes. Shelf rechecks existing
 fresh-lane flags after registration, preserving intentionally empty live lanes.
 
+The separate [live library request-ownership decision](2026-11-11-library-load-request-ownership.md)
+guards overlapping MyShelf/FollowPage reads before they can enqueue a stale
+snapshot. This decision owns cover projection and disk publication order;
+serializing writes alone does not determine which live read should be accepted.
+
 ## Alternatives considered
 
 Discarding cached cards loses the requested cold-start content. Storing direct

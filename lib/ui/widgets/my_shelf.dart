@@ -269,6 +269,10 @@ String shelfTabToFollowKey(ShelfTab t) => switch (t) {
 class MyShelfState extends State<MyShelf> {
   ShelfTab _tab = ShelfTab.following;
   bool _loading = true;
+  // Tab/route refreshes can overlap in this retained State.
+  int _loadGeneration = 0;
+
+  bool _ownsLoad(int generation) => mounted && generation == _loadGeneration;
 
   /// 是否已完成首次加载
   ///
@@ -607,6 +611,8 @@ class MyShelfState extends State<MyShelf> {
 
   /// 拉取三份数据
   Future<void> load() async {
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
     // ⚠️ 刷新时**不要**把 _loading 置回 true（见文件头 ③）
     //
     // ★ fix/return-jank-signature ③：这里的 setState 加了**真正的首屏守卫**。
@@ -723,7 +729,7 @@ class MyShelfState extends State<MyShelf> {
         ]);
       }
 
-      if (!mounted) return;
+      if (!_ownsLoad(generation)) return;
       /*
        * ══════════════════════════════════════════════════════════════════
        * ★★★ Owner 2026-10-11 第 2 条（第三次报）：「从播放页返回还是非常卡顿」
@@ -848,13 +854,15 @@ class MyShelfState extends State<MyShelf> {
        *      "仪器兼容性"那段：那三个查询的**数量**是 task-36
        *      仪器的除数，不能动。
        */
-      await _refreshRemaining();
+      await _refreshRemaining(generation);
+      if (!_ownsLoad(generation)) return;
       unawaited(
         LibraryCoverRecovery.repair().then((changed) async {
-          if (changed > 0 && mounted) await load();
+          if (changed > 0 && _ownsLoad(generation)) await load();
         }),
       );
     } catch (e) {
+      if (!_ownsLoad(generation)) return;
       debugPrint('[SHELF] 加载失败: $e');
     } finally {
       /*
@@ -866,7 +874,9 @@ class MyShelfState extends State<MyShelf> {
        * （每次返回都白重建一次本子树）。
        * ⚠️ 语义不变：`_loading` 为 true 时照样置 false（首屏骨架会消失）。
        */
-      if (mounted && _loading) setState(() => _loading = false);
+      if (_ownsLoad(generation) && _loading) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -900,10 +910,10 @@ class MyShelfState extends State<MyShelf> {
   int _remainingOf(Favorite f) => _remainingByKey[f.key] ?? 0;
 
   /// 拉全部进度 → 算每部追更的"还剩几集"
-  Future<void> _refreshRemaining() async {
+  Future<void> _refreshRemaining(int generation) async {
     try {
       final all = await SourinApi.listAllProgress();
-      if (!mounted) return;
+      if (!_ownsLoad(generation)) return;
       final byKey = followRemainingByKey(
         following: _following,
         allProgress: all,

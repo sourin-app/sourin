@@ -233,6 +233,10 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   List<UpdateInfo> _updates = [];
 
   bool _loading = true;
+  // Tab, route and app-resume refreshes share one accepted request owner.
+  int _loadGeneration = 0;
+
+  bool _ownsLoad(int generation) => mounted && generation == _loadGeneration;
   // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
   //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
 
@@ -463,8 +467,13 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   ///    detail），不能拖住列表刷新 —— 用户该立刻看到列表，
   ///    然后"N 部有更新"稍后自己冒出来。
   Future<void> _refreshOnEnter() async {
-    await _load(silent: true);
+    // _load claims its generation synchronously before yielding to core reads.
+    final loading = _load(silent: true);
+    final generation = _loadGeneration;
+    await loading;
+    if (!_ownsLoad(generation)) return;
     await _refreshUnread();
+    if (!_ownsLoad(generation)) return;
     unawaited(_maybeSweep());
   }
 
@@ -476,8 +485,12 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   /// `_followKey.currentState?.loadAll()` 调它。
   ///（原版是 Vue Router 的 `onActivated(loadAll)`。）
   Future<void> loadAll() async {
-    await _load();
+    final loading = _load();
+    final generation = _loadGeneration;
+    await loading;
+    if (!_ownsLoad(generation)) return;
     await _refreshUnread();
+    if (!_ownsLoad(generation)) return;
     // 切回本 tab 也算"回到本页" —— 同样要跑巡检（内部有节流）
     unawaited(_maybeSweep());
   }
@@ -533,6 +546,8 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   /// 切了 tab，界面不该在这中间闪一下骨架 —— 所以刷新走 silent，
   /// 只有**首次**（`!_loadedOnce`）才把 `_loading` 置起来显示骨架。
   Future<void> _load({bool silent = false}) async {
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
     if (mounted && !silent) setState(() => _loading = true);
     try {
       /*
@@ -546,9 +561,24 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
        * ```
        */
       final results = await Future.wait<Object?>([
-        SourinApi.listFavorites(followingOnly: true),
-        SourinApi.listFavorites(followingOnly: false),
-        SourinApi.continueWatching(limit: 20),
+        SourinApi.listFavorites(followingOnly: true)
+            .then<Object?>((v) => v)
+            .catchError((e) {
+              debugPrint('[FOLLOW] 取追更失败（保留旧数据）: $e');
+              return null;
+            }),
+        SourinApi.listFavorites(followingOnly: false)
+            .then<Object?>((v) => v)
+            .catchError((e) {
+              debugPrint('[FOLLOW] 取收藏失败（保留旧数据）: $e');
+              return null;
+            }),
+        SourinApi.continueWatching(limit: 20)
+            .then<Object?>((v) => v)
+            .catchError((e) {
+              debugPrint('[FOLLOW] 取历史失败（保留旧数据）: $e');
+              return null;
+            }),
         SourinApi.continueWatchingCount().then<Object?>((v) => v).catchError((
           e,
         ) {
@@ -557,7 +587,7 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
         }),
       ]);
 
-      if (!mounted) return;
+      if (!_ownsLoad(generation)) return;
       /*
        * ★★★ Owner 2026-10-11 第 2 条（第三次报）：「从播放页返回还是非常卡顿」
        *      + 「缓存下来不用重建，是不是能缓冲很大压力」
@@ -568,19 +598,26 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
        *
        * ⚠️ 保**刷新语义**：数据真变了（新追更 / 进度变）⇒ 指纹变 ⇒ 照常 setState。
        */
-      final nextF = results[0] as List<Favorite>;
-      final nextA = results[1] as List<Favorite>;
-      final nextC = results[2] as List<Progress>;
+      final following = results[0] as List<Favorite>?;
+      final favorites = results[1] as List<Favorite>?;
+      final history = results[2] as List<Progress>?;
+      final anyListSucceeded =
+          following != null || favorites != null || history != null;
+      final nextF = following ?? _following;
+      final nextA = favorites ?? _allFavs;
+      final nextC = history ?? _continueList;
       final nextCount = (results[3] as int?) ?? _historyCount;
       final sigBefore = _followSignature(_following, _allFavs, _continueList);
       final sigAfter = _followSignature(nextF, nextA, nextC);
-      if (sigBefore != sigAfter || nextCount != _historyCount || !_loadedOnce) {
+      if (sigBefore != sigAfter ||
+          nextCount != _historyCount ||
+          (anyListSucceeded && !_loadedOnce)) {
         setState(() {
           _following = nextF;
           _allFavs = nextA;
           _continueList = nextC;
           _historyCount = nextCount;
-          _loadedOnce = true;
+          if (anyListSucceeded) _loadedOnce = true;
         });
       }
 
@@ -600,18 +637,25 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
        * ⚠️ 只在这里发起 —— **绝不在 `build()` 里**发请求
        *    （`build` 每帧都可能跑 ⇒ 会变成每帧一个网络请求）。
        */
-      unawaited(_backfillTitles());
-      unawaited(
-        LibraryCoverRecovery.repair().then((changed) async {
-          if (changed > 0 && mounted) await _load(silent: true);
-        }),
-      );
+      if (anyListSucceeded) {
+        unawaited(_backfillTitles());
+        unawaited(
+          LibraryCoverRecovery.repair().then((changed) async {
+            if (changed > 0 && _ownsLoad(generation)) {
+              await _load(silent: true);
+            }
+          }),
+        );
+      }
     } catch (e) {
+      if (!_ownsLoad(generation)) return;
       debugPrint('[FOLLOW] 加载追更失败: $e');
     } finally {
       // ★ 与 my_shelf 同款：只在 `_loading` 真的是 true 时才 setState
       //   （刷新路径 `_loading` 本就 false ⇒ 无谓的重建去掉）。
-      if (mounted && _loading) setState(() => _loading = false);
+      if (_ownsLoad(generation) && _loading) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -889,8 +933,11 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   ///
   /// ⚠️ 失败静默（不清零）—— 与 task-36 那条"失败不许清空"同一原则。
   Future<void> _refreshUnread() async {
+    final generation = _loadGeneration;
+    if (!_ownsLoad(generation)) return;
     try {
       final all = await SourinApi.listAllProgress();
+      if (!_ownsLoad(generation)) return;
       final byKey = followRemainingByKey(
         following: _following,
         allProgress: all,
@@ -994,7 +1041,10 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
        * 巡检会改 `unread_count`（新增集数 → 未读），所以要把
        * 列表与底栏徽章一起刷新，否则界面显示的还是巡检前的状态。
        */
-      await _load(silent: true);
+      final loading = _load(silent: true);
+      final generation = _loadGeneration;
+      await loading;
+      if (!_ownsLoad(generation)) return;
       await _refreshUnread();
     } catch (e) {
       /*
@@ -1012,7 +1062,10 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('[FOLLOW] 标记已读失败: $e');
     }
-    await _load();
+    final loading = _load();
+    final generation = _loadGeneration;
+    await loading;
+    if (!_ownsLoad(generation)) return;
     await _refreshUnread();
   }
 

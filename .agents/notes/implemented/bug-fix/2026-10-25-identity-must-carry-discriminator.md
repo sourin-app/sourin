@@ -2,6 +2,9 @@
 
 Status: implemented
 
+Current Miuix fixture targeting is specified by the
+[live and binding test contract](../testing/2026-11-11-live-and-binding-miuix-fixtures.md).
+
 ## Problem
 
 同一批里出现三处**形态相同**的缺陷：判据手上只有"一半信息"，却给出了完整结论。

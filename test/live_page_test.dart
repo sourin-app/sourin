@@ -75,12 +75,21 @@
 //    ★ 组件没被删除，所以它的契约**依然有效**。
 
 import 'dart:io';
+import 'dart:ui' as semantics_ui;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/disk_cache.dart';
+import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/models.dart';
+import 'package:sourin_spike/core/source_discovery.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/ui/live_page.dart';
+import 'package:sourin_spike/ui/settings/source_manager_page.dart';
 import 'package:sourin_spike/ui/widgets/epg_panel.dart';
+import 'package:sourin_spike/ui/widgets/live_embedded_player.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 
@@ -875,13 +884,33 @@ void main() {
       )));
       await t.pumpAndSettle();
 
-      final bars = t.widgetList<LinearProgressIndicator>(
-        find.byType(LinearProgressIndicator),
-      );
+      final bars = t.widgetList<miuix.MiuixLinearProgressIndicator>(
+        find.byType(miuix.MiuixLinearProgressIndicator),
+      ).toList();
       expect(bars.length, 1, reason: '★ 只有正在播的那条有进度条');
+      final currentRow = find.ancestor(
+        of: find.text('正在播的节目'),
+        matching: find.byType(EpgTile),
+      );
+      expect(currentRow, findsOneWidget);
+      expect(find.descendant(
+        of: currentRow,
+        matching: find.byType(miuix.MiuixLinearProgressIndicator),
+      ), findsOneWidget);
+      for (final title in ['可回看的节目', '不可回看的节目']) {
+        final otherRow = find.ancestor(
+          of: find.text(title),
+          matching: find.byType(EpgTile),
+        );
+        expect(otherRow, findsOneWidget);
+        expect(find.descendant(
+          of: otherRow,
+          matching: find.byType(miuix.MiuixLinearProgressIndicator),
+        ), findsNothing);
+      }
       // 播了一半：900/1800 = 50%
       expect(
-        bars.first.value,
+        bars.single.progress,
         closeTo(0.5, 0.01),
         reason: '原版 `progressOf` = (now-start)/(end-start)',
       );
@@ -984,25 +1013,38 @@ void main() {
       )));
       await t.pumpAndSettle();
 
-      // 直接断言 InkWell 的 onTap 是 null（比"点一下看有没有反应"更强）
-      final ink = t.widget<InkWell>(
-        find.ancestor(
-          of: find.text('不可回看的节目'),
-          matching: find.byType(InkWell),
-        ),
+      final row = find.ancestor(
+        of: find.text('不可回看的节目'),
+        matching: find.byType(EpgTile),
       );
+      expect(row, findsOneWidget);
+      final target = find.descendant(
+        of: row,
+        matching: find.byType(miuix.MiuixPressable),
+      );
+      expect(target, findsOneWidget);
+      final pressable = t.widget<miuix.MiuixPressable>(target);
+      expect(pressable.enabled, isFalse);
       expect(
-        ink.onTap,
+        pressable.onPressed,
         isNull,
         reason: '原版 `:disabled="!e.replayable && !isNow(e)"` —— '
             '源不提供回看流，点了只会报错，不如直接禁掉',
       );
-
-      // 再真的点一下，确认两个回调都不会被调
-      await t.tap(find.text('不可回看的节目'), warnIfMissed: false);
-      await t.pumpAndSettle();
-      expect(live, 0);
-      expect(replayed, isEmpty);
+      final semantics = t.ensureSemantics();
+      try {
+        await t.pump();
+        final data = t.getSemantics(target).getSemanticsData();
+        expect(data.flagsCollection.isEnabled, semantics_ui.Tristate.isFalse);
+        expect(data.hasAction(semantics_ui.SemanticsAction.tap), isFalse);
+        // Real pointer activation must still leave both business callbacks idle.
+        await t.tap(find.text('不可回看的节目'), warnIfMissed: false);
+        await t.pumpAndSettle();
+        expect(live, 0);
+        expect(replayed, isEmpty);
+      } finally {
+        semantics.dispose();
+      }
     });
 
     testWidgets('★ 没有选中频道时（onWatchLive == null）点「正在播」不炸', (t) async {
@@ -1041,13 +1083,97 @@ void main() {
       live = stripComments(File('lib/ui/live_page.dart').readAsStringSync());
     });
 
-    test('★ 没有频道 → 空态「没有可用的直播源」', () {
-      expect(live.contains('没有可用的直播源'), isTrue);
-      expect(
-        live.contains('在设置中启用一个支持直播的内容源'),
-        isTrue,
-        reason: '原版 EmptyState 的 desc（`LiveView.vue:171`）',
-      );
+    testWidgets('★ 没有频道 → 真实空态可达直播源管理且不启用源', (t) async {
+      final previousTransport = SourinCore.debugCallAsyncTransport;
+      final previousGroupsFetcher = LivePageState.debugLiveGroupsFetcher;
+      final previousDirectory = DiskCache.dataDir;
+      final previousSkipPlayer = debugSkipPlayerCreation;
+      final previousDiscovery = SourceDiscoveryService.current.value;
+      final commands = <String>[];
+      final unexpected = <String>[];
+      DiskCache.debugResetForTest();
+      UiPrefs.debugResetForTest(<String, String>{});
+      LivePageState.debugLiveGroupsFetcher = null;
+      debugSkipPlayerCreation = true;
+      SourceDiscoveryService.current.value = null;
+      SourinCore.debugCallAsyncTransport = (command, args) async {
+        commands.add(command);
+        switch (command) {
+          case 'get_live_channels':
+            return <dynamic>[];
+          case 'list_providers':
+            return [
+              {
+                'id': 'fixture-live', 'name': 'Fixture live',
+                'kind': 'm3u_live', 'enabled': false,
+                'capabilities': {'live': true},
+              },
+              {
+                'id': 'fixture-vod', 'name': 'Fixture vod',
+                'kind': 'js', 'enabled': true,
+                'capabilities': {'vod': true},
+              },
+            ];
+          case 'source_catalog_get':
+            return {'origins': [], 'groups': []};
+          case 'source_discovery_status':
+            return <String, dynamic>{};
+          default:
+            unexpected.add(command);
+            throw StateError('Unexpected empty-live fixture command: $command');
+        }
+      };
+      addTearDown(() {
+        SourinCore.debugCallAsyncTransport = previousTransport;
+        LivePageState.debugLiveGroupsFetcher = previousGroupsFetcher;
+        DiskCache.debugResetForTest(previousDirectory);
+        UiPrefs.debugResetForTest(<String, String>{});
+        debugSkipPlayerCreation = previousSkipPlayer;
+        SourceDiscoveryService.current.value = previousDiscovery;
+        expect(unexpected, isEmpty);
+      });
+      var opened = 0;
+      await t.pumpWidget(_host(Builder(
+        builder: (context) => LivePage(onManageSources: () async {
+          opened++;
+          await Navigator.of(context).push(MaterialPageRoute<void>(
+            builder: (_) => SourceManagerPage(
+              initialType: ManagedSourceType.live,
+              onSourcesChanged: () => fail('Opening management must not mutate sources'),
+              onImportTvbox: () async => fail('Unexpected import'),
+              onPasteJs: () async => fail('Unexpected install'),
+              onEditProvider: (_) async => fail('Unexpected edit'),
+              onConfigureProvider: (_) async => fail('Unexpected configuration'),
+              onRemoveProvider: (_) async => fail('Unexpected removal'),
+            ),
+          ));
+        }),
+      )));
+      addTearDown(() async {
+        await t.pumpWidget(const SizedBox.shrink());
+        await t.pump();
+      });
+      await t.pumpAndSettle();
+      expect(find.text('没有可用的直播源'), findsOneWidget);
+      expect(find.text('导入直播订阅，或启用已有的直播源'), findsOneWidget);
+      expect(find.text('管理直播源'), findsOneWidget);
+      await t.tap(find.text('管理直播源'));
+      await t.pumpAndSettle();
+      expect(opened, 1);
+      expect(find.byType(SourceManagerPage), findsOneWidget);
+      expect(find.byKey(const ValueKey('managed-source-fixture-live')), findsOneWidget);
+      expect(find.byKey(const ValueKey('managed-source-fixture-vod')), findsNothing);
+      expect(commands, contains('get_live_channels'));
+      expect(commands, contains('list_providers'));
+      expect(commands.where((command) => command.startsWith('set_') ||
+          command.contains('import') || command.contains('install') ||
+          command.contains('remove') || command.contains('scan')), isEmpty);
+      Navigator.of(t.element(find.byType(SourceManagerPage))).pop();
+      await t.pumpAndSettle();
+      expect(find.byType(SourceManagerPage), findsNothing);
+      expect(find.text('没有可用的直播源'), findsOneWidget);
+      expect(find.text('管理直播源'), findsOneWidget);
+      expect(t.takeException(), isNull);
     });
 
     /*

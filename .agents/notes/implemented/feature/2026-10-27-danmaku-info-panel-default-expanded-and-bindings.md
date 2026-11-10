@@ -2,6 +2,9 @@
 
 Status: implemented
 
+Current Miuix fixture targeting is specified by the
+[live and binding test contract](../testing/2026-11-11-live-and-binding-miuix-fixtures.md).
+
 ## Problem
 
 Owner 2026-10-27：「我说的弹幕来源就是这个（弹幕信息卡片），这里默认展开，然后来源、渠道、绑定的什么来源、哪一个弹幕都要显示出来，并且支持解绑。」三个缺口：

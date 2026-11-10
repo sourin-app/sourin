@@ -50,13 +50,17 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
-import 'package:sourin_spike/core/models.dart';
-import 'package:sourin_spike/ui/media_session.dart';
+import 'package:sourin_spike/core/disk_cache.dart';
+import 'package:sourin_spike/core/ffi.dart';
+import 'package:sourin_spike/core/sourin_api.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/live_page.dart';
+import 'package:sourin_spike/ui/widgets/live_embedded_player.dart';
 
 Widget _host(Widget child) {
   final theme = AppTheme.themeFor(Brightness.dark);
@@ -72,21 +76,60 @@ const _pB = 'other';
 /// 两个源里**同一个**频道 id —— 这就是撞 key 的触发条件
 const _sameId = 'cctv1';
 
+/// Actual selected semantics and the Miuix surface painted inside every row.
+/// Neutral cards also have colors, so color presence alone is not selection.
+Set<String> _paintedHighlightedRows(WidgetTester tester) {
+  const prefix = 'live-channel-highlight-';
+  final selected = <String>{};
+  var rows = 0;
+  for (final element in find.byType(miuix.MiuixCard).evaluate()) {
+    final key = element.widget.key;
+    if (key is! ValueKey<String> || !key.value.startsWith(prefix)) continue;
+    rows++;
+    bool? active;
+    element.visitAncestorElements((ancestor) {
+      final widget = ancestor.widget;
+      if (widget is Semantics && widget.properties.selected != null) {
+        active = widget.properties.selected;
+        return false;
+      }
+      return true;
+    });
+    expect(active, isNotNull, reason: 'Each painted live row exposes selection');
+    final palette = miuix.MiuixTheme.of(element).colors;
+    final expected = active!
+        ? palette.primary.withValues(alpha: .12)
+        : palette.surfaceContainer;
+    final surface = find.descendant(
+      of: find.byKey(key),
+      matching: find.byWidgetPredicate((widget) =>
+          widget is DecoratedBox &&
+          widget.decoration is ShapeDecoration &&
+          (widget.decoration as ShapeDecoration).color == expected),
+    );
+    expect(surface, findsOneWidget,
+        reason: 'The selected and neutral rows paint their actual Miuix colors');
+    if (active!) selected.add(key.value.substring(prefix.length));
+  }
+  expect(rows, greaterThan(0), reason: 'Do not accept a missing-row empty result');
+  return selected;
+}
+
 Widget _twoSourcesSayingTheSameId({
   ValueChanged<LiveChannel>? onPick,
 }) {
-  final a = LiveChannel(id: _sameId, name: '一套（IPTV 源）');
-  final b = LiveChannel(id: _sameId, name: '一套（另一源）');
+  const a = LiveChannel(id: _sameId, name: '一套（IPTV 源）');
+  const b = LiveChannel(id: _sameId, name: '一套（另一源）');
   return _host(SizedBox(
     width: 420,
     height: 400,
     child: LiveChannelList(
-      providers: [
+      providers: const [
         LiveGroup(provider: _pA, providerName: 'IPTV 直播', channels: [a]),
         LiveGroup(provider: _pB, providerName: '某平台', channels: [b]),
       ],
       enabledProviders: const {_pA, _pB},
-      channels: [
+      channels: const [
         (channel: a, tag: 'IPTV 直播', provider: _pA),
         (channel: b, tag: '某平台', provider: _pB),
       ],
@@ -178,20 +221,20 @@ void main() {
       (t) async {
     // 用 `selectedRow` + `onPickEntry`：宿主自己维护"选中身份"
     var selectedRow = liveChannelRowKey(_pA, _sameId);
-    final a = LiveChannel(id: _sameId, name: '一套（IPTV 源）');
-    final b = LiveChannel(id: _sameId, name: '一套（另一源）');
+    const a = LiveChannel(id: _sameId, name: '一套（IPTV 源）');
+    const b = LiveChannel(id: _sameId, name: '一套（另一源）');
 
     Widget build() => _host(SizedBox(
           width: 420,
           height: 400,
           child: StatefulBuilder(
             builder: (ctx, setSt) => LiveChannelList(
-              providers: [
+              providers: const [
                 LiveGroup(provider: _pA, providerName: 'IPTV 直播', channels: [a]),
                 LiveGroup(provider: _pB, providerName: '某平台', channels: [b]),
               ],
               enabledProviders: const {_pA, _pB},
-              channels: [
+              channels: const [
                 (channel: a, tag: 'IPTV 直播', provider: _pA),
                 (channel: b, tag: '某平台', provider: _pB),
               ],
@@ -208,22 +251,7 @@ void main() {
     await t.pumpWidget(build());
     await t.pump();
 
-    /// 当前**真的着了色**的高亮行身份集合
-    Set<String> highlightedRows() {
-      const prefix = 'live-channel-highlight-';
-      final out = <String>{};
-      for (final e in find.byType(Container).evaluate()) {
-        final w = e.widget;
-        if (w is! Container) continue;
-        final d = w.decoration;
-        if (d is! BoxDecoration || d.color == null) continue;
-        final k = w.key;
-        if (k is! ValueKey<String>) continue;
-        if (!k.value.startsWith(prefix)) continue;
-        out.add(k.value.substring(prefix.length));
-      }
-      return out;
-    }
+    Set<String> highlightedRows() => _paintedHighlightedRows(t);
 
     // 初始：只有 A 行高亮（旧 API 会让两行都亮 —— 这条是修复的直接判据）
     expect(highlightedRows(), {'$_pA:$_sameId'},
@@ -288,6 +316,36 @@ void main() {
 
   // ── ⑥ 键盘 ↓ 不许跨源跳（同 id 时按身份定位） ────────────────────────
   testWidgets('⑥ 键盘 ↓/↑ 在**同一源内**走（不许因为 id 相同而跳源）', (t) async {
+    final previousTransport = SourinCore.debugCallAsyncTransport;
+    final previousStreamFetcher = SourinApi.debugLiveStreamFetcher;
+    final previousGroupsFetcher = LivePageState.debugLiveGroupsFetcher;
+    final previousDirectory = DiskCache.dataDir;
+    final previousSkipPlayer = debugSkipPlayerCreation;
+    final unexpected = <String>[];
+    final requested = <String>[];
+    DiskCache.debugResetForTest();
+    UiPrefs.debugResetForTest(<String, String>{});
+    SourinApi.debugClearLiveStreamCache();
+    SourinApi.debugLiveStreamFetcher = null;
+    debugSkipPlayerCreation = true;
+    SourinCore.debugCallAsyncTransport = (command, args) async {
+      if (command == 'get_live_stream') {
+        requested.add('${args!['provider']}:${args['channel_id']}');
+        return <dynamic>[];
+      }
+      unexpected.add(command);
+      throw StateError('Unexpected duplicate-channel fixture command: $command');
+    };
+    addTearDown(() {
+      SourinCore.debugCallAsyncTransport = previousTransport;
+      SourinApi.debugLiveStreamFetcher = previousStreamFetcher;
+      LivePageState.debugLiveGroupsFetcher = previousGroupsFetcher;
+      SourinApi.debugClearLiveStreamCache();
+      DiskCache.debugResetForTest(previousDirectory);
+      UiPrefs.debugResetForTest(<String, String>{});
+      debugSkipPlayerCreation = previousSkipPlayer;
+      expect(unexpected, isEmpty);
+    });
     const a1 = LiveChannel(id: _sameId, name: 'A 一套');
     const a2 = LiveChannel(id: 'cctv2', name: 'A 二套');
     const b1 = LiveChannel(id: _sameId, name: 'B 一套');
@@ -296,8 +354,6 @@ void main() {
           LiveGroup(provider: _pA, providerName: 'IPTV 直播', channels: [a1, a2]),
           LiveGroup(provider: _pB, providerName: '某平台', channels: [b1, b2]),
         ];
-    addTearDown(() => LivePageState.debugLiveGroupsFetcher = null);
-
     t.view.devicePixelRatio = 1.0;
     t.view.physicalSize = const Size(1000, 680);
     addTearDown(() {
@@ -306,6 +362,10 @@ void main() {
     });
 
     await t.pumpWidget(_host(const LivePage()));
+    addTearDown(() async {
+      await t.pumpWidget(const SizedBox.shrink());
+      await t.pump();
+    });
     await t.pump();
     await t.pump();
 
@@ -314,21 +374,7 @@ void main() {
     await t.pump();
     await t.pump();
 
-    Set<String> highlightedRows() {
-      const prefix = 'live-channel-highlight-';
-      final out = <String>{};
-      for (final e in find.byType(Container).evaluate()) {
-        final w = e.widget;
-        if (w is! Container) continue;
-        final d = w.decoration;
-        if (d is! BoxDecoration || d.color == null) continue;
-        final k = w.key;
-        if (k is! ValueKey<String>) continue;
-        if (!k.value.startsWith(prefix)) continue;
-        out.add(k.value.substring(prefix.length));
-      }
-      return out;
-    }
+    Set<String> highlightedRows() => _paintedHighlightedRows(t);
 
     expect(highlightedRows(), {'$_pA:$_sameId'},
         reason: '前提：选中的是 A 源那一台');
@@ -344,6 +390,13 @@ void main() {
      */
     expect(highlightedRows(), {'$_pA:cctv2'},
         reason: '★★★ 按 ↓ 没走到同一源的下一台 ⇒ 切台仍按 id 定位（第 15 项缺口）');
+    expect(requested.last, '$_pA:cctv2',
+        reason: 'The real key path must request the same provider/native channel');
+
+    await t.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await t.pump();
+    expect(highlightedRows(), {'$_pA:$_sameId'});
+    expect(requested.last, '$_pA:$_sameId');
 
     await t.pumpWidget(const SizedBox.shrink());
   });

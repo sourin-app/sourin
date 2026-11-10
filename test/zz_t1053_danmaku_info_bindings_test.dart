@@ -148,7 +148,126 @@ String _stripComments(String src) {
   return out.toString();
 }
 
+/// Static wiring check for this one expression-bodied host getter. Mask quoted
+/// text after the existing comment stripper, scope to the constructor's actual
+/// parentheses, then inspect only its top-level named arguments. This is not a
+/// general Dart parser or proof that the native player renders binding records.
+bool _hasHostBindingsArgument(String source) {
+  final chars = _stripComments(source).split('');
+  for (var i = 0; i < chars.length; i++) {
+    final quote = chars[i];
+    if (quote != "'" && quote != '"') continue;
+    final raw = i > 0 && chars[i - 1] == 'r';
+    final triple = i + 2 < chars.length &&
+        chars[i + 1] == quote && chars[i + 2] == quote;
+    final width = triple ? 3 : 1;
+    final start = i;
+    i += width;
+    while (i < chars.length) {
+      if (!raw && chars[i] == r'\') {
+        i += 2;
+        continue;
+      }
+      if (chars[i] == quote &&
+          (!triple || (i + 2 < chars.length &&
+              chars[i + 1] == quote && chars[i + 2] == quote))) {
+        i += width;
+        break;
+      }
+      i++;
+    }
+    for (var index = start; index < i && index < chars.length; index++) {
+      chars[index] = ' ';
+    }
+    i--;
+  }
+  final code = chars.join();
+  final owners = RegExp(
+    r'\bDanmakuInfoData\s+get\s+_danmakuInfo\s*=>\s*DanmakuInfoData\s*\(',
+  ).allMatches(code).toList();
+  if (owners.length != 1) return false;
+  final start = owners.single.end;
+  var depth = 1;
+  var end = start;
+  for (; end < code.length && depth > 0; end++) {
+    if (code[end] == '(') depth++;
+    if (code[end] == ')') depth--;
+  }
+  if (depth != 0 || !RegExp(r'^\s*;').hasMatch(code.substring(end))) {
+    return false;
+  }
+  final arguments = code.substring(start, end - 1);
+  final named = <String>[];
+  var begin = 0;
+  depth = 0;
+  for (var index = 0; index <= arguments.length; index++) {
+    if (index == arguments.length || (arguments[index] == ',' && depth == 0)) {
+      final argument = arguments.substring(begin, index).trim();
+      if (RegExp(r'^bindings\s*:').hasMatch(argument)) named.add(argument);
+      begin = index + 1;
+    } else if ('([{'.contains(arguments[index])) {
+      depth++;
+    } else if (')]}'.contains(arguments[index])) {
+      if (--depth < 0) return false;
+    }
+  }
+  return depth == 0 && named.length == 1 && RegExp(
+    r'^bindings\s*:\s*_danmakuInfoVisible\s*\?\s*_danmakuBindings\s*:\s*'
+    r'const\s*<\s*DanmakuBindRouteView\s*>\s*\[\s*\]\s*$',
+  ).hasMatch(named.single);
+}
+
 void main() {
+  group('N6-host static binding matcher controls', () {
+    const valid = 'bindings: _danmakuInfoVisible ? _danmakuBindings '
+        ': const <DanmakuBindRouteView>[]';
+    String owner(String arguments, {String getter = '_danmakuInfo'}) =>
+        'DanmakuInfoData get $getter => DanmakuInfoData($arguments);';
+
+    test('complete binding argument accepts whitespace and comments', () {
+      expect(_hasHostBindingsArgument(owner(valid)), isTrue);
+      expect(_hasHostBindingsArgument(owner('''
+        count: countOf(currentEpisode()),
+        bindings : _danmakuInfoVisible
+            /* current host binding snapshot */ ? _danmakuBindings
+            : const < DanmakuBindRouteView > [ ],
+      ''')), isTrue);
+    });
+
+    test('absent binding cannot be supplied by unrelated code or literal text', () {
+      final absent = owner('count: 2,');
+      for (final source in [
+        absent,
+        '$absent\n${owner(valid, getter: '_unrelatedInfo')}',
+        '$absent\n// $valid',
+        '${owner('detail: "decoy, $valid",')}\n',
+        'final decoy = "${owner(valid)}";\n$absent',
+        owner('detail: OtherInfo($valid),'),
+      ]) {
+        expect(_hasHostBindingsArgument(source), isFalse,
+            reason: 'Only the real host constructor top-level field qualifies.');
+      }
+    });
+
+    test('wrong complete binding expressions remain rejected', () {
+      for (final argument in [
+        'bindings: const <DanmakuBindRouteView>[]',
+        'bindings: _danmakuInfoVisible ? _otherBindings '
+            ': const <DanmakuBindRouteView>[]',
+        'bindings: _danmakuInfoVisible ? const <DanmakuBindRouteView>[] '
+            ': _danmakuBindings',
+        'bindings: _danmakuInfoVisible ? _danmakuBindings : _cachedBindings',
+        'bindings: _danmakuInfoVisible ? _danmakuBindings '
+            ': const <DanmakuBindRouteView>[] + _extraBindings',
+        'bindings: _danmakuInfoVisible ? _danmakuBindings',
+        '$valid, bindings: const <DanmakuBindRouteView>[]',
+      ]) {
+        expect(_hasHostBindingsArgument(owner(argument)), isFalse,
+            reason: 'The complete guarded field must be present exactly once.');
+      }
+    });
+  });
+
   group('N6-① 缺省展开', () {
     testWidgets('★★★ 不传 initiallyExpanded ⇒ 直接见全量卡片', (t) async {
       await t.pumpWidget(_host(const DanmakuInfoPanel(data: _loaded)));
@@ -460,7 +579,7 @@ void main() {
 
     test('★★★ 绑定明细必须走 DanmakuInfoData（不是往 Panel 构造器乱塞）', () {
       expect(
-        src.contains('bindings: _danmakuInfoVisible ? _danmakuBindings'),
+        _hasHostBindingsArgument(src),
         isTrue,
         reason: '★★★ 明细是 `DanmakuInfoData.bindings` 的字段 —— '
             '必须随 data 进面板（往 Panel 构造器传会直接 analyze 报错）',

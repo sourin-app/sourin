@@ -932,3 +932,142 @@ async fn inline_cover_headers_survive_library_restart_and_use_global_proxy() {
     assert_eq!(restarted.db.get_progress("cover-fixture:series").unwrap().unwrap().position, 42);
     origin.abort(); server.abort();
 }
+
+struct ReturnedIdentityCoverSource {
+    manifest: ProviderManifest,
+    reported: MediaId,
+    cover: String,
+    requested: Arc<std::sync::Mutex<Vec<MediaId>>>,
+}
+
+#[async_trait]
+impl MediaProvider for ReturnedIdentityCoverSource {
+    fn manifest(&self) -> &ProviderManifest { &self.manifest }
+
+    async fn detail(&self, id: &MediaId) -> std::result::Result<MediaDetail, ProviderError> {
+        self.requested.lock().unwrap().push(id.clone());
+        Ok(serde_json::from_value(serde_json::json!({
+            "id":self.reported.as_key(), "title":"Returned detail title",
+            "cover":self.cover,
+        })).unwrap())
+    }
+
+    async fn resolve(
+        &self, _: &MediaId, _: &PlayRequest,
+    ) -> std::result::Result<Vec<StreamCandidate>, ProviderError> {
+        Ok(vec![])
+    }
+}
+
+async fn assert_all_missing_detail_identity(reported: MediaId, matching_identity: bool) {
+    let (state, raw, original_calls, server) = fixture().await;
+    let target = MediaId::new("cover-fixture", "selected-work");
+    let poster = raw.replace("/cover", "/poster.png");
+    // A usable response from the real loopback image service is not sufficient
+    // authority to attach it to a different work returned by the provider.
+    let image = reqwest::Client::builder().no_proxy().build().unwrap()
+        .get(&poster).header("X-Cover-Source", "origin-a")
+        .send().await.unwrap();
+    assert_eq!(image.status(), reqwest::StatusCode::OK);
+    assert_eq!(&image.bytes().await.unwrap()[..], POSTER_PNG);
+    let requested = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let manifest = state.registry.get("cover-fixture").unwrap().manifest().clone();
+    state.registry.register(Arc::new(ReturnedIdentityCoverSource {
+        manifest, reported, cover: poster.clone(), requested: requested.clone(),
+    }));
+
+    for (provider, order) in [("cover-fixture", 100_i64), ("other-owner", 200_i64)] {
+        commands_write::set_following(
+            &state, provider, "selected-work", true,
+            Some("Saved library title".into()), None, Some("series".into()),
+        ).await.unwrap();
+        let key = format!("{provider}:selected-work");
+        let mut favorite = state.db.get_favorite(&key).unwrap().unwrap();
+        favorite.favorited = true;
+        favorite.group_name = Some("Saved group".into());
+        favorite.note = Some("Saved user note".into());
+        favorite.last_episode_count = 8;
+        favorite.last_episode_title = Some("Episode 8".into());
+        favorite.unread_count = 3;
+        favorite.created_at = order - 10;
+        favorite.updated_at = order;
+        state.db.upsert_favorite(&favorite).unwrap();
+        state.db.upsert_progress(&Progress {
+            key: String::new(), provider: provider.into(), native_id: "selected-work".into(),
+            title: "Saved progress title".into(), cover: None,
+            episode_id: Some("ep3".into()), episode_title: Some("Episode 3".into()),
+            position: 63, duration: 180, finished: false, updated_at: order + 1,
+        }).unwrap();
+        state.db.add_history(&HistoryEntry {
+            key, provider: provider.into(), native_id: "selected-work".into(),
+            title: "Saved history title".into(), cover: None,
+            episode_title: Some("Episode 3".into()), position: 61, duration: 180,
+            watched_at: order + 2,
+        }).unwrap();
+    }
+    let mut expected_favorites = state.db.list_following_for_ui().unwrap();
+    let mut expected_progress = state.db.continue_watching(100).unwrap();
+    let mut expected_history = state.db.list_history(100).unwrap();
+    assert_eq!(expected_favorites.len(), 2);
+    assert_eq!(expected_progress.len(), 2);
+    assert_eq!(expected_history.len(), 2);
+    assert!(expected_favorites.iter().all(|row| row.cover.is_none()));
+    assert!(expected_progress.iter().all(|row| row.cover.is_none()));
+    assert!(expected_history.iter().all(|row| row.cover.is_none()));
+    if matching_identity {
+        // Only the selected provider/work may receive the independently known
+        // fixture image. All baseline fields and row ordering remain unchanged.
+        for row in &mut expected_favorites {
+            if row.provider == "cover-fixture" { row.cover = Some(poster.clone()); }
+        }
+        for row in &mut expected_progress {
+            if row.provider == "cover-fixture" { row.cover = Some(poster.clone()); }
+        }
+        for row in &mut expected_history {
+            if row.provider == "cover-fixture" { row.cover = Some(poster.clone()); }
+        }
+    }
+
+    let changed = tokio::time::timeout(
+        std::time::Duration::from_secs(5), library_covers::repair(&state),
+    ).await.unwrap().unwrap();
+    assert_eq!(*requested.lock().unwrap(), vec![target],
+        "Recovery must request the selected work from its owning provider");
+    assert_eq!(original_calls.load(Ordering::SeqCst), 0);
+    let actual_rows = serde_json::json!({
+        "favorites":state.db.list_following_for_ui().unwrap(),
+        "progress":state.db.continue_watching(100).unwrap(),
+        "history":state.db.list_history(100).unwrap(),
+    });
+    let expected_rows = serde_json::json!({
+        "favorites":expected_favorites, "progress":expected_progress,
+        "history":expected_history,
+    });
+    server.abort();
+    assert_eq!(actual_rows, expected_rows,
+        "A foreign detail must not corrupt any stored cover; matching details may change only the owning cover fields");
+    assert_eq!(changed, if matching_identity { 3 } else { 0 });
+    assert!(state.db.get_favorite("cover-fixture:another-work").unwrap().is_none());
+    assert!(state.db.get_favorite("another-provider:selected-work").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn all_missing_detail_identity_rejects_another_native_id() {
+    assert_all_missing_detail_identity(
+        MediaId::new("cover-fixture", "another-work"), false,
+    ).await;
+}
+
+#[tokio::test]
+async fn all_missing_detail_identity_rejects_another_provider() {
+    assert_all_missing_detail_identity(
+        MediaId::new("another-provider", "selected-work"), false,
+    ).await;
+}
+
+#[tokio::test]
+async fn all_missing_detail_identity_accepts_exact_provider_and_native_id() {
+    assert_all_missing_detail_identity(
+        MediaId::new("cover-fixture", "selected-work"), true,
+    ).await;
+}

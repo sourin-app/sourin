@@ -31,6 +31,14 @@ items from starving later records. The frontend coalesces requests and applies
 a one-minute cooldown. Compare-and-update changes cover fields only, preserving
 ordering, progress, follow state and concurrently replaced covers.
 
+When all stored covers are missing, a source detail can supply artwork only if
+its complete MediaId matches the requested provider and native ID. This is the
+same ownership boundary enforced by expired-singleton refresh. A readable image
+returned with a different work or provider identity cannot become the selected
+record's cover. Rejection leaves all library tables unchanged; a matching detail
+still changes only the selected cover fields through the existing conditional
+database update.
+
 Poster cards retry a failed URL twice, after two and four seconds. A URL change
 resets the budget, and disposal cancels the pending retry.
 
@@ -50,6 +58,9 @@ Clearing stale covers alone leaves permanent placeholders. Refetching all detail
 before displaying the library delays navigation and repeatedly contacts sources.
 Rewriting complete favorite or progress records can overwrite concurrent changes.
 Sharing the video header cache with posters makes browsing affect active playback.
+Checking only whether a detail contains a usable cover accepts artwork belonging
+to another work. Title similarity or a valid image response does not establish
+the exact provider and native identity required for persisted library records.
 
 ## Consequences
 
@@ -64,6 +75,22 @@ original wait interval without timing out. The history page's decode-size check
 uses its actual Image and layout at two widths; hardcoding its card width causes
 the check to fail. Coordinator
 tests cover concurrent callers, cooldown and synchronous failure recovery.
+
+The all-missing identity regression uses the real recovery API and database with
+a loopback image service. Wrong-native-ID and wrong-provider details are compared
+against full favorite, progress and history snapshots, including another owner's
+same-native-ID record and ordering. The matching-ID control permits only the
+three selected cover fields to change. The compiled baseline produced two
+intended failures and one passing control: foreign detail artwork was actually
+written into all three selected records. Evidence is retained in
+`.probe/parallel-astra-1108/native-verify-v51/v54-library-identity-red-v1.log`.
+The coordinating post-change run of the complete `library_cover_lifecycle`
+integration target passes all 21 tests, with zero failures or ignored tests.
+Compilation takes 47.65 seconds and execution 4.61 seconds; the source hashes
+remain frozen and the three identity tests retain the same bytes as the qualified
+baseline. Evidence is retained in
+`.probe/parallel-astra-1108/native-verify-v51/v54-library-lifecycle-green-v1.log`
+and its matching source receipt.
 
 Bounded validation and replacement of existing stale URLs is governed by
 [expired-cover refresh](2026-11-10-expired-library-cover-refresh.md); it extends

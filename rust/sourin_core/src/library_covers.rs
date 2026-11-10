@@ -443,7 +443,8 @@ pub async fn repair(state: &AppState) -> Result<usize, String> {
                 let detail =
                     tokio::time::timeout(std::time::Duration::from_secs(4), provider.detail(&id))
                         .await;
-                let replacement = detail.ok().and_then(Result::ok).and_then(|d| d.cover)
+                let replacement = detail.ok().and_then(Result::ok)
+                    .filter(|detail| detail.id == id).and_then(|d| d.cover)
                     .map(|cover| (candidate.invalid.clone(), cover));
                 (candidate, replacement, None)
             });

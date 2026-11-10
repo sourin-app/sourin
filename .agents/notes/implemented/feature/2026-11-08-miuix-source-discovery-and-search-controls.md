@@ -39,6 +39,11 @@ rail remains a lazy list and uses Miuix basic components; narrow layouts use
 the application Miuix choice control. A source click filters the current
 results without issuing a new search.
 
+Search matching continues to use source item titles for stable group and item
+ranking. Source notes are display metadata: ordinary text remains a caption;
+recognized episode/completion state appears in the existing cover badge. They
+never become similarity inputs.
+
 The dedicated source-order page always lists all managed sources, independent of
 the manager's current type, status or text filter. Rows show origin and disabled
 state. Miuix arrow buttons and drag handles edit the same local draft; first/last
@@ -99,6 +104,23 @@ and inspect the submitted primary address and ordered fallback list.
 - Eagerly build every source row: regresses the streaming-search build budget.
 
 ## Consequences
+
+The historical t73 search-order gates retain their existing names and behavior
+requirements. Their direct `SourinApi.searchAllStream` callback anchor was stale
+after the page introduced its existing runner seam, and the single-line subtitle
+anchor no longer described the release-status projection. The revised source
+check follows the actual production fallback, captured keyword, epoch guard,
+hit insertion and title_match score owners. It validates bounded function
+sections rather than prohibiting display metadata across the whole file.
+
+The matching display test feeds notes that deliberately reverse title relevance
+into the real SearchPage and reads actual PosterCard geometry. It requires the
+title-based order, ordinary captions below the cover and explicit completion
+inside the cover badge. Two source-text copies remove the item-rank call or
+replace title scoring with note scoring; the same source validator must reject
+both. These copies never edit production files and establish the static gate's
+discrimination, not execution of a mutated app. Root owns fresh Flutter and
+analysis results; the previous two anchor failures are not product regressions.
 
 Existing behavior tests retain their service-call, selection, disabled-state,
 scroll-position and input assertions while following the new component types.
@@ -220,3 +242,10 @@ or owner disposal. Delayed switch/order replies exercise both owner lifetimes,
 including the rendered disabled switch after reopening. Tests must inspect
 rendered feedback and refreshed rows;
 matching retired page class names or an always-null notifier is not evidence.
+
+The updated ordering gates and rendered inverse-note controls pass in the
+52-case combined source-switch/filter/order/dialog suite. Analysis of the changed
+production and tests has no errors or warnings; the ordering fixture retains one
+pre-existing function-declaration style info on an unchanged line. The two
+source-copy faults are checked by the same gate, not executed as runtime
+production mutations.

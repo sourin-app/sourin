@@ -72,6 +72,7 @@ import 'package:sourin_spike/core/title_match.dart';
 import 'package:sourin_spike/ui/search_page.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
+import 'package:sourin_spike/ui/widgets/poster_card.dart';
 
 // ══════════════════════════════════════════════════════════════════════════
 // 夹具
@@ -269,6 +270,77 @@ String slice(String src, String from, String to) {
   final b = src.indexOf(to, a + from.length);
   if (b < 0) fail('切片右锚点找不到：$to');
   return src.substring(a, b);
+}
+
+/// Validate the real transport/hit/ranking chain, not unrelated display uses
+/// of note. The same checks also reject in-memory source faults below.
+List<String> searchOrderSourceFailures(String searchRaw, String titleRaw) {
+  final failures = <String>[];
+  String compact(String raw) =>
+      stripComments(raw).replaceAll(RegExp(r'\s+'), '');
+  final search = compact(searchRaw);
+  final title = compact(titleRaw);
+  String section(String source, String from, String to, String name) {
+    final start = source.indexOf(from);
+    if (start < 0 || source.indexOf(from, start + 1) >= 0) {
+      failures.add('$name: left boundary');
+      return '';
+    }
+    final end = source.indexOf(to, start + from.length);
+    if (end < 0 || source.indexOf(to, end + 1) >= 0) {
+      failures.add('$name: right boundary');
+      return '';
+    }
+    return source.substring(start, end);
+  }
+
+  void require(String body, String text, String name) {
+    if (!body.contains(text)) {
+      failures.add(name);
+    }
+  }
+
+  final run = section(search, 'Future<void>_doSearch()async{',
+      'void_addHit(Stringkeyword,SearchStreamEventev){', 'search request');
+  require(run, 'finalkw=_controller.text.trim();', 'captured keyword');
+  require(run,
+      'finalrunSearch=debugSearchStreamRunner??SourinApi.searchAllStream;',
+      'production transport fallback');
+  final beforeHit = section(run, 'awaitrunSearch(kw,(ev){',
+      'caseSearchEventKind.hit:', 'stream callback');
+  require(beforeHit, 'if(!mounted||epoch!=_searchEpoch)returnfalse;',
+      'stream epoch guard');
+  final hitBranch = section(run, 'caseSearchEventKind.hit:',
+      'caseSearchEventKind.miss:', 'hit branch');
+  require(hitBranch, '_addHit(kw,ev);', 'hit uses captured keyword');
+  if (hitBranch.contains('_lastKeyword')) {
+    failures.add('hit reads mutable keyword');
+  }
+
+  final add = section(search, 'void_addHit(Stringkeyword,SearchStreamEventev){',
+      '@visibleForTestingvoiddebugBeginSearch(', 'ranked insertion');
+  require(add, '_settled++;', 'complete insertion body');
+  require(add, 'splitAggregateHit(ev,', 'aggregate split');
+  require(add, 'rankHitGroups(keyword,[', 'group rank wiring');
+  require(add, 'for(finalgingroups)', 'per-source groups');
+  require(add, 'items:rankItemsByTitleDesc(keyword,g.items),',
+      'item rank wiring');
+
+  final best = section(title, 'doublebestTitleScore(',
+      'List<MediaItem>rankItemsByTitleDesc(', 'group score owner');
+  require(best, 'titleSimilarity(keyword,it.title)', 'group score uses title');
+  if (best.contains('.note')) {
+    failures.add('group score reads note');
+  }
+  final itemRank = section(title, 'List<MediaItem>rankItemsByTitleDesc(',
+      'List<T>stableRankDesc<T>(', 'item score owner');
+  require(itemRank,
+      'stableRankDesc(items,(it)=>titleSimilarity(keyword,it.title));',
+      'item score uses title');
+  if (itemRank.contains('.note')) {
+    failures.add('item score reads note');
+  }
+  return failures;
 }
 
 void main() {
@@ -679,16 +751,13 @@ void main() {
     });
 
     test('⑧-4 hit 分支走 _addHit（关键词是闭包捕获的 kw）', () {
-      final raw = srcOf('lib/ui/search_page.dart');
-      final body = stripComments(
-        slice(raw, 'await SourinApi.searchAllStream(kw, (ev) {', 'case SearchEventKind.miss:'),
-      );
-      expect(body.contains('_addHit(kw, ev);'), isTrue);
-      // ★ 上次搜索的延迟结果必须用**它自己那次**的关键词打分，不能用 _lastKeyword
       expect(
-        body.contains('_addHit(_lastKeyword'),
-        isFalse,
-        reason: '用了 _lastKeyword ⇒ 改关键词后旧结果会被新关键词重排',
+        searchOrderSourceFailures(
+          srcOf('lib/ui/search_page.dart'),
+          srcOf('lib/core/title_match.dart'),
+        ),
+        isEmpty,
+        reason: '真实 runner 的生产 fallback、epoch、hit 捕获词和排序接线必须都在位',
       );
     });
 
@@ -703,15 +772,100 @@ void main() {
       );
     });
 
-    test('⑧-6 排序判据用 title、不用 note', () {
-      final raw = srcOf('lib/ui/search_page.dart');
-      final clean = stripComments(raw);
-      // 排序相关的地方不许出现 it.note / item.note
-      expect(clean.contains('titleSimilarity(kW, it.note)'), isFalse);
-      expect(clean.contains('it.note'), isFalse,
-          reason: 'note 是「全 27 集」这类副标题，与匹配度无关');
-      // 卡片副标题显示的**仍然**是 note —— 那是对的
-      expect(raw.contains('subtitle: group.items[i].note'), isTrue);
+    testWidgets('⑧-6 排序判据用 title、不用 note', (t) async {
+      expect(
+        searchOrderSourceFailures(
+          srcOf('lib/ui/search_page.dart'),
+          srcOf('lib/core/title_match.dart'),
+        ),
+        isEmpty,
+      );
+      final st = await seeded(t, const Size(1400, 2400));
+      st.debugFeedHit(hit('测试来源', const [
+        // Notes deliberately reverse title relevance. Reading note would put
+        // this unrelated title ahead of the exact title below.
+        MediaItem(id: 'p:wrong', title: tWrong, note: kW),
+        MediaItem(id: 'p:status', title: tYue, note: '全24集'),
+        MediaItem(id: 'p:exact', title: tExact, note: '普通来源说明'),
+      ]));
+      st.debugEndSearch();
+      await t.pump();
+      Finder card(String title) => find.byWidgetPredicate(
+        (widget) => widget is PosterCard && widget.title == title,
+      );
+      for (final title in [tWrong, tYue, tExact]) {
+        expect(card(title), findsOneWidget);
+      }
+      double cardOrder(String title) {
+        final rect = t.getRect(card(title));
+        return rect.top * 10000 + rect.left;
+      }
+
+      expect(cardOrder(tExact), lessThan(cardOrder(tYue)));
+      expect(cardOrder(tYue), lessThan(cardOrder(tWrong)));
+      for (final (title, note) in [(tExact, '普通来源说明'), (tWrong, kW)]) {
+        final poster = card(title);
+        expect(t.widget<PosterCard>(poster).subtitle, note);
+        expect(t.widget<PosterCard>(poster).releaseStatus, isNull);
+        final caption = find.descendant(of: poster, matching: find.text(note));
+        expect(caption, findsOneWidget);
+        final cover = find.descendant(
+          of: poster,
+          matching: find.byType(AspectRatio),
+        );
+        expect(t.getRect(caption).top, greaterThan(t.getRect(cover).bottom));
+      }
+      final completed = card(tYue);
+      expect(t.widget<PosterCard>(completed).subtitle, isNull);
+      expect(t.widget<PosterCard>(completed).releaseStatus, '已完结·全24集');
+      final badge = find.descendant(
+        of: completed,
+        matching: find.byKey(const ValueKey('poster-release-status')),
+      );
+      expect(badge, findsOneWidget);
+      expect(find.descendant(of: badge, matching: find.text('已完结·全24集')),
+          findsOneWidget);
+      final cover = t.getRect(find.descendant(
+        of: completed,
+        matching: find.byType(AspectRatio),
+      ));
+      final badgeRect = t.getRect(badge);
+      expect(badgeRect.left, greaterThanOrEqualTo(cover.left));
+      expect(badgeRect.right, lessThanOrEqualTo(cover.right));
+      expect(badgeRect.top, greaterThanOrEqualTo(cover.top));
+      expect(badgeRect.bottom, lessThan(cover.bottom));
+      expect(find.descendant(of: completed, matching: find.text('全24集')),
+          findsNothing);
+      expect(t.takeException(), isNull);
+      await t.pumpWidget(const SizedBox.shrink());
+      await t.pump();
+    });
+
+    test('⑧-6a 同一接线判据拒绝移除组内排序的源码副本', () {
+      final search = stripComments(srcOf('lib/ui/search_page.dart'));
+      final title = stripComments(srcOf('lib/core/title_match.dart'));
+      expect(searchOrderSourceFailures(search, title), isEmpty);
+      const call = 'items: rankItemsByTitleDesc(keyword, g.items),';
+      expect(call.allMatches(stripComments(search)), hasLength(1));
+      final fault = search.replaceFirst(call, 'items: g.items,');
+      expect(fault, isNot(search));
+      expect(searchOrderSourceFailures(fault, title), contains('item rank wiring'));
+    });
+
+    test('⑧-6b 同一接线判据拒绝改读备注的源码副本', () {
+      final search = stripComments(srcOf('lib/ui/search_page.dart'));
+      final title = stripComments(srcOf('lib/core/title_match.dart'));
+      expect(searchOrderSourceFailures(search, title), isEmpty);
+      const score = 'titleSimilarity(keyword, it.title)';
+      expect(score.allMatches(stripComments(title)), hasLength(2));
+      final fault = title.replaceAll(score, "titleSimilarity(keyword, it.note ?? '')");
+      expect(fault, isNot(title));
+      expect(searchOrderSourceFailures(search, fault), containsAll([
+        'group score uses title',
+        'group score reads note',
+        'item score uses title',
+        'item score reads note',
+      ]));
     });
 
     test('⑧-7 换源弹层组内也排（⑥）', () {

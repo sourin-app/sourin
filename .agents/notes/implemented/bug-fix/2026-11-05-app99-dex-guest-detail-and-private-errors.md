@@ -115,3 +115,6 @@ Baidu account/file decode and native interaction/final-package acceptance
 remain separate open requirements in the active full goal.
 
 Related: [Selected Episode Parser And Real Line Switch](2026-11-04-selected-episode-parser-and-real-line-switch.md).
+
+Related (2026-11-10): [safe detail error facts](2026-11-10-detail-upstream-errors-safe-facts.md)
+applies the same producer-side privacy policy to a separate signed form adapter.

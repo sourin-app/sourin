@@ -160,3 +160,6 @@ owns the initial native selection and line-switching pipeline.
 
 [Supported share handoff](2026-11-04-supported-share-candidate-handoff.md)
 owns the source-to-host share candidate boundary.
+
+Related (2026-11-10): [safe detail error facts](2026-11-10-detail-upstream-errors-safe-facts.md)
+protects the signed form adapter before its errors reach public consumers.

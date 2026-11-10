@@ -29,3 +29,6 @@ Three production-widget cases cover both hot-path failures and expanded request
 body details, including original object identity and useful readable text.
 They pass in the 2026-11-08 precommit run. These synthetic tests do not establish
 live transport, account access, native screenshot or complete product acceptance.
+
+Related (2026-11-10): [safe detail error facts](2026-11-10-detail-upstream-errors-safe-facts.md)
+owns a separate producer boundary; this note retains the search display policy.

@@ -19,8 +19,12 @@ struct RejectedDetail {
 
 impl RejectedDetail {
     async fn new(status: StatusCode) -> Self {
+        Self::with_body(status, PRIVATE_BODY.to_string()).await
+    }
+
+    async fn with_body(status: StatusCode, body: String) -> Self {
         let origin = serve(|_| panic!("HTTP rejection must not fall back to origin")).await;
-        let rejection = serve(move |_| (status, PRIVATE_BODY).into_response()).await;
+        let rejection = serve(move |_| (status, body.clone()).into_response()).await;
         let store = Arc::new(crate::proxy::ProxyStore::new());
         custom(&store, &rejection.url);
         let site = Arc::new(AppRJ::new());
@@ -116,4 +120,62 @@ async fn app_rj_detail_http_401_remains_access_denial_without_retry_or_fallback(
 #[tokio::test]
 async fn app_rj_detail_http_403_remains_access_denial_without_retry_or_fallback() {
     assert_access_denial(StatusCode::FORBIDDEN).await;
+}
+
+fn assert_actionable_response_error(message: &str, fixture: &RejectedDetail) {
+    assert_private_details_are_absent(message, fixture);
+    assert!(["重试", "稍后再试", "切换", "换源"].iter().any(|action| message.contains(action)),
+        "response failure must provide a next action without guessing the cause");
+}
+
+#[tokio::test]
+async fn app_rj_detail_http_200_malformed_json_omits_body_and_request_identity() {
+    let fixture = RejectedDetail::new(StatusCode::OK).await;
+    let error = fixture.site.detail(ITEM, &fixture.ext).await
+        .expect_err("HTTP success with malformed JSON must reject detail");
+    fixture.assert_one_signed_detail_request();
+    assert!(error.contains("JSON") || error.contains("格式"), "malformed response must retain its format failure");
+    assert_actionable_response_error(&error, &fixture);
+}
+
+#[tokio::test]
+async fn app_rj_detail_http_200_missing_code_reports_structure_without_signature_diagnosis() {
+    let body = serde_json::json!({"data": {}, "msg": PRIVATE_BODY}).to_string();
+    let fixture = RejectedDetail::with_body(StatusCode::OK, body).await;
+    let error = fixture.site.detail(ITEM, &fixture.ext).await
+        .expect_err("missing success code must reject detail");
+    fixture.assert_one_signed_detail_request();
+    assert!(error.contains("code"), "missing business code must remain an explicit structure failure");
+    assert_actionable_response_error(&error, &fixture);
+}
+
+#[tokio::test]
+async fn app_rj_detail_http_200_business_rejection_keeps_code_and_omits_private_message() {
+    let body = serde_json::json!({"code": 0, "msg": PRIVATE_BODY}).to_string();
+    let fixture = RejectedDetail::with_body(StatusCode::OK, body).await;
+    let error = fixture.site.detail(ITEM, &fixture.ext).await
+        .expect_err("non-success business code must reject detail");
+    fixture.assert_one_signed_detail_request();
+    assert!(error.contains("code=0"), "business failure must retain the actual code");
+    assert_actionable_response_error(&error, &fixture);
+}
+
+#[tokio::test]
+async fn app_rj_detail_closed_loopback_proxy_omits_addresses_without_origin_fallback() {
+    let fixture = RejectedDetail::new(StatusCode::OK).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let closed_proxy = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let store = Arc::new(crate::proxy::ProxyStore::new());
+    custom(&store, &closed_proxy);
+    fixture.site.set_http_context(store, "app-rj-closed-error-fixture");
+    let error = fixture.site.detail(ITEM, &fixture.ext).await
+        .expect_err("closed application proxy must reject detail");
+    assert!(fixture.origin.hits.lock().unwrap().is_empty(), "connection failure must not fall back to origin");
+    assert!(fixture.rejection.hits.lock().unwrap().is_empty(), "connection failure must not reuse the previous proxy");
+    assert!(error.contains("请求") && (error.contains("失败") || error.contains("未完成")),
+        "transport error must identify the failed request stage");
+    assert!(!error.contains(&closed_proxy), "transport error must omit the configured proxy address");
+    assert!(!error.contains("HTTP 502") && !error.contains("HTTP 405"), "transport failure must not invent a response status");
+    assert_actionable_response_error(&error, &fixture);
 }

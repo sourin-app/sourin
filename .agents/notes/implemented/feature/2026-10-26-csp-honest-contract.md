@@ -81,3 +81,6 @@ csp 类的四条硬约束：
   `PanWebShare` home 6 分类 / 60 条目、detail 2 条网盘链接。
 - 文档四套门禁：`zz_t66_md_gate` +5、`zz_t66_ui_selfaudit` +10~1、`zz_t66_data_manage_md_review` +9、
   `t98` offenders=0（文档也在它的扫描范围内）。
+
+Related (2026-11-10): [safe detail error facts](../bug-fix/2026-11-10-detail-upstream-errors-safe-facts.md)
+keeps malformed-response rejection factual without private response text.

@@ -96,19 +96,17 @@ pub fn base_of(ext: &str) -> Result<String, String> {
 
 /// 上游判据：**只有 `code == 1` 是成功**；缺 `code` 必须 Err
 ///
-/// ★ 实测 405 的 body 是 `not found` / `"sign error"`（**不是 JSON**）⇒
-///   `code` 缺失时错误文案要点名"可能被拦/签名错"这条分支。
-pub fn ensure_ok<'a>(v: &'a Value, what: &str) -> Result<&'a Value, String> {
+/// Public errors retain structural facts without upstream text or a diagnosis.
+pub fn ensure_ok<'a>(v: &'a Value, _what: &str) -> Result<&'a Value, String> {
     match v.get("code").and_then(|c| c.as_i64()) {
         Some(1) => Ok(v),
+        Some(c @ (401 | 403)) => Err(format!(
+            "上游返回 code={c}，当前请求被拒绝，请切换来源"
+        )),
         Some(c) => Err(format!(
-            "上游热剧 {what} 返回 code={c}（msg={}）",
-            v.get("msg").and_then(|m| m.as_str()).unwrap_or("")
+            "上游返回 code={c}，请稍后重试或切换来源"
         )),
-        None => Err(format!(
-            "上游热剧 {what} 响应里没有 code 字段 —— ★ 实测本站对「缺签名」的请求返 \
-             `405 \"sign error\"`（非 JSON）；签名 = md5(KEY + 秒级时间戳)"
-        )),
+        None => Err("上游响应里没有 code 字段，请稍后重试或切换来源".to_string()),
     }
 }
 
@@ -306,7 +304,7 @@ impl AppRJ {
     }
 
     /// Existing form-encoded POST, including the DEX timestamp/sign fields.
-    async fn post_form(&self, base: &str, path: &str, fields: Vec<(String, String)>, what: &str) -> Result<Value, String> {
+    async fn post_form(&self, base: &str, path: &str, fields: Vec<(String, String)>) -> Result<Value, String> {
         let ts = ts_secs().to_string();
         let sign = sign_of(&ts);
         let mut form: Vec<(String, String)> = fields;
@@ -321,26 +319,23 @@ impl AppRJ {
             .form(&form) // reqwest 的 `.form()` = application/x-www-form-urlencoded
             .send()
             .await
-            .map_err(|e| format!("请求热剧上游失败（{url}）：{e}"))?;
+            .map_err(|_| "请求上游失败，请稍后重试或切换来源".to_string())?;
         let status = resp.status();
+        // A received status is authoritative even when its error body is unreadable.
+        if !status.is_success() {
+            let action = if matches!(status.as_u16(), 401 | 403) {
+                "当前请求被拒绝，请切换来源"
+            } else {
+                "请稍后重试或切换来源"
+            };
+            return Err(format!("上游返回 HTTP {status}，{action}"));
+        }
         let body = resp
             .text()
             .await
-            .map_err(|e| format!("读取热剧响应失败（{url}）：{e}"))?;
-        if !status.is_success() {
-            let head = body.chars().take(60).collect::<String>();
-            return Err(format!(
-                "上游热剧返回 HTTP {status}（{url}）：{head:?} —— \
-                 ★ 实测 `405 \"sign error\"` 表示「端点存在但签名不对」；\
-                 签名 = md5({SIGN_KEY} + 秒级时间戳)；若为 `not found` 则可能路径变了"
-            ));
-        }
-        serde_json::from_str(&body).map_err(|e| {
-            format!(
-                "上游热剧 {what} 响应不是合法 JSON（{e}）；前 100 字：{}",
-                body.chars().take(100).collect::<String>()
-            )
-        })
+            .map_err(|_| "读取上游响应失败，请稍后重试或切换来源".to_string())?;
+        serde_json::from_str(&body)
+            .map_err(|_| "上游响应不是合法 JSON，请稍后重试或切换来源".to_string())
     }
 }
 
@@ -367,7 +362,7 @@ impl CspSite for AppRJ {
     async fn home(&self, ext: &str) -> Result<CspHome, String> {
         let categories = cats();
         let items = match base_of(ext) {
-            Ok(base) => match self.post_form(&base, P_TOP_TYPE, vec![], "首页").await {
+            Ok(base) => match self.post_form(&base, P_TOP_TYPE, vec![]).await {
                 Ok(v) => items_of(&v, "首页").unwrap_or_default(),
                 Err(_) => Vec::new(), // 预取失败不影响分类（与 DEX 的内嵌表语义一致）
             },
@@ -395,7 +390,6 @@ impl CspSite for AppRJ {
                     ("year".into(), String::new()),
                     ("extend".into(), String::new()),
                 ],
-                &format!("分类 {tid} 第 {page} 页"),
             )
             .await?;
         Ok(CspList {
@@ -416,7 +410,6 @@ impl CspSite for AppRJ {
                     ("keyword".into(), kw.to_string()),
                     ("page".into(), page.to_string()),
                 ],
-                "搜索",
             )
             .await?;
         Ok(CspList {
@@ -438,7 +431,6 @@ impl CspSite for AppRJ {
                 &base,
                 P_VOD_DETAILS,
                 vec![("vod_id".into(), id.trim().to_string())],
-                &format!("详情 {id}"),
             )
             .await?;
         detail_of(&v, id.trim())
@@ -563,20 +555,20 @@ mod tests {
     }
 
     #[test]
-    /// ★★ `code != 1` 必须 Err；缺 code 要指向**签名**这条分支
+    /// `code != 1` remains an error; missing code reports structure, not a cause.
     ///
-    /// 注入：把缺 code 那句话里的"sign error"提示删掉 ⇒ 本条红。
+    /// Deliberately replaces historical signing advice after the public-error RED.
     #[test]
     fn non_one_code_and_missing_code_are_errors() {
         let bad: Value = serde_json::from_str(r#"{"code":0,"msg":"no"}"#).unwrap();
         let e = ensure_ok(&bad, "搜索").expect_err("★ code≠1 必须 Err");
-        assert!(e.contains("code=0") && e.contains("no"), "{e}");
+        assert!(e.contains("code=0") && !e.contains("no"), "business code remains visible without raw msg");
 
         let miss: Value = serde_json::from_str(r#""not found""#).unwrap();
         let e2 = ensure_ok(&miss, "搜索").expect_err("★ 缺 code 必须 Err");
         assert!(
-            e2.contains("sign") || e2.contains("405"),
-            "★ 缺 code 时要指向「签名/405」这条实测分支（别让人以为是「上游死」）：{e2}"
+            e2.contains("code") && e2.contains("没有") && !e2.contains("sign") && !e2.contains("405"),
+            "missing code must report structure without inventing a signature failure"
         );
     }
 

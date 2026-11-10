@@ -117,3 +117,6 @@ Status: implemented
     "我打不开" ≠ "它不可用" —— 都是**把"我的动作结果"当成"对象的属性"**。
   · 与[锚定会变的东西](../process/2026-10-27-anchoring-something-that-moves.md)配对：
     "上游状态"是**时点值**，句子必须带时点。
+
+Related (2026-11-10): [safe detail error facts](../bug-fix/2026-11-10-detail-upstream-errors-safe-facts.md)
+keeps historical protocol evidence out of unsupported public-error diagnoses.

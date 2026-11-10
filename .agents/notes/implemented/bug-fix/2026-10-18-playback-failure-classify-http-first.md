@@ -74,3 +74,6 @@ Status: implemented
   两篇合起来说明同一件事：**归因函数的输入必须是原始事实。**
 - **重访条件**：当出现「状态码对但归因错」的稳定复现时，说明中间有层改写了状态码，
   届时应在那一层记录原始码而不是调整归因顺序。
+
+Related (2026-11-10): [safe detail error facts](2026-11-10-detail-upstream-errors-safe-facts.md)
+keeps the received HTTP status while removing private upstream/debug text.

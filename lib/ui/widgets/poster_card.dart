@@ -151,12 +151,30 @@ class PosterCard extends StatefulWidget {
         .firstMatch(latest);
     final lastCompleted = RegExp(r'^第(\d+)[集话話][（(]?(?:已)?完结[）)]?$')
         .firstMatch(latest);
-    if (full != null || completed != null || lastCompleted != null) {
+    if (latest == '全剧集' ||
+        full != null ||
+        completed != null ||
+        lastCompleted != null) {
       final count = int.tryParse(
         full?.group(1) ?? completed?.group(1) ?? lastCompleted?.group(1) ?? '',
       );
       final total = count ?? episodeCount;
       return total > 0 ? '已完结·全$total集' : '已完结';
+    }
+    final ratio = RegExp(
+      r'^更新[至到](?:第)?(\d+)(?:/(\d+)[集话話]|[集话話]/全(\d+)[集话話])(?:[,，].*)?$',
+    ).firstMatch(latest);
+    if (ratio != null) {
+      final available = int.tryParse(ratio.group(1)!);
+      final total = int.tryParse(ratio.group(2) ?? ratio.group(3)!);
+      if (available == null ||
+          total == null ||
+          available <= 0 ||
+          total <= 0 ||
+          available > total) {
+        return null;
+      }
+      return '更新至$available/$total集';
     }
     final numbered = RegExp(r'^(?:更新[至到])?(?:第)?(\d+)[集话話]$')
         .firstMatch(latest);

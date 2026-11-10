@@ -498,7 +498,129 @@ String _decodeHtmlEntities(String s) {
   return out.replaceAll('&amp;', '&');
 }
 
-/// ★ 仅供测试调用 —— 上面那个私有函数的转发入口
+/// Project inert source markup into text; keep the original detail unchanged.
+/// Decode entities after removing real tags so escaped literal tags stay text.
+String _descriptionPlainText(String raw) {
+  if (!raw.contains('<')) {
+    return _decodeHtmlEntities(raw);
+  }
+  const lineTags = {
+    'br', 'hr', 'p', 'div', 'section', 'article', 'header', 'footer',
+    'blockquote', 'pre', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'table', 'tr',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  };
+  const markupTags = {
+    ...lineTags,
+    'a', 'abbr', 'b', 'bdi', 'bdo', 'caption', 'cite', 'code', 'col',
+    'colgroup', 'del', 'em', 'i', 'img', 'ins', 'kbd', 'mark', 'q', 's',
+    'samp', 'small', 'span', 'strong', 'sub', 'sup', 'tbody', 'td', 'tfoot',
+    'th', 'thead', 'time', 'u', 'var', 'wbr', 'script', 'style',
+  };
+  final tagStart = RegExp(r'<(/?)([A-Za-z][A-Za-z0-9:-]*)');
+  final tagBoundary = RegExp(r'[\s/>]');
+  ({String name, int end, bool closing})? tagAt(int start) {
+    final match = tagStart.matchAsPrefix(raw, start);
+    if (match == null) {
+      return null;
+    }
+    final name = match.group(2)!.toLowerCase();
+    // Unknown tag-like text, including x<y && y>z, is ordinary description.
+    if (!markupTags.contains(name) ||
+        (match.end < raw.length && !tagBoundary.hasMatch(raw[match.end]))) {
+      return null;
+    }
+    String? quote;
+    for (var i = match.end; i < raw.length; i++) {
+      final char = raw[i];
+      if (quote != null) {
+        if (char == quote) {
+          quote = null;
+        }
+      } else if (char == '"' || char == "'") {
+        quote = char;
+      } else if (char == '>') {
+        return (
+          name: name,
+          end: i + 1,
+          closing: match.group(1) == '/',
+        );
+      } else if (char == '<') {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  final out = StringBuffer();
+  var pendingLine = false;
+  var hasText = false;
+  var endsLine = false;
+  void writeText(String text) {
+    if (text.isEmpty) {
+      return;
+    }
+    if (pendingLine) {
+      // Whitespace between block tags is source formatting, not another line.
+      if (text.trim().isEmpty) {
+        return;
+      }
+      if (hasText &&
+          !endsLine &&
+          !text.startsWith('\n') &&
+          !text.startsWith('\r')) {
+        out.write('\n');
+      }
+      pendingLine = false;
+    }
+    out.write(text);
+    hasText = hasText || text.trim().isNotEmpty;
+    endsLine = text.endsWith('\n') || text.endsWith('\r');
+  }
+
+  var textStart = 0;
+  var cursor = 0;
+  while (cursor < raw.length) {
+    if (raw[cursor] != '<') {
+      cursor++;
+      continue;
+    }
+    if (raw.startsWith('<!--', cursor)) {
+      writeText(raw.substring(textStart, cursor));
+      final end = raw.indexOf('-->', cursor + 4);
+      cursor = end < 0 ? raw.length : end + 3;
+      textStart = cursor;
+      continue;
+    }
+    final tag = tagAt(cursor);
+    if (tag == null) {
+      cursor++;
+      continue;
+    }
+    writeText(raw.substring(textStart, cursor));
+    cursor = tag.end;
+    if (!tag.closing && (tag.name == 'script' || tag.name == 'style')) {
+      // HTML raw-text elements end at their own closing tag, not at apparent
+      // tags inside their body. They are never content for the description.
+      final close = RegExp('</${tag.name}(?=[\\s/>])', caseSensitive: false);
+      var end = raw.length;
+      for (final match in close.allMatches(raw, cursor)) {
+        final closing = tagAt(match.start);
+        if (closing != null && closing.closing && closing.name == tag.name) {
+          end = closing.end;
+          break;
+        }
+      }
+      cursor = end;
+    } else if (lineTags.contains(tag.name)) {
+      pendingLine = true;
+    }
+    textStart = cursor;
+  }
+  writeText(raw.substring(textStart));
+  return _decodeHtmlEntities(out.toString());
+}
+
+/// ★ 仅供测试调用 —— 私有实体解码函数的转发入口
 ///
 /// 为什么不直接把 _decodeHtmlEntities 改成公开：
 /// 它没有对外语义（只有详情页简介这一个调用点），公开会让"谁能调"变模糊。
@@ -4444,17 +4566,16 @@ class _Info extends StatelessWidget {
   ///    （见下），所以两半拼起来与拆分前的 `Column` **逐字等价**。
   Widget _rest(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final description = _descriptionPlainText(detail.description ?? '');
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // ── 简介 ──
-        if (detail.description != null && detail.description!.isNotEmpty) ...[
+        if (description.isNotEmpty) ...[
           const SizedBox(height: Sp.x4),
           Text(
-            // ★ task-9 ②：兜底解 HTML 实体（老插件文件没重转的路径，
-            //   见 [_decodeHtmlEntities] 的长注释）。幂等 —— 已解过的文本再解不变。
-            _decodeHtmlEntities(detail.description!),
+            description,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(

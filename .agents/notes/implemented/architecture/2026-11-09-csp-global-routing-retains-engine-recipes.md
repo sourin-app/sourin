@@ -30,6 +30,37 @@ proxy on the old settings, then origin manifest/segment requests and changing
 software-rendered frames after the explicit empty AVOption. This establishes the
 native routing boundary, not remote source availability or full-title playback.
 
+Clearing an embedded live selection advances the same transport generation
+used by both open paths and clears suppressed/pending starts. A native-policy
+await that belongs to a cleared selection therefore cannot reopen the old
+stream or publish its late failure after the widget has already stopped it.
+The widget regression delays the real native property boundary, updates the
+mounted stream to null, then releases the readback and observes actual
+Player.open/play/stop/dispose calls. The same boundary covers initial/retry and
+stream-switch opens, hidden return, disposal and a newer selection that remains
+allowed to open. Native creation alone is replaced in that test; cancellation
+and generation handling use the mounted production widget. This does not
+establish real network playback or native UI acceptance.
+
+The main player also gives every candidate start its own generation, because
+quality selections within one episode retain the resolve and session generations.
+A superseded precheck, native preparation, open completion or failure cannot
+reopen an earlier candidate or replace the newer candidate's error state. The
+mounted-page regression delays the existing HTTP precheck without network I/O,
+selects the newer candidate through the rendered quality callback, then observes
+the Media passed to the final open boundary in the existing probe mode. Ordered
+selection remains a positive control. This covers candidate identity and
+cancellation, not native decoding or real network playback.
+
+The native hardware-decoder observer also invalidates its generation on page
+disposal. It checks page ownership after each property await and before another
+read, retry or diagnostic log, because checking only at the loop entrance lets
+a ready result cross disposal into the final read and an empty result schedule
+another retry against the disposed player. The same mounted-page fixture holds
+the property read across real unmount and observes the next requested property;
+a mounted ready result remains a positive control. This is observer lifecycle
+coverage and does not establish hardware decoding.
+
 Migration is per engine, with local request observations. A wrapper's hook does not cover independent downstream cloud/share clients. Explicitly unavailable engines do not become playable by migrating their client. Counts and execution results belong to the implementation plan; this note does not claim every historical engine is covered.
 
 The two anonymous playback adapters retain their engine-specific protocol as well as routing. The protobuf adapter signs the exact selected line and opaque episode value with the same SHA-256 request bytes as the public web client, using existing cryptographic dependencies without an additional runtime. It decodes the actual protobuf media field, preserves signed URL query bytes and keeps platform, login and membership rejections as failures without reflecting private payloads. The encrypted episode adapter holds one anonymous identity per engine instance, supplies the public client headers, decrypts the episode envelope, verifies the returned pid and permission, and signs that selected pid/scid before decrypting the returned media and headers. It neither switches episodes nor rotates identity in response to denial or limits. Both use their existing CspHttpContext. Registration, catalog retrieval, media resolution and real decoder frames remain separate acceptance stages.

@@ -2143,6 +2143,8 @@ class _PlayerPageState extends State<PlayerPage>
       'player-${DateTime.now().microsecondsSinceEpoch}';
   final String _playConsumer = '$_playConsumerPrefix-${++_globalPlayConsumer}';
   int _playGeneration = ++_globalPlayGeneration;
+  // Selecting another candidate can supersede an open within the same episode.
+  int _candidateOpenGeneration = 0;
   bool _playClosed = false;
 
   int _beginPlayResolve() => _playGeneration = ++_globalPlayGeneration;
@@ -3608,6 +3610,12 @@ class _PlayerPageState extends State<PlayerPage>
   /// 判据形态：用户点开作品后**立刻**切集 ⇒ 只有**新集**那一次起播；
   /// 在途的旧 `_load()` 不许再开一次（否则最后打开的是上一集的流）。
   int _startPlaybackCalls = 0;
+
+  /// Replaces only the final native open boundary in the existing probe mode.
+  Future<void> Function(Media, {required bool play})? _openForProbe;
+
+  /// Replaces only native property reads in the existing probe mode.
+  Future<String> Function(String)? _hwdecReadForProbe;
 
   /// 上一次**起播失败**的耗时（只在失败路径写；成功/新一轮起播清空）
   ///
@@ -5285,6 +5293,9 @@ class _PlayerPageState extends State<PlayerPage>
     // Windows 才有 d3d11va；其它平台后端不同，但读法一样，所以不排除
     final native = _player.platform;
     if (native is! NativePlayer) return;
+    final readForProbe = debugPlayerSkipOpenForProbe ? _hwdecReadForProbe : null;
+    bool isCurrentReport() =>
+        mounted && !_playClosed && token == _hwdecToken;
 
     /*
      * 等 `video-params` 就绪。
@@ -5297,13 +5308,18 @@ class _PlayerPageState extends State<PlayerPage>
     var waited = 0;
     var ready = false;
     while (waited < 48) {
-      if (token != _hwdecToken) {
-        // 用户已换集/换源，这次取证作废
+      if (!isCurrentReport()) {
+        // 用户已换集/换源或退出，这次取证作废
         debugPrint('[PLAYER] hwdec 取证已过期（用户换了流），放弃');
         return;
       }
       try {
-        final vp = await native.getProperty('video-params');
+        final vp = await (readForProbe != null
+            ? readForProbe('video-params')
+            : native.getProperty('video-params'));
+        if (!isCurrentReport()) {
+          return;
+        }
         // mpv 在没有视频轨/解码器时返回空串
         if (vp.isNotEmpty) {
           ready = true;
@@ -5312,10 +5328,16 @@ class _PlayerPageState extends State<PlayerPage>
       } catch (_) {
         // 属性还没建好时可能抛错 —— 当作"未就绪"继续等
       }
+      if (!isCurrentReport()) {
+        return;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 250));
       waited++;
     }
 
+    if (!isCurrentReport()) {
+      return;
+    }
     try {
       /*
        * ★ 硬指标①的证据行 —— 格式不要改，验收脚本按这个前缀 grep。
@@ -5323,13 +5345,21 @@ class _PlayerPageState extends State<PlayerPage>
        * 无论就绪与否都读一次并如实打印：`ready=false` 时打出来的
        * 空值/`no` 本身就是"这个平台没硬解"的真实结论。
        */
-      final cur = await native.getProperty('hwdec-current');
+      final cur = await (readForProbe != null
+          ? readForProbe('hwdec-current')
+          : native.getProperty('hwdec-current'));
+      if (!isCurrentReport()) {
+        return;
+      }
       // ignore: lines_longer_than_80_chars
       debugPrint(
         '[PLAYER] hwdec-current = $cur'
         '（就绪=${ready ? "是" : "否，等待 ${waited * 250}ms 超时"}）',
       );
     } catch (e) {
+      if (!isCurrentReport()) {
+        return;
+      }
       debugPrint('[PLAYER] 读 hwdec-current 失败: $e');
     }
   }
@@ -6961,6 +6991,11 @@ class _PlayerPageState extends State<PlayerPage>
   Future<void> _startPlayback(StreamCandidate st) async {
     final session = _playSessionGen;
     final generation = _playGeneration;
+    final candidate = ++_candidateOpenGeneration;
+    bool isCurrentOpen() =>
+        _isCurrentPlayResolve(generation) &&
+        session == _playSessionGen &&
+        candidate == _candidateOpenGeneration;
     _startPlaybackCalls++;
     setState(() {
       _current = st;
@@ -6999,8 +7034,9 @@ class _PlayerPageState extends State<PlayerPage>
       st.url,
       st.httpHeaders,
     );
-    if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+    if (!isCurrentOpen()) {
       return;
+    }
     if (precheck.error != null) {
       AppLog.write('PLAY', '非媒体预检剔除（不再报"格式解不了"）：${precheck.error}');
       if (mounted) {
@@ -7085,20 +7121,25 @@ class _PlayerPageState extends State<PlayerPage>
        */
       // ★ 伪装的 .mp3（其实是 mp4）必须在 open 前纠正 demuxer，否则只有音轨
       await _applyDemuxerOverride();
-      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen) {
+      if (!isCurrentOpen()) {
         return;
       }
       await prepareNativeMediaTransport(_player.platform);
-      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+      if (!isCurrentOpen()) {
         return;
-      if (!debugPlayerSkipOpenForProbe) {
-        await _player.open(
-          Media(playUrl, httpHeaders: st.httpHeaders),
-          play: !_isLive || (widget.initialLivePlayback?.playing ?? true),
-        );
       }
-      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+      if (!debugPlayerSkipOpenForProbe || _openForProbe != null) {
+        final media = Media(playUrl, httpHeaders: st.httpHeaders);
+        final play = !_isLive || (widget.initialLivePlayback?.playing ?? true);
+        if (debugPlayerSkipOpenForProbe) {
+          await _openForProbe!(media, play: play);
+        } else {
+          await _player.open(media, play: play);
+        }
+      }
+      if (!isCurrentOpen()) {
         return;
+      }
       /*
        * ★★★ task-22 P1-11：`video-zoom` 是**逐文件**属性 —— mpv 换文件时会
        *   把它复位。只在 `_setHwdec()` 里下发一次是不够的（换集后缩放就没了），
@@ -7349,8 +7390,9 @@ class _PlayerPageState extends State<PlayerPage>
        *    慢的源（HLS / 大 MP4）3 秒还没 demux 完，快的源白等 3 秒。
        *    轮询是"该等多久等多久"。
        */
-      if (!_isCurrentPlayResolve(generation) || session != _playSessionGen)
+      if (!isCurrentOpen()) {
         return;
+      }
       final pending = _pendingSeek;
       if (pending != null && pending > Duration.zero) {
         // 保持续播意图，直到 seek 落地；等待 duration 时禁止自动片头抢跑。
@@ -7392,7 +7434,7 @@ class _PlayerPageState extends State<PlayerPage>
        */
       unawaited(_applySubtitleStyle());
     } catch (e) {
-      if (_isCurrentPlayResolve(generation) && session == _playSessionGen) {
+      if (isCurrentOpen()) {
         setState(() {
           _error = e.toString();
           // ★ 结构化类别（能从 SourinCoreException 拿到就记下来）
@@ -17132,6 +17174,7 @@ class _PlayerPageState extends State<PlayerPage>
   @override
   void dispose() {
     _playClosed = true;
+    _hwdecToken++;
     _reportLivePlaybackExit();
     /*
      * ★★★ 2026-10-29（Owner 问的"播一次存一次、不复用不删除吗"）：**播完即删**。
@@ -22500,6 +22543,36 @@ bool debugPlayerResetResumeGuardForProbe() {
   s._resumedThisSession = false;
   s._pendingSeek = null;
   s._position = Duration.zero;
+  return true;
+}
+
+/// Observes the Media passed to native open; requires the existing probe mode.
+/// Precheck, transport preparation and cancellation remain production code.
+@visibleForTesting
+bool debugPlayerSetOpenForProbe(
+  Future<void> Function(Media, {required bool play})? open,
+) {
+  final s = _livePlayerState;
+  if (s == null || !debugPlayerSkipOpenForProbe) return false;
+  s._openForProbe = open;
+  return true;
+}
+
+/// Replaces the native read boundary, retaining the actual diagnostic loop.
+@visibleForTesting
+bool debugPlayerSetHwdecReadForProbe(Future<String> Function(String)? read) {
+  final s = _livePlayerState;
+  if (s == null || !debugPlayerSkipOpenForProbe) return false;
+  s._hwdecReadForProbe = read;
+  return true;
+}
+
+/// Waits for the production observer itself, rather than a quiet time window.
+@visibleForTesting
+Future<bool> debugPlayerReportHwdecForProbe() async {
+  final s = _livePlayerState;
+  if (s == null || !debugPlayerSkipOpenForProbe) return false;
+  await s._reportHwdecAfterReady(++s._hwdecToken);
   return true;
 }
 

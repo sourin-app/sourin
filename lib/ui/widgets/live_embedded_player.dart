@@ -2278,6 +2278,16 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   @visibleForTesting
   Player? get playerForTest => _player;
 
+  /// Injects only the native boundary for lifecycle tests without libmpv.
+  /// The real open, widget-update cancellation and disposal paths still run.
+  @visibleForTesting
+  void attachPlayerForTest(Player player) {
+    if (!debugSkipPlayerCreation || _player != null || _disposed) {
+      throw StateError('Player injection requires an uncreated test host');
+    }
+    _player = player;
+  }
+
   @override
   void didUpdateWidget(covariant LiveEmbeddedPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -2298,6 +2308,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     final b = widget.stream?.url;
     if (a != b) {
       if (b == null) {
+        // Cancelling selection also cancels native-policy/open continuations.
+        // Clearing only the pending value cannot invalidate an awaited open.
+        _transportGeneration++;
+        _suppressedStart = false;
         /*
          * ★ task-74 ⑤：也要丢掉**挂起的**换台。
          *   否则"窗口内先选台、再取消选择"会让 `_create()` 末尾

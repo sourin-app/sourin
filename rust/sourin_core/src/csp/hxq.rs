@@ -1,84 +1,7 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  csp_Hxq —— 「🌼韩圈｜蓝光韩剧」（韩小圈 App 协议）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # 配置里覆盖什么
-//
-// ```text
-// 订阅（8815.kstore.vip/tvbox/wmz）100 站里：
-//   csp_Hxq  🌼韩圈｜蓝光韩剧   ext = null   key = "韩圈"
-// ⇒ **base URL 硬编码在类里**（DEX 常量），不需要 ext。
-// ```
-//
-// # ★★ 2026-10-27 真网络实测（逐段分档，**不许把"部分通"说成"通了"**）
-//
-// ```text
-// ✅ home    GET /api/common/configs                → 200 真 JSON（pver/conf_ver/模板 URL 等）
-// ✅ list    GET /api/series/cate?stype=&sort=&page= → 200 真 JSON，seriesList 22 条
-//              stype=1 剧集 22 条 / stype=2 综艺 29 条 / stype=3 20 条
-//              stype=4,5,6 **上游返回 0 条**（这不是我们的解析问题，是上游确实空）
-//              sort=new/hot/score 有效；sort=hits **0 条**（DEX 里写的是 vod_hits_week，
-//                真站已改成 new/hot/score —— DEX 常量与真站不一致，已按真站为准）
-// ✅ detail  GET /api/series/detail?sid=              → 200 真 JSON
-//              `series{}` 有 name/intro/thumb/count/category/scopeQualities
-//              ★ 且**顶层内嵌 `playItems[]`**（6 条，含真 `pid`/`serialNo`/`title`/`duration`）
-//                —— 这条是本次探明的关键：**详情一次就能拿到剧集，不用再打 episodes 端点**
-// ⛔ play    GET /api/series/rslvV4?pid=&t=&…&sign=    → **一律 `{"rescode":-2,"errmsg":"bad request params"}`**
-//              见下方"未实现"（**不是我们没写，是签名不可从常量复现**）
-// ⛔ search  GET /api/search/s5?k=&srefer=&type=0&page= → **`{"rescode":0}` 空体**
-//              且 `/api/series2/episodes`、`/api/series2/detail/normal` 也只回 `{"rescode":0}` 空壳
-// ```
-//
-// # ★ 未实现（如实登记，附我做过的尝试，便于下一个人接手）
-//
-// ## ① `play` —— 卡在 `rslvV4` 的 `sign`
-// ```text
-// DEX 里 play 的链路是：
-//   `Hxq.r(String)`  → /api/series2/episode/detail?pid=&refer=     ← 实测**只回 {"rescode":0,"confVer":782}**（空壳）
-//   `Hxq.w(String,String)` → /api/series/rslvV4?pid=&scid=&re=&sq=&t=&dt=android&version=&uuid=&udid=&sign=
-//   `Hxq.i()` → sign 的来源；它是 18 条指令的**极小方法**，反汇编后是**读一个静态字段**
-//              （`sget-object`），即 secre 在 `init()` 里被赋值，**不是常量**。
-//   `Hxq.b([B,[B,String)` → AES/CBC/PKCS5Padding（加解密工具）
-//   DEX 里唯一的候选 secret 字面量：`rSwCIIUMYCiHZXIVfgxlxylE9eGqfmwMg5V8mRSBB55vN8P3bNpXkUrv9MFhYOvm`（46 字符）
-//   该字段的真实来源在 `init()` 里从 **配置/服务端** 取得，而订阅里 `ext = null` ⇒ **我们没有这个值**。
-//
-// 【我实测试过的 sign 方案（**全部**回 bad request params）】
-//   无 sign / md5(全 params) / md5(排序 params) / md5(pid+t) / md5(pid)
-//   md5(query+secret) / md5(query+"&"+secret) / md5(secret+query) / b64(query) / b64(query+secret)
-//   以及参数集穷举：{pid,scid,re,sq,t} / {pid,t} / {pid,utk,uk,spl,t,ip} /
-//                  {pid,udid,uuid,t} / {pid,serialNo} / 全量  —— 共 12 组 × 2 种签名
-//   ⇒ 全部 `bad request params`。**这说明缺的是必需参数或 sign 的算法/盐，不是"路径写错"**
-//     （路径写错会是 404，而这里服务端明确回"参数不对"⇒ 端点存在、是参数问题）。
-// ⇒ **结论：`play` 需要"服务端下发的 secret"，本仓该值缺失 ⇒ 如实返回 Err，绝不伪造直链。**
-// ```
-//
-// ## ② `search` —— 上游返回空
-// ```text
-// `/api/search/s5?k=韩&srefer=&type=0&page=1` → `{"rescode":0,"ts":…}`（**没有任何列表键**）
-// 换 srefer 为搜索模板 URL / 其 hash / 空，换 k/keyword，试 s6/series/search —— 结果相同。
-// 不带 `srefer` 时**直接 500** `Handler execution resulted in exception, uri: /api/search/s5`
-//   ⇒ 说明 `srefer` 是**必需参数**（缺了服务端抛异常），给了之后"能进但返回空"。
-// ⇒ 同 play 一样：`srefer` 的真实值应由服务端下发（见 `/api/common/configs` 的
-//   `search_tpl_v2` → 那是个模板 URL，其内容才是 srefer）⇒ **本仓缺这一步的取数**。
-// ⇒ `supports_search()` 如实返回 **false**（不许声明一个"搜不到"的 true，
-//   那会让 registry 把它纳入聚合搜索并恒返回空）。
-// ```
-//
-// # 已知缺口（按 Lead 裁定的契约边界登记）
-// ```text
-// · mProxy   —— 本批不做（本批无 mProxy 等价位）
-// · loadPic  —— 本仓不补 trait；封面头见 COVER_HEADERS（声明式；本类实测不需要额外头）
-// · isVideoFormat / manualVideoCheck —— DEX 有，但本仓**无等价位**（本层不做"是否需要
-//   先探测格式/手动选视频"的裁决），如实标"未实现"，不硬造。
-// ```
-//
-// # 播放链路的能力边界（诚实契约）
-// ```text
-// 本类 **detail 能列出剧集**（真 pid/serialNo/title）——
-// 用户能看到"第 1 集…第 N 集"，但点进去取流会得到明确的
-//   「需要服务端下发的 secret（本仓缺失）」错误，而不是一个假地址或空列表。
-// ⇒ 这与本仓 App99 的处理口径一致（"实现了但被服务端挡住"→ 说清原因，不说"尚未实现"）。
-// ```
+// Native catalog adapter with an anonymous client session for media resolution.
+// 2026-11-10: playback supplies the public client headers, decrypts the episode
+// envelope and signs rslvV4 for the exact selected pid. Source permission and
+// rate-limit responses remain failures; no alternative pid is substituted.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -87,13 +10,13 @@ use std::time::Duration;
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
 use crate::csp::shared::{pick_arr, pick_id_str, pick_str};
 
+#[path = "hxq_playback.rs"]
+mod playback;
+
 /// 硬编码 API 根（DEX 常量 `Lcom/github/catvod/spider/Hxq;` 的 `<init>`）
 const BASE: &str = "https://hxqapi.hiyun.tv";
 
-/// DEX 里的唯一候选 secret 字面量（**46 字符**）
-///
-/// ⚠️ 它**不是** `rslvV4` 的 sign —— 实测用各种组合都回 `bad request params`。
-/// 保留在代码里是为了**下一个接手的人不必重做这段穷举**（见文件头"未实现①"）。
+/// Public client's default episode-detail refer value; it is not a signing secret.
 pub const CANDIDATE_SECRET: &str = "rSwCIIUMYCiHZXIVfgxlxylE9eGqfmwMg5V8mRSBB55vN8P3bNpXkUrv9MFhYOvm";
 
 /// 站点 UA（DEX `d()` 里写的是 `hj` 这个 app 标识 + 移动 UA）
@@ -125,28 +48,35 @@ pub const SORTS: &'static [(&'static str, &'static str)] =
     &[("new", "最新"), ("hot", "最热"), ("score", "评分")];
 
 pub struct Hxq {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
+    playback_session: std::sync::OnceLock<Result<playback::Session, String>>,
 }
 
 impl Hxq {
     pub const CLASS: &'static str = "Hxq";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(TIMEOUT)
-            .no_proxy() // 与其它 csp 源一致
-            .build()
-            .expect("build hxq http client");
-        Self { client }
+        let client = super::http_context::CspHttpContext::new(|| {
+            reqwest::Client::builder()
+                .user_agent(UA)
+                .timeout(TIMEOUT)
+                // Ignore environment proxies; CspHttpContext applies app policy.
+                .no_proxy()
+        });
+        Self { client, playback_session: std::sync::OnceLock::new() }
     }
 
     /// 带站点标识的 GET（DEX 的 `d()` 里那几个头）
     async fn get_json(&self, path: &str) -> Result<Value, String> {
         let url = format!("{BASE}{path}");
+        self.get_json_url(&url, path).await
+    }
+
+    async fn get_json_url(&self, url: &str, path: &str) -> Result<Value, String> {
         let resp = self
             .client
-            .get(&url)
+            .client()?
+            .get(url)
             .header("app", APP_ID)
             .header(reqwest::header::ACCEPT, "*/*")
             .send()
@@ -304,6 +234,10 @@ pub fn clean_intro(html: &str) -> String {
 
 #[async_trait]
 impl CspSite for Hxq {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -465,25 +399,8 @@ impl CspSite for Hxq {
         false
     }
 
-    /// 取流：**未实现** —— 需要服务端下发的 secret（见文件头"未实现①"）
-    ///
-    /// # 为什么这里返回一个**说清原因**的 Err，而不是"尚未实现"
-    /// ```text
-    /// 本类在服务端有真实现（`/api/series/rslvV4` 端点存在——它回的是
-    /// `bad request params` 而不是 404，说明端点活着、是**参数/签名**不对）。
-    /// 我穷举了 12 组参数 × 多种签名算法，全部 `bad request params`。
-    /// ⇒ 真因是"缺服务端下发的 secret"，不是"我们还没动手写"。
-    ///   按本仓 App99 的口径（实现了但被服务端挡住 ⇒ 说清原因），这里点名真因。
-    /// ```
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
-        Err(format!(
-            "Hxq 取流需要服务端下发的 secret（`/api/series/rslvV4` 的 `sign`）——\
-             本仓缺该值，所以不能解析 pid={id}。\
-             已实测：端点在（回 bad request params 而非 404），\
-             穷举 12 组参数 × md5/b64 多种签名全部被拒；\
-             DEX 里 sign 来自 `Hxq.i()`（读一个 init 期赋值、非常量的静态字段）。\
-             绝不伪造播放地址。"
-        ))
+        self.anonymous_play(id).await
     }
 }
 
@@ -499,7 +416,7 @@ impl CspSite for Hxq {
 //   home   /api/common/configs 200
 //   list   /api/series/cate?stype=1 → 22 条（stype=2 → 29 / stype=3 → 20；4/5/6 上游空）
 //   detail /api/series/detail?sid= → series{} + **顶层 playItems[6]**（真 pid/serialNo/title）
-//   play   ⛔ 缺服务端 secret ⇒ 明确 Err（端点存在，回 bad request params）
+//   play   anonymous headers + AES envelope + selected-pid rslvV4 resolution
 //   search ⛔ 上游 /api/search/s5 回空 ⇒ supports_search=false
 // ⚠️ 探明的一个坑（留档）：playItems 在**顶层**不在 series{} 里 ——
 //    第一版我在 series 里找 ⇒ 误判"没有剧集"。
@@ -612,17 +529,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn play_errs_and_names_the_server_side_secret() {
-        let s = Hxq::new();
-        let e = s
-            .play("韩圈", "beQsAckTv1NjBZPdULTL", "")
-            .await
-            .expect_err("★ 缺 secret ⇒ 必须 Err，不许给假地址");
-        // ★ 这三条是这个 Err 的价值所在：说清"端点在、是签名问题、别去改路径"
-        assert!(e.contains("rslvV4"), "要点名端点：{e}");
-        assert!(e.contains("secret"), "要点名真因（缺服务端 secret）：{e}");
-        assert!(e.contains("绝不伪造"), "要表明不会给假地址：{e}");
-        assert!(e.contains("beQsAckTv1NjBZPdULTL"), "要带上 pid 便于定位：{e}");
+    async fn play_rejects_invalid_episode_identity_privately() {
+        let error = Hxq::new().play("line", "pid?token=private", "").await.unwrap_err();
+        assert!(error.contains("标识无效"));
+        assert!(!error.contains("private"));
     }
 
     // ── ★ 结构判据：playItems 必须从**顶层**读（我读错层级踩过） ────────
@@ -730,11 +640,19 @@ mod tests {
             d.title, d.episodes.len(),
             d.episodes.first().map(|e| e.title.clone()),
             d.description.as_deref().unwrap_or("").chars().take(40).collect::<String>());
-        // ★ play 会明确 Err —— 这是**预期**（缺服务端 secret），断言它 Err 而不是 Ok
+        // Optional live probe observes actual media resolution, not player frames.
         let pe = s.play(&d.episodes[0].flag, &d.episodes[0].id, "").await;
         eprintln!("[LIVE] play 实测: {}", match &pe {
-            Ok(v) => format!("★ 意外成功（{} 条）—— 说明 secret 已可得，需更新实现", v.len()),
+            Ok(v) => format!("解析返回 {} 条媒体候选（未验证首帧）", v.len()),
             Err(e) => format!("如实 Err：{}", e.chars().take(90).collect::<String>()),
         });
     }
 }
+
+#[cfg(test)]
+#[path = "hxq_proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
+#[path = "anonymous_decode_live_tests.rs"]
+mod anonymous_decode_live_tests;

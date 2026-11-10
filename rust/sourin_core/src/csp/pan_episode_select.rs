@@ -10,6 +10,32 @@ use super::{CspDetail, CspEpisode, CspPlay};
 
 const FILE_PREFIX: &str = "panfile:";
 
+pub(crate) type PanRouting = (std::sync::Arc<crate::proxy::ProxyStore>, String);
+
+tokio::task_local! {
+    static SHARE_OPERATION: PanChecker;
+}
+
+/// Scoped to this resolve/cleanup future, never shared between playback owners.
+/// Capture before the first await; helpers reuse its immutable routing clients.
+pub(crate) async fn with_operation<T>(checker: PanChecker, future: impl std::future::Future<Output = T>) -> T {
+    SHARE_OPERATION.scope(checker, future).await
+}
+
+pub(crate) fn current_operation() -> Option<PanChecker> {
+    SHARE_OPERATION.try_with(Clone::clone).ok()
+}
+
+pub(crate) fn operation_checker(routing: Option<&PanRouting>) -> Result<PanChecker, String> {
+    if let Some(checker) = current_operation() { return Ok(checker); }
+    let checker = crate::pan_check::global_checker();
+    match routing {
+        Some((store, provider)) => checker.for_share_operation(store.clone(), provider),
+        None => Ok(checker.clone()),
+    }
+}
+
+
 #[derive(Debug, Clone, Default)]
 pub struct EpisodeSpec {
     pub title: String,
@@ -209,7 +235,7 @@ pub async fn resolve_family_with(
     // 验证/选片失败不动网盘，转存前才收走上一次临时文件。
     let _mutation = super::pan_playback_guard::mutation_lock(drive.kind().code()).await;
     super::pan_playback_guard::check_current()?;
-    drive.purge_previous().await;
+    drive.purge_previous_with_cookie(&cookie).await;
     super::pan_playback_guard::check_current()?;
     let mut play = drive.degrade_attempt(&cookie, share_id, passcode, selected).await?;
     super::pan_playback_guard::check_current()?;
@@ -220,7 +246,8 @@ pub async fn resolve_family_with(
 pub async fn resolve_family(url: &str, fid: Option<&str>, spec: &EpisodeSpec) -> Result<CspPlay, String> {
     let share = super::pan_share_play::parse_share_page(url).ok_or("网盘分享地址无效")?;
     let drive = super::pan_share_play::drive_for(share.kind).ok_or("该网盘的分享解析尚未接入")?;
-    resolve_family_with(crate::pan_check::global_checker(), &drive, url,
+    let checker = operation_checker(None)?;
+    resolve_family_with(&checker, &drive, url,
         &share.share_id, &share.passcode, fid, spec).await
 }
 
@@ -230,7 +257,8 @@ pub async fn resolve_share(url: &str, fid: Option<&str>, spec: &EpisodeSpec) -> 
     }
     let share = crate::pan::parse_share(url);
     let passcode = share.pwd_in_url.as_deref().unwrap_or("");
-    let outcome = check_before_listing(crate::pan_check::global_checker(), url, passcode).await?;
+    let checker = operation_checker(None)?;
+    let outcome = check_before_listing(&checker, url, passcode).await?;
     match share.kind {
         PanKind::Xunlei => super::pan_xunlei_play::resolve_selected(&share.share_id, passcode, fid, spec).await,
         // 百度使用真实文件标识与完整下载直链，不把分享页交回播放器。
@@ -251,9 +279,19 @@ pub async fn family_episodes(url: &str, flag: &str) -> Result<Vec<CspEpisode>, S
 }
 
 pub async fn family_episodes_at(url: &str, flag: &str, folder: &str) -> Result<Vec<CspEpisode>, String> {
+    family_episodes_at_with_routing(url, flag, folder, None).await
+}
+
+pub(crate) async fn family_episodes_at_with_routing(url: &str, flag: &str, folder: &str, routing: Option<&PanRouting>) -> Result<Vec<CspEpisode>, String> {
+    let checker = operation_checker(routing)?;
+    family_episodes_using(url, flag, folder, &checker).await
+}
+
+async fn family_episodes_using(url: &str, flag: &str, folder: &str, checker: &PanChecker) -> Result<Vec<CspEpisode>, String> {
     let share = super::pan_share_play::parse_share_page(url).ok_or("网盘分享地址无效")?;
-    check_before_listing(crate::pan_check::global_checker(), url, &share.passcode).await?;
-    let drive = super::pan_share_play::drive_for(share.kind).ok_or("该网盘的分享解析尚未接入")?;
+    check_before_listing(checker, url, &share.passcode).await?;
+    let mut drive = super::pan_share_play::drive_for(share.kind).ok_or("该网盘的分享解析尚未接入")?;
+    if let Some(client) = checker.drive_client() { drive = drive.with_client(client); }
     // 浏览分享无需账号；取流入口再要求登录。
     let files = drive.share_video_files("", &share.share_id, &share.passcode, folder).await?;
     Ok(files.into_iter().map(|f| CspEpisode {
@@ -264,19 +302,31 @@ pub async fn family_episodes_at(url: &str, flag: &str, folder: &str) -> Result<V
 }
 
 pub async fn share_episodes(url: &str, flag: &str) -> Result<Vec<CspEpisode>, String> {
+    share_episodes_with_routing(url, flag, None).await
+}
+
+pub(crate) async fn share_episodes_with_routing(url: &str, flag: &str, routing: Option<&PanRouting>) -> Result<Vec<CspEpisode>, String> {
+    let checker = operation_checker(routing)?;
+    share_episodes_using(url, flag, &checker).await
+}
+
+async fn share_episodes_using(url: &str, flag: &str, checker: &PanChecker) -> Result<Vec<CspEpisode>, String> {
     if super::pan_share_play::parse_share_page(url).is_some() {
-        return family_episodes(url, flag).await;
+        return family_episodes_using(url, flag, "0", checker).await;
     }
     let share = crate::pan::parse_share(url);
     let passcode = share.pwd_in_url.as_deref().unwrap_or("");
-    let outcome = check_before_listing(crate::pan_check::global_checker(), url, passcode).await?;
+    let outcome = check_before_listing(checker, url, passcode).await?;
     match share.kind {
         PanKind::Baidu => {
-            let files = super::pan_baidu_play::list_share_files(&share.share_id, passcode).await?;
+            let files = super::pan_baidu_play::list_share_files_with_client(&super::pan_baidu_play::BaiduEndpoints::default(), &share.share_id, passcode, checker.baidu_client()).await?;
             Ok(baidu_episodes(&share.share_id, passcode, flag, files))
         }
         PanKind::Xunlei => {
-            let files = super::pan_xunlei_play::list_share_files(&share.share_id, passcode).await?;
+            let files = match checker.xunlei_client() {
+                Some(client) => super::pan_xunlei_play::list_share_files_with_client(&share.share_id, passcode, client).await?,
+                None => super::pan_xunlei_play::list_share_files(&share.share_id, passcode).await?,
+            };
             Ok(files.into_iter().map(|f| CspEpisode {
                 id: encode_file_id(share.kind, &share.share_id, passcode, &f.id),
                 title: f.name,
@@ -301,7 +351,11 @@ pub(crate) fn share_page_payload(id: &str) -> String {
 }
 
 /// 只展开本来把整份分享当一集的线路。真实文件 id/媒体直链保持原样。
-pub async fn expand_detail(mut detail: CspDetail) -> CspDetail {
+pub async fn expand_detail(detail: CspDetail) -> CspDetail {
+    expand_detail_with_routing(detail, None).await
+}
+
+pub(crate) async fn expand_detail_with_routing(mut detail: CspDetail, routing: Option<&PanRouting>) -> CspDetail {
     let mut join = tokio::task::JoinSet::new();
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
     let mut shares = std::collections::HashMap::<String, Vec<usize>>::new();
@@ -311,11 +365,20 @@ pub async fn expand_detail(mut detail: CspDetail) -> CspDetail {
         if !matches!(share.kind, PanKind::Quark | PanKind::Uc | PanKind::Xunlei | PanKind::Baidu) || share.share_id.is_empty() { continue; }
         shares.entry(url).or_default().push(index);
     }
+    if shares.is_empty() { return detail; }
+    let checker = match operation_checker(routing) {
+        Ok(checker) => checker,
+        Err(_) => {
+            crate::applog::write_file_log("PAN", "分享文件网络配置不可用，保留待检查的分享入口");
+            return detail;
+        }
+    };
     for (url, indexes) in shares {
         let sem = sem.clone();
+        let checker = checker.clone();
         join.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            (indexes, share_episodes(&url, "").await)
+            (indexes, share_episodes_using(&url, "", &checker).await)
         });
     }
     let mut expanded = std::collections::HashMap::new();
@@ -451,3 +514,7 @@ mod tests {
         assert!(pick_episode_file(&EpisodeSpec::default(), &[], None).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "pan_episode_proxy_tests.rs"]
+mod proxy_tests;

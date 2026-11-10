@@ -110,7 +110,7 @@ const PLAY_QN: u32 = 64;
 pub struct Bili {
     /// 上游根地址（测试时指向本地假服务）
     base: String,
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 /// WBI 的 mixin 置换表（该站前端 `wbi` 混淆表的公开常量，64 项）
@@ -191,13 +191,12 @@ impl Bili {
     /// 生产用 [`Bili::new`]；测试用本地假服务，**不改一行解析逻辑**。
     pub fn with_base(base: impl Into<String>) -> Self {
         let base = base.into();
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(Duration::from_secs(20))
             // 与 pan_web_share 同一条纪律：不读系统代理（代理会把"站点可用"测成"全宕"）
             .no_proxy()
-            .build()
-            .expect("build upstream http client");
+        );
         Self {
             base: base.trim_end_matches('/').to_string(),
             client,
@@ -212,6 +211,7 @@ impl Bili {
         let url = format!("{}{}", self.base, path_and_query);
         let resp = self
             .client
+            .client()?
             .get(&url)
             .header(reqwest::header::REFERER, REFERER)
             .header(reqwest::header::ACCEPT, "application/json")
@@ -325,6 +325,7 @@ impl Bili {
         let url = format!("{}{}", self.base, path_and_query);
         let resp = self
             .client
+            .client()?
             .get(&url)
             .header(reqwest::header::REFERER, REFERER)
             .header(reqwest::header::ACCEPT, "application/json")
@@ -388,6 +389,10 @@ impl Default for Bili {
 
 #[async_trait]
 impl CspSite for Bili {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -724,6 +729,10 @@ fn secs_text(secs: u64) -> String {
 // csp_Bili：配置里覆盖 **10 个源**（本批最多的一个）。真发 HTTP（上游公开 web 接口）。
 // ```
 crate::csp::register_site!(Bili);
+
+#[cfg(test)]
+#[path = "bili_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

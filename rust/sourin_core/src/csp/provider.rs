@@ -46,11 +46,25 @@ pub struct CspProvider {
     /// ext **原样透传**文本（见 [`CspSite`]）
     ext: String,
     site: Arc<dyn CspSite>,
+    pan_routing: Option<super::pan_episode_select::PanRouting>,
     /// 导入时探测到的分类（可为空 ⇒ 运行期再问 home()）
     classes: Vec<TvboxCategoryEntry>,
 }
 
 impl CspProvider {
+    /// Supported XBPQ requests use the current application policy on every fetch.
+    pub fn with_proxy(mut self, proxy: Arc<crate::proxy::ProxyStore>) -> Self {
+        self.pan_routing = Some((proxy.clone(), self.manifest.id.clone()));
+        if super::class_of(&self.api) == Some(super::xbpq::Xbpq::CLASS) {
+            self.site = Arc::new(
+                super::xbpq::Xbpq::new().with_proxy(proxy, self.manifest.id.clone()),
+            );
+        } else {
+            self.site.set_http_context(proxy, &self.manifest.id);
+        }
+        self
+    }
+
     /// 建一个 csp 源
     ///
     /// `api` 必须是注册表里有的类（否则 [`route`] 返回 None ⇒ 这里报错，
@@ -82,6 +96,9 @@ impl CspProvider {
             return Err("源 id 为空".to_string());
         }
         let site = route(api).ok_or_else(|| super::unimplemented_reason(api))?;
+        // Static implementation limits apply to both imports and restoration.
+        // A failed network probe must not turn into a permanent disabled flag.
+        let unavailable_reason = super::unimplemented_note(api);
         /*
          * ★ search 能力按 **这个类自己的声明** 判定，不再写死 false。
          *
@@ -94,7 +111,7 @@ impl CspProvider {
          * ```
          */
         let capabilities = crate::model::Capabilities {
-            vod: true,
+            vod: unavailable_reason.is_none(),
             search: site.supports_search(),
             ..Default::default()
         };
@@ -124,8 +141,8 @@ impl CspProvider {
             config: Vec::new(),
             api_version: 1,
             theme_color: None,
-            working: true,
-            broken_reason: None,
+            working: unavailable_reason.is_none(),
+            broken_reason: unavailable_reason.map(str::to_owned),
             enabled: None,
             /*
              * ★★★ 2026-10-28（Owner 图1：「Tvbox聚合源…应该属于第二个的二级页面，
@@ -146,6 +163,7 @@ impl CspProvider {
             api: api.trim().to_string(),
             ext: ext.to_string(),
             site,
+            pan_routing: None,
             classes,
         })
     }
@@ -180,6 +198,7 @@ impl CspProvider {
             api: "csp_Test".into(),
             ext: ext.to_string(),
             site,
+            pan_routing: None,
             classes: Vec::new(),
         }
     }
@@ -451,7 +470,7 @@ impl MediaProvider for CspProvider {
             .detail(&id.native, &self.ext)
             .await
             .map_err(|e| classify_err(self.site.class(), e))?;
-        let d = super::pan_episode_select::expand_detail(d).await;
+        let d = super::pan_episode_select::expand_detail_with_routing(d, self.pan_routing.as_ref()).await;
         let mut line_orders = std::collections::HashMap::<String, u32>::new();
         let episodes: Vec<Episode> = d
             .episodes
@@ -497,7 +516,9 @@ impl MediaProvider for CspProvider {
             req.extra.as_ref().unwrap_or(&serde_json::Value::Null)
         ).and_then(super::pan_playback_guard::register)
             .map_err(|e| classify_err(self.site.class(), e))?;
-        super::pan_playback_guard::with_scope(owner, async {
+        let checker = super::pan_episode_select::operation_checker(self.pan_routing.as_ref())
+            .map_err(|e| classify_err(self.site.class(), e))?;
+        super::pan_episode_select::with_operation(checker, super::pan_playback_guard::with_scope(owner, async {
         let result = async {
         // ★ 与 tvbox.rs 的 appleCMS 分支同一条规矩（那边踩过「第二集播出第一集」）：
         //   剧集 id（这里形如 `bvid|cid`）优先于条目 id。
@@ -521,7 +542,7 @@ impl MediaProvider for CspProvider {
                 .map_err(|e| classify_err(self.site.class(), e))?;
             super::pan_playback_guard::check_current()
                 .map_err(|e| classify_err(self.site.class(), e))?;
-            let d = super::pan_episode_select::expand_detail(d).await;
+            let d = super::pan_episode_select::expand_detail_with_routing(d, self.pan_routing.as_ref()).await;
             let line = req.flag.as_deref().filter(|flag| !flag.is_empty());
             let episodes: Vec<_> = d.episodes.iter().enumerate()
                 .filter(|(_, episode)| line.map_or(true, |flag| episode.flag == flag))
@@ -606,7 +627,7 @@ impl MediaProvider for CspProvider {
         super::pan_playback_guard::check_current()
             .map_err(|e| classify_err(self.site.class(), e))?;
         result
-        }).await
+        })).await
     }
 }
 
@@ -622,8 +643,17 @@ impl MediaProvider for CspProvider {
 pub async fn probe_categories(
     api: &str,
     ext: &str,
+    client: &reqwest::Client,
+    proxy: Option<Arc<crate::proxy::ProxyStore>>,
 ) -> std::result::Result<Vec<TvboxCategoryEntry>, String> {
-    let site = route(api).ok_or_else(|| super::unimplemented_reason(api))?;
+    let site: Arc<dyn CspSite> = if super::class_of(api) == Some(super::xbpq::Xbpq::CLASS) {
+        Arc::new(super::xbpq::Xbpq::with_client(client.clone()))
+    } else {
+        route(api).ok_or_else(|| super::unimplemented_reason(api))?
+    };
+    if let Some(proxy) = proxy {
+        site.set_http_context(proxy, "tvbox");
+    }
     let home = site.home(ext).await?;
     if home.categories.is_empty() {
         return Err("上游没有返回任何分类（home 为空）".to_string());
@@ -642,6 +672,10 @@ pub async fn probe_categories(
 #[cfg(test)]
 #[path = "pan_host_dispatch_tests.rs"]
 mod share_dispatch_tests;
+
+#[cfg(test)]
+#[path = "app_drama_availability_tests.rs"]
+mod app_drama_availability_tests;
 
 #[cfg(test)]
 mod tests {

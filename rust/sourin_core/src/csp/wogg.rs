@@ -70,7 +70,7 @@ const MAX_FAIL_DETAILS: usize = 3;
 const MAX_ITEMS: usize = 120;
 
 pub struct Wogg {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
     /// 成功过的镜像置顶（避免每次请求都从死镜像开始重试）
     sticky: std::sync::Mutex<Option<String>>,
 }
@@ -79,14 +79,12 @@ impl Wogg {
     pub const CLASS: &'static str = "Wogg";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // ★ 必须在 `.timeout(..)` 之后、`.build()` 之前：不读系统代理，
-            //   否则本机代理的 502 会把 4 个镜像全判死（诚实契约第 3 条）。
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
-            .build()
-            .expect("build wogg http client");
+        );
         Self {
             client,
             sticky: std::sync::Mutex::new(None),
@@ -133,6 +131,7 @@ impl Wogg {
     async fn get_html(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .send()
@@ -407,6 +406,10 @@ fn clean_text(s: &str) -> String {
 
 #[async_trait]
 impl CspSite for Wogg {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -572,6 +575,10 @@ crate::csp::register_site!(Wogg);
 // ═══════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[path = "wogg_proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -689,12 +696,17 @@ mod tests {
     }
 
     #[test]
-    fn http_client_disables_proxy_after_timeout() {
+    fn http_client_recipe_keeps_timeout_and_unbound_direct() {
+        // Static builder-recipe check only. Real routing, failure handling and
+        // hot policy changes are exercised through get_html in proxy_tests.
+        assert_eq!(TIMEOUT, Duration::from_secs(12));
         let flat = crate::csp::shared::impl_src_only(include_str!("wogg.rs"));
-        let t = flat.find(".timeout(TIMEOUT)").expect("必须设 timeout");
-        let p = flat.find(".no_proxy()").expect("★ 必须 .no_proxy()");
-        let b = flat.find(".build()").expect("必须 build");
-        assert!(t < p && p < b, "★ 顺序必须是 timeout → no_proxy → build");
+        let recipe = flat.split("CspHttpContext::new(||").nth(1)
+            .expect("context must own the builder recipe")
+            .split(";Self{").next().unwrap();
+        let t = recipe.find(".timeout(TIMEOUT)").expect("recipe must retain timeout");
+        let p = recipe.find(".no_proxy()").expect("unbound recipe must remain direct");
+        assert!(t < p, "retain the original timeout → no_proxy recipe");
     }
 
     #[test]

@@ -70,7 +70,7 @@
 use async_trait::async_trait;
 use regex::Regex;
 use serde_json::Value;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
@@ -87,6 +87,7 @@ const TIMEOUT: Duration = Duration::from_secs(25);
 
 pub struct Xbpq {
     client: reqwest::Client,
+    proxy: Option<(Arc<crate::proxy::ProxyStore>, String)>,
 }
 
 impl Xbpq {
@@ -96,17 +97,31 @@ impl Xbpq {
         let client = reqwest::Client::builder()
             .user_agent(DESKTOP_UA)
             .timeout(TIMEOUT)
-            // 本仓既定惯例：不读系统代理（否则「站点可用」会被测成「全宕」）
+            // Standalone callers have no application policy. Production factories
+            // supply either the probe client or the shared ProxyStore below.
             .no_proxy()
             .build()
             .expect("build xbpq http client");
-        Self { client }
+        Self::with_client(client)
+    }
+
+    pub(crate) fn with_client(client: reqwest::Client) -> Self {
+        Self { client, proxy: None }
+    }
+
+    pub(crate) fn with_proxy(mut self, proxy: Arc<crate::proxy::ProxyStore>, id: String) -> Self {
+        self.proxy = Some((proxy, id));
+        self
     }
 
     async fn fetch(&self, url: &str, ua: &str) -> Result<String, String> {
-        let resp = self
-            .client
+        let client = match &self.proxy {
+            Some((proxy, id)) => proxy.client_for(id, None).map_err(|e| e.message)?,
+            None => self.client.clone(),
+        };
+        let resp = client
             .get(url)
+            .timeout(TIMEOUT)
             .header(reqwest::header::ACCEPT, "*/*")
             .header(reqwest::header::USER_AGENT, ua)
             .send()
@@ -623,6 +638,10 @@ fn check_encoding(cfg: &Cfg) -> Result<(), String> {
 //  ③ 真网取到数据 —— 50 条 + 真 mp4）
 // ═══════════════════════════════════════════════════════════════════════
 crate::csp::register_site!(Xbpq);
+
+#[cfg(test)]
+#[path = "xbpq_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

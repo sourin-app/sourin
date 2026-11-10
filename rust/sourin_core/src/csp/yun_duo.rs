@@ -1,106 +1,7 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  csp_YunDuo —— 「🦊布布丨蓝光秒播」（多多影视，Vue SPA + `/api.php/web/*`）
-// ═══════════════════════════════════════════════════════════════════════
-//
-// # 配置里覆盖什么
-//
-// ```text
-// 订阅（8815.kstore.vip/tvbox/wmz）100 站里：
-//   csp_YunDuo  🦊布布丨蓝光秒播
-//   ext = {"host":"https://323433ssdfd.top",
-//          "finger":"WF-2c064bc5b3400788f31b848849bc3a60f835423ba2dfe69d7ea93974c216e4f2",
-//          "aid":"com.web.player",
-//          "sk":"WEB-50a8e9c84a1dc05669a692ded99a2dac46527229e607a7be15db88dbc59059d1",
-//          "client":"8f3d2a1c7b6e5d4c9a0b1f2e3d4c5b6a",
-//          "sign":"ddtvf65f3a83d6d9ad6f"}
-// ```
-//
-// # ★★ 探明方式（**读静态 JS 文本**，不是执行 JS —— 这条值得记）
-//
-// ```text
-// 第一次探测：`/index/home`、`/filter/vod`、`/api/zzz` 等**任意路径**都返回
-//   同一个 1629 字节的 index.html ⇒ 判定它是 **SPA 兜底路由**。
-// ⇒ 我没有停在"SPA ⇒ 拿不到 API"，而是**读 index.html**：
-//     它引 `/assets/index-CyTZheoy.js`（66 KB，Vite 构建的 Vue bundle）
-//   ⇒ **下载那份 JS 当文本读**（不需要 JS 引擎！）：
-//     · 端点表：`/api.php/web/{index/home, filter/vod, vod/get_detail,
-//                search/index, ranking/list, feature, decode/url, …}`
-//     · 请求头**全是常量**：
-//         `X-Client: 8f3d2a1c7b6e5d4c9a0b1f2e3d4c5b6a`  ← 就是 ext.client
-//         `web-sign: ddtvf65f3a83d6d9ad6f`              ← 就是 ext.sign
-//       （且只在 URL 含 `api.php` 时才加 `web-sign`）
-// ⇒ **ext 里给的 client/sign 就是直接用的头值，不需要"算"签名**。
-// ★ 教训：**"SPA 拿不到接口"不是结论** —— 前端 bundle 里写着接口表与头常量，
-//   而读文本**不需要 JS 引擎**。（把这条记下来，同类 SPA 站点都能这么拆。）
-// ```
-//
-// # ★★ 2026-10-27 真网络实测：四段通，第五段（取流）卡在站点自身的解码器
-//
-// ```text
-// ✅ home    GET /api.php/web/index/home → 200 真数据
-//             data.categories 4 个：电影(1) 剧集(2) 动漫(3) 综艺(4)，各带 videos[]
-//             + data.recommend[] / data.hotSearch[] / data.siteConfig.domain
-// ✅ list    GET /api.php/web/filter/vod?type_name=&page=1 → 200，**24 条/页**
-//             ★ 参数是 **type_name**（分类**名**），不是 type_id：
-//               `type_name=电影` → 24 条；`type_name=1` → **0 条**（名字不匹配）
-//               空 type_name → 24 条（= 全部）
-//             响应自带 `total` / `page` / `limit` / `pageCount` ⇒ 真分页（如实透出）
-// ✅ detail  GET /api.php/web/vod/get_detail?vod_id=363 → 200，171 KB
-//             ★ **响应自带 `vod_play_from` + `vod_play_url`**（含剧集与多线路）
-//               from = "PAN1$$$zijianm3u8$$$CO4K$$$NBY$$$qsvip$$$BBA"
-//               url  = "第1集$PAN1-pBTFch38…"（`名$值`、`#` 分集、`$$$` 分线）
-//               参数名是 **vod_id**（`id=` → `code:400 参数错误`）
-// ✅ search  GET /api.php/web/search/index?wd=仙逆 → 200，**15 条真命中**
-//             ★ 参数名是 **wd**（`name=`/`keywords=` → `400 搜索关键词不能为空`）
-//             另有 `/internal/search_aggregate`（要 vod_id 或 name，聚合多站）
-// ⛔ play    `vod_play_url` 的值是**不透明密文**（形如 `PAN1-pBTFch38YURjS_CJvf_…`），
-//             必须过 `/api.php/web/decode/url` —— 见下"未实现"
-// ```
-//
-// # ⛔ 未实现：`play` —— 卡在站点**自身的** wasm 解码器（如实登记 + 穷举留档）
-//
-// ```text
-// 【原版怎么解】读 bundle 得到的调用链：
-//     `await Ct()`                     ← 初始化 wasm（`/assets/web_app_wasm_bg-Bxwbrgev.wasm`）
-//     `xt(e, t)`                       ← **wasm 编码**成 protobuf 请求体
-//     `dt($.decodeUrlPb, r)`           ← POST /api.php/web/decode/url（`application/x-protobuf`）
-//     `kt(n)`                          ← 解 protobuf 回应
-//
-// 【我做到哪一步（全部真网络实测）】
-//   ① 手工拼 protobuf（**纯 Python/Rust 可以拼**，不需要 wasm）打这个端点，
-//      把它的**错误 protobuf** 解出来当"服务端在告诉我缺什么"：
-//        空 body            → field2="缺少url参数"
-//        field1=<blob>      → field2="缺少vodFrom参数"
-//        field1 + field2    → field1=varint 401、field2="签名验证失败: 缺少必要参数"
-//      ⇒ **字段号是 f1=url、f2=vodFrom**（我用 1..6 逐字段试出来的，不是猜的）
-//   ② 卡在最后一关：**第二个签名**。
-//      · 站点对每个请求只加一个常量头 `web-sign: ddtvf65f3a83d6d9ad6f`
-//      · 加了它仍报 `401 签名验证失败: 缺少必要参数`
-//      · 我试过把各种签名放**请求头**（X-Sign / sign / web-sign2 / x-sign /
-//        X-Nonce / X-Time / x-request-id）—— 错误**一字不变**
-//      · 试过把签名放**请求体** f3..f6（sha256/md5/ext.sign/空）—— 错误**一字不变**
-//      ⇒ 结论：这一步的签名由 **wasm 模块内部**产生（bundle 只有它的胶水层，
-//        算法在 `web_app_wasm_bg.wasm` 里）。**本仓不嵌 wasm 运行时**
-//        （与"不嵌 JVM / 不嵌 JS 引擎"同一口径）。
-//   ③ 另试过一条**跨类线索**（打掉一个可能的侥幸）：
-//      YunDuo 的线路名 `CO4K/NBY/qsvip` 与 **Gulu DEX 常量里**的解析服务**同名**，
-//      于是我拿 Gulu 里那批供应商 api（`co4k.1ljx.com/api/?key=…&url=` 等）去解这些值。
-//      ⇒ 供应商**全部活着**（各自回了自己的业务错误，不是 404），
-//        但都说"url 不正确/Invalid ID" ⇒ **YunDuo 的值不是那些 api 认的编码**。
-//        ⇒ 这条线索**被排除**（不是"能绕过 wasm"，如实记）。
-//
-// 【所以 play 的能力边界】
-//     detail 能列出**全部线路与剧集**（真数据），
-//     但点进去取流会得到**点名真因**的错误（缺站点自身 wasm 签名的能力位），
-//     **绝不伪造地址**、也**不假装"这条线路没源"**。
-// ```
-//
-// # 已知缺口（按 Lead 裁定的契约边界登记）
-// ```text
-// · mProxy   —— 本批不做（本批无 mProxy 等价位）
-// · loadPic  —— 本仓不补 trait；封面头见 COVER_HEADERS（实测该 CDN 直连可取）
-// · 上游 `?v=` 参数 —— DEX `b()` 里有 `v=1`，本实现照带（实测不被校验，但按 DEX 保真）
-// ```
+// Native adapter for the configured web catalog and anonymous media decoder.
+// 2026-11-10: protobuf request bytes match the public web client's WASM output.
+// Upstream platform, login and subscription rejections remain failures.
+// Catalog availability, media URL resolution and actual playback are separate checks.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -108,6 +9,9 @@ use std::time::Duration;
 
 use super::{CspCategory, CspDetail, CspEpisode, CspHome, CspItem, CspList, CspPlay, CspSite};
 use crate::csp::shared::{pick_arr, pick_id_str, pick_str, split_lines};
+
+#[path = "yun_duo_decode.rs"]
+mod decode_protocol;
 
 /// ext 缺省时的兜底 host（订阅里 ext 有给，这里是保险）
 const DEFAULT_HOST: &str = "https://323433ssdfd.top";
@@ -128,7 +32,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 const RETRIES: usize = 3;
 
 pub struct YunDuo {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 /// ext 里的几个值（全是**可选**：缺了用 bundle 里的常量兜底）
@@ -143,12 +47,11 @@ impl YunDuo {
     pub const CLASS: &'static str = "YunDuo";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
             .no_proxy()
-            .build()
-            .expect("build yun_duo http client");
+        );
         Self { client }
     }
 
@@ -186,6 +89,7 @@ impl YunDuo {
         for attempt in 1..=RETRIES {
             let sent = self
                 .client
+                .client()?
                 .get(&url)
                 .header(reqwest::header::ACCEPT, "application/json")
                 .header("X-Client", &cfg.client)
@@ -227,6 +131,34 @@ impl YunDuo {
             }
         }
         Err(last)
+    }
+
+    async fn decode(&self, cfg: &ExtCfg, line: &str, value: &str) -> Result<String, String> {
+        let body = decode_protocol::request(value, line)?;
+        let mut response = self.client.client()?
+            .post(format!("{}/api.php/web/decode/url", cfg.host))
+            .timeout(Duration::from_secs(10))
+            .header(reqwest::header::CONTENT_TYPE, "application/x-protobuf")
+            .header(reqwest::header::ACCEPT, "application/x-protobuf")
+            .header("X-Client", &cfg.client)
+            .header("web-sign", &cfg.web_sign)
+            .header(reqwest::header::REFERER, format!("{}/", cfg.host))
+            .body(body).send().await
+            .map_err(|_| "播放地址解析请求未完成，请稍后重试")?;
+        if !response.status().is_success() {
+            return Err(format!("播放地址解析返回 HTTP {}", response.status().as_u16()));
+        }
+        if response.content_length().is_some_and(|n| n > decode_protocol::MAX_RESPONSE as u64) {
+            return Err("播放解析响应过长".into());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| "播放解析响应未完整接收")? {
+            if bytes.len().saturating_add(chunk.len()) > decode_protocol::MAX_RESPONSE {
+                return Err("播放解析响应过长".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        decode_protocol::response(&bytes)
     }
 
     /// `vod` 形态的一条 → [`CspItem`]（列表/首页/搜索**共用**，避免三份映射漂移）
@@ -313,6 +245,10 @@ pub fn parse_ep_id(id: &str) -> Option<(String, String)> {
 
 #[async_trait]
 impl CspSite for YunDuo {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -510,30 +446,23 @@ impl CspSite for YunDuo {
         true
     }
 
-    /// 取流：**未实现** —— 卡在站点自身的 **wasm 解码器**（见文件头"未实现"）
-    ///
-    /// # 为什么这里返回一个**说清原因**的 Err，而不是"尚未实现"
-    /// ```text
-    /// 我把 `/api.php/web/decode/url` 拆到了**最后一关**：
-    ///   · 手工拼 protobuf **被服务端接受**（字段号 f1=url、f2=vodFrom 是试出来的）
-    ///   · 服务端回应从"缺少url参数"→"缺少vodFrom参数"→
-    ///     "401 签名验证失败: 缺少必要参数"（**逐关推进**，证明我在对的路上）
-    ///   · 最后一关的签名由 wasm 模块产生（bundle 只有胶水层）⇒ 本仓不嵌 wasm 运行时
-    /// ⇒ 真因是"缺 wasm 能力位"，不是"没动手"。按本仓口径点名真因。
-    /// ```
-    async fn play(&self, flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
-        let (line, val) = parse_ep_id(id).ok_or_else(|| {
-            format!("剧集 id 形态不对（应为 `线路|集名|值`）：{id}")
-        })?;
-        let _ = flag;
-        Err(format!(
-            "YunDuo 取流需要站点自身的 「wasm 解码器」（`/assets/web_app_wasm_bg-*.wasm`）——\
-             本仓不嵌 wasm 运行时，所以不能解 线路={line} 的值（前 24 字：{}）。\
-             已实测：`/api.php/web/decode/url` 手工拼 protobuf 「被接受」\
-             （字段 f1=url、f2=vodFrom），缺的是它的「第二道签名」（wasm 内计算）。\
-             绝不伪造播放地址。",
-            val.chars().take(24).collect::<String>()
-        ))
+    /// Decode exactly the selected line and opaque episode value.
+    async fn play(&self, flag: &str, id: &str, ext: &str) -> Result<Vec<CspPlay>, String> {
+        let (line, value) = parse_ep_id(id)
+            .ok_or_else(|| "剧集 id 形态不对（应为 `线路|集名|值`）".to_string())?;
+        if !flag.trim().is_empty() && flag.trim() != line {
+            return Err("剧集与所选线路不一致，请重新选择".into());
+        }
+        let cfg = Self::cfg_of(ext);
+        let url = self.decode(&cfg, &line, &value).await?;
+        Ok(vec![CspPlay {
+            url,
+            headers: vec![
+                ("User-Agent".to_string(), UA.to_string()),
+                ("Referer".to_string(), format!("{}/", cfg.host)),
+            ],
+            label: Some(line),
+        }])
     }
 }
 
@@ -562,7 +491,7 @@ pub fn clean_html(html: &str) -> String {
 //   list   /api.php/web/filter/vod?type_name=电影&page=1 → 24 条/页，**上游给 total/pageCount**
 //   detail /api.php/web/vod/get_detail?vod_id=363 → 171 KB，**自带 vod_play_from/url**（多线路）
 //   search /api.php/web/search/index?wd=仙逆 → 15 条真命中
-//   play   ⛔ 值是不透明密文，需站点自身 wasm 解码器 ⇒ 明确 Err（不伪造）
+//   play   protobuf 请求/响应兼容公开网页客户端；实际首帧单独验收
 //
 // ★★ 探明方式值得复用：它是 **Vue SPA**（任意路径都回同一 index.html），
 //    但**下载它的 JS bundle 当文本读**就拿到了端点表 + 头常量
@@ -570,6 +499,14 @@ pub fn clean_html(html: &str) -> String {
 //    ⇒ **"SPA 拿不到接口"不是结论；读 bundle 不需要 JS 引擎。**
 // ```
 crate::csp::register_site!(YunDuo);
+
+#[cfg(test)]
+#[path = "yun_duo_proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
+#[path = "yun_duo_playback_tests.rs"]
+mod playback_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
@@ -774,20 +711,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn play_errs_naming_the_wasm_capability_gap() {
-        let s = YunDuo::new();
-        let e = s
-            .play("PAN1", "PAN1|第1集|PAN1-pBTFch38YURjS_CJvf_mb4D", "")
-            .await
-            .expect_err("★ 缺 wasm 能力位 ⇒ 必须 Err，不许给假地址");
-        // ★ 这三条是这个 Err 的价值：说清"卡在哪、我试到哪、不会伪造"
-        assert!(e.contains("wasm"), "要点名缺的是 wasm 能力位：{e}");
-        assert!(e.contains("decode/url"), "要点名端点：{e}");
-        assert!(e.contains("绝不伪造"), "要表明不会给假地址：{e}");
-        assert!(e.contains("PAN1"), "要带上线路便于定位：{e}");
-        // 形态不对的 id 也要明确 Err（不是 panic）
-        let e2 = s.play("", "坏id", "").await.expect_err("形态不对必须 Err");
-        assert!(e2.contains("形态不对"), "{e2}");
+    async fn play_rejects_invalid_identity_without_reflecting_payload() {
+        let site = YunDuo::new();
+        let error = site.play("", "opaque-secret-value", "").await.unwrap_err();
+        assert!(error.contains("形态不对"));
+        assert!(!error.contains("opaque-secret-value"));
+        let error = site.play("other", "line|episode|opaque-secret-value", "").await.unwrap_err();
+        assert!(error.contains("不一致"));
+        assert!(!error.contains("opaque-secret-value"));
     }
 
     #[test]
@@ -833,10 +764,10 @@ mod tests {
         eprintln!("[LIVE] detail({id}): 标题={} 集={} **线路={}** {:?}",
             d.title, d.episodes.len(), flags.len(),
             flags.iter().take(6).cloned().collect::<Vec<_>>());
-        // ★ play 会明确 Err（缺 wasm）—— 这是预期
+        // This optional live probe checks actual decoding; no account is used.
         let pe = s.play(&d.episodes[0].flag, &d.episodes[0].id, ext).await;
         eprintln!("[LIVE] play 实测: {}", match &pe {
-            Ok(v) => format!("★ 意外成功（{} 条）—— 说明能绕过 wasm，需更新实现", v.len()),
+            Ok(v) => format!("解析返回 {} 条媒体候选（未验证首帧）", v.len()),
             Err(e) => format!("如实 Err：{}", e.chars().take(80).collect::<String>()),
         });
         let se = s.search("仙逆", 1, ext).await.expect("search 应成功");

@@ -124,25 +124,19 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
 const REQ_BUDGET: Duration = Duration::from_secs(20);
 
 pub struct AppDrama {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl AppDrama {
     pub const CLASS: &'static str = "AppDrama";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(REQ_BUDGET)
-            // ★ 与 pan_web_share / app99 同一条纪律：**不读系统代理**。
-            //   ```text
-            //   实测教训（2026-10-27）：本机 https_proxy=127.0.0.1:7890 会让同一 URL
-            //   8 次里坏 2 次（HTTP=000），而绕代理 8/8 全 200。
-            //   ⇒ 读系统代理会把"本机代理抽风"测成"站点挂了"（本项目已栽过好几次）。
-            //   ```
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
-            .build()
-            .expect("build app_drama http client");
+        );
         Self { client }
     }
 
@@ -566,6 +560,10 @@ fn not_wired(what: &str) -> String {
 
 #[async_trait]
 impl CspSite for AppDrama {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -621,6 +619,7 @@ impl AppDrama {
     async fn get_text(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .send()
             .await
@@ -669,6 +668,10 @@ impl AppDrama {
 // ```
 
 crate::csp::register_site!(AppDrama);
+
+#[cfg(test)]
+#[path = "app_drama_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

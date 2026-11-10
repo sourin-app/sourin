@@ -50,13 +50,17 @@ Owner：「如果是网盘播放，都放到一个目录去，不要都放在根
   和"原版客户端的"分不清）；也**不加设备后缀**（同账号多机共用一个目录，否则根目录会堆
   sourin-temp-abc / sourin-temp-def）。
 · `ensure_temp_dir(cookie)`：进程内缓存 → 用 `list_dir_with_subdirs` 找同名目录 → 找不到才建
-  → 建失败返回 Err（由调用方决定退回根目录）；缓存按 kind 分开（夸克/UC 的 fid 不通用）。
+  → 建失败返回 Err（由调用方决定退回根目录）；缓存按盘种、实际端点和原 Cookie 的 SHA256 指纹分开，不保存原 Cookie。
 · `share_save(..., to_pdir_fid)`：`to_pdir_fid` **和** `pdir_fid` 都用它 —— 不再是 "0"。
 · 两个调用点（`play` 的分享分支、`resolve_share_play`）统一走 `save_into_temp_dir`：
   建目录失败 ⇒ `log::warn!` + 退回根目录（**不让播放整体失败**），错误文案追加
   「（临时目录不可用，已退回根目录：<原因>）」。
 · 清理：沿用 `file/delete` + `action_type:2`，日志改成「已从 sourin-temp 清理…」。
 ```
+
+缓存与清理使用精确会话；资源归属冲突使用更宽的盘种 + 实际端点 + fid 域。不同 owner 的同一资源不因 Cookie 轮换或重排变成可接管文件。无法证明账号相同时采取保守拒绝，可能拒绝不同账号恰好同 fid 的情况。owner/generation、盘种 mutation lock、LIFO 和删除失败留账仍有效。
+
+一次转存操作在网络 await 前捕获 Cookie，后续下载、重试和操作内清理沿用该值；独立清理读取当前凭据一次，只处理匹配会话。无法确认会话的旧记录保留。24项本地合成session/operation/rotation回归通过；不据此声明真实云端播放或全局代理深层接线完成。[全局路由](../architecture/2026-11-09-csp-global-routing-retains-engine-recipes.md)是独立边界。
 
 ## Alternatives considered
 

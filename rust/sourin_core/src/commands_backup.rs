@@ -257,13 +257,13 @@ pub fn clear_proxy_config(state: &AppState, provider: &str) -> Result<(), String
 ///
 /// ⚠️ 注意：这个命令**不需要 AppState** —— 原版签名里没有 state。
 /// 密码存在**系统钥匙串**里（不是数据库），所以与 AppState 无关。
-pub fn set_proxy_password(provider: &str, password: &str) -> Result<(), String> {
-    crate::proxy::set_proxy_password(provider, password)
+pub fn set_proxy_password(_provider: &str, password: &str) -> Result<(), String> {
+    crate::proxy::set_proxy_password(crate::proxy::GLOBAL_PROXY, password)
 }
 
 /// 是否已设置代理密码（**不返回密码本身**）
-pub fn has_proxy_password(provider: &str) -> Result<bool, String> {
-    Ok(crate::proxy::get_proxy_password(provider).is_some())
+pub fn has_proxy_password(_provider: &str) -> Result<bool, String> {
+    Ok(crate::proxy::get_proxy_password(crate::proxy::GLOBAL_PROXY).is_some())
 }
 
 /// 测试代理连通性

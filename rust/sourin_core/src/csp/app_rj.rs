@@ -456,43 +456,23 @@ pub fn play_request_of(url: &str, parse_url: &str) -> (String, String) {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub struct AppRJ {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl AppRJ {
     pub const CLASS: &'static str = "AppRJ";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            /*
-             * ★ `.no_proxy()` —— 本仓 csp 的**既定惯例**（app3q/app99/app_drama/app_fox/
-             *   app_qi/app_sy/app_yqk/app_ys … 都这么做），**我第一版全部漏了**。
-             *
-             * # 真网后果（HDMoli 那次实测抓到的根因，是**系统性问题**）
-             * ```text
-             * 本机 `https_proxy=http://127.0.0.1:7890/`（curl/reqwest/urllib 都会读它），
-             * 而该代理对某些站点不通 ⇒
-             *     reqwest 走代理      ⇒ `operation timed out`
-             *     Python no-proxy     ⇒ **HTTP 200**
-             *     Python via-proxy    ⇒ TLS 握手超时
-             *   ⇒ 失败与"上游"无关，是"我们没绕开本机代理"。
-             * ```
-             * # 为什么 csp 类必须 `.no_proxy()`
-             * ```text
-             * ① 这些源是面向**公网直连**的（本机代理不是它们的依赖）；
-             * ② 本仓既有 8 个类已这么做 ⇒ 不做就是**偏离惯例**；
-             * ③ 装不装代理**不该改变 csp 源的行为**（否则用户装代理就一半源失效）。
-             * ```
-             */
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
+            // Ignore environment proxies; an injected context applies the app's policy.
             .no_proxy()
             .user_agent(APP_UA)
             .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+        );
         Self { client }
     }
 
-    /// DEX 形态的 POST（multipart + timestamp/sign）
+    /// Existing form-encoded POST, including the DEX timestamp/sign fields.
     async fn post_form(&self, base: &str, path: &str, fields: Vec<(String, String)>, what: &str) -> Result<Value, String> {
         let ts = ts_secs().to_string();
         let sign = sign_of(&ts);
@@ -502,6 +482,7 @@ impl AppRJ {
         let url = format!("{}{path}", base.trim_end_matches('/'));
         let resp = self
             .client
+            .client()?
             .post(&url)
             .header(reqwest::header::REFERER, format!("{}/", base.trim_end_matches('/')))
             .form(&form) // reqwest 的 `.form()` = application/x-www-form-urlencoded
@@ -538,6 +519,10 @@ impl Default for AppRJ {
 
 #[async_trait]
 impl CspSite for AppRJ {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -651,6 +636,10 @@ impl CspSite for AppRJ {
 }
 
 crate::csp::register_site!(AppRJ);
+
+#[cfg(test)]
+#[path = "app_rj_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

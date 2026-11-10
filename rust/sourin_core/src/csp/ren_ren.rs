@@ -86,26 +86,26 @@ pub const TIP_ID: &str = "rr|login";
 pub const WALL_TIP: &str = "需要注册会员才能看网盘链接（游客被权限墙挡住，星标提示）";
 
 pub struct RenRen {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl RenRen {
     pub const CLASS: &'static str = "RenRen";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // 本仓既定惯例：不读系统代理（否则「站点可用」会被测成「全宕」）
+            // Ignore environment proxies; an injected context applies the app's policy.
             .no_proxy()
-            .build()
-            .expect("build renren http client");
+        );
         Self { client }
     }
 
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .header(reqwest::header::REFERER, format!("{SITE}/"))
@@ -388,6 +388,10 @@ pub fn parse_detail(html: &str) -> Result<ParsedDetail, String> {
 
 #[async_trait]
 impl CspSite for RenRen {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -567,6 +571,10 @@ fn pan_flag(url: &str) -> &'static str {
 //  ③ 真网取到数据 —— home 10 条 / list 10 条 / search 4 条 / detail 标题）
 // ═══════════════════════════════════════════════════════════════════════
 crate::csp::register_site!(RenRen);
+
+#[cfg(test)]
+#[path = "ren_ren_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

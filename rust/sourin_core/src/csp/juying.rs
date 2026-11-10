@@ -51,8 +51,8 @@
 //
 // # 代理纪律
 // ```text
-// client 在 `.timeout(TIMEOUT)` 之后、`.build()` 之前显式 `.no_proxy()`
-// （本机 HTTP_PROXY 会让 200 变成 502，把"站点可用"误判成"站点死"）。
+// 保留引擎自己的 UA/超时配方；未绑定应用策略时默认直连，不读环境代理。
+// 绑定后由 CspHttpContext 应用当前代理策略；策略变更只重建客户端。
 // ```
 
 use async_trait::async_trait;
@@ -86,20 +86,19 @@ const TYPES: &[(&str, &str)] = &[
 ];
 
 pub struct Juying {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Juying {
     pub const CLASS: &'static str = "Juying";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // ★ 直连（顺序有门禁扫：timeout → no_proxy → build）
+            // 应用策略绑定前不读取环境代理；绑定后由上下文选择路由。
             .no_proxy()
-            .build()
-            .expect("build juying http client");
+        );
         Self { client }
     }
 
@@ -135,6 +134,7 @@ impl Juying {
     async fn get_json(&self, url: &str, token: Option<&str>) -> Result<Value, String> {
         let mut req = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "application/json")
             .header(reqwest::header::REFERER, format!("{DEFAULT_HOST}/"));
@@ -351,6 +351,10 @@ pub fn need_login_episode(id: &str) -> CspEpisode {
 
 #[async_trait]
 impl CspSite for Juying {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -518,6 +522,10 @@ fn encode_path(s: &str) -> String {
 // ```
 crate::csp::register_site!(Juying);
 
+#[cfg(test)]
+#[path = "juying_proxy_tests.rs"]
+mod proxy_tests;
+
 // ═══════════════════════════════════════════════════════════════════════
 //  测试（真响应片段；纯函数）
 // ═══════════════════════════════════════════════════════════════════════
@@ -641,15 +649,6 @@ mod tests {
         let flat = crate::csp::shared::impl_src_only(include_str!("juying.rs"));
         assert!(flat.contains("NEED_LOGIN_PREFIX"), "★ 必须先拦状态行");
         assert!(flat.contains("不伪造地址") || flat.contains("不返回任何播放地址"));
-    }
-
-    #[test]
-    fn http_client_disables_proxy_after_timeout() {
-        let flat = crate::csp::shared::impl_src_only(include_str!("juying.rs"));
-        let t = flat.find(".timeout(TIMEOUT)").expect("timeout");
-        let p = flat.find(".no_proxy()").expect("★ no_proxy 必须存在");
-        let b = flat.find(".build()").expect("build");
-        assert!(t < p && p < b, "timeout → no_proxy → build");
     }
 
     #[test]

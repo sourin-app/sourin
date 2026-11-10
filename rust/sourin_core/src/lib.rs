@@ -39,6 +39,7 @@ pub mod providers;
 // ── 存储 ──
 pub mod store;
 pub mod library_covers;
+mod cover_request;
 pub mod source_discovery;
 #[cfg(test)]
 mod native_catalog_line_tests;
@@ -48,6 +49,7 @@ pub mod hostpool;
 
 // ── 网络 ──
 pub mod proxy;
+pub mod proxy_download;
 pub mod streamproxy;
 
 // ── 文件日志直写器（log 门面无 sink，文件日志唯一 crate 级入口；见 applog.rs 头）──
@@ -144,6 +146,7 @@ pub mod commands_remote;
 // 为什么不生成 JS 插件：见 tvbox.rs 顶部说明。
 pub mod tvbox;
 pub mod tvbox_aggregate;
+pub mod source_catalog;
 
 // ── ★ TVBox `csp_Xxx` 路由层（第19项）──
 //

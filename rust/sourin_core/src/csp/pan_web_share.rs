@@ -85,7 +85,7 @@ const FETCH_BUDGET: Duration = Duration::from_secs(25);
 const MAX_FAIL_DETAILS: usize = 5;
 
 pub struct PanWebShare {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
     /// ★ sticky 镜像：一旦某个镜像成功过，后续请求**先试它**
     ///
     /// 为什么必需：没有它时每次 list/detail 都从列表头开始重试死站，
@@ -98,20 +98,13 @@ impl PanWebShare {
     pub const CLASS: &'static str = "PanWebShare";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             // ★ 单请求上限压到 8s：16 个镜像串行时，20s×16 会把"某站慢"放大成"整类不可用"
             .timeout(Duration::from_secs(8))
-            /*
-             * ★ 显式**不走**环境代理。
-             *
-             * 实测（见文件头）：本机 HTTP_PROXY=127.0.0.1:7890 时，走代理的请求
-             * 对每个 host 都回 502，从而把"9/16 可用"误判成"全宕"。
-             * reqwest 默认会读环境代理 ⇒ 这里必须显式关掉，判据才是站点的真实状态。
-             */
+            // Ignore environment proxies; an injected context applies the app's policy.
             .no_proxy()
-            .build()
-            .expect("build panwebshare http client");
+        );
         Self { client, sticky: std::sync::Mutex::new(None) }
     }
 
@@ -146,24 +139,27 @@ impl PanWebShare {
         out
     }
 
-    async fn get_html(&self, url: &str) -> Result<String, String> {
+    async fn get_html(&self, url: &str) -> Result<(String, String), String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .send()
             .await
             .map_err(|e| format!("请求 {url} 失败：{e}"))?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| format!("读取 {url} 失败：{e}"))?;
         if !status.is_success() {
-            let head: String = text.chars().take(120).collect();
-            return Err(format!("HTTP {}（{url}）：{head}", status.as_u16()));
+            // Rejected responses can have truncated bodies. Keep the received
+            // HTTP status and let the caller try its next configured mirror.
+            return Err(format!("HTTP {}（{url}）", status.as_u16()));
         }
-        Ok(text)
+        let page_url = resp.url().to_string();
+        let text = resp.text().await.map_err(|e| format!("读取 {url} 失败：{e}"))?;
+        Ok((page_url, text))
     }
 
-    /// 依次尝试镜像，返回第一个成功的 HTML（含它用的 base）
+    /// 依次尝试镜像，只有响应内容通过调用方解析后才记录成功并返回。
     ///
     /// # 三条纪律（都是实测踩出来的）
     /// ```text
@@ -175,7 +171,10 @@ impl PanWebShare {
     ///    只留最后一条（旧行为）会让人误以为"整个类挂了"，
     ///    而真实情况常常只是某一个镜像 522（见文件头的代理踩坑记录）。
     /// ```
-    async fn fetch_first(&self, sites: &[String], path: &str) -> Result<(String, String), String> {
+    async fn fetch_first<T, F>(&self, sites: &[String], path: &str, parse: F) -> Result<T, String>
+    where
+        F: Fn(&str, &str) -> Result<T, String>,
+    {
         let started = std::time::Instant::now();
         // sticky 优先，其余保持配置顺序
         let sticky = self.sticky.lock().ok().and_then(|g| g.clone());
@@ -204,12 +203,18 @@ impl PanWebShare {
             let url = format!("{base}{path}");
             // 单次尝试也被剩余预算夹住 —— 否则最后一个站能把总时长再拉长 8s
             match tokio::time::timeout(left, self.get_html(&url)).await {
-                Ok(Ok(html)) => {
-                    if let Ok(mut g) = self.sticky.lock() {
-                        *g = Some(base.clone());
+                Ok(Ok((page_url, html))) => match parse(&page_url, &html) {
+                    Ok(content) => {
+                        if let Ok(mut g) = self.sticky.lock() {
+                            *g = Some(base.clone());
+                        }
+                        return Ok(content);
                     }
-                    return Ok((base.clone(), html));
-                }
+                    // A reachable mirror can return an error/challenge page with
+                    // HTTP 200. Keep trying the declared mirrors through the
+                    // same HTTP context; do not make invalid content sticky.
+                    Err(error) => failures.push(format!("{base}：{error}")),
+                },
                 Ok(Err(e)) => failures.push(format!("{base}：{e}")),
                 Err(_) => failures.push(format!("{base}：超时（剩余预算 {}s）", left.as_secs())),
             }
@@ -267,29 +272,139 @@ fn parse_categories(html: &str) -> Vec<CspCategory> {
     out
 }
 
-/// 列表页条目：`.module-item` 里的 detail 链接 / 标题 / 封面
-fn parse_items(html: &str) -> Vec<CspItem> {
-    /*
-     * ⚠️ 不能用"前瞻"切块：`regex` crate **不支持 lookaround**
-     *    （`(?=class="…module-item…")` 会直接编译失败 —— 首次实现就栽在这）。
-     * ⇒ 改成**标记点分段**：找到每个 `module-item` 的起点，切到下一个起点。
-     *    比正则切块更笨，但语义明确、无回溯开销。
-     */
+// Note: .agents/notes/implemented/bug-fix/2026-11-09-relative-catalog-covers.md
+// Decode HTML attributes once before resolving against the successful page.
+// The markup parser retains relative URLs; transport entrypoints own the base.
+fn parse_cover(html: &str) -> Option<String> {
+    static ATTRIBUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?is)\b(?:data-src|data-original)\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
+            .expect("cover attribute")
+    });
+    let validation_base = reqwest::Url::parse("https://cover.invalid/").expect("literal URL");
+    ATTRIBUTE.captures_iter(html).find_map(|capture| {
+        let raw = capture.get(1).or_else(|| capture.get(2))?.as_str();
+        let decoded = crate::tvbox::decode_entities(raw);
+        let value = decoded.trim();
+        if value.is_empty() || value.starts_with('#') {
+            return None;
+        }
+        let checked = validation_base.join(value).ok()?;
+        matches!(checked.scheme(), "http" | "https").then(|| value.to_string())
+    })
+}
+
+fn resolve_cover(cover: &mut Option<String>, page_url: &str) {
+    let Some(raw) = cover.as_deref() else { return };
+    *cover = reqwest::Url::parse(page_url)
+        .ok()
+        .and_then(|base| base.join(raw).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .map(|url| url.to_string());
+}
+
+fn resolve_item_covers(items: &mut [CspItem], page_url: &str) {
+    for item in items {
+        resolve_cover(&mut item.cover, page_url);
+    }
+}
+
+/// Match complete class tokens and their enclosing element, not similarly named
+/// child classes. An unclosed element is discarded instead of borrowing the next
+/// card's status. Quoted attributes, comments and raw-text nodes are skipped.
+fn class_elements<'a>(html: &'a str, class: &str) -> Vec<&'a str> {
+    use std::sync::LazyLock;
+    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?is)<!--.*?(?:-->|$)|<![^>]*>|<(/?)([a-z][a-z0-9:_-]*)\b(?:[^\"'<>]|\"[^\"]*\"|'[^']*')*>"#,
+        ).expect("HTML tag")
+    });
+    static ATTR: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"([^\s=<>/'\"]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s<>]+)))?"#)
+            .expect("HTML attribute")
+    });
+    let mut stack: Vec<(&str, usize, bool)> = Vec::new();
+    let mut ranges = Vec::new();
+    let mut raw_text: Option<&str> = None;
+    for tag in TAG.captures_iter(html) {
+        let Some(name) = tag.get(2) else { continue };
+        let token = tag.get(0).expect("tag");
+        let closing = &tag[1] == "/";
+        if let Some(raw) = raw_text {
+            if !closing || !name.as_str().eq_ignore_ascii_case(raw) {
+                continue;
+            }
+            raw_text = None;
+        }
+        if closing {
+            if let Some(index) = stack
+                .iter()
+                .rposition(|(n, _, _)| n.eq_ignore_ascii_case(name.as_str()))
+            {
+                let (_, start, selected) = stack[index];
+                if selected {
+                    ranges.push((start, token.end()));
+                }
+                stack.truncate(index);
+            }
+            continue;
+        }
+        let name = name.as_str();
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "area"
+                | "base"
+                | "br"
+                | "col"
+                | "embed"
+                | "hr"
+                | "img"
+                | "input"
+                | "link"
+                | "meta"
+                | "param"
+                | "source"
+                | "track"
+                | "wbr"
+        ) || token.as_str().ends_with("/>")
+        {
+            continue;
+        }
+        let is_raw_text = ["script", "style", "textarea", "title"]
+            .iter()
+            .any(|raw| name.eq_ignore_ascii_case(raw));
+        let attributes = &html[tag.get(2).unwrap().end()..token.end() - 1];
+        let selected = !is_raw_text
+            && ATTR.captures_iter(attributes).any(|attr| {
+                attr[1].eq_ignore_ascii_case("class")
+                    && (2..=4).find_map(|i| attr.get(i)).is_some_and(|value| {
+                        value.as_str().split_ascii_whitespace().any(|c| c == class)
+                    })
+            });
+        if selected {
+            // This template has sibling cards. A new card invalidates an
+            // unclosed predecessor; never attribute its fields to both cards.
+            for (_, _, active) in &mut stack {
+                *active = false;
+            }
+        }
+        stack.push((name, token.start(), selected));
+        if is_raw_text {
+            raw_text = Some(name);
+        }
+    }
+    ranges.sort_unstable_by_key(|&(start, _)| start);
+    ranges
+        .into_iter()
+        .map(|(start, end)| &html[start..end])
+        .collect()
+}
+
+/// List and search share the same card fields; only search has action titles.
+fn parse_cards(html: &str, class: &str, search: bool) -> Vec<CspItem> {
     let re_id = regex::Regex::new(r#"/index\.php/vod/detail/id/(\d+)\.html"#).expect("id");
     let re_title = regex::Regex::new(r#"(?is)title="([^"]+)""#).expect("title");
-    let re_pic = regex::Regex::new(r#"(?is)data-src="([^"]+)""#).expect("pic");
-    let starts: Vec<usize> = html.match_indices("module-item").map(|(i, _)| i).collect();
-    let segs: Vec<&str> = starts
-        .iter()
-        .enumerate()
-        .map(|(i, &start)| {
-            let end = starts.get(i + 1).copied().unwrap_or(html.len());
-            &html[start..end.min(html.len())]
-        })
-        .collect();
     let mut out: Vec<CspItem> = Vec::new();
-    for seg in segs.iter() {
-        let seg = *seg;
+    for seg in class_elements(html, class) {
         let Some(id) = re_id.captures(seg).map(|c| c[1].to_string()) else {
             continue;
         };
@@ -297,24 +412,34 @@ fn parse_items(html: &str) -> Vec<CspItem> {
             .captures(seg)
             .map(|c| clean_text(&c[1]))
             .unwrap_or_default();
-        let pic = re_pic
-            .captures(seg)
-            .map(|c| c[1].to_string())
-            .filter(|p| p.starts_with("http"));
-        if title.is_empty() || out.len() >= MAX_ITEMS {
+        let title = if search {
+            strip_action_prefix(&title)
+        } else {
+            title
+        };
+        if title.is_empty() || out.iter().any(|x| x.id == id) {
             continue;
         }
-        if out.iter().any(|x| x.id == id) {
-            continue;
-        }
+        let subtitle = class_elements(seg, "module-item-text")
+            .into_iter()
+            .map(clean_text)
+            .find(|text| !text.is_empty());
         out.push(CspItem {
             id,
             title,
-            cover: pic,
-            subtitle: None,
+            cover: parse_cover(seg),
+            subtitle,
         });
+        if out.len() == MAX_ITEMS {
+            break;
+        }
     }
     out
+}
+
+/// 列表页条目：完整 `.module-item` 里的 detail 链接 / 标题 / 封面 / 状态。
+fn parse_items(html: &str) -> Vec<CspItem> {
+    parse_cards(html, "module-item", false)
 }
 
 /// ext 缺站点时的统一文案（home/list/detail 三处共用，避免三份措辞漂移）
@@ -364,44 +489,7 @@ fn strip_action_prefix(title: &str) -> String {
 }
 
 fn parse_search_items(html: &str) -> Vec<CspItem> {
-    let re_id = regex::Regex::new(r#"/index\.php/vod/detail/id/(\d+)\.html"#).expect("id");
-    let re_title = regex::Regex::new(r#"(?is)title="([^"]+)""#).expect("title");
-    let re_pic = regex::Regex::new(r#"(?is)data-src="([^"]+)""#).expect("pic");
-    let starts: Vec<usize> = html
-        .match_indices("module-search-item")
-        .map(|(i, _)| i)
-        .collect();
-    let mut out: Vec<CspItem> = Vec::new();
-    for (i, &start) in starts.iter().enumerate() {
-        let end = starts.get(i + 1).copied().unwrap_or(html.len());
-        let seg = &html[start..end.min(html.len())];
-        let Some(id) = re_id.captures(seg).map(|c| c[1].to_string()) else {
-            continue;
-        };
-        let title = strip_action_prefix(
-            &re_title
-                .captures(seg)
-                .map(|c| clean_text(&c[1]))
-                .unwrap_or_default(),
-        );
-        let pic = re_pic
-            .captures(seg)
-            .map(|c| c[1].to_string())
-            .filter(|p| p.starts_with("http"));
-        if title.is_empty() || out.len() >= MAX_ITEMS {
-            continue;
-        }
-        if out.iter().any(|x| x.id == id) {
-            continue;
-        }
-        out.push(CspItem {
-            id,
-            title,
-            cover: pic,
-            subtitle: None,
-        });
-    }
-    out
+    parse_cards(html, "module-search-item", true)
 }
 
 /// 首页解析（纯函数，供单测与注入）
@@ -458,15 +546,13 @@ fn parse_detail(html: &str, id: &str) -> CspDetail {
         .expect("d desc");
     let re_share = regex::Regex::new(r#"(?is)data-clipboard-text="(https?://[^"]+)""#)
         .expect("d share");
-    let re_pic = regex::Regex::new(r#"(?is)(?:data-src|data-original)="(https?://[^"]+)""#)
-        .expect("d pic");
 
     let title = re_title
         .captures(html)
         .map(|c| clean_text(&c[1]))
         .unwrap_or_default();
     let desc = re_desc.captures(html).map(|c| clean_text(&c[1]));
-    let cover = re_pic.captures(html).map(|c| c[1].to_string());
+    let cover = parse_cover(html);
 
     let mut episodes: Vec<CspEpisode> = Vec::new();
     for c in re_share.captures_iter(html) {
@@ -578,6 +664,10 @@ impl UrlPanKind {
 
 #[async_trait]
 impl CspSite for PanWebShare {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -588,8 +678,11 @@ impl CspSite for PanWebShare {
         if sites.is_empty() {
             return Err(SITE_MISSING.to_string());
         }
-        let (_base, html) = self.fetch_first(&sites, &format!("{PATH_SHOW}1.html")).await?;
-        home_from_html(&html)
+        self.fetch_first(&sites, &format!("{PATH_SHOW}1.html"), |page_url, html| {
+            let mut home = home_from_html(html)?;
+            resolve_item_covers(&mut home.items, page_url);
+            Ok(home)
+        }).await
     }
 
     async fn list(&self, tid: &str, page: u32, ext: &str) -> Result<CspList, String> {
@@ -607,8 +700,11 @@ impl CspSite for PanWebShare {
         } else {
             format!("{PATH_SHOW}{tid}/page/{page}.html")
         };
-        let (_base, html) = self.fetch_first(&sites, &path).await?;
-        list_from_html(&html, page, &path)
+        self.fetch_first(&sites, &path, |page_url, html| {
+            let mut list = list_from_html(html, page, &path)?;
+            resolve_item_covers(&mut list.items, page_url);
+            Ok(list)
+        }).await
     }
 
     async fn detail(&self, id: &str, ext: &str) -> Result<CspDetail, String> {
@@ -621,14 +717,14 @@ impl CspSite for PanWebShare {
             return Err(SITE_MISSING.to_string());
         }
         let path = format!("{PATH_DETAIL}{id}.html");
-        let (_base, html) = self.fetch_first(&sites, &path).await?;
-        let d = parse_detail(&html, id);
-        if d.episodes.is_empty() {
-            return Err(format!(
-                "这个条目页上没有找到网盘分享链接（可能已下架，或模板改版）"
-            ));
-        }
-        Ok(d)
+        self.fetch_first(&sites, &path, |page_url, html| {
+            let mut detail = parse_detail(html, id);
+            if detail.episodes.is_empty() {
+                return Err("这个条目页上没有找到网盘分享链接（可能已下架，或模板改版）".to_string());
+            }
+            resolve_cover(&mut detail.cover, page_url);
+            Ok(detail)
+        }).await
     }
 
     /// 取流
@@ -669,14 +765,16 @@ impl CspSite for PanWebShare {
         } else {
             format!("{PATH_SEARCH}{enc}/page/{page}")
         };
-        let (_b, html) = self.fetch_first(&sites, &path).await?;
-        let items = parse_search_items(&html);
-        if items.is_empty() {
-            return Err(format!(
-                "搜索「{kw}」第 {page} 页没解析出条目（站点模板可能已改版，或被风控页替换）"
-            ));
-        }
-        Ok(CspList { items, page, page_count: None, total: None })
+        self.fetch_first(&sites, &path, |page_url, html| {
+            let mut items = parse_search_items(html);
+            if items.is_empty() {
+                return Err(format!(
+                    "搜索「{kw}」第 {page} 页没解析出条目（站点模板可能已改版，或被风控页替换）"
+                ));
+            }
+            resolve_item_covers(&mut items, page_url);
+            Ok(CspList { items, page, page_count: None, total: None })
+        }).await
     }
 
     async fn play(&self, _flag: &str, id: &str, _ext: &str) -> Result<Vec<CspPlay>, String> {
@@ -733,6 +831,18 @@ impl CspSite for PanWebShare {
 // ```
 crate::csp::register_site!(PanWebShare);
 
+#[cfg(test)]
+#[path = "pan_web_share_proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
+#[path = "pan_web_share_cover_tests.rs"]
+mod cover_tests;
+
+#[cfg(test)]
+#[path = "pan_web_share_content_tests.rs"]
+mod content_tests;
+
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
@@ -741,7 +851,7 @@ crate::csp::register_site!(PanWebShare);
 mod tests {
     use super::*;
 
-    const LIST_HTML: &str = r#"
+    pub(super) const LIST_HTML: &str = r#"
       <nav>
         <a href="/index.php/vod/show/id/1.html">电影</a>
         <a href="/index.php/vod/show/id/2.html">电视剧</a>
@@ -759,7 +869,7 @@ mod tests {
         </div>
       </div>"#;
 
-    const DETAIL_HTML: &str = r#"
+    pub(super) const DETAIL_HTML: &str = r#"
       <h1 class="video-info-header"><span class="page-title">示例片 甲</span></h1>
       <img data-src="https://img.example/a.jpg">
       <p class="sqjj_a">导演：某人 主演：甲乙丙 年代：2026</p>
@@ -1080,3 +1190,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "pan_web_share_metadata_tests.rs"]
+mod metadata_tests;

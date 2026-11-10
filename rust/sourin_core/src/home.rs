@@ -51,6 +51,13 @@ pub async fn get_home(state: &AppState) -> Result<Vec<serde_json::Value>, String
         .collect())
 }
 
+/// Selected-source homepage. The aggregate command remains available to callers
+/// that explicitly need every provider.
+pub async fn get_provider_home(state: &AppState, provider: &str) -> Result<Vec<serde_json::Value>, String> {
+    let (id, name, sections) = state.registry.home_for_provider(provider).await.map_err(|e| e.message)?;
+    Ok(vec![serde_json::json!({ "provider": id, "providerName": name, "sections": sections })])
+}
+
 /// 取某个源的分类列表
 ///
 /// 源：原版 `lib.rs` 的 `get_categories`
@@ -135,15 +142,10 @@ pub async fn get_list(
 /// 部分源（尤其 外部视频站）的图片 CDN **白名单校验 Referer** ——
 /// 直接请求返回 403，界面上就是一片裂图。
 ///
-/// # 三个关键细节（原版实测得来）
-///
-/// ```text
-/// ① 该源没声明 cover_headers → 直连，什么都不做（不做无用功）
-/// ② 代理起不来 → 保持原 URL，让用户看到"图挂了"而不是白屏
-///     （静默失败比可见的失败更糟：用户不知道发生了什么）
-/// ③ 已经是本地代理地址 → 跳过（幂等）
-///     —— 否则重复包一层，URL 会越来越长
-/// ```
+/// All remote covers use the shared API proxy policy, with source headers and
+/// exact-CDN defaults resolved before the host is hidden by the loopback URL.
+/// Registration is stable per URL/headers; persisted library metadata keeps
+/// the original URL. A failed loopback startup never falls back to direct HTTP.
 pub async fn proxy_covers(
     state: &AppState,
     provider: &str,

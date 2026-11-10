@@ -315,6 +315,26 @@ pub(crate) async fn inspect_anonymous(
     inspect_with(ep, "", share_id, passcode).await
 }
 
+/// The anonymous checker may supply routing while retaining Baidu's protocol
+/// recipe. Credentialed playback uses the same builder with the operation policy.
+pub(crate) fn inspection_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .user_agent(UA)
+        .timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+pub(crate) async fn inspect_anonymous_with_client(
+    ep: &BaiduEndpoints,
+    share_id: &str,
+    passcode: &str,
+    client: reqwest::Client,
+) -> Result<BaiduInspection, BaiduInspectionFailure> {
+    Ok(inspect_context_with_client(ep, "", share_id, passcode, Some(client))
+        .await?
+        .inspection)
+}
+
 async fn inspect_with(
     ep: &BaiduEndpoints,
     cookie: &str,
@@ -345,6 +365,18 @@ async fn inspect_context(
     share_id: &str,
     passcode: &str,
 ) -> Result<InspectionContext, BaiduInspectionFailure> {
+    let client = super::pan_episode_select::current_operation()
+        .and_then(|operation| operation.baidu_client());
+    inspect_context_with_client(ep, cookie, share_id, passcode, client).await
+}
+
+async fn inspect_context_with_client(
+    ep: &BaiduEndpoints,
+    cookie: &str,
+    share_id: &str,
+    passcode: &str,
+    supplied_client: Option<reqwest::Client>,
+) -> Result<InspectionContext, BaiduInspectionFailure> {
     super::pan_playback_guard::check_current()?;
     let share_id = share_id.trim();
     if share_id.is_empty() {
@@ -362,13 +394,13 @@ async fn inspect_context(
         .pop_if_empty()
         .push(share_id);
     let mut cookies = Cookies::new(cookie, &page_url)?;
-    let client = reqwest::Client::builder()
-        .user_agent(UA)
-        .timeout(std::time::Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .build()
-        .map_err(|_| "百度 HTTP 客户端初始化失败".to_string())?;
+    let client = match supplied_client {
+        Some(client) => client,
+        None => inspection_client_builder()
+            .no_proxy()
+            .build()
+            .map_err(|_| "百度 HTTP 客户端初始化失败".to_string())?,
+    };
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(45);
     let request = client
         .get(page_url.clone())
@@ -563,7 +595,13 @@ pub async fn list_share_files_with(
     share_id: &str,
     passcode: &str,
 ) -> Result<Vec<super::pan_drive::DriveEntry>, String> {
-    let mut ctx = inspect_context(ep, "", share_id, passcode)
+    list_share_files_with_client(ep, share_id, passcode, None).await
+}
+
+pub(crate) async fn list_share_files_with_client(
+    ep: &BaiduEndpoints, share_id: &str, passcode: &str, client: Option<reqwest::Client>,
+) -> Result<Vec<super::pan_drive::DriveEntry>, String> {
+    let mut ctx = inspect_context_with_client(ep, "", share_id, passcode, client)
         .await
         .map_err(|v| v.message)?;
     match ctx.inspection {

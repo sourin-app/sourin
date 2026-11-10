@@ -436,7 +436,7 @@ pub fn cats() -> Vec<CspCategory> {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub struct Libvio {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
     /// DEX 字段：`__cdn_pow` 的值（跨段复用）
     ///
     /// ⚠️ 本仓 `CspSite` **没有"跨段持久化 cookie"能力位** ⇒ 进程内缓存替代，
@@ -452,7 +452,7 @@ impl Libvio {
     pub const CLASS: &'static str = "Libvio";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .no_proxy()
             /*
@@ -469,8 +469,7 @@ impl Libvio {
              */
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(25))
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+        );
         Self {
             client,
             pow: Mutex::new(None),
@@ -528,7 +527,7 @@ impl Libvio {
         let mut hops = 0usize;
         let mut pow_solved = false;
         loop {
-            let mut req = self.headers(self.client.get(&current));
+            let mut req = self.headers(self.client.client()?.get(&current));
             // 带上已知 cookie（两个都带 —— 服务端按哪个有效用哪个）
             let mut ck: Vec<String> = Vec::new();
             if let Some(v) = &verified {
@@ -645,6 +644,10 @@ impl Default for Libvio {
 
 #[async_trait]
 impl CspSite for Libvio {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -723,6 +726,10 @@ pub fn home_of(prefetch: Result<String, String>) -> CspHome {
 }
 
 crate::csp::register_site!(Libvio);
+
+#[cfg(test)]
+#[path = "libvio_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

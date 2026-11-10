@@ -2314,11 +2314,10 @@ async fn try_raw_deflate_fallback(
      * ```
      */
     let raw_client = match proxy {
-        Some(px) => px
-            .client_for_ex(provider, None, crate::proxy::AutoDecompress::Off)
-            // 代理配置坏了也不该把回退整个吞掉：退回"无代理但关解压"的客户端，
-            // 至少行为与修复前一致（旧代码本来就没代理），不会更差。
-            .unwrap_or_else(|_| raw_decompress_off_client()),
+        Some(px) => match px.client_for_ex(provider, None, crate::proxy::AutoDecompress::Off) {
+            Ok(client) => client,
+            Err(e) => return Some(format!("__ERR__代理配置不可用: {}", e.message)),
+        },
         None => raw_decompress_off_client(),
     };
     let req = if method == "POST" {
@@ -2536,9 +2535,10 @@ async fn do_http(
      * ⇒ 必须把真实 provider id 传进来，让「按源配置」真的生效。
      */
     let client = match proxy {
-        Some(px) => px
-            .client_for(provider, None)
-            .unwrap_or_else(|_| default_client()),
+        Some(px) => match px.client_for(provider, None) {
+            Ok(client) => client,
+            Err(e) => return format!("__ERR__代理配置不可用: {}", e.message),
+        },
         None => default_client(),
     };
 
@@ -2775,9 +2775,14 @@ pub async fn do_http_full(
     body: Option<String>,
 ) -> HttpFull {
     let client = match proxy {
-        Some(px) => px
-            .client_for(provider, None)
-            .unwrap_or_else(|_| default_client()),
+        Some(px) => match px.client_for(provider, None) {
+            Ok(client) => client,
+            Err(e) => return HttpFull {
+                status: 0,
+                body: format!("__ERR__代理配置不可用: {}", e.message),
+                set_cookie: Vec::new(),
+            },
+        },
         None => default_client(),
     };
 
@@ -3325,9 +3330,18 @@ pub async fn probe_url(
     url: &str,
 ) -> ProbeReport {
     let client = match proxy {
-        Some(px) => px
-            .client_for(provider, None)
-            .unwrap_or_else(|_| default_client()),
+        Some(px) => match px.client_for(provider, None) {
+            Ok(client) => client,
+            Err(e) => return ProbeReport {
+                verdict: ProbeVerdict::Unreachable {
+                    detail: format!("代理配置不可用: {}", e.message),
+                },
+                status_code: 0,
+                content_type: String::new(),
+                redirected: false,
+                final_url: url.to_string(),
+            },
+        },
         None => default_client(),
     };
 
@@ -4378,6 +4392,20 @@ pub async fn validate_source(source: &str) -> std::result::Result<(), String> {
     }
 }
 
+/// Compile the body without invoking it: downloaded configuration validation must
+/// neither execute top-level plugin code nor grant network or storage access.
+pub fn validate_source_syntax(source: &str) -> std::result::Result<(), String> {
+    let runtime = rquickjs::Runtime::new().map_err(|_| "无法创建 JS 语法检查器")?;
+    runtime.set_memory_limit(24 * 1024 * 1024);
+    let context = rquickjs::Context::full(&runtime).map_err(|_| "无法创建 JS 语法检查上下文")?;
+    let quoted = serde_json::to_string(source).map_err(|_| "JS 源码编码失败")?;
+    context.with(|ctx| {
+        ctx.eval::<rquickjs::Function, _>(format!("new Function({quoted})"))
+            .map(|_| ())
+            .map_err(|_| "JS 插件语法无效".to_string())
+    })
+}
+
 // ─────────────────────── 在线安装（GitHub → CDN）───────────────────────
 
 /// 把用户粘贴的地址解析成**真正可下载的直链**
@@ -4466,65 +4494,15 @@ pub async fn fetch_plugin_source(
     proxy: Option<&Arc<crate::proxy::ProxyStore>>,
     url: &str,
 ) -> std::result::Result<(String, String), String> {
-    /*
-     * ⚠️ 这里**故意**保留字面量 key（与 do_http / do_http_full / probe_url 不同）。
-     *
-     * 理由：本函数是「安装插件时下载它的源码」—— 此刻**插件还不存在**，
-     * 没有任何 provider id 可用。用户能给的是「下载插件用哪个代理」这种
-     * 全局设置，所以用固定 key 是语义正确的，不是漏改。
-     */
-    let client = match proxy {
-        Some(px) => px
-            .client_for("plugin", None)
-            .unwrap_or_else(|_| default_client()),
-        None => default_client(),
-    };
-
-    /* 候选地址，按「最可能成功」排序
-     *
-     * 1. 解析出来的（默认 jsDelivr）
-     * 2. 换另一个分支名 —— 仓库默认分支是 main 还是 master，用户不会记得
-     * 3. raw（国内通常不通，但用户配了代理就能用）
-     */
-    let mut candidates = vec![url.to_string()];
-    if url.contains("cdn.jsdelivr.net/gh/") {
-        if url.contains("@main/") {
-            candidates.push(url.replace("@main/", "@master/"));
-        } else if url.contains("@master/") {
-            candidates.push(url.replace("@master/", "@main/"));
+    let proxy = proxy.ok_or_else(|| "插件下载缺少全局代理配置".to_owned())?;
+    crate::source_catalog::fetch_validated(proxy, "plugin", &[url.to_owned()], None, |text| {
+        let meta = parse_meta(text);
+        if meta.id.is_empty() || meta.name.is_empty() {
+            return Err(crate::source_catalog::Validation::Invalid("内容不是有效的 JS 插件".into()));
         }
-        candidates.push(
-            url.replace("https://cdn.jsdelivr.net/gh/", "https://raw.githubusercontent.com/")
-                .replace('@', "/"),
-        );
-    }
-
-    let mut tried = Vec::new();
-    for c in candidates {
-        tried.push(c.clone());
-        match client.get(&c).send().await {
-            Ok(r) if r.status().is_success() => match r.text().await {
-                Ok(t) => {
-                    // ★ 校验拿到的确实是插件，而不是 CDN 返回的 HTML 错误页
-                    //   （jsDelivr 对不存在的路径会返回 HTML，直接写盘会得到一个坏插件）
-                    if !t.contains("@id") {
-                        continue;
-                    }
-                    return Ok((t, c));
-                }
-                Err(_) => continue,
-            },
-            _ => continue,
-        }
-    }
-
-    Err(format!(
-        "下载失败，已尝试 {} 个地址：\n{}\n\n\
-         可能原因：地址写错、仓库里没有 index.js、或网络受限。\n\
-         若网络受限，可在「网络代理」里给插件下载配置代理。",
-        tried.len(),
-        tried.join("\n")
-    ))
+        validate_source_syntax(text).map_err(crate::source_catalog::Validation::Invalid)?;
+        Ok(text.to_owned())
+    }).await.map(|(body, actual, _)| (body, actual))
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -4917,6 +4895,73 @@ mod tests {
         assert_eq!(m.name, "某电视台站");
         assert_eq!(m.version, "1.0.0");
         assert_eq!(m.author, "dsh");
+    }
+
+    #[tokio::test]
+    async fn ambiguous_legacy_proxy_blocks_all_plugin_http_fallbacks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let count = hits.clone();
+        let app = axum::Router::new().fallback(axum::routing::get(move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                "fixture"
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/plugin.js", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!(
+            "sourin-plugin-proxy-conflict-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ui-prefs.json"),
+            r#"{"dsh.danmaku.proxy.mode":"custom","dsh.danmaku.proxy.url":"http://127.0.0.1:7890"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("github-discovery.json"),
+            r#"{"proxyUrl":"http://127.0.0.1:8080"}"#,
+        )
+        .unwrap();
+        let store = Arc::new(crate::proxy::ProxyStore::open(&dir).unwrap());
+        let proxy = Some(store.clone());
+        let headers = HashMap::new();
+        let status = reqwest::StatusCode::OK;
+        let (body, full, report, source, raw) = tokio::time::timeout(
+            Duration::from_secs(1),
+            async {
+                tokio::join!(
+                    do_http(&proxy, "plugin-id", "GET", &url, &headers, None),
+                    do_http_full(&proxy, "plugin-id", "GET", &url, &headers, None),
+                    probe_url(&proxy, "plugin-id", &url),
+                    fetch_plugin_source(Some(&store), &url),
+                    try_raw_deflate_fallback(&proxy, "plugin-id", "GET", &url, &headers, None, &status),
+                )
+            },
+        )
+        .await
+        .expect("Invalid proxy configuration must fail before any network work");
+        assert!(body.starts_with("__ERR__代理配置不可用:"));
+        assert_eq!(full.status, 0);
+        assert!(full.body.starts_with("__ERR__代理配置不可用:"));
+        assert!(matches!(report.verdict, ProbeVerdict::Unreachable { detail } if detail.starts_with("代理配置不可用:")));
+        assert!(source.unwrap_err().starts_with("代理配置不可用:"));
+        assert!(raw.unwrap().starts_with("__ERR__代理配置不可用:"));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+        // The same endpoint is reachable after the user resolves the migration.
+        store.set(crate::proxy::GLOBAL_PROXY, crate::proxy::ProxyConfig::default()).unwrap();
+        assert_eq!(do_http(&proxy, "plugin-id", "GET", &url, &headers, None).await, "fixture");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        server.abort();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // ═══════════════════════════════════════════════════════════════

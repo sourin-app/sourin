@@ -148,19 +148,18 @@ pub const FALLBACK_CATEGORIES: &'static [(&'static str, &'static str)] = &[
 ];
 
 pub struct Wwys {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Wwys {
     pub const CLASS: &'static str = "Wwys";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
             .no_proxy()
-            .build()
-            .expect("build wwys http client");
+        );
         Self { client }
     }
 
@@ -183,6 +182,7 @@ impl Wwys {
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .send()
@@ -475,6 +475,10 @@ pub fn safe_slice(s: &str, from: usize, to: usize) -> &str {
 
 #[async_trait]
 impl CspSite for Wwys {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -699,6 +703,10 @@ fn fallback_cats() -> Vec<CspCategory> {
 //      而不是把它当正常页面（那样会静默返回 0 条，症状变成"没数据"）。
 // ```
 crate::csp::register_site!(Wwys);
+
+#[cfg(test)]
+#[path = "wwys_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
@@ -1049,7 +1057,7 @@ mod tests {
             plays.len(), plays[0].url, plays[0].label);
         assert!(plays[0].url.contains("m3u8") || plays[0].url.contains("mp4"), "应给真流地址");
         // ★ 真播一次（这是"四段全通"的最后一公里）
-        let resp = s.client.get(&plays[0].url).send().await.expect("应能请求流");
+        let resp = s.client.client().unwrap().get(&plays[0].url).send().await.expect("应能请求流");
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         eprintln!("[LIVE] 流实测: HTTP {status}，前 60 字：{}", body.chars().take(60).collect::<String>());

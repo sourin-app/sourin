@@ -333,42 +333,20 @@ fn re(pat: &str) -> Regex {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub struct HDMoli {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl HDMoli {
     pub const CLASS: &'static str = "HDMoli";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            /*
-             * ★★★ `.no_proxy()` —— **本仓 csp 的既定惯例**（`app3q/app99/app_drama/app_fox/
-             *   app_qi/app_sy/app_yqk/app_ys` … 都有），**而我第一版漏了它**。
-             *
-             * # 这个漏项的真网后果（本类实测抓到的根因）
-             * ```text
-             * 本机环境：`https_proxy=http://127.0.0.1:7890/`（curl/reqwest/urllib **都会读它**）。
-             * 而那个代理**对本站连接不通** ⇒
-             *     reqwest 走代理      ⇒ `error sending request ← operation timed out`
-             *     curl 走代理        ⇒ `(28) Connection timed out`
-             *     手工 openssl 直连   ⇒ **HTTP 200 / 36173 字节** ← 不走代理
-             *     Python `no-proxy`  ⇒ **HTTP 200 / 36173 字节**
-             *     Python `via-proxy` ⇒ `TLS 握手超时`
-             *   ⇒ ★ **失败与"上游"无关，是"我们没绕开本机代理"。**
-             * ```
-             * # 为什么 csp 类必须 `.no_proxy()`
-             * ```text
-             * ① 这些源是**面向公网直连**的（本机代理是给浏览器/开发用的，不是它们的依赖）；
-             * ② 本仓既有 8 个类已经这么做了 ⇒ **不这么做就是偏离惯例**（也会造成
-             *    "有的源能通、有的源不通"这种极难定位的现象）；
-             * ③ 代理的存在与否**不该改变 csp 源的行为**（否则用户装了个代理就有一半源失效）。
-             * ```
-             */
-            .no_proxy()
-            .timeout(std::time::Duration::from_secs(25))
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+        let client = super::http_context::CspHttpContext::new(|| {
+            reqwest::Client::builder()
+                .user_agent(UA)
+                // Ignore environment proxies; CspHttpContext applies app policy.
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(25))
+        });
         Self { client }
     }
 
@@ -376,6 +354,7 @@ impl HDMoli {
     async fn get_text(&self, url: &str, what: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::REFERER, format!("{SITE}/"))
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
@@ -407,6 +386,10 @@ impl Default for HDMoli {
 
 #[async_trait]
 impl CspSite for HDMoli {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -782,3 +765,7 @@ mod tests {
         assert!(p[0].url.starts_with("http"), "★ 必须拿到真地址（网盘分享页）");
     }
 }
+
+#[cfg(test)]
+#[path = "hd_moli_proxy_tests.rs"]
+mod proxy_tests;

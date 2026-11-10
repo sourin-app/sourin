@@ -317,15 +317,33 @@ fn temp_dir_or_root(r: Result<String, String>) -> (String, Option<String>) {
     }
 }
 
-/// 进程内的"临时目录 fid"缓存（按盘 kind 分开：两家盘 fid 不通用）
+/// 临时资源的会话边界。指纹只用于当前进程内比较，不保留或输出原 Cookie。
+/// Cookie 字节变化即视为另一会话；不能凭显示名或部分字段猜测同一账号。
+#[derive(Clone, PartialEq, Eq)]
+struct TempSession {
+    kind: String,
+    endpoint: String,
+    cookie_fingerprint: [u8; 32],
+}
+
+impl TempSession {
+    fn capture(spec: &PanDriveSpec, cookie: &str) -> Self {
+        let digest = ring::digest::digest(&ring::digest::SHA256, cookie.as_bytes());
+        let mut cookie_fingerprint = [0; 32];
+        cookie_fingerprint.copy_from_slice(digest.as_ref());
+        Self { kind: spec.kind.code().to_string(), endpoint: api_root(spec), cookie_fingerprint }
+    }
+}
+
+/// 进程内的"临时目录 fid"缓存（kind、实际 API 端点和请求会话分别隔离）
 ///
 /// ★ 为什么必须缓存：`resolve_share_play` 每次都先列根目录再建目录，
 ///   会把播放延迟拉长一截；并且同一进程里重复建同名目录在某些账号上会
-///   返回 `相同文件已存在` 一类错误。缓存后同一进程只探/建一次。
-static TEMP_DIR_CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> =
+///   返回 `相同文件已存在` 一类错误。缓存后同一会话只探/建一次。
+static TEMP_DIR_CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<(TempSession, String)>>> =
     std::sync::OnceLock::new();
 
-fn temp_dir_cache() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+fn temp_dir_cache() -> &'static std::sync::Mutex<Vec<(TempSession, String)>> {
     TEMP_DIR_CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
@@ -459,6 +477,7 @@ impl PanDrive {
          * ⇒ 现在按 fid 重新取回 `(stoken, token)` **一对**，save 用同一对。
          * ```
          */
+        let session = TempSession::capture(&self.spec, cookie);
         let referer = share_referer(&self.spec, share_id)?;
         let (stoken, fid_token) = self
             .refresh_fid_token(cookie, share_id, passcode, fid)
@@ -548,7 +567,7 @@ impl PanDrive {
                         .map(|x| x.to_string())
                 });
             if let Some(saved) = saved {
-                self.check_temp_owner(&saved)?;
+                self.check_temp_owner(&session, &saved)?;
                 return Ok(saved);
             }
             let status = v
@@ -579,6 +598,7 @@ impl PanDrive {
         parent_fid: &str,
         name: &str,
     ) -> Result<String, String> {
+        let session = TempSession::capture(&self.spec, cookie);
         // ① 先找（★ 必须用**含子目录**的列法 —— `list_dir` 是 `_fetch_sub_dirs=0`，
         //    用它找目录永远找不到 ⇒ 每启动一次多建一个 sourin-temp，真机实测踩过）
         let found = if let Ok(entries) = self.list_dir_with_subdirs(cookie, parent_fid).await {
@@ -617,8 +637,8 @@ impl PanDrive {
             ));
         }
         if super::pan_playback_guard::current_owner().is_some() && name != TEMP_DIR_NAME {
-            self.check_temp_owner(&fid)?;
-            self.remember_temp(&fid);
+            self.check_temp_owner(&session, &fid)?;
+            self.remember_temp_in(&session, &fid);
         }
         log::info!(
             "[PAN] 已建目录 kind={kind} name={name} fid={fid}（父目录 {parent_fid}）"
@@ -632,18 +652,18 @@ impl PanDrive {
     /// ```text
     /// ① 先 `file/sort` 列根目录找同名目录（夸克/UC 都可能已存在，比如上次登录建的）
     /// ② 找不到 ⇒ `POST file` 建目录（dex 实证的端点与请求体，见 `mkdir_url`）
-    /// ③ 成功 ⇒ 记进进程内缓存，同一进程只探/建一次
+    /// ③ 成功 ⇒ 记进进程内缓存，同一会话和端点只探/建一次
     /// ④ 失败 ⇒ 原样 Err（**不在这里吞**：退回根目录的决定与日志在
     ///    `save_into_temp_dir`，那里才看得到"这次是退回了"的上下文）
     /// ```
     /// ⚠️ 只认**目录**：同名文件（极少数用户会自己建个 sourin-temp 文件）不算，
     ///    否则转存会失败在一个根本不是目录的 fid 上。
     pub(crate) async fn ensure_temp_dir(&self, cookie: &str) -> Result<String, String> {
-        let kind = self.spec.kind.code().to_string();
+        let session = TempSession::capture(&self.spec, cookie);
         // ① 缓存
         {
             let guard = temp_dir_cache().lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((_, fid)) = guard.iter().find(|(k, _)| k == &kind) {
+            if let Some((_, fid)) = guard.iter().find(|(key, _)| key == &session) {
                 if !fid.trim().is_empty() {
                     return Ok(fid.clone());
                 }
@@ -654,8 +674,8 @@ impl PanDrive {
         // ④ 缓存
         {
             let mut guard = temp_dir_cache().lock().unwrap_or_else(|e| e.into_inner());
-            guard.retain(|(k, _)| k != &kind);
-            guard.push((kind, fid.clone()));
+            guard.retain(|(key, _)| key != &session);
+            guard.push((session, fid.clone()));
         }
         Ok(fid)
     }
@@ -664,7 +684,7 @@ impl PanDrive {
     ///
     /// 名字由 [`retry_subdir_name`] 保证唯一 ⇒ 子目录里不可能已有同名文件 ⇒
     /// save 的同名去重必然落空（对内容级去重无效但无害 —— 见 `degrade_attempt`）。
-    /// 目录 fid 由调用方 `remember_temp` 记账（purge LIFO：先删文件再删本目录，
+    /// 目录 fid 由调用方 `remember_temp_in` 记账（purge LIFO：先删文件再删本目录，
     /// 别只建不清 —— 又一个目录垃圾源）。
     pub(crate) async fn ensure_retry_subdir(&self, cookie: &str, temp_fid: &str) -> Result<String, String> {
         let name = retry_subdir_name();
@@ -717,15 +737,22 @@ impl PanDrive {
         }
     }
 
-    pub fn with_spec(class: &'static str, spec: PanDriveSpec) -> Self {        // ⚠️ 与 `pan_web_share.rs` 同一条纪律：reqwest 默认读环境代理，
-        //    而用户机器上的代理会把"接口可用"测成"全失败"。
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(HTTP_TIMEOUT)
-            .no_proxy()
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+    pub(crate) fn client_builder() -> reqwest::ClientBuilder {
+        reqwest::Client::builder().user_agent(UA).timeout(HTTP_TIMEOUT).no_proxy()
+    }
+
+    pub fn with_spec(class: &'static str, spec: PanDriveSpec) -> Self {
+        let client = super::pan_episode_select::current_operation()
+            .and_then(|operation| operation.drive_client())
+            .unwrap_or_else(|| Self::client_builder().build()
+                .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底"));
         Self { class, spec, client }
+    }
+
+    /// The caller captures routing once before the first share request.
+    pub(crate) fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
     }
 
     /// 本盘的登录 cookie（没有 ⇒ 返回 `None`，由调用方如实报错）
@@ -1481,6 +1508,15 @@ impl CspSite for PanDrive {
             Some(c) => c,
             None => return Err(login_hint(self.spec.kind)),
         };
+        self.play_with_cookie(&cookie, id).await
+    }
+}
+
+impl PanDrive {
+    /// 同次解析的转存、重试和取流沿用原 Cookie；不能在 await 后读取新登录。
+    async fn play_with_cookie(&self, cookie: &str, id: &str) -> Result<Vec<CspPlay>, String> {
+        super::pan_playback_guard::check_current()?;
+        let session = TempSession::capture(&self.spec, cookie);
         let raw_id = id.trim();
         if raw_id.is_empty() {
             return Err("条目 id 为空".to_string());
@@ -1499,10 +1535,10 @@ impl CspSite for PanDrive {
         super::pan_playback_guard::check_current()?;
         let fid = if let Some((share_id, sfid, token)) = parse_share_item(raw_id) {
             // ★ 走临时目录（建不出来才退回根目录），见 `save_into_temp_dir`
-            self.purge_previous().await;
+            self.purge_previous_with_cookie(cookie).await;
             super::pan_playback_guard::check_current()?;
-            let fid = self.save_into_temp_dir(&cookie, &share_id, "", &sfid, &token).await?;
-            self.remember_temp(&fid);
+            let fid = self.save_into_temp_dir(cookie, &share_id, "", &sfid, &token).await?;
+            self.remember_temp_in(&session, &fid);
             fid
         } else {
             raw_id.to_string()
@@ -1519,7 +1555,7 @@ impl CspSite for PanDrive {
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/plain, */*")
             .header("Referer", self.spec.share_host)
-            .header("Cookie", &cookie)
+            .header("Cookie", cookie)
             .body(body)
             .send()
             .await
@@ -1531,7 +1567,7 @@ impl CspSite for PanDrive {
         super::pan_playback_guard::check_current()?;
         if self.spec.kind == PanKind::Quark && serde_json::from_str::<serde_json::Value>(&text)
             .ok().and_then(|value| value.get("code").and_then(serde_json::Value::as_i64)) == Some(23018) {
-            return self.video_play(&fid, &playback_cookie(&cookie, &set_cookie)).await;
+            return self.video_play(&fid, &playback_cookie(cookie, &set_cookie)).await;
         }
         if !status.is_success() {
             // ★ N-23018（2026-11-01，lead 批复③）：夸克 21001「file not found」=
@@ -1591,7 +1627,7 @@ impl CspSite for PanDrive {
             ));
         }
         // 把 Set-Cookie（主要是 `__puus`）并进 Cookie —— 缺它 CDN 一律 403
-        let merged = playback_cookie(&cookie, &set_cookie);
+        let merged = playback_cookie(cookie, &set_cookie);
         Ok(vec![CspPlay {
             url: direct.to_string(),
             headers: vec![
@@ -1869,15 +1905,28 @@ impl PanDrive {
         self.purge_owned(super::pan_playback_guard::current_owner()).await;
     }
 
+    /// 解析中清理只使用该操作已捕获的账号，避免列表或锁等待期间切换登录。
+    pub(crate) async fn purge_previous_with_cookie(&self, cookie: &str) {
+        self.purge_owned_with_cookie(cookie, super::pan_playback_guard::current_owner()).await;
+    }
+
+    /// 独立清理入口在开始时读取当前账号一次；不使用旧账本中的原始凭据。
     async fn purge_owned(&self, target: Option<super::pan_playback_guard::PlaybackOwner>) {
         let Some(cookie) = self.cookie() else { return };
+        self.purge_owned_with_cookie(&cookie, target).await;
+    }
+
+    async fn purge_owned_with_cookie(
+        &self, cookie: &str, target: Option<super::pan_playback_guard::PlaybackOwner>,
+    ) {
+        let session = TempSession::capture(&self.spec, cookie);
         let kind = self.spec.kind.code().to_string();
         let victims: Vec<TempSaved> = {
             let mut guard = temp_saved().lock().unwrap_or_else(|e| e.into_inner());
             let mut keep = Vec::new();
             let mut victims = Vec::new();
             for saved in guard.drain(..) {
-                if saved.kind == kind && super::pan_playback_guard::cleanup_matches(&saved.owner, &target) {
+                if saved.session == session && super::pan_playback_guard::cleanup_matches(&saved.owner, &target) {
                     victims.push(saved);
                 } else {
                     keep.push(saved);
@@ -1909,7 +1958,7 @@ impl PanDrive {
                 .client
                 .post(file_delete_url(&self.spec))
                 .header("Content-Type", "application/json")
-                .header("Cookie", &cookie)
+                .header("Cookie", cookie)
                 .header("Referer", self.spec.share_host)
                 .body(file_delete_body(&fid))
                 .send()
@@ -1933,7 +1982,7 @@ impl PanDrive {
                         });
                     let confirmed = match (accepted, task_id) {
                         (false, _) => false,
-                        (true, Some(id)) => self.wait_delete_task(&cookie, &id, deadline).await,
+                        (true, Some(id)) => self.wait_delete_task(cookie, &id, deadline).await,
                         (true, None) => {
                             crate::applog::write_file_log(
                                 "PAN",
@@ -2052,24 +2101,30 @@ impl PanDrive {
         );
     }
 
-    fn check_temp_owner(&self, fid: &str) -> Result<(), String> {
+    fn check_temp_owner(&self, session: &TempSession, fid: &str) -> Result<(), String> {
         let owner = super::pan_playback_guard::current_owner();
-        let kind = self.spec.kind.code();
         if temp_saved().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|saved| {
-            saved.kind == kind && saved.fid == fid && saved.owner != owner
+            // Cookie rotation/reordering changes the session fingerprint, but it
+            // cannot make a server-deduplicated fid become a new owner's file.
+            // Keep cache/cleanup selection session-exact; the ownership collision
+            // domain is the actual drive kind + endpoint + fid.
+            saved.session.kind == session.kind
+                && saved.session.endpoint == session.endpoint
+                && saved.fid == fid
+                && saved.owner != owner
         }) {
             return Err("网盘转存回吐了其他播放请求的临时副本，无法确认本次文件归属；请稍后重试或换一条线路".into());
         }
         Ok(())
     }
 
-    /// 记下这次转存的 fid（下次解析前清理）
-    pub(crate) fn remember_temp(&self, fid: &str) {
+    /// 记下产生 fid 的请求会话；调用方必须在网络 await 前从原 Cookie 捕获。
+    fn remember_temp_in(&self, session: &TempSession, fid: &str) {
         temp_saved()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(TempSaved {
-                kind: self.spec.kind.code().to_string(),
+                session: session.clone(),
                 fid: fid.to_string(),
                 owner: super::pan_playback_guard::current_owner(),
             });
@@ -2112,7 +2167,7 @@ impl PanDrive {
         let candidates = self.pick_share_candidates(&cookie, share_id, passcode).await?;
         let _mutation = super::pan_playback_guard::mutation_lock(self.spec.kind.code()).await;
         super::pan_playback_guard::check_current()?;
-        self.purge_previous().await;
+        self.purge_previous_with_cookie(&cookie).await;
         super::pan_playback_guard::check_current()?;
         // 「夸克网盘」→「夸克」：Owner 指定的文案是「该分享的文件超出夸克下载上限」
         let short_kind = self
@@ -2155,7 +2210,7 @@ impl PanDrive {
 
     /// 降级重试里的**单次尝试**：转存候选 → 取直链
     ///
-    /// ★ 失败的尝试**也** `remember_temp` —— 转存可能已成功（超限发生在取直链一步），
+    /// ★ 失败的尝试**也** `remember_temp_in` —— 转存可能已成功（超限发生在取直链一步），
     ///   不记下来下次 purge 就清不掉 ⇒ 用户网盘里堆垃圾（正是上批修掉的问题）。
     ///
     /// ★★★ N-23018 v2（2026-11-01，lead 批复）：下载遇 21001 ⇒ **有界自愈循环**
@@ -2192,12 +2247,13 @@ impl PanDrive {
         &self, cookie: &str, share_id: &str, passcode: &str, entry: &DriveEntry,
         budget: std::time::Duration, backoff: std::time::Duration,
     ) -> Result<CspPlay, String> {
+        let session = TempSession::capture(&self.spec, cookie);
         let token = entry.fid_token.clone().unwrap_or_default();
         let mut fid = self
             .save_into_temp_dir(cookie, share_id, passcode, &entry.fid, &token)
             .await?;
-        self.remember_temp(&fid);
-        // 复用 `play`（`share_save` 已把文件放进我自己的网盘 ⇒ 走到裸 fid 那条路）
+        self.remember_temp_in(&session, &fid);
+        // 复用取流内核并保留本次原 Cookie；不能为已转存的 fid 换成当前新登录。
         // 首次转存不计入自愈预算；此后所有下载、退避、目录与转存 await 统一封顶。
         let deadline = tokio::time::Instant::now() + budget;
         let mut resaves: u32 = 0;
@@ -2206,7 +2262,7 @@ impl PanDrive {
         let result = tokio::time::timeout_at(deadline, async {
         loop {
             super::pan_playback_guard::check_current()?;
-            match self.play("", &fid, "").await {
+            match self.play_with_cookie(cookie, &fid).await {
                 Ok(plays) => break Ok(plays),
                 Err(e) if is_file_not_found_21001(&e) => {
                     if resaves >= SELFHEAL_RESAVE_ATTEMPTS {
@@ -2251,7 +2307,7 @@ impl PanDrive {
                             .await
                         {
                             Ok(sub) => {
-                                if !modern { self.remember_temp(&sub); }
+                                if !modern { self.remember_temp_in(&session, &sub); }
                                 fid = self
                                     .share_save(
                                         cookie, share_id, passcode, &entry.fid, &token, &sub,
@@ -2284,7 +2340,7 @@ impl PanDrive {
                             .await?;
                     }
                     dedupe_echo = fid == dead;
-                    self.remember_temp(&fid);
+                    self.remember_temp_in(&session, &fid);
                     // ★★ 核心判据（真机缺口）：save 回吐的 fid 必须 ≠ 死 fid。
                     //   相同 = 去重回吐（旧文件删除尚未在服务端生效）；已是最后一次
                     //   ⇒ 直接进"卡住"终态，不再空打一次必死的下载。
@@ -2518,7 +2574,7 @@ pub(crate) const SHARE_PICK_MAX_DEPTH: usize = 2;
 /// 我们此前只做了前半截 ⇒ 用户网盘里会一直堆；这里记下 fid，下次解析开始时清掉。
 /// ```
 struct TempSaved {
-    kind: String,
+    session: TempSession,
     fid: String,
     owner: Option<super::pan_playback_guard::PlaybackOwner>,
 }
@@ -2730,6 +2786,15 @@ pub(crate) fn debug_override_api_bases(bases: Vec<(String, String)>) -> TestApiB
 }
 
 impl PanDrive {
+    /// 冻结的旧调用夹具桥；生产调用必须显式传入原请求会话。
+    #[cfg(test)]
+    pub(crate) fn remember_temp(&self, fid: &str) {
+        let cookie = self.test_cookie_override().or_else(|| {
+            crate::pan_auth::debug_test_credential(self.spec.kind).map(|credential| credential.cookie)
+        }).expect("legacy fixture must provide a synthetic cookie");
+        self.remember_temp_in(&TempSession::capture(&self.spec, &cookie), fid);
+    }
+
     /// ★ 测试缝（仅测试编译存在）：假服务器夹具需要"已登录"态，而真 cookie
     ///   在系统钥匙串里 —— 夹具从这里注入；生产构建本函数不存在（恒 None）。
     #[cfg(test)]
@@ -4738,3 +4803,15 @@ mod tests {
 #[path = "pan_drive_video_tests.rs"]
 mod video_fallback_tests;
 
+#[cfg(test)]
+#[path = "pan_drive_session_tests.rs"]
+mod session_tests;
+
+#[cfg(test)]
+#[path = "pan_drive_operation_tests.rs"]
+mod operation_session_tests;
+
+
+#[cfg(test)]
+#[path = "pan_drive_cookie_rotation_tests.rs"]
+mod cookie_rotation_tests;

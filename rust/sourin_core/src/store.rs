@@ -628,6 +628,7 @@ impl Db {
                 watched_at      INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_hist_time ON history(watched_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_hist_item ON history(provider, native_id);
 
             -- 平台自带历史的备份镜像（备份平面，只读）
             CREATE TABLE IF NOT EXISTS platform_history (
@@ -1157,7 +1158,26 @@ impl Db {
         Ok(())
     }
 
-    /// 收藏列表（**只看 favorited**，与追更无关）
+    /// Distinct persisted covers for one exact identity, without UI resume
+    /// filters or preview limits. No episode metadata or other identity is read.
+    pub fn library_cover_variants(
+        &self, provider: &str, native_id: &str,
+    ) -> Result<Vec<Option<String>>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT cover FROM progress \
+             WHERE item_key=?3 AND provider=?1 AND native_id=?2 \
+             UNION SELECT cover FROM history WHERE provider=?1 AND native_id=?2 \
+             ORDER BY cover",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(
+            params![provider, native_id, item_key_of(provider, native_id)],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Conditionally update only the selected cover fields for one identity.
     pub fn repair_library_cover(
         &self, provider: &str, native_id: &str, expected: &[Option<String>], cover: &str,
     ) -> Result<usize, String> {
@@ -1444,6 +1464,18 @@ impl Db {
             .query_map(params![limit], row_to_progress)
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Count the same rows as continue_watching without its preview limit.
+    pub fn continue_watching_count(&self) -> Result<u64, String> {
+        self.conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM progress p \
+             WHERE finished=0 AND position > 5 \
+               AND updated_at = (SELECT MAX(updated_at) FROM progress \
+                                 WHERE item_key = p.item_key)",
+            [],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())
     }
 
     /// 全部进度记录（**同步用**：需要全量，不能只看「最近在看的」）
@@ -3538,6 +3570,67 @@ mod tests {
         let cw = db.continue_watching(10).unwrap();
         assert_eq!(cw.len(), 1);
         assert_eq!(cw[0].title, "Y");
+    }
+
+    #[test]
+    fn continue_watching_count_matches_latest_episode_filters_without_preview_limit() {
+        let db = Db::in_memory().unwrap();
+        let insert = |native_id: &str, episode_id: &str, position, finished, updated_at| {
+            db.upsert_progress(&Progress {
+                key: String::new(),
+                provider: "fixture".into(),
+                native_id: native_id.into(),
+                title: native_id.into(),
+                cover: None,
+                episode_id: Some(episode_id.into()),
+                episode_title: Some(episode_id.into()),
+                position,
+                duration: 100,
+                finished,
+                updated_at,
+            })
+            .unwrap();
+        };
+        for index in 0..25 {
+            insert(&format!("series-{index}"), "episode-1", 60, false, 100);
+        }
+        // A newer episode replaces the older episode of the same work.
+        insert("series-0", "episode-2", 70, false, 200);
+        // Filtering happens after finding the latest episode for a work.
+        insert("finished", "episode-1", 60, false, 100);
+        insert("finished", "episode-2", 100, true, 200);
+        insert("early-exit", "episode-1", 60, false, 100);
+        insert("early-exit", "episode-2", 5, false, 200);
+
+        assert_eq!(db.continue_watching(12).unwrap().len(), 12);
+        assert_eq!(db.continue_watching(20).unwrap().len(), 20);
+        assert_eq!(db.continue_watching(100).unwrap().len(), 25);
+        assert_eq!(db.continue_watching_count().unwrap(), 25);
+    }
+
+    #[test]
+    fn continue_watching_count_preserves_existing_timestamp_tie_semantics() {
+        let db = Db::in_memory().unwrap();
+        assert_eq!(db.continue_watching_count().unwrap(), 0);
+        for episode_id in ["episode-1", "episode-2"] {
+            db.upsert_progress(&Progress {
+                key: String::new(),
+                provider: "fixture".into(),
+                native_id: "same-work".into(),
+                title: "Same work".into(),
+                cover: None,
+                episode_id: Some(episode_id.into()),
+                episode_title: None,
+                position: 60,
+                duration: 100,
+                finished: false,
+                updated_at: 100,
+            })
+            .unwrap();
+        }
+        let rows = db.continue_watching(100).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(db.continue_watching_count().unwrap(), rows.len() as u64);
     }
 
     #[test]

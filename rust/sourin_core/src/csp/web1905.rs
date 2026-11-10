@@ -482,7 +482,7 @@ fn now_ms() -> u64 {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub struct Web1905 {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 /// 非 2xx 的**分档**（判据：`real_waf_403_is_classified`）
@@ -542,32 +542,12 @@ impl Web1905 {
     pub const CLASS: &'static str = "Web1905";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            /*
-             * ★ `.no_proxy()` —— 本仓 csp 的**既定惯例**（app3q/app99/app_drama/app_fox/
-             *   app_qi/app_sy/app_yqk/app_ys … 都这么做），**我第一版全部漏了**。
-             *
-             * # 真网后果（HDMoli 那次实测抓到的根因，是**系统性问题**）
-             * ```text
-             * 本机 `https_proxy=http://127.0.0.1:7890/`（curl/reqwest/urllib 都会读它），
-             * 而该代理对某些站点不通 ⇒
-             *     reqwest 走代理      ⇒ `operation timed out`
-             *     Python no-proxy     ⇒ **HTTP 200**
-             *     Python via-proxy    ⇒ TLS 握手超时
-             *   ⇒ 失败与"上游"无关，是"我们没绕开本机代理"。
-             * ```
-             * # 为什么 csp 类必须 `.no_proxy()`
-             * ```text
-             * ① 这些源是面向**公网直连**的（本机代理不是它们的依赖）；
-             * ② 本仓既有 8 个类已这么做 ⇒ 不做就是**偏离惯例**；
-             * ③ 装不装代理**不该改变 csp 源的行为**（否则用户装代理就一半源失效）。
-             * ```
-             */
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
             .user_agent(UA)
             .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+        );
         Self { client }
     }
 
@@ -575,6 +555,7 @@ impl Web1905 {
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::REFERER, REFERER)
             .header(reqwest::header::ACCEPT, ACCEPT)
@@ -620,6 +601,10 @@ impl Default for Web1905 {
 
 #[async_trait]
 impl CspSite for Web1905 {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -785,6 +770,10 @@ crate::csp::register_site!(Web1905);
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+#[path = "web1905_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

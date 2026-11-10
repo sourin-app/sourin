@@ -425,20 +425,17 @@ fn parse_files(v: &serde_json::Value) -> Vec<ShareFile> {
 
 /// csp_PanShare
 pub struct PanShare {
-    client: reqwest::Client,
+    http: super::http_context::CspHttpContext,
+    pan_routing: std::sync::RwLock<Option<super::pan_episode_select::PanRouting>>,
 }
 
 impl PanShare {
     pub const CLASS: &'static str = "PanShare";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(HTTP_TIMEOUT)
-            .no_proxy()
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
-        Self { client }
+        let http = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
+            .user_agent(UA).timeout(HTTP_TIMEOUT).no_proxy());
+        Self { http, pan_routing: std::sync::RwLock::new(None) }
     }
 
     /// 取分享库（ext 三种形态：内联 JSON / http(s) / 本地文件）
@@ -452,7 +449,7 @@ impl PanShare {
         }
         if t.starts_with("http://") || t.starts_with("https://") {
             let resp = self
-                .client
+                .http.client()?
                 .get(t)
                 .header("Accept", "application/json, text/plain, */*")
                 .send()
@@ -494,6 +491,11 @@ impl Default for PanShare {
 
 #[async_trait]
 impl CspSite for PanShare {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.http.set_proxy(proxy.clone(), provider);
+        *self.pan_routing.write().unwrap() = Some((proxy, provider.to_string()));
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -560,6 +562,7 @@ impl CspSite for PanShare {
 
     /// 详情 = 进这个分享，把**可播文件**列成剧集
     async fn detail(&self, id: &str, ext: &str) -> Result<CspDetail, String> {
+        let routing = self.pan_routing.read().map_err(|_| "分享网络配置忙")?.clone();
         let (drive_key, share_id, passcode, folder) = decode_id(id)?;
         let spec = drive_of_key(&drive_key).ok_or_else(|| format!("{UNSUPPORTED}（键 `{drive_key}`）"))?;
         let _ = ext; // detail 不需要重新读库（id 里已经带全了）
@@ -576,9 +579,9 @@ impl CspSite for PanShare {
             ).ok_or(UNSUPPORTED)?;
             let url = super::pan_episode_select::share_url(kind, &share_id, &passcode)?;
             let episodes = if matches!(kind, crate::pan::PanKind::Quark | crate::pan::PanKind::Uc) {
-                super::pan_episode_select::family_episodes_at(&url, spec.display, &folder).await?
+                super::pan_episode_select::family_episodes_at_with_routing(&url, spec.display, &folder, routing.as_ref()).await?
             } else {
-                super::pan_episode_select::share_episodes(&url, spec.display).await?
+                super::pan_episode_select::share_episodes_with_routing(&url, spec.display, routing.as_ref()).await?
             };
             return Ok(CspDetail {
                 id: id.to_string(), title: spec.display.to_string(), cover: None,

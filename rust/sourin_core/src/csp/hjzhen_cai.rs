@@ -49,8 +49,8 @@
 //
 // # 代理纪律
 // ```text
-// 判"站点死活"必须直连：client 在 `.timeout(TIMEOUT)` 之后、`.build()` 之前
-// 显式 `.no_proxy()`。本机 HTTP_PROXY 会让每个 host 回 502（诚实契约第 3 条）。
+// 保留引擎自己的 UA/超时配方；未绑定应用策略时默认直连，不读环境代理。
+// 绑定后由 CspHttpContext 应用当前代理策略；策略变更只重建客户端。
 // ```
 
 use async_trait::async_trait;
@@ -67,20 +67,19 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_ITEMS: usize = 120;
 
 pub struct HJZhenCai {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl HJZhenCai {
     pub const CLASS: &'static str = "HJZhenCai";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // ★ 直连（顺序有门禁扫：timeout → no_proxy → build）
+            // 应用策略绑定前不读取环境代理；绑定后由上下文选择路由。
             .no_proxy()
-            .build()
-            .expect("build hjzhencai http client");
+        );
         Self { client }
     }
 
@@ -118,6 +117,7 @@ impl HJZhenCai {
     async fn get_text(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/json")
             .send()
@@ -420,6 +420,10 @@ fn clean_text(s: &str) -> String {
 
 #[async_trait]
 impl CspSite for HJZhenCai {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -656,6 +660,10 @@ fn encode_path(s: &str) -> String {
 // ```
 crate::csp::register_site!(HJZhenCai);
 
+#[cfg(test)]
+#[path = "hjzhen_cai_proxy_tests.rs"]
+mod proxy_tests;
+
 // ═══════════════════════════════════════════════════════════════════════
 //  测试（真响应片段，纯函数）
 // ═══════════════════════════════════════════════════════════════════════
@@ -766,15 +774,6 @@ mod tests {
         assert_eq!(items[0].title, "红海龟");
         assert_eq!(items[0].subtitle.as_deref(), Some("花卷原盘"));
         assert!(parse_suggest(&crate::tvbox::parse_loose_json(r#"{"list":[]}"#).unwrap()).is_empty());
-    }
-
-    #[test]
-    fn http_client_disables_proxy_after_timeout() {
-        let flat = crate::csp::shared::impl_src_only(include_str!("hjzhen_cai.rs"));
-        let t = flat.find(".timeout(TIMEOUT)").expect("timeout");
-        let p = flat.find(".no_proxy()").expect("★ no_proxy 必须存在");
-        let b = flat.find(".build()").expect("build");
-        assert!(t < p && p < b, "timeout → no_proxy → build");
     }
 
     #[test]

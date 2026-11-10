@@ -94,7 +94,7 @@ const PAGE_SIZE: u32 = 30;
 const GET_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct SportsKafei {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl SportsKafei {
@@ -113,7 +113,7 @@ impl SportsKafei {
         &[("hot", "热门"), ("1", "足球"), ("2", "篮球")];
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             // DEX 里逐字给出的 Accept
             .default_headers({
@@ -136,14 +136,14 @@ impl SportsKafei {
             //   ⇒ 行为差异被对照实验证实，不能靠"本机代理恰好可用"掩盖。
             // ```
             .no_proxy()
-            .build()
-            .expect("build SportsKafei http client");
+        );
         Self { client }
     }
 
     async fn get_json(&self, url: &str) -> Result<serde_json::Value, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .send()
             .await
@@ -371,6 +371,10 @@ fn as_string(v: Option<&serde_json::Value>) -> Option<String> {
 
 #[async_trait]
 impl CspSite for SportsKafei {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -470,6 +474,10 @@ impl CspSite for SportsKafei {
 // ⚠️ 已知缺口：原版有 mProxy，本批不做（见文件头）⇒ 需代理的线路可能不通。
 // ```
 crate::csp::register_site!(SportsKafei);
+
+#[cfg(test)]
+#[path = "sports_kafei_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

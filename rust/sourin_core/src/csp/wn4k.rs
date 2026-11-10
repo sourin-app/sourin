@@ -78,26 +78,27 @@ pub const LOGIN_TIP: &str = "未登录：请到配置中心-其他-蜗牛登录"
 const LOCK_MARK: &str = "******";
 
 pub struct Wn4k {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Wn4k {
     pub const CLASS: &'static str = "Wn4k";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(TIMEOUT)
-            // 与 app99/zhinan 同一条纪律：不读系统代理（代理会把「站点可用」测成「全宕」）
-            .no_proxy()
-            .build()
-            .expect("build wn4k http client");
+        let client = super::http_context::CspHttpContext::new(|| {
+            reqwest::Client::builder()
+                .user_agent(UA)
+                .timeout(TIMEOUT)
+                // Ignore environment proxies; CspHttpContext applies app policy.
+                .no_proxy()
+        });
         Self { client }
     }
 
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .header(reqwest::header::REFERER, format!("{SITE}/"))
@@ -449,6 +450,10 @@ pub fn search_path(kw: &str, page: u32) -> String {
 
 #[async_trait]
 impl CspSite for Wn4k {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -806,3 +811,7 @@ mod tests {
         assert!(!d.title.is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "wn4k_proxy_tests.rs"]
+mod proxy_tests;

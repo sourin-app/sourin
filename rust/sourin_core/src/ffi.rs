@@ -786,6 +786,19 @@ async fn dispatch_inner(req: &str) -> String {
 
         // ── Provider 管理 ──
         "list_providers" => with_state(|st| crate::commands::list_providers(st)),
+        "source_catalog_get" => with_state(crate::source_catalog::command_get),
+        "source_catalog_set_origin" => {
+            let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            with_state(move |st| crate::source_catalog::command_set_origin(st, &args))
+        }
+        "source_catalog_select_providers" => {
+            let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            with_state(move |st| {
+                let group = args.get("groupId").and_then(|v| v.as_str()).ok_or("缺少 groupId")?;
+                let ids: Vec<String> = serde_json::from_value(args.get("providerIds").cloned().unwrap_or(serde_json::Value::Null)).map_err(|_| "providerIds 必须是字符串数组")?;
+                crate::source_catalog::command_select(st, group, &ids)
+            })
+        }
         // ── TVBox 聚合（A′，第 01 项）──
         //
         // 契约：.probe/ffi-contract-tvbox-aggregate.md
@@ -985,6 +998,15 @@ async fn dispatch_inner(req: &str) -> String {
         "get_home" => with_state_async(move |st| async move {
             crate::home::get_home(st).await
         }).await,
+        "get_provider_home" => {
+            let provider = match a.str("provider") {
+                Ok(s) => s.to_string(),
+                Err(e) => return err_json(&e, "other"),
+            };
+            with_state_async(move |st| async move {
+                crate::home::get_provider_home(st, &provider).await
+            }).await
+        }
         "get_categories" => {
             let provider = match a.str("provider") {
                 Ok(s) => s.to_string(),
@@ -1152,6 +1174,7 @@ async fn dispatch_inner(req: &str) -> String {
                 crate::commands::continue_watching_for_ui(st, limit).await
             }).await
         }
+        "continue_watching_count" => with_state(crate::commands::continue_watching_count),
         "repair_library_covers" => {
             with_state_async(move |st| async move { crate::library_covers::repair(st).await }).await
         }
@@ -1837,6 +1860,15 @@ async fn dispatch_inner(req: &str) -> String {
 
         // ── 站点代理 ──
         "list_proxy_configs" => with_state(|st| crate::commands_backup::list_proxy_configs(st)),
+        "global_proxy_migration_choices" => with_state(|st| Ok(st.proxy.migration_choices())),
+        "global_proxy_open_download" => {
+            let args = v.get("args").cloned().unwrap_or_default();
+            with_state_async(move |st| async move { crate::proxy_download::register(st.proxy.clone(),args).await }).await
+        }
+        "global_proxy_text_request" => {
+            let args = v.get("args").cloned().unwrap_or_default();
+            with_state_async(move |st| async move { st.proxy.text_request(args).await }).await
+        }
         "set_proxy_config" => {
             let provider = match a.str("provider") {
                 Ok(s) => s.to_string(),
@@ -1876,7 +1908,10 @@ async fn dispatch_inner(req: &str) -> String {
              *    所以不走 with_state —— 核心未启动时也能用。
              */
             match crate::commands_backup::set_proxy_password(&provider, &password) {
-                Ok(()) => r#"{"ok":true}"#.to_string(),
+                Ok(()) => with_state(|st| {
+                    st.proxy.invalidate_clients();
+                    Ok(serde_json::json!({"ok": true}))
+                }),
                 Err(e) => err_json(&e, "other"),
             }
         }
@@ -2280,9 +2315,31 @@ async fn dispatch_inner(req: &str) -> String {
                 Ok(s) => s.to_string(),
                 Err(e) => return err_json(&e, "other"),
             };
+            let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let backups: Vec<String> = match args.get("backupUrls") {
+                Some(value) => match serde_json::from_value(value.clone()) { Ok(v) => v, Err(_) => return err_json("备用地址格式错误", "other") },
+                None => Vec::new(),
+            };
+            let name = args.get("name").and_then(|v| v.as_str()).map(str::to_owned);
             with_state_async(move |st| async move {
-                crate::commands_remote::install_plugin(st, &url).await
+                let result = crate::commands_remote::install_plugin_with_backups(st, &url, &backups).await?;
+                if let (Some(name), Some(id)) = (name, result.get("id").and_then(|v| v.as_str())) {
+                    if let Some(origin) = crate::source_catalog::catalog(st)?.origins.iter().find(|o| o.kind == "js" && o.provider_ids.iter().any(|p| p == id)) {
+                        crate::source_catalog::command_set_origin(st, &serde_json::json!({"id": origin.id, "name": name}))?;
+                    }
+                }
+                Ok(result)
             }).await
+        }
+        "import_live_source" => {
+            let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let url = match a.str("url") { Ok(s) => s.to_owned(), Err(e) => return err_json(&e, "other") };
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+            let backups: Vec<String> = match args.get("backupUrls") {
+                Some(value) => match serde_json::from_value(value.clone()) { Ok(v) => v, Err(_) => return err_json("备用地址格式错误", "other") },
+                None => Vec::new(),
+            };
+            with_state_async(move |st| async move { crate::source_catalog::import_live(st, &url, &name, &backups).await }).await
         }
         "install_plugin_source" => {
             let source = match a.str("source") {
@@ -2325,17 +2382,21 @@ async fn dispatch_inner(req: &str) -> String {
                 Ok(s) => s.to_string(),
                 Err(e) => return err_json(&e, "other"),
             };
+            let args = v.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let name = args.get("name").and_then(|v| v.as_str()).map(str::to_owned);
+            let backups: Vec<String> = match args.get("backupUrls") {
+                Some(value) => match serde_json::from_value(value.clone()) { Ok(v) => v, Err(_) => return err_json("备用地址格式错误", "other") },
+                None => Vec::new(),
+            };
             with_state_async(move |st| async move {
-                crate::tvbox::import_tvbox_config(st, &config).await
+                crate::tvbox::import_tvbox_config_with_options(st, &config, &backups, name.as_deref()).await
             }).await
         }
         "source_discovery_status" => with_state(crate::source_discovery::status),
         "source_discovery_read" => with_state(crate::source_discovery::mark_read),
         "source_discovery_scan" => with_state_async(crate::source_discovery::scan).await,
         "source_discovery_configure" => {
-            let proxy = match a.str("proxy_url") {
-                Ok(v) => v.to_string(), Err(e) => return err_json(&e, "other"),
-            };
+            let proxy = a.str_or("proxy_url", "").to_string();
             let automatic = v.get("args").and_then(|v| v.get("automatic")).and_then(|v| v.as_bool()).unwrap_or(false);
             with_state(move |st| crate::source_discovery::configure(st, &proxy, automatic))
         }
@@ -2373,8 +2434,9 @@ async fn dispatch_inner(req: &str) -> String {
                 Ok(s) => s.to_string(),
                 Err(e) => return err_json(&e, "other"),
             };
-            with_state_async(move |_st| async move {
-                crate::pan_check::command_check(&items).await
+            let provider = a.str("provider").unwrap_or("tvbox").to_string();
+            with_state_async(move |st| async move {
+                crate::pan_check::command_check_for_state(st, &provider, &items).await
             }).await
         }
 
@@ -2461,12 +2523,21 @@ async fn dispatch_inner(req: &str) -> String {
             if a.bool_or("invalidate", false) {
                 if let Some(owner) = &owner { crate::csp::pan_playback_guard::invalidate(owner); }
             }
-            if owner.is_none() {
-                crate::csp::pan_drive::purge_all_previous().await;
-            } else {
-                crate::csp::pan_drive::purge_for_owner(owner.clone()).await;
-            }
-            crate::csp::pan_xunlei_play::purge_for_owner(owner).await;
+            // Stay in this future: moving cleanup to a worker would discard the
+            // caller's scoped fixtures and needlessly introduce another task.
+            let routing = state().map(|st| (st.proxy.clone(), crate::proxy::GLOBAL_PROXY.to_string()));
+            let checker = match crate::csp::pan_episode_select::operation_checker(routing.as_ref()) {
+                Ok(checker) => checker,
+                Err(error) => return err_json(&error, classify_error(&error)),
+            };
+            crate::csp::pan_episode_select::with_operation(checker, async {
+                if owner.is_none() {
+                    crate::csp::pan_drive::purge_all_previous().await;
+                } else {
+                    crate::csp::pan_drive::purge_for_owner(owner.clone()).await;
+                }
+                crate::csp::pan_xunlei_play::purge_for_owner(owner).await;
+            }).await;
             with_state(|_st| Ok::<_, String>(serde_json::json!({})))
         }
         "pan_logout" => {
@@ -3186,6 +3257,48 @@ mod pan_cleanup_envelope_tests {
         replay.expect(&["legacy-only"]);
         cleanup(Some(&active), false).await;
         replay.expect(&["legacy-active"]);
+    }
+
+    #[tokio::test(flavor="current_thread")]
+    async fn ffi_pan_cleanup_proxy_routes_all_drives_and_retains_failed_cleanup() {
+        use crate::csp::http_context::test_support::{serve,custom};
+        use crate::csp::pan_episode_select::with_operation;
+        use axum::response::IntoResponse;
+        let _serial = pan_drive::FIXTURE_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        let replay = Replay::new().await;
+        let second = serve(|_|axum::Json(json!({"code":0,"data":{"status":2}})).into_response()).await;
+        let store = Arc::new(crate::proxy::ProxyStore::new());
+        let changing = store.clone();
+        let next = second.url.clone();
+        let first = serve(move |_| {
+            custom(&changing,&next);
+            axum::Json(json!({"code":0,"data":{"status":2}})).into_response()
+        }).await;
+        let checker = crate::pan_check::PanChecker::with_endpoints(crate::pan_check::PanEndpoints::default());
+        let target = owner("ffi-proxy-cleanup",1);
+        guard::register(Some(target.clone())).unwrap();
+        replay.seed(Some(target.clone()),"routed").await;
+        custom(&store,&first.url);
+        with_operation(checker.for_share_operation(store.clone(),crate::proxy::GLOBAL_PROXY).unwrap(),cleanup(Some(&target),false)).await;
+        assert!(replay.take().is_empty(),"dispatcher must not send any direct delete");
+        assert!(second.hits.lock().unwrap().is_empty(),"all three drives retain the same cleanup snapshot");
+        let hits = first.hits.lock().unwrap().clone();
+        for prefix in ["/q/","/u/","/x/"] {
+            assert!(hits.iter().any(|r|r.uri.path().starts_with(prefix)),"missing routed {prefix} cleanup");
+        }
+        replay.seed(Some(target.clone()),"retry").await;
+        let dead=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unavailable=format!("http://{}",dead.local_addr().unwrap());drop(dead);
+        custom(&store,&unavailable);
+        with_operation(checker.for_share_operation(store.clone(),crate::proxy::GLOBAL_PROXY).unwrap(),cleanup(Some(&target),false)).await;
+        assert!(replay.take().is_empty(),"proxy failure never silently deletes directly");
+        custom(&store,&second.url);
+        with_operation(checker.for_share_operation(store,crate::proxy::GLOBAL_PROXY).unwrap(),cleanup(Some(&target),false)).await;
+        let hits = second.hits.lock().unwrap().clone();
+        for prefix in ["/q/","/u/","/x/"] {
+            assert!(hits.iter().any(|r|r.uri.path().starts_with(prefix)),"failed cleanup must preserve ownership for {prefix} retry");
+        }
+        assert!(replay.take().is_empty());
     }
 }
 

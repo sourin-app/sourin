@@ -144,6 +144,7 @@ pub mod pan_ali;
 pub mod push;
 pub mod webdav;
 pub mod xbpq;
+pub(crate) mod http_context;
 pub mod pan123;
 pub mod config;
 pub mod local_file;
@@ -209,12 +210,11 @@ pub fn unimplemented_reason(api: &str) -> String {
     }
 }
 
-/// 已知的"不是简单未实现"的具体原因（按 api 逐字匹配）
-///
-/// 为什么需要它：`csp_App99` 的代码已经写完并验证到"能解开真实响应"，
-/// 卡在服务端拒绝第二段握手 —— 说成"尚未实现"是**不准确**的。
+/// 已知的固定实现限制；注册过类不等于已经提供浏览和播放能力。
+/// 只描述实现本身的边界，不记录一次网络探测失败。
 pub fn unimplemented_note(api: &str) -> Option<&'static str> {
     match class_of(api)? {
+        "AppDrama" => Some("AppDrama 的浏览和播放能力尚未实现，配置已保留"),
         // App99 已注册（浏览链路实证可用）⇒ 不再需要"暂不可用"的原因。
         // 保留这个 match 作为**机制**：将来某个类"实现了但被服务端挡住"时，往这里加一条。
         "App99" => None,
@@ -326,6 +326,9 @@ pub struct CspPlay {
 /// 一填默认值，实现就分不清「配置没写」和「配置写了空」。
 #[async_trait::async_trait]
 pub trait CspSite: Send + Sync {
+    /// Only engines with a migrated HTTP context override this hook.
+    fn set_http_context(&self, _proxy: Arc<crate::proxy::ProxyStore>, _provider: &str) {}
+
     /// 类名（= api 去掉 `csp_` 前缀，注册表键）
     fn class(&self) -> &'static str;
 
@@ -815,14 +818,19 @@ mod tests {
 
     #[test]
     fn unimplemented_reason_quotes_api_verbatim() {
+        // AppDrama has a fixed capability limit; its reason is more specific
+        // than the generic message for an unregistered implementation.
         assert_eq!(
             unimplemented_reason("csp_AppDrama"),
-            "csp_AppDrama 尚未实现"
+            "csp_AppDrama 暂不可用：AppDrama 的浏览和播放能力尚未实现，配置已保留"
         );
         assert_eq!(
             unimplemented_reason("  csp_AppDrama "),
-            "csp_AppDrama 尚未实现"
+            "csp_AppDrama 暂不可用：AppDrama 的浏览和播放能力尚未实现，配置已保留"
         );
+        for api in ["csp_UnregisteredFixture", "  csp_UnregisteredFixture?key=value  "] {
+            assert_eq!(unimplemented_reason(api), format!("{} 尚未实现", api.trim()));
+        }
     }
 
     #[test]

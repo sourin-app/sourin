@@ -46,6 +46,12 @@ impl Registry {
 
     /// 注册一个 Provider
     pub fn register(&self, provider: Arc<dyn MediaProvider>) {
+        self.register_with_default_enabled(provider, true);
+    }
+
+    /// Restore late providers with their saved switch before making them visible.
+    /// Replacing an existing provider keeps its current switch and position.
+    pub fn register_with_default_enabled(&self, provider: Arc<dyn MediaProvider>, enabled: bool) {
         let mut list = self.providers.write().unwrap();
         let id = provider.manifest().id.clone();
         // Replacing implementation must not reset the user's disabled flag or
@@ -54,7 +60,9 @@ impl Registry {
             handle.provider = provider;
             return;
         }
-        list.push(ProviderHandle::new(provider));
+        let mut handle = ProviderHandle::new(provider);
+        handle.enabled = enabled;
+        list.push(handle);
         // 按优先级稳定排序
         list.sort_by_key(|h| h.priority);
     }
@@ -315,29 +323,18 @@ impl Registry {
             }
         }
 
-        /*
-         * ★★ A′（2026-10-26）：`hidden` 的子站**不直接参与搜索**。
-         *
-         * 原因：TVBox 导入的子站都被置 `hidden: true`（列表不展示），
-         * 但它们**仍是 enabled**（要能被 `provider:native` 路由命中）；
-         * 而聚合源 `tvbox_agg` 自己也会扇出搜索同一批子站 ⇒
-         * 若这里不过滤，同一部片会被搜两遍（聚合一次 + 每个子站各一次），
-         * 用户看到重复结果、每多一个子站就多一轮无谓请求。
-         *
-         * ⚠️ **兜底（fail-open）**：若过滤后一个都不剩，说明聚合源还没被
-         *    启用任何子站（`enabledSiteIds` 为空）。这时如果把 hidden 也排除，
-         *    搜索会**整个空掉**——用户导入了 100 个源却搜不到任何东西。
-         *    所以此时退回"搜全部"，与加这个过滤之前的行为一致。
-         */
+        // TVBox children are first-level sources even in older configurations
+        // that persisted hidden=true. Exclude the aggregate fan-out entry to
+        // avoid duplicate calls; keep ordinary hidden-source fallback semantics.
         let candidates: Vec<(Arc<dyn MediaProvider>, bool)> = self
             .providers
             .read()
             .unwrap()
             .iter()
-            .filter(|h| h.enabled && h.provider.manifest().capabilities.search)
+            .filter(|h| h.enabled && h.provider.manifest().capabilities.search && h.provider.manifest().id != crate::tvbox_aggregate::AGGREGATE_ID)
             .map(|h| {
                 let p = h.provider.clone();
-                let hidden = p.manifest().hidden;
+                let hidden = p.manifest().hidden && p.manifest().kind != "tvbox";
                 (p, hidden)
             })
             .collect();
@@ -535,23 +532,17 @@ impl Registry {
     ///
     /// 设置页仍照旧显示各源的登录状态（`session_state`），那是**另一个**职责。
     pub async fn home_all(&self) -> Vec<(String, String, Vec<Section>)> {
-        /*
-         * ★★ A′（2026-10-26）：`hidden` 子站**不直接上首页**。
-         *
-         * 否则用户首页会同时看到「TVBox 聚合」的区块 **和** 16 个子站各自的
-         * 区块 —— 同一批内容重复两遍。子站的内容改由聚合源扇出提供。
-         * 兜底同 `for_each_search`：一个可见源都不剩时退回全部，
-         * 免得"导入了却首页空白"。
-         */
+        // Same flat-source policy as search: enabled TVBox children replace
+        // their aggregate entry; generic hidden sources keep the old fallback.
         let candidates: Vec<(Arc<dyn MediaProvider>, bool)> = self
             .providers
             .read()
             .unwrap()
             .iter()
-            .filter(|h| h.enabled)
+            .filter(|h| h.enabled && h.provider.manifest().id != crate::tvbox_aggregate::AGGREGATE_ID)
             .map(|h| {
                 let p = h.provider.clone();
-                let hidden = p.manifest().hidden;
+                let hidden = p.manifest().hidden && p.manifest().kind != "tvbox";
                 (p, hidden)
             })
             .collect();
@@ -574,25 +565,52 @@ impl Registry {
             }
         }
 
-        let mut out = Vec::new();
-        for p in targets {
-            let m = p.manifest();
-            if !m.working {
-                continue;
-            }
-            /*
-             * ★ 这里「不再」按会话过滤（2026-10-15）—— 详见上面那段长注释。
-             *   一句话：`login_required` 只挡取流，不挡浏览；
-             *   真要登录的源会由下面这行 `home()` 自己返回 Unauthorized。
-             */
-            // 错误隔离
-            if let Ok(sections) = p.home().await {
-                if !sections.is_empty() {
-                    out.push((m.id.clone(), m.name.clone(), sections));
-                }
-            }
+        // Load independent source homes concurrently and retain the saved source order.
+        let permits = Arc::new(tokio::sync::Semaphore::new(8));
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, provider) in targets.into_iter().enumerate() {
+            if !provider.manifest().working { continue; }
+            let permits = permits.clone();
+            tasks.spawn(async move {
+                let _permit = permits.acquire_owned().await.ok()?;
+                let sections = tokio::time::timeout(std::time::Duration::from_secs(8), provider.home()).await.ok()?.ok()?;
+                if sections.is_empty() { return None; }
+                let manifest = provider.manifest();
+                Some((index, (manifest.id.clone(), manifest.name.clone(), sections)))
+            });
         }
-        out
+        let mut out = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            if let Ok(Some(group)) = result { out.push(group); }
+        }
+        out.sort_by_key(|(index, _)| *index);
+        out.into_iter().map(|(_, group)| group).collect()
+    }
+
+    /// Load only the selected enabled source. Unlike aggregate browsing, its
+    /// error must reach the caller instead of becoming a successful empty home.
+    pub async fn home_for_provider(&self, id: &str) -> Result<(String, String, Vec<Section>)> {
+        let provider = {
+            let handles = self.providers.read().unwrap();
+            let handle = handles.iter()
+                .find(|h| h.provider.manifest().id == id && h.enabled)
+                .ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "该内容源已停用或不存在"))?;
+            let manifest = handle.provider.manifest();
+            if !manifest.working {
+                return Err(ProviderError::new(ErrorKind::Broken, "该内容源暂不可用"));
+            }
+            handle.provider.clone()
+        };
+        let sections = tokio::time::timeout(std::time::Duration::from_secs(8), provider.home())
+            .await.map_err(|_| ProviderError::network("首页目录请求超时，请重试或切换来源"))??;
+        // A source can be disabled/replaced while its network request is pending.
+        let still_enabled = self.providers.read().unwrap().iter()
+            .any(|h| h.enabled && Arc::ptr_eq(&h.provider, &provider));
+        if !still_enabled {
+            return Err(ProviderError::new(ErrorKind::NotFound, "内容源配置已变更，请刷新"));
+        }
+        let manifest = provider.manifest();
+        Ok((manifest.id.clone(), manifest.name.clone(), sections))
     }
 
     /// 全部直播频道聚合（按 provider 分组）
@@ -1914,32 +1932,27 @@ mod tests {
         }
     }
 
-    /// ★★ 门禁①：**hidden 子站一次都不许被搜**，可见源（含聚合）照常搜
-    ///
-    /// # 这条挡的是什么
-    /// ```text
-    /// TVBox 导入的 16 个子站是 hidden 但仍 enabled ⇒
-    /// 若搜索只筛 `enabled && capabilities.search`，同一部片会被搜两遍：
-    ///   聚合源（扇出 16 个子站）一次 + 每个子站各自一次 = 17 次
-    /// 后果：结果重复、请求放大 17 倍。
-    /// ```
-    /// **注入验证**：把 `for_each_search` 里的 `.filter(|(_, hidden)| !*hidden)` 删掉 ⇒ 本条立刻红。
     #[tokio::test]
-    async fn search_skips_hidden_subsites_and_keeps_visible() {
+    async fn search_flattens_tvbox_children_without_aggregate_or_hidden_duplicates() {
         let reg = Registry::new();
-        let agg = HiddenProbe::new("tvbox_agg", "TVBox 聚合", false);
-        let sub1 = HiddenProbe::new("tvbox1", "子站一", true);
-        let sub2 = HiddenProbe::new("tvbox2", "子站二", true);
-        reg.register(agg.clone());
-        reg.register(sub1.clone());
-        reg.register(sub2.clone());
-
-        let r = reg.search_all("兰香如故", 1).await;
-        let ids: Vec<String> = r.results.iter().map(|(id, _, _)| id.clone()).collect();
-        assert_eq!(ids, vec!["tvbox_agg"], "只有可见/聚合源该被搜：{ids:?}");
-        assert_eq!(agg.calls.load(Ordering::SeqCst), 1, "聚合源必须被搜到（门禁②）");
-        assert_eq!(sub1.calls.load(Ordering::SeqCst), 0, "★ hidden 子站一不许被搜");
-        assert_eq!(sub2.calls.load(Ordering::SeqCst), 0, "★ hidden 子站二不许被搜");
+        let agg = HiddenProbe::new("tvbox_agg", "Aggregate", false);
+        let sub1 = HiddenProbe::new("tvbox1", "Child one", true);
+        let sub2 = HiddenProbe::new("tvbox2", "Child two", true);
+        let mut generic = HiddenProbe::new("hidden", "Hidden", true);
+        Arc::get_mut(&mut generic).unwrap().manifest.kind = "js".into();
+        for provider in [&agg, &sub1, &sub2, &generic] { reg.register(provider.clone()); }
+        let result = reg.search_all("fixture", 1).await;
+        let mut ids: Vec<_> = result.results.iter().map(|(id, _, _)| id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["tvbox1", "tvbox2"]);
+        assert_eq!(agg.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(generic.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(sub1.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(sub2.calls.load(Ordering::SeqCst), 1);
+        reg.set_enabled("tvbox2", false);
+        let result = reg.search_all("fixture", 1).await;
+        assert_eq!(result.results.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>(), vec!["tvbox1"]);
+        assert_eq!(sub2.calls.load(Ordering::SeqCst), 1);
     }
 
     /// ★ 兜底：**一个可见源都没有**时（聚合还没启用任何子站），hidden 子站仍要能搜
@@ -1948,7 +1961,8 @@ mod tests {
     #[tokio::test]
     async fn search_falls_back_to_hidden_when_nothing_visible() {
         let reg = Registry::new();
-        let sub = HiddenProbe::new("tvbox1", "子站一", true);
+        let mut sub = HiddenProbe::new("tvbox1", "子站一", true);
+        Arc::get_mut(&mut sub).unwrap().manifest.kind = "js".into();
         reg.register(sub.clone());
         let r = reg.search_all("x", 1).await;
         assert_eq!(r.results.len(), 1, "兜底必须生效：{:?}", r.results.len());
@@ -1956,17 +1970,123 @@ mod tests {
     }
 
     /// ★★ 门禁③：hidden 子站不直接上首页（否则首页既有聚合区块又有 16 个子站区块）
+    struct PendingHome {
+        inner: Arc<HiddenProbe>,
+        entered: tokio::sync::Notify,
+        resume: tokio::sync::Notify,
+    }
+
+    impl PendingHome {
+        fn new(id: &str) -> Arc<Self> {
+            Arc::new(Self {
+                inner: HiddenProbe::new(id, "Pending", false),
+                entered: tokio::sync::Notify::new(),
+                resume: tokio::sync::Notify::new(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl MediaProvider for PendingHome {
+        fn manifest(&self) -> &ProviderManifest { self.inner.manifest() }
+        async fn home(&self) -> Result<Vec<Section>> {
+            self.entered.notify_one();
+            self.resume.notified().await;
+            self.inner.home().await
+        }
+        async fn resolve(&self, _: &MediaId, _: &PlayRequest) -> Result<Vec<StreamCandidate>> {
+            Ok(vec![])
+        }
+    }
+
     #[tokio::test]
-    async fn home_skips_hidden_subsites_and_keeps_visible() {
+    async fn selected_home_does_not_wait_for_or_fetch_unselected_sources() {
+        let registry = Registry::new();
+        let selected = HiddenProbe::new("selected", "Selected", true);
+        let unrelated = HiddenProbe::new("other", "Other", false);
+        registry.register(selected.clone());
+        registry.register(unrelated.clone());
+        registry.register(PendingHome::new("slow"));
+        let (id, name, sections) = tokio::time::timeout(
+            std::time::Duration::from_millis(200), registry.home_for_provider("selected"),
+        ).await.expect("unselected source delayed selected home").unwrap();
+        assert_eq!((id.as_str(), name.as_str()), ("selected", "Selected"));
+        assert_eq!(sections[0].id, "s1");
+        assert_eq!(selected.home_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(unrelated.home_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn selected_home_rejects_disabled_missing_and_broken_before_fetch() {
+        let registry = Registry::new();
+        let source = HiddenProbe::new("selected", "Selected", false);
+        registry.register(source.clone());
+        registry.set_enabled("selected", false);
+        assert_eq!(registry.home_for_provider("selected").await.unwrap_err().kind, ErrorKind::NotFound);
+        assert_eq!(registry.home_for_provider("missing").await.unwrap_err().kind, ErrorKind::NotFound);
+        assert_eq!(source.home_calls.load(Ordering::SeqCst), 0);
+        let mut broken = HiddenProbe::new("broken", "Broken", false);
+        Arc::get_mut(&mut broken).unwrap().manifest.working = false;
+        registry.register(broken.clone());
+        assert_eq!(registry.home_for_provider("broken").await.unwrap_err().kind, ErrorKind::Broken);
+        assert_eq!(broken.home_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn selected_home_preserves_failure_instead_of_returning_empty() {
+        let registry = Registry::new();
+        registry.register(Arc::new(FakeProvider::new(false, false, false, false).with_home_unauthorized()));
+        assert_eq!(registry.home_for_provider("fake").await.unwrap_err().kind, ErrorKind::Unauthorized);
+    }
+
+    #[tokio::test]
+    async fn selected_home_rejects_disabled_or_replaced_inflight_provider() {
+        for replace in [false, true] {
+            let registry = Arc::new(Registry::new());
+            let source = PendingHome::new("selected");
+            registry.register(source.clone());
+            let pending = tokio::spawn({
+                let registry = registry.clone();
+                async move { registry.home_for_provider("selected").await }
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(1), source.entered.notified()).await.unwrap();
+            if replace {
+                registry.register(HiddenProbe::new("selected", "Replacement", false));
+            } else {
+                registry.set_enabled("selected", false);
+            }
+            source.resume.notify_one();
+            assert_eq!(pending.await.unwrap().unwrap_err().kind, ErrorKind::NotFound);
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_home_times_out_without_claiming_successful_empty() {
+        let registry = Registry::new();
+        registry.register(PendingHome::new("slow"));
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), registry.home_for_provider("slow"))
+            .await.expect("selected home exceeded its request budget").unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Network);
+    }
+
+    #[tokio::test]
+    async fn home_flattens_tvbox_children_without_aggregate_or_hidden_duplicates() {
         let reg = Registry::new();
-        let agg = HiddenProbe::new("tvbox_agg", "TVBox 聚合", false);
-        let sub = HiddenProbe::new("tvbox1", "子站一", true);
-        reg.register(agg.clone());
-        reg.register(sub.clone());
+        let agg = HiddenProbe::new("tvbox_agg", "Aggregate", false);
+        let sub = HiddenProbe::new("tvbox1", "Child", true);
+        let visible = HiddenProbe::new("visible", "Visible", false);
+        let mut generic = HiddenProbe::new("hidden", "Hidden", true);
+        Arc::get_mut(&mut generic).unwrap().manifest.kind = "js".into();
+        for provider in [&agg, &sub, &visible, &generic] { reg.register(provider.clone()); }
         let rows = reg.home_all().await;
-        let ids: Vec<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
-        assert_eq!(ids, vec!["tvbox_agg"], "首页只该有聚合源：{ids:?}");
-        assert_eq!(sub.home_calls.load(Ordering::SeqCst), 0, "★ hidden 子站不许上首页");
+        assert_eq!(rows.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>(), vec!["tvbox1", "visible"]);
+        assert_eq!(agg.home_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(generic.home_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(sub.home_calls.load(Ordering::SeqCst), 1);
+        reg.set_enabled("tvbox1", false);
+        let rows = reg.home_all().await;
+        assert_eq!(rows.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>(), vec!["visible"]);
+        assert_eq!(sub.home_calls.load(Ordering::SeqCst), 1);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2069,7 +2189,7 @@ mod tests {
     fn r2b_candidates_always_filter_enabled() {
         let src = include_str!("registry.rs");
         let n = src
-            .matches(".filter(|h| h.enabled && h.provider.manifest().capabilities.search)")
+            .matches(".filter(|h| h.enabled && h.provider.manifest().capabilities.search && h.provider.manifest().id != crate::tvbox_aggregate::AGGREGATE_ID)")
             .count();
         assert!(n >= 1, "★★ search_all 的候选必须按 enabled 过滤（实际 {n} 处）");
         let hn = src.matches(".filter(|h| h.enabled)").count();

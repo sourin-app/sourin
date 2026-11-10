@@ -57,7 +57,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -224,6 +224,21 @@ pub struct StreamEntry {
     pub hdr_token: String,
 }
 
+// Preserve per-image metadata for saved library records; the actual HTTP request
+// uses the decoded address and headers. Media entries remain unchanged.
+#[derive(Debug, Clone)]
+struct CoverEntry {
+    original_url: String,
+    request: StreamEntry,
+}
+
+// Covers share the loopback URL shape with streams but use the API proxy policy.
+#[derive(Clone, Copy)]
+enum ForwardKind {
+    Media,
+    Cover,
+}
+
 /// 流代理的共享状态
 ///
 /// # 为什么流与封面要分成两套表
@@ -247,7 +262,7 @@ pub struct StreamProxy {
     /// （换一次集/线路才登记一次），锁竞争可以忽略。
     table: Mutex<HashMap<String, StreamEntry>>,
     /// 封面：token → 取图信息
-    cover_table: Mutex<HashMap<String, StreamEntry>>,
+    cover_table: Mutex<HashMap<String, CoverEntry>>,
     /// 封面去重索引：**(URL, 请求头) → token**
     ///
     /// 相同 URL 和请求头复用 token，不同源的请求头互不覆盖。
@@ -341,6 +356,9 @@ pub struct StreamProxy {
     /// （读 HTTP_PROXY/HTTPS_PROXY）重试一次 —— 被墙的源才需要代理。
     /// ```
     proxied: reqwest::Client,
+    /// Production shares the live global configuration. Legacy constructors are
+    /// retained for isolated tests of the former direct/fallback behavior.
+    proxy_store: Option<Arc<crate::proxy::ProxyStore>>,
     /*
      * ═══════════════════════════════════════════════════════════════════
      * ★★★ 并行预取的开关 —— **每实例**，不是进程级环境变量
@@ -557,6 +575,7 @@ impl StreamProxy {
             start_lock: tokio::sync::Mutex::new(()),
             client,
             proxied,
+            proxy_store: None,
             /*
              * ★ 从环境变量初始化 —— 保留生产上的回滚开关
              *   （`SOURIN_PREFETCH_DISABLE=1` 完全回到改动前的串行透传），
@@ -585,6 +604,49 @@ impl StreamProxy {
             yield_until_ms: std::sync::atomic::AtomicU64::new(0),
             yield_saved_disabled: std::sync::atomic::AtomicU8::new(0),
         }
+    }
+
+    pub fn with_proxy_store(store: Arc<crate::proxy::ProxyStore>) -> Self {
+        let mut proxy = Self::new();
+        proxy.proxy_store = Some(store);
+        proxy
+    }
+
+    /// Select on each request so updates also affect already registered streams.
+    pub(crate) fn upstream_client(&self) -> Result<reqwest::Client, String> {
+        self.forward_client(ForwardKind::Media)
+    }
+
+    fn forward_client(&self, kind: ForwardKind) -> Result<reqwest::Client, String> {
+        let Some(store) = &self.proxy_store else { return Ok(self.client.clone()); };
+        let client = match kind {
+            ForwardKind::Media => store.stream_client(),
+            ForwardKind::Cover => store.client_for_ex(
+                crate::proxy::GLOBAL_PROXY, None, crate::proxy::AutoDecompress::Off,
+            ),
+        };
+        client.map_err(|_| "无法建立代理连接".to_string())
+    }
+
+    /// Our loopback wrapper handles proxy policy at its upstream boundary.
+    pub(crate) fn owns_url(&self, url: &str) -> bool {
+        let Ok(url) = reqwest::Url::parse(url) else { return false; };
+        let port = self.port();
+        port != 0 && url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
+            && url.port() == Some(port)
+            && (url.path().starts_with("/s/") || url.path().starts_with("/p/"))
+    }
+
+    pub(crate) fn probe_client(&self, url: &str) -> Result<reqwest::Client, String> {
+        if self.owns_url(url) { Ok(self.client.clone()) } else { self.upstream_client() }
+    }
+
+    fn global_stream_proxy_enabled(&self) -> bool {
+        self.proxy_store.as_ref().is_some_and(|store| {
+            let cfg = store.get(crate::proxy::GLOBAL_PROXY);
+            cfg.scope == crate::proxy::ProxyScope::All
+                && cfg.mode != crate::proxy::ProxyMode::Direct
+        })
     }
 
     /// 本实例是否禁用并行预取（测试用；生产走环境变量默认值）
@@ -961,7 +1023,7 @@ impl StreamProxy {
         }
 
         let tbl = self.cover_table.lock().unwrap_or_else(|e| e.into_inner());
-        tbl.get(token).map(|e| e.url.clone())
+        tbl.get(token).map(|e| e.original_url.clone())
     }
 
     /// [`unproxy_cover`] 的便利包装：还原不了就原样返回
@@ -1009,10 +1071,10 @@ impl StreamProxy {
         // entry is ready, so concurrent registration cannot expose an absent token.
 
         if let Ok(mut tbl) = self.cover_table.lock() {
-            tbl.insert(token.clone(), StreamEntry {
-                url: url.to_string(),
-                headers,
-                hdr_token: token.clone(),
+            let (request_url, headers) = crate::cover_request::decode(url, headers);
+            tbl.insert(token.clone(), CoverEntry {
+                original_url: url.to_string(),
+                request: StreamEntry { url: request_url, headers, hdr_token: token.clone() },
             });
         }
         drop(idx);
@@ -1299,6 +1361,7 @@ async fn handle_preflight() -> Response {
 async fn handle_proxied(
     State(proxy): State<Arc<StreamProxy>>,
     Path(params): Path<HashMap<String, String>>,
+    RawQuery(query): RawQuery,
     req_headers: HeaderMap,
 ) -> Response {
     let token = params.get("token").cloned().unwrap_or_default();
@@ -1307,12 +1370,12 @@ async fn handle_proxied(
     // 查头（插件的 Referer 等）
     let headers = {
         let t = proxy.hdr_table.lock().unwrap_or_else(|e| e.into_inner());
-        t.get(&token).cloned()
+        t.get(&token).cloned().map(|headers| (headers, ForwardKind::Media))
     }.or_else(|| {
         proxy.cover_table.lock().unwrap_or_else(|e| e.into_inner())
-            .get(&token).map(|entry| entry.headers.clone())
+            .get(&token).map(|entry| (entry.request.headers.clone(), ForwardKind::Cover))
     });
-    let Some(headers) = headers else {
+    let Some((headers, kind)) = headers else {
         // ★ issue #9：同 `/s/` 的 404 —— 改前完全静默（log::* 被丢弃）
         splog!(
             "404 分片查不到头: token={} rest={}（代理地址已失效）",
@@ -1336,9 +1399,12 @@ async fn handle_proxied(
     if scheme.is_empty() || host.is_empty() || !matches!(scheme, "http" | "https") {
         return (StatusCode::BAD_REQUEST, "代理地址格式不对").into_response();
     }
-    let url = format!("{scheme}://{host}/{path}");
+    // Path excludes the query. Preserve its raw bytes (signature escapes,
+    // repeated keys and literal '+') instead of parsing/re-encoding it.
+    let mut url = format!("{scheme}://{host}/{path}");
+    if let Some(query) = query { url.push('?'); url.push_str(&query); }
 
-    forward_request(&proxy, &token, &headers, &url, &req_headers).await
+    forward_request(&proxy, kind, &token, &headers, &url, &req_headers).await
 }
 
 /// 转发一次取流
@@ -1371,6 +1437,7 @@ async fn handle_proxied(
 async fn handle_stream(
     State(proxy): State<Arc<StreamProxy>>,
     Path(params): Path<HashMap<String, String>>,
+    RawQuery(query): RawQuery,
     req_headers: HeaderMap,
 ) -> Response {
     /*
@@ -1410,7 +1477,7 @@ async fn handle_stream(
          */
         let t = proxy.table.lock().unwrap_or_else(|e| e.into_inner());
         match t.get(&token).cloned() {
-            Some(e) => Some(e),
+            Some(e) => Some((e, ForwardKind::Media)),
             None => {
                 drop(t);
                 proxy
@@ -1419,10 +1486,11 @@ async fn handle_stream(
                     .unwrap_or_else(|e| e.into_inner())
                     .get(&token)
                     .cloned()
+                    .map(|entry| (entry.request, ForwardKind::Cover))
             }
         }
     };
-    let Some(entry) = entry else {
+    let Some((entry, kind)) = entry else {
         /*
          * ★★★ issue #9：这条 404 正是用户截图里那句的来源。
          * 改前**一行日志都没有**（`log::*` 被丢弃）⇒ 只能猜。
@@ -1452,7 +1520,10 @@ async fn handle_stream(
      */
     let upstream_url = match rest.as_deref() {
         None | Some("") => entry.url.clone(),
-        Some(sub) => join_subpath(&entry.url, sub),
+        Some(sub) => {
+            let child = query.as_ref().map_or_else(|| sub.to_string(), |query| format!("{sub}?{query}"));
+            join_subpath(&entry.url, &child)
+        },
     };
 
     /*
@@ -1495,7 +1566,7 @@ async fn handle_stream(
     );
 
     let t_start = std::time::Instant::now();
-    let resp = forward_request(&proxy, &entry.hdr_token, &entry.headers,
+    let resp = forward_request(&proxy, kind, &entry.hdr_token, &entry.headers,
                                &upstream_url, &req_headers).await;
     splog!(
         "OUT status={} elapsed={}ms upstream={}",
@@ -1787,25 +1858,41 @@ fn split_segments(from: u64, to: u64, n: usize) -> Vec<(u64, u64)> {
     out
 }
 
-/// 取一段（**必须**是 206 且长度严格相符，否则算失败）
-///
-/// 严格校验是刻意的：宁可回退到串行（慢但正确），
-/// 也绝不把长度不对/起点不对的数据拼进流里。
-async fn fetch_segment(
+/// Each prefetch request reselects the live policy while sharing cached pools.
+#[derive(Clone)]
+struct StreamClientSource {
     client: reqwest::Client,
+    store: Option<Arc<crate::proxy::ProxyStore>>,
+}
+
+impl StreamClientSource {
+    fn current(&self) -> Result<reqwest::Client, String> {
+        match &self.store {
+            Some(store) => store.stream_client().map_err(|_| "无法建立视频代理连接".to_string()),
+            None => Ok(self.client.clone()),
+        }
+    }
+}
+
+/// Fetch exactly the requested bytes; mismatched ranges cannot be concatenated.
+async fn fetch_segment(
+    source: StreamClientSource,
     url: String,
     headers: Vec<(String, String)>,
     start: u64,
     end: u64,
 ) -> Result<Bytes, String> {
-    let mut rb = client
+    let mut rb = source.current()?
         .get(&url)
         .header(header::RANGE, format!("bytes={start}-{end}"));
     for (k, v) in &headers {
-        rb = rb.header(k.as_str(), v.as_str());
+        if source.store.is_none() || !k.eq_ignore_ascii_case("accept-encoding") {
+            rb = rb.header(k.as_str(), v.as_str());
+        }
     }
+    if source.store.is_some() { rb = rb.header(header::ACCEPT_ENCODING, "identity"); }
 
-    let resp = rb.send().await.map_err(|e| format!("分段请求失败: {e}"))?;
+    let resp = rb.send().await.map_err(|e| format!("分段请求失败: {}", e.without_url()))?;
     let status = resp.status();
     if status != StatusCode::PARTIAL_CONTENT {
         return Err(format!("分段未返回 206（{status}）—— 上游可能不支持 Range"));
@@ -1821,7 +1908,7 @@ async fn fetch_segment(
             }
         }
     }
-    let body = resp.bytes().await.map_err(|e| format!("读取分段失败: {e}"))?;
+    let body = resp.bytes().await.map_err(|e| format!("读取分段失败: {}", e.without_url()))?;
     let want = (end - start + 1) as usize;
     if body.len() != want {
         return Err(format!("分段长度不符: 期望 {want}，实得 {}", body.len()));
@@ -1890,7 +1977,7 @@ struct WindowTask {
 /// `head_len > 0` 时按 `split_first_window` 切（第一段是小首块），
 /// 否则按 `split_segments` 均分。
 fn spawn_window(
-    client: &reqwest::Client,
+    client: &StreamClientSource,
     url: &str,
     headers: &[(String, String)],
     from: u64,
@@ -1969,7 +2056,7 @@ impl Stream for ChannelStream {
 /// 而"首段成功、后续段失败"在改前与改后都会触发串行重取。
 async fn run_prefetch(
     plan: PrefetchPlan,
-    client: reqwest::Client,
+    client: StreamClientSource,
     url: String,
     headers: Vec<(String, String)>,
     first_window: Bytes,
@@ -2124,6 +2211,7 @@ async fn fetch_window(
     to: u64,
     parallel: usize,
 ) -> Result<Bytes, String> {
+    let client = StreamClientSource { client: client.clone(), store: None };
     let handles: Vec<_> = split_segments(from, to, parallel)
         .into_iter()
         .map(|(a, b)| {
@@ -2221,7 +2309,7 @@ async fn send_headers(
         Ok(Ok(r)) => Ok(r),
         Ok(Err(e)) => {
             let conn = e.is_connect() || e.is_timeout();
-            Err((format!("{e}"), conn))
+            Err((e.without_url().to_string(), conn))
         }
         Err(_) => Err((
             format!("等响应头超过 {UPSTREAM_HEADER_SECS}s（连接类失败 ⇒ 回退）"),
@@ -2230,8 +2318,36 @@ async fn send_headers(
     }
 }
 
+/// Stream clients keep encoded bytes untouched for Range. HLS manifests must
+/// be decoded before URI rewriting; identity is requested but some origins
+/// still send gzip or deflate.
+pub(crate) async fn read_playlist_text(response: reqwest::Response) -> Result<String, String> {
+    use std::io::Read;
+    let encoding = response.headers().get(header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok()).unwrap_or("").trim().to_ascii_lowercase();
+    let bytes = response.bytes().await.map_err(|_| "读取播放列表失败".to_string())?;
+    let mut decoded = Vec::new();
+    match encoding.as_str() {
+        "" | "identity" => decoded.extend_from_slice(&bytes),
+        "gzip" | "x-gzip" => {
+            flate2::read::GzDecoder::new(&bytes[..]).read_to_end(&mut decoded)
+                .map_err(|_| "播放列表压缩内容无效".to_string())?;
+        }
+        "deflate" => {
+            if flate2::read::ZlibDecoder::new(&bytes[..]).read_to_end(&mut decoded).is_err() {
+                decoded.clear();
+                flate2::read::DeflateDecoder::new(&bytes[..]).read_to_end(&mut decoded)
+                    .map_err(|_| "播放列表压缩内容无效".to_string())?;
+            }
+        }
+        _ => return Err("播放列表使用不支持的压缩格式".to_string()),
+    }
+    Ok(String::from_utf8_lossy(&decoded).into_owned())
+}
+
 async fn forward_request(
     proxy: &Arc<StreamProxy>,
+    kind: ForwardKind,
     hdr_token: &str,
     headers: &[(String, String)],
     upstream_url: &str,
@@ -2244,14 +2360,20 @@ async fn forward_request(
      * ⇒ 池永远空 ⇒ 每次都要 DNS + TCP + TLS。
      * 详见 `StreamProxy::client` 字段上的说明。
      */
-    let client = proxy.client.clone();
+    let client = match proxy.forward_client(kind) {
+        Ok(client) => client,
+        Err(_) => return (StatusCode::BAD_GATEWAY, "代理配置不可用，请检查全局代理设置").into_response(),
+    };
 
     let mut rb = client.request(reqwest::Method::GET, upstream_url);
 
     // 插件声明的头（如 外部视频站的 Referer —— 少它就是 403）
     for (k, v) in headers {
-        rb = rb.header(k.as_str(), v.as_str());
+        if proxy.proxy_store.is_none() || !k.eq_ignore_ascii_case("accept-encoding") {
+            rb = rb.header(k.as_str(), v.as_str());
+        }
     }
+    if proxy.proxy_store.is_some() { rb = rb.header(header::ACCEPT_ENCODING, "identity"); }
 
     /*
      * ★ 透传 Range —— 视频拖进度条全靠它
@@ -2307,6 +2429,11 @@ async fn forward_request(
                 t_up.elapsed().as_millis(),
                 redact_url(upstream_url),
             );
+            // Production obeys the selected policy, including ApiOnly's direct
+            // media path. Connection errors never select a different route.
+            if proxy.proxy_store.is_some() {
+                return (StatusCode::BAD_GATEWAY, "取流失败，请检查网络或全局代理设置").into_response();
+            }
             if !is_conn {
                 // 非连接类（例如 TLS 证书、非法 URL）⇒ 保持原行为，不回退
                 return (StatusCode::BAD_GATEWAY, format!("取流失败: {e}")).into_response();
@@ -2407,8 +2534,7 @@ async fn forward_request(
      *
      * · `Content-Range` / `Accept-Ranges` —— 进度条要用，必须带
      * · `Content-Type` / `Content-Length` —— 播放器要判断格式与总时长
-     * · `Content-Encoding` —— **不能带**：reqwest 已经解压过了，
-     *   再声明一次会让浏览器二次解压 → 花屏
+     * · `Content-Encoding` —— raw 流客户端保留编码；自动解压客户端已删掉此头。
      * · `Set-Cookie` —— 不带（那是上游与它自己域的事）
      *
      * ★★ 但 **CORS 头必须由我们自己发**（不能透传上游的）
@@ -2430,6 +2556,7 @@ async fn forward_request(
     for key in [
         header::CONTENT_TYPE,
         header::CONTENT_LENGTH,
+        header::CONTENT_ENCODING,
         header::CONTENT_RANGE,
         header::ACCEPT_RANGES,
         header::LAST_MODIFIED,
@@ -2489,7 +2616,7 @@ async fn forward_request(
         || path_only.ends_with(".m3u");
 
     if is_playlist {
-        let text = match upstream.text().await {
+        let text = match read_playlist_text(upstream).await {
             Ok(t) => t,
             Err(e) => {
                 // ★ issue #9：改前这条**没有日志**（502 只在播放器那边看到）
@@ -2627,8 +2754,12 @@ async fn forward_request(
          * 只是"要先等的东西"从 1MB 变成 64KB —— 失败判据完全相同
          * （`fetch_segment` 仍要求 206 + 长度严格相符），只是更快有结论。
          */
+        let client_source = StreamClientSource {
+            client: client.clone(),
+            store: proxy.proxy_store.clone(),
+        };
         let first_window = spawn_window(
-            &client,
+            &client_source,
             &upstream_url,
             &headers,
             plan.start,
@@ -2645,7 +2776,7 @@ async fn forward_request(
                 let plan2 = plan;
                 let url2 = upstream_url.to_string();
                 let headers2 = headers.to_vec();
-                let client2 = client.clone();
+                let client2 = client_source.clone();
                 tokio::spawn(async move {
                     run_prefetch(
                         plan2,
@@ -2855,19 +2986,22 @@ fn to_local(uri: &str, base_url: &str, origin: &str, local_base: &str) -> String
     format!("{local_base}{scheme}/{host}{path}")
 }
 
-/// 把「需要头的流」包装成本地代理地址
+/// Header-protected streams and all-scope proxy traffic use the local wrapper.
 ///
 /// 供 `resolve_stream` 命令在返回候选前统一处理：
-/// 只有 `not_web_ready` 的流才需要走代理（其余直连更快、也少一跳）。
+/// 全流量代理也必须包装无请求头的视频与独立音轨。
 pub async fn maybe_proxy(
     proxy: &Arc<StreamProxy>,
     url: &str,
     headers: &[(String, String)],
     not_web_ready: bool,
-) -> Option<String> {
-    if !not_web_ready || headers.is_empty() {
-        return None;
+) -> Result<Option<String>, String> {
+    if proxy.owns_url(url) { return Ok(None); }
+    if !proxy.global_stream_proxy_enabled() && (!not_web_ready || headers.is_empty()) {
+        return Ok(None);
     }
+    // Fail before handing a URL to the player if proxy configuration is invalid.
+    proxy.upstream_client()?;
     /*
      * ★★★ issue #9（次修 2）：**用 `ensure_started` 返回的端口**，
      * 不再让 `register` 回读 `self.port()` —— 两步之间代理可能已退出
@@ -2886,8 +3020,8 @@ pub async fn maybe_proxy(
              * ★ issue #9：这里原来也是 `log::error!`（同样被丢弃）⇒
              *   改走 stderr。
              */
-            splog!("代理启动失败，该流将直连（很可能 403）: {e}");
-            return None;
+            splog!("本地流代理启动失败: {e}");
+            return Err("无法启动本地视频代理，请重试".to_string());
         }
     };
     let local = proxy.register_at(url, headers.to_vec(), port);
@@ -2898,8 +3032,12 @@ pub async fn maybe_proxy(
         redact_url(url),
         hdr_names(headers),
     );
-    Some(local)
+    Ok(Some(local))
 }
+
+#[cfg(test)]
+#[path = "streamproxy_global_proxy_tests.rs"]
+mod global_proxy_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5070,11 +5208,11 @@ mod tests {
         let h = vec![("Referer".to_string(), "https://www.example-v.com".to_string())];
 
         // 直连流：不代理
-        assert!(maybe_proxy(&p, "https://x/a.mp4", &h, false).await.is_none());
+        assert!(maybe_proxy(&p, "https://x/a.mp4", &h, false).await.unwrap().is_none());
         // 没有头：不需要代理
-        assert!(maybe_proxy(&p, "https://x/a.mp4", &[], true).await.is_none());
+        assert!(maybe_proxy(&p, "https://x/a.mp4", &[], true).await.unwrap().is_none());
         // 需要头 + not_web_ready：必须代理
-        let got = maybe_proxy(&p, "https://x/a.mp4", &h, true).await;
+        let got = maybe_proxy(&p, "https://x/a.mp4", &h, true).await.unwrap();
         assert!(got.is_some(), "外部视频站这类流必须走代理（否则 403）");
         assert!(got.unwrap().starts_with("http://127.0.0.1:"));
     }

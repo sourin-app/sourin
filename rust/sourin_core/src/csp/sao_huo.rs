@@ -619,7 +619,7 @@ pub fn split_ep_id(ep: &str) -> Option<(String, String, usize, String)> {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub struct SaoHuo {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
     /// DEX 字段 b：上游给的 Cookie（跨段复用）
     ///
     /// ⚠️ 本仓 `CspSite` **没有**"跨段持久化 cookie"的能力位 ⇒ 用进程内缓存替代，
@@ -633,32 +633,12 @@ impl SaoHuo {
     pub const CLASS: &'static str = "SaoHuo";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            /*
-             * ★ `.no_proxy()` —— 本仓 csp 的**既定惯例**（app3q/app99/app_drama/app_fox/
-             *   app_qi/app_sy/app_yqk/app_ys … 都这么做），**我第一版全部漏了**。
-             *
-             * # 真网后果（HDMoli 那次实测抓到的根因，是**系统性问题**）
-             * ```text
-             * 本机 `https_proxy=http://127.0.0.1:7890/`（curl/reqwest/urllib 都会读它），
-             * 而该代理对某些站点不通 ⇒
-             *     reqwest 走代理      ⇒ `operation timed out`
-             *     Python no-proxy     ⇒ **HTTP 200**
-             *     Python via-proxy    ⇒ TLS 握手超时
-             *   ⇒ 失败与"上游"无关，是"我们没绕开本机代理"。
-             * ```
-             * # 为什么 csp 类必须 `.no_proxy()`
-             * ```text
-             * ① 这些源是面向**公网直连**的（本机代理不是它们的依赖）；
-             * ② 本仓既有 8 个类已这么做 ⇒ 不做就是**偏离惯例**；
-             * ③ 装不装代理**不该改变 csp 源的行为**（否则用户装代理就一半源失效）。
-             * ```
-             */
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
             .user_agent(UA)
             .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+        );
         Self {
             client,
             cookie: Mutex::new(String::new()),
@@ -671,6 +651,7 @@ impl SaoHuo {
         let ck = self.cookie.lock().map(|c| c.clone()).unwrap_or_default();
         let mut req = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT_LANGUAGE, ACCEPT_LANG)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml");
@@ -716,6 +697,10 @@ impl SaoHuo {
 
     /// 解析出站点前缀：ext → 缓存 → 地址发布页探测（DEX `init` 的三级）
     async fn resolve_site(&self, ext: &str) -> Result<String, String> {
+        self.resolve_from_release_url(ext, FALLBACK_SITE).await
+    }
+
+    async fn resolve_from_release_url(&self, ext: &str, fallback_url: &str) -> Result<String, String> {
         if let Ok(g) = self.site.lock() {
             if !g.trim().is_empty() {
                 return Ok(g.clone());
@@ -729,10 +714,10 @@ impl SaoHuo {
             return Ok(from_ext);
         }
         // ★ 三级兜底：地址发布页探测（DEX `init` 的那段）
-        let page = self.get_text(FALLBACK_SITE, "地址发布页").await?;
+        let page = self.get_text(fallback_url, "地址发布页").await?;
         let probed = probe_site_from(&page).ok_or_else(|| {
             format!(
-                "既没有 ext 站点、也没能从地址发布页 {FALLBACK_SITE} 探到新域名\
+                "既没有 ext 站点、也没能从地址发布页 {fallback_url} 探到新域名\
                  （页面 {} 字节；`.content-top a` 可能改结构了）",
                 page.len()
             )
@@ -752,6 +737,10 @@ impl Default for SaoHuo {
 
 #[async_trait]
 impl CspSite for SaoHuo {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -932,6 +921,10 @@ pub fn cats() -> Vec<CspCategory> {
 }
 
 crate::csp::register_site!(SaoHuo);
+
+#[cfg(test)]
+#[path = "sao_huo_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

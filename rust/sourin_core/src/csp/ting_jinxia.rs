@@ -116,25 +116,27 @@ pub fn host_of(ext: &str) -> Option<String> {
 }
 
 pub struct TingJinxia {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl TingJinxia {
     pub const CLASS: &'static str = "TingJinxia";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(TIMEOUT)
-            .no_proxy()
-            .build()
-            .expect("build ting_jinxia http client");
+        let client = super::http_context::CspHttpContext::new(|| {
+            reqwest::Client::builder()
+                .user_agent(UA)
+                .timeout(TIMEOUT)
+                // Ignore environment proxies; CspHttpContext applies app policy.
+                .no_proxy()
+        });
         Self { client }
     }
 
     async fn get_text(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(
                 reqwest::header::ACCEPT,
@@ -420,6 +422,10 @@ crate::csp::register_site!(TingJinxia);
 
 #[async_trait]
 impl CspSite for TingJinxia {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -506,6 +512,7 @@ impl CspSite for TingJinxia {
         // ★ POST + `xt` 头（GET 或不带 xt 都只会拿到 `{"url":null,"status":1}`）
         let resp = self
             .client
+            .client()?
             .post(format!("{host}/?s=api-getneoplay"))
             .header("xt", &m.xt)
             .header(reqwest::header::REFERER, ep_url.clone())
@@ -755,3 +762,7 @@ mod tests {
         assert_eq!(cats.iter().filter(|c| c.name == "武侠玄幻").count(), 1, "不许重复");
     }
 }
+
+#[cfg(test)]
+#[path = "ting_jinxia_proxy_tests.rs"]
+mod proxy_tests;

@@ -114,3 +114,27 @@ stream.duration 在 DISCONTINUITY 清单上是"当前分片有多长"的**伪影
 - 同一契约的 Rust 半边：[hls-facts-not-duration-guessing](./2026-10-30-hls-facts-not-duration-guessing.md)
 - 样片判据（缓存记权威值的直接受益者）：[./2026-10-30-sample-line-duration-cache](../feature/2026-10-30-sample-line-duration-cache.md)
 - duration 边界（本改动所在监听的行为契约）：[./2026-10-30-episode-jump-duration-boundary.md](./2026-10-30-episode-jump-duration-boundary.md)
+
+
+## Effective duration updates (2026-11-09)
+
+media_kit already deduplicates raw duration events. Distinct segment readings can
+still map to the same authoritative playlist total. `_onDurationTick` now rebuilds
+the page only when the effective display/progress duration or the cached line's
+sample badge changes. `_recordLineDuration` skips serialization when the same
+line already has the same whole-second value. The authoritative fact selection
+and existing sample policy are unchanged.
+
+Do not early-return from the duration callback merely because the displayed total
+is equal: a new current line still needs its own cache entry and progress identity.
+Record before comparing the line badge. A rendered regression caught a first draft
+that left a second short line's badge stale; the final code updates that label.
+
+`player_duration_rebuild_test.dart` uses the real PlayerPage, native media library
+and isolated transport. It counts actual page builds, reads the rendered bottom
+bar and line labels, and checks precise duration, zero-value preservation, same
+duration on another line, and no playback restart. Eight distinct segment values
+caused eight builds before the fix and zero afterward; genuine duration/badge
+changes still build. This is widget behavior evidence, not a measured external
+playback frame-rate improvement. Native/client receipts belong in the execution
+plan. The related sample-cache note still owns its labeling/default-line policy.

@@ -218,6 +218,14 @@ pub(crate) fn debug_override_credentials(credentials: Vec<PanCredential>) -> Tes
     TestCredentialGuard { previous, _thread_bound: std::marker::PhantomData }
 }
 
+/// Read only the explicit thread-local fixture, never fall back to the OS keyring.
+#[cfg(test)]
+pub(crate) fn debug_test_credential(kind: PanKind) -> Option<PanCredential> {
+    TEST_CREDENTIALS.with(|slot| {
+        slot.borrow().as_ref().and_then(|all| all.iter().find(|c| c.kind == kind).cloned())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

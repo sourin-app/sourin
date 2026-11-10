@@ -97,7 +97,7 @@ pub const CHAPTER_SIZE: u32 = 1000;
 const GET_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub struct TingShijie {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl TingShijie {
@@ -111,26 +111,20 @@ impl TingShijie {
     pub const CATEGORIES: &'static [(&'static str, &'static str)] = &[("1", "听书")];
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(GET_TIMEOUT)
-            // 与本仓 csp 既定惯例一致 —— **不读系统代理**
-            // ```text
-            // 代理会把"站点可用"测成"全宕"（见 `app99.rs:342` 同一条纪律）。
-            // ★ 实测依据（Lead 跨批一致性审计发现，我复现并扩面 7/8 类）：
-            //   本机装了代理时 `reqwest` 会**默认读系统代理**；把代理指向死端口 `:9`
-            //   ⇒ 本类 live FAILED（含糊的 `error sending request for url …`）；
-            //   而同条件下**有** `.no_proxy()` 的类（app99 / app_drama）**仍 ok**。
-            // ```
-            .no_proxy()
-            .build()
-            .expect("build TingShijie http client");
+        let client = super::http_context::CspHttpContext::new(|| {
+            reqwest::Client::builder()
+                .user_agent(UA)
+                .timeout(GET_TIMEOUT)
+                // Ignore environment proxies; CspHttpContext applies app policy.
+                .no_proxy()
+        });
         Self { client }
     }
 
     async fn get_text(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .send()
             .await
@@ -380,6 +374,10 @@ pub fn parse_detail(book: &serde_json::Value, chapters: &serde_json::Value) -> R
 
 #[async_trait]
 impl CspSite for TingShijie {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -821,3 +819,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "ting_shijie_proxy_tests.rs"]
+mod proxy_tests;

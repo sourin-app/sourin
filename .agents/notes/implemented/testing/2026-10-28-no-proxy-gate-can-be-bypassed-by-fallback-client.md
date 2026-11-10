@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Scope: 2026-11-09 的 [CSP 全局路由](../architecture/2026-11-09-csp-global-routing-retains-engine-recipes.md) 在保留环境代理隔离的同时显式应用应用内策略。下面的源码门禁只覆盖默认 client 兜底，不能证明全局代理接线；已迁移引擎的构建失败返回可读错误，不再要求 panic。
+
 ## Problem
 
 `.no_proxy()` 那条纪律（"真发 HTTP 的 csp 类必须关掉系统代理"）已经有一条全仓判据

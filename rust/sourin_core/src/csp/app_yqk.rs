@@ -118,19 +118,19 @@ const RETRIES: usize = 3;
 const SEARCH_NEXT_COUNT: u32 = 15;
 
 pub struct AppYQK {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl AppYQK {
     pub const CLASS: &'static str = "AppYQK";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            .no_proxy() // 与其它 csp 源一致：不读系统代理
-            .build()
-            .expect("build app_yqk http client");
+            // Unbound sites remain direct; the context applies the current app policy.
+            .no_proxy()
+        );
         Self { client }
     }
 
@@ -169,6 +169,10 @@ impl AppYQK {
     /// 放头里会得到 405/参数错 —— 这条路已排除。
     /// ```
     async fn post(&self, path: &str, extra: &[(String, String)]) -> Result<Value, String> {
+        self.post_at(BASE, path, extra).await
+    }
+
+    async fn post_at(&self, base: &str, path: &str, extra: &[(String, String)]) -> Result<Value, String> {
         let pairs = {
             let mut v = Self::common_pairs();
             v.extend(extra.iter().cloned());
@@ -183,7 +187,7 @@ impl AppYQK {
         }
         body.insert("sign".into(), Value::String(sign));
 
-        let url = format!("{BASE}{path}");
+        let url = format!("{base}{path}");
         let payload = Value::Object(body).to_string();
 
         let mut last_err = String::new();
@@ -195,6 +199,7 @@ impl AppYQK {
         for attempt in 1..=RETRIES {
             let sent = self
                 .client
+                .client()?
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .header(reqwest::header::ORIGIN, ORIGIN)
@@ -306,6 +311,10 @@ fn new_request_id() -> String {
 
 #[async_trait]
 impl CspSite for AppYQK {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -687,6 +696,10 @@ crate::csp::register_site!(AppYQK);
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+#[path = "app_yqk_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

@@ -138,13 +138,15 @@ fn proxy_url(raw: &str) -> Result<String, String> {
     Ok(u.to_string())
 }
 pub fn configure(state: &AppState, raw: &str, automatic: bool) -> Result<Value, String> {
-    let proxy = if raw.trim().is_empty() {
-        String::new()
-    } else {
-        proxy_url(raw)?
-    };
+    // Older clients may still supply an address; it now updates the shared setting.
+    if !raw.trim().is_empty() {
+        state.proxy.set(crate::proxy::GLOBAL_PROXY, crate::proxy::ProxyConfig {
+            mode: crate::proxy::ProxyMode::Custom,
+            url: Some(proxy_url(raw)?),
+            ..Default::default()
+        })?;
+    }
     edit(&state.data_dir, |s| {
-        s.proxy_url = proxy;
         s.automatic = automatic;
     })?;
     status(state)
@@ -191,15 +193,18 @@ fn public_url(u: &reqwest::Url) -> bool {
     }
     true
 }
+#[cfg(test)]
 fn strict_client(proxy: &str) -> Result<reqwest::Client, String> {
     let proxy = proxy_url(proxy)?;
+    strict_client_with_proxy(reqwest::Proxy::all(proxy).map_err(|_| "代理地址无效")?)
+}
+fn strict_global_client(state: &AppState) -> Result<reqwest::Client, String> {
+    strict_client_with_proxy(state.proxy.required_global_proxy()?)
+}
+fn strict_client_with_proxy(proxy: reqwest::Proxy) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .no_proxy()
-        .proxy(
-            reqwest::Proxy::all(proxy)
-                .map_err(|_| "代理地址无效")?
-                .no_proxy(None),
-        )
+        .proxy(proxy.no_proxy(None))
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))
         .user_agent("Sourin-Source-Discovery/1.0")
@@ -729,11 +734,7 @@ pub async fn scan(state: &AppState) -> Result<Value, String> {
 }
 async fn scan_at(state: &AppState, api: &str, raw: &str) -> Result<Value, String> {
     let _guard = RUN_LOCK.try_lock().map_err(|_| "源发现正在进行")?;
-    let proxy = {
-        let _g = STORE_LOCK.lock().map_err(|_| "源发现存储忙")?;
-        read(&state.data_dir)?.proxy_url
-    };
-    let client = strict_client(&proxy)?; // No proxy means no search request is sent.
+    let client = strict_global_client(state)?; // No proxy means no search request is sent.
     RUNNING.store(true, Ordering::Release);
     let _running = RunFlag;
     let result = tokio::time::timeout(Duration::from_secs(105), collect(&client, api, raw))
@@ -816,7 +817,7 @@ pub async fn enable(state: &AppState, id: &str) -> Result<Value, String> {
     if candidate.status != "ready" {
         return Err("此候选尚未通过校验".into());
     }
-    let client = strict_client(&data.proxy_url)?;
+    let client = strict_global_client(state)?;
     let checked = validate(&client, candidate).await?;
     let provider_id = format!("github-{}", candidate.id);
     // Explicit enable revalidates, then uses the existing provider builder and persistence.
@@ -904,27 +905,44 @@ pub fn spawn_auto_discovery(state: &Arc<AppState>) {
     if std::env::var("SOURIN_NO_REMOTE_AUTOSTART").ok().as_deref() == Some("1") {
         return;
     }
-    let weak = Arc::downgrade(state);
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            let Some(state) = weak.upgrade() else {
-                break;
-            };
-            let due = {
-                let Ok(_g) = STORE_LOCK.lock() else {
-                    continue;
-                };
-                read(&state.data_dir)
-                    .map(|s| s.automatic && !s.proxy_url.is_empty() && now() - s.last_scan >= 86400)
-                    .unwrap_or(false)
-            };
-            if due {
-                let _ = scan(&state).await;
-            }
-        }
-    });
+    tokio::spawn(auto_discovery_loop(
+        Arc::downgrade(state),
+        "https://api.github.com",
+        "https://raw.githubusercontent.com",
+        Duration::from_secs(60),
+    ));
 }
+
+// Keep the production timer and its persisted due decision in one loop. Tests
+// provide local proxy fixtures and a shorter interval without environment edits.
+async fn auto_discovery_loop(
+    weak: std::sync::Weak<AppState>,
+    api: &'static str,
+    raw: &'static str,
+    interval: Duration,
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+        let Some(state) = weak.upgrade() else {
+            break;
+        };
+        let due = {
+            let Ok(_g) = STORE_LOCK.lock() else {
+                continue;
+            };
+            read(&state.data_dir)
+                .map(|s| s.automatic && state.proxy.required_global_proxy().is_ok() && now() - s.last_scan >= 86400)
+                .unwrap_or(false)
+        };
+        if due {
+            let _ = scan_at(&state, api, raw).await;
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "source_discovery_scheduler_tests.rs"]
+mod scheduler_tests;
 
 #[cfg(test)]
 #[path = "source_discovery_coverage_tests.rs"]

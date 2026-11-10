@@ -107,7 +107,7 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 pub const CATS: &[(&str, &str)] = &[("1", "电影"), ("2", "电视剧"), ("3", "动漫")];
 
 pub struct Yidong4K {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
     /// fprint 的单调序号：保证同一毫秒内的两次调用也得到不同 nano 段
     seq: std::sync::atomic::AtomicU64,
 }
@@ -116,15 +116,14 @@ impl Yidong4K {
     pub const CLASS: &'static str = "Yidong4K";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // ★ 不读系统代理：代理会把"站点可用"测成"全宕"（全仓判据会扫这一行）。
+            // Unbound sites remain direct; the context applies the current app policy.
             //   Host / Connection / Accept-Encoding 由 reqwest 按 URL 自动生成，
             //   实测与 DEX 手写值等价（见文件头读数）。
             .no_proxy()
-            .build()
-            .expect("build yidong_4k http client");
+        );
         Self {
             client,
             seq: std::sync::atomic::AtomicU64::new(0),
@@ -157,6 +156,7 @@ impl Yidong4K {
     async fn post_text(&self, url: &str, body: &Value) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .post(url)
             .header(reqwest::header::ORIGIN, BASE)
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
@@ -358,6 +358,10 @@ pub fn detail_of(v: &Value, id: &str) -> Result<CspDetail, String> {
 
 #[async_trait]
 impl CspSite for Yidong4K {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -506,6 +510,10 @@ impl CspSite for Yidong4K {
 crate::csp::register_site!(Yidong4K);
 
 #[cfg(test)]
+#[path = "yidong_4k_proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -632,10 +640,11 @@ mod tests {
     #[test]
     fn client_builder_turns_off_proxy() {
         let src = crate::csp::shared::impl_src_only(include_str!("yidong_4k.rs"));
+        let c = src.find("CspHttpContext::new").expect("HTTP context builder recipe");
         let t = src.find(".timeout(TIMEOUT)").expect("必须有 timeout");
         let n = src.find(".no_proxy()").expect("★ 必须有 .no_proxy()");
-        let b = src.find(".build()").expect("必须有 build");
-        assert!(t < n && n < b, "★ .no_proxy() 必须在 timeout 之后、build 之前");
+        assert!(c < t && t < n, "context recipe → timeout → no_proxy");
+        assert!(src.contains(".client()?"), "requests must obtain the policy-aware client");
     }
 
     #[tokio::test]

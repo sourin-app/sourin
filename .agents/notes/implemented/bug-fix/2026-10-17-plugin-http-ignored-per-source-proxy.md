@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Scope: 2026-11-09 的 [统一路由决策](../architecture/2026-11-09-csp-global-routing-retains-engine-recipes.md) 将产品配置集中为全局代理。本文的真实 provider id 透传原则仍适用；按源分别填写代理的界面与旧默认值说明属于原实现边界。
+
 ## Problem
 
 用户给某个源单独配了代理（或配成直连），插件发出的请求**完全不理会这份配置**。

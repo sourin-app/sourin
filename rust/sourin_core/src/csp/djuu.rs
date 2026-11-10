@@ -119,7 +119,7 @@ const REFERER: &str = "https://m.djuu.com/";
 const GET_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct Djuu {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Djuu {
@@ -153,26 +153,19 @@ impl Djuu {
     ];
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(GET_TIMEOUT)
-            // 与本仓 csp 既定惯例一致 —— **不读系统代理**
-            // ```text
-            // 代理会把"站点可用"测成"全宕"（见 `app99.rs:342` 同一条纪律）。
-            // ★ 实测依据（Lead 跨批一致性审计发现，我复现并扩面 7/8 类）：
-            //   本机装了代理时 `reqwest` 会**默认读系统代理**；把代理指向死端口 `:9`
-            //   ⇒ 本类 live FAILED（含糊的 `error sending request for url …`）；
-            //   而同条件下**有** `.no_proxy()` 的类（app99 / app_drama）**仍 ok**。
-            // ```
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
-            .build()
-            .expect("build Djuu http client");
+        );
         Self { client }
     }
 
     async fn get_html(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::REFERER, REFERER)
             .send()
@@ -198,9 +191,14 @@ impl Djuu {
     /// 而是站点自己的 `common.min.js`：`http("/play/music",{id:t},…,"POST","json")`。
     async fn post_play(&self, id: &str) -> Result<serde_json::Value, String> {
         let url = format!("{BASE}/play/music");
+        self.post_play_url(&url, id).await
+    }
+
+    async fn post_play_url(&self, url: &str, id: &str) -> Result<serde_json::Value, String> {
         let resp = self
             .client
-            .post(&url)
+            .client()?
+            .post(url)
             .header(reqwest::header::REFERER, format!("{BASE}/play/{id}.html"))
             .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .form(&[("id", id)])
@@ -573,6 +571,10 @@ pub fn parse_detail(v: &serde_json::Value, id: &str) -> Result<CspDetail, String
 
 #[async_trait]
 impl CspSite for Djuu {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -702,6 +704,10 @@ crate::csp::register_site!(Djuu);
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+#[path = "djuu_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

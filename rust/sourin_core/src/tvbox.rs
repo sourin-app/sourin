@@ -76,7 +76,7 @@ AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 /// ⚠️ 不这么做的后果（真实症状）：用户在浏览器里明明看到的是 JSON，
 ///    导入时报「配置不是合法 JSON」，而错误里看不到任何线索 ——
 ///    因为服务端回的是**一个完全合法的 HTML 页面**。
-pub const TVBOX_CONFIG_UA: &str = "okhttp/3.12.13";
+pub const TVBOX_CONFIG_UA: &str = "okhttp/4.12.0";
 
 /// 下载一份 TVBox 配置（带上面那个 UA）
 ///
@@ -412,30 +412,10 @@ pub fn normalize_api_url(api: &str) -> String {
 
 /// 把相对接口地址按配置来源地址补全（对应 resolveApi）
 pub fn resolve_api(api: &str, base_url: &str) -> Option<String> {
-    let a = api.trim();
-    if a.is_empty() {
-        return None;
-    }
-    if starts_http(a) {
-        return Some(a.to_string());
-    }
-    let (scheme, origin) = split_origin(base_url)?;
-    // ★ 协议相对地址：拼 scheme 时**必须保留**原来的两条斜杠
-    //   （JS 版是 scheme + 原串；剥掉再拼会得到 "https:b.com/x"）
-    if a.starts_with("//") {
-        return Some(format!("{scheme}{a}"));
-    }
-    if a.starts_with('/') {
-        return Some(format!("{origin}{a}"));
-    }
-    let no_query = base_url
-        .split(|c| c == '?' || c == '#')
-        .next()
-        .unwrap_or("");
-    match no_query.rfind('/') {
-        Some(i) => Some(format!("{}{}", &no_query[..i + 1], a)),
-        None => Some(format!("{origin}/{a}")),
-    }
+    let api = api.trim();
+    if api.is_empty() { return None; }
+    if starts_http(api) { return Some(api.to_owned()); }
+    reqwest::Url::parse(base_url).ok()?.join(api).ok().map(|u| u.to_string())
 }
 
 /// 相对地址补全 —— ★ **纯字符串实现**
@@ -443,33 +423,11 @@ pub fn resolve_api(api: &str, base_url: &str) -> Option<String> {
 /// 不能依赖 url crate（依赖树里没有），而且这段逻辑要跟
 /// tvbox-convert.mjs 里的 absolutize 逐条对齐（那边是给 QuickJS 用的，
 /// 同样不能用 new URL）。
-pub fn absolutize(r: &str, base_url: &str) -> String {
-    let r = r.trim();
-    if r.is_empty() {
-        return String::new();
-    }
-    if starts_http(r) {
-        return r.to_string();
-    }
-    let (scheme, origin) = match split_origin(base_url) {
-        Some(x) => x,
-        None => return r.to_string(),
-    };
-    // ★ 同上：协议相对地址要保留 "//"
-    if r.starts_with("//") {
-        return format!("{scheme}{r}");
-    }
-    if r.starts_with('/') {
-        return format!("{origin}{r}");
-    }
-    let no_query = base_url
-        .split(|c| c == '?' || c == '#')
-        .next()
-        .unwrap_or("");
-    match no_query.rfind('/') {
-        Some(i) => format!("{}{}", &no_query[..i + 1], r),
-        None => format!("{origin}/{r}"),
-    }
+pub fn absolutize(relative: &str, base_url: &str) -> String {
+    let relative = relative.trim();
+    if relative.is_empty() || starts_http(relative) { return relative.to_owned(); }
+    reqwest::Url::parse(base_url).ok().and_then(|u| u.join(relative).ok())
+        .map(|u| u.to_string()).unwrap_or_else(|| relative.to_owned())
 }
 
 /// 从网页里挖第一个 m3u8 地址（对应 extractM3u8）
@@ -904,6 +862,13 @@ pub fn collect_parsers(cfg: &serde_json::Value) -> Vec<String> {
 /// 扫描配置：挑出 type=1 的站点，其余分类归档
 ///
 /// 返回值：(待探测站点, 跳过清单, 直播源清单)
+fn resolve_ext_resource(ext: &str, base_url: &str) -> String {
+    let value = ext.trim();
+    if !base_url.is_empty() && (value.starts_with("./") || value.starts_with("../") || value.starts_with('/')) {
+        absolutize(value, base_url)
+    } else { ext.to_owned() }
+}
+
 pub fn collect_sites(
     cfg: &serde_json::Value,
     base_url: &str,
@@ -948,7 +913,7 @@ pub fn collect_sites(
                 api,
                 kind,
                 csp: None,
-                ext: crate::csp::ext_text(s.get("ext")),
+                ext: resolve_ext_resource(&crate::csp::ext_text(s.get("ext")), base_url),
             });
         } else if kind == Some(3) && crate::csp::is_csp(&raw_api) {
             // ── type:3 + csp_Xxx ────────────────────────────────────────
@@ -975,7 +940,7 @@ pub fn collect_sites(
                     api: normalize_api_url(&raw_api),
                     kind,
                     csp: crate::csp::class_of(&raw_api).map(|c| c.to_string()),
-                    ext: crate::csp::ext_text(s.get("ext")),
+                    ext: resolve_ext_resource(&crate::csp::ext_text(s.get("ext")), base_url),
                 });
             } else {
                 skipped.push(serde_json::json!({
@@ -1002,7 +967,7 @@ pub fn collect_sites(
                 .map(|l| {
                     serde_json::json!({
                         "name": jstr(l, "name"),
-                        "url": jstr(l, "url"),
+                        "url": absolutize(&jstr(l, "url"), base_url),
                     })
                 })
                 .collect()
@@ -1120,12 +1085,13 @@ pub async fn probe_apple_cms(
 pub async fn probe_site(
     client: &reqwest::Client,
     job: &SiteJob,
+    proxy: Option<Arc<crate::proxy::ProxyStore>>,
 ) -> std::result::Result<ProbeOk, String> {
     match job.csp.as_deref() {
         // csp 源：问一次 home()，把**真实分类**拿回来
         Some(class) => {
             log::debug!("探测 csp 源 {}（类 {class}）", job.api.trim());
-            let classes = crate::csp::provider::probe_categories(&job.api, &job.ext)
+            let classes = crate::csp::provider::probe_categories(&job.api, &job.ext, client, proxy)
                 .await
                 .map_err(|e| format!("{} 探测失败：{e}", job.api.trim()))?;
             // total 留 0：csp 源的「条目总数」只有具体分类才有，不在这里编一个
@@ -1194,6 +1160,10 @@ pub fn build_site_provider(
                 // hidden：导入的子站一律藏（经聚合二级页使用）
                 true,
             )?;
+            let p = match proxy {
+                Some(proxy) => p.with_proxy(proxy),
+                None => p,
+            };
             Ok(Arc::new(p) as Arc<dyn MediaProvider>)
         }
         None => {
@@ -1887,20 +1857,32 @@ pub async fn import_tvbox_config(
     state: &crate::state::AppState,
     input: &str,
 ) -> std::result::Result<serde_json::Value, String> {
+    import_tvbox_config_with_options(state, input, &[], None).await
+}
+
+pub async fn import_tvbox_config_with_options(
+    state: &crate::state::AppState,
+    input: &str,
+    backup_urls: &[String],
+    name: Option<&str>,
+) -> std::result::Result<serde_json::Value, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err("TVBox 配置内容为空".to_string());
     }
 
     // 允许直接贴配置地址
-    let (text, base_url) = if starts_http(trimmed) && !trimmed.starts_with('{') {
-        let client = probe_client();
-        let t = fetch_config_text(&client, trimmed)
-            .await
-            .map_err(|e| format!("下载配置失败（{trimmed}）：{e}"))?;
-        (t, trimmed.to_string())
+    let (text, base_url, successful_endpoint) = if starts_http(trimmed) && !trimmed.starts_with('{') {
+        let urls = if backup_urls.is_empty() {
+            crate::source_catalog::urls_for(&state.data_dir, "tvbox", None, trimmed)
+        } else {
+            crate::source_catalog::validated_urls(trimmed, backup_urls)?
+        };
+        crate::source_catalog::fetch_validated(
+            &state.proxy, "tvbox", &urls, Some(TVBOX_CONFIG_UA), crate::source_catalog::validate_tvbox,
+        ).await?
     } else {
-        (trimmed.to_string(), String::new())
+        (trimmed.to_string(), String::new(), String::new())
     };
 
     let cfg = parse_loose_json(&text).map_err(|e| format!("配置不是合法 JSON：{e}"))?;
@@ -1949,7 +1931,8 @@ pub async fn import_tvbox_config(
         if lurl.trim().is_empty() {
             continue; // 没有地址的条目无法播放，不注册也不虚报
         }
-        let p = crate::providers::m3u_live::M3uLiveProvider::new(lname, lurl);
+        let p = crate::providers::m3u_live::M3uLiveProvider::new(lname, lurl)
+            .with_context(state.proxy.clone(), state.data_dir.clone());
         let pid = crate::provider::MediaProvider::manifest(&p).id.clone();
         let pname = crate::provider::MediaProvider::manifest(&p).name.clone();
         state.registry.register(Arc::new(p));
@@ -1962,28 +1945,34 @@ pub async fn import_tvbox_config(
     if jobs.is_empty() {
         // 即便一个点播源都用不了，直播源也可能可用 ⇒ 必须落盘
         persist_live_rows(state, &live_rows)?;
+        let origin_id = if starts_http(trimmed) {
+            Some(crate::source_catalog::record_import(state, trimmed, &base_url, &successful_endpoint, &[], name, backup_urls)?)
+        } else { None };
         return Ok(serde_json::json!({
             "totalSites": cfg.get("sites").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
             "imported": [],
             "skipped": skipped,
             "lives": lives,
             "liveImported": live_rows,
+            "originId": origin_id,
+            "resolvedUrl": base_url,
         }));
     }
 
     // ── 并发探测（保序：结果按下标回填，保证 id 生成稳定）────────────
-    let client = probe_client();
+    let client = state.proxy.client_for("tvbox", None).map_err(|e| e.message)?;
     let sem = Arc::new(tokio::sync::Semaphore::new(MAX_PROBE_CONCURRENCY));
     let mut results: Vec<Option<std::result::Result<ProbeOk, String>>> =
         (0..jobs.len()).map(|_| None).collect();
     let mut set = tokio::task::JoinSet::new();
     for (idx, job) in jobs.iter().enumerate() {
         let client = client.clone();
+        let proxy = state.proxy.clone();
         let sem = sem.clone();
         let job = job.clone();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
-            (idx, probe_site(&client, &job).await)
+            (idx, probe_site(&client, &job, Some(proxy)).await)
         });
     }
     while let Some(joined) = set.join_next().await {
@@ -2001,9 +1990,20 @@ pub async fn import_tvbox_config(
         .registry
         .manifests()
         .iter()
-        .filter(|m| m.kind != "tvbox")
         .map(|m| m.id.clone())
         .collect();
+    let old_metas = load_tvbox_metas(&state.data_dir);
+    let previously_registered = used.clone();
+    let subscription_url = if starts_http(trimmed) { trimmed } else { "" };
+    let source_catalog = crate::source_catalog::load(&state.data_dir);
+    // A subscription may also be another subscription's declared backup.
+    // An exact primary address keeps its own provider identity in that case.
+    let existing_origin = source_catalog.origins.iter()
+        .find(|o| o.kind == "tvbox" && !subscription_url.is_empty() && o.primary_url == subscription_url)
+        .or_else(|| source_catalog.origins.iter().find(|o| {
+            o.kind == "tvbox" && !subscription_url.is_empty()
+                && o.backup_urls.iter().any(|u| u == subscription_url)
+        }));
     let mut imported: Vec<serde_json::Value> = Vec::new();
     let mut to_persist: Vec<crate::model::PersistedProvider> = Vec::new();
     // (源 id, site key, 名称, 接口) —— 只用于落盘订阅来源
@@ -2052,7 +2052,17 @@ pub async fn import_tvbox_config(
             }
         };
         // ★ csp 源用"与顺序无关"的 id（见 csp_id_base）；其余沿用 to_id
-        let id = unique_id(&id_base_for(job), &mut used);
+        let existing = old_metas.iter().find(|(id, meta)| {
+            let same_origin = existing_origin.map_or_else(
+                || meta.source_url.as_deref().unwrap_or("") == subscription_url,
+                |origin| origin.provider_ids.contains(id),
+            );
+            same_origin && ((!job.key.is_empty() && meta.site_key == job.key)
+                || (meta.site_name == job.name && meta.api == normalize_api_url(&job.api)))
+        }).map(|(id, _)| id.clone());
+        let id = if let Some(existing) = existing { existing } else {
+            unique_id(&id_base_for(job), &mut used)
+        };
         // ★ 按站点类型建 Provider：csp_Bili 走 Rust 重写实现，其余走苹果CMS
         let provider = build_site_provider(
             &id,
@@ -2161,7 +2171,7 @@ pub async fn import_tvbox_config(
         let src = if base_url.is_empty() {
             None
         } else {
-            Some(base_url.clone())
+            Some(subscription_url.to_string())
         };
         /*
          * ★ B3（2026-11-01）：**链接导入成功 ⇒ 盖 installed 时刻的初始章**
@@ -2202,6 +2212,21 @@ pub async fn import_tvbox_config(
         }
     }
 
+    let mut aggregate = crate::tvbox_aggregate::load(&state.data_dir);
+    if aggregate.site_selection_explicit || !aggregate.enabled_site_ids.is_empty() {
+        for (id, _, _, _) in &meta_rows {
+            if !previously_registered.contains(id) && !aggregate.enabled_site_ids.contains(id) {
+                aggregate.enabled_site_ids.push(id.clone());
+            }
+        }
+        crate::tvbox_aggregate::save(&state.data_dir, &aggregate)?;
+    }
+    crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
+    let origin_id = if !subscription_url.is_empty() {
+        let ids: Vec<String> = meta_rows.iter().map(|row| row.0.clone()).collect();
+        Some(crate::source_catalog::record_import(state, subscription_url, &base_url, &successful_endpoint, &ids, name, backup_urls)?)
+    } else { None };
+
     log::info!(
         "TVBox 配置导入完成：{} 个源可用，{} 条跳过，{} 个直播源未导入",
         imported.len(),
@@ -2217,6 +2242,8 @@ pub async fn import_tvbox_config(
         // ★ 保留这个键（Dart 侧 `notPersisted` 已接线），但现在恒为空：
         //   csp 源已落盘 ⇒ 没有任何"重启后需要重新导入"的源。
         "notPersisted": Vec::<String>::new(),
+        "originId": origin_id,
+        "resolvedUrl": base_url,
     }))
 }
 
@@ -3112,17 +3139,14 @@ pub async fn adopt_tvbox_orphans(
     }
 
     // 下载 + 解析（fetch_config_text 已带 base64** 解包）
-    let client = probe_client();
-    let text = fetch_config_text(&client, url)
-        .await
-        .map_err(|e| format!("下载配置失败（{url}）：{e}"))?;
+    let (text, actual_url) = crate::source_catalog::fetch_tvbox(state, url).await?;
     let cfg = parse_loose_json(&text).map_err(|e| format!("配置不是合法 JSON：{e}"))?;
     if cfg.get("sites").and_then(|v| v.as_array()).is_none() {
         return Err(format!(
             "远端链接 {url} 没有 sites 段（多仓配置请先选子仓，用子仓链接认领）"
         ));
     }
-    let (remote_jobs, _skipped, _lives) = collect_sites(&cfg, url);
+    let (remote_jobs, _skipped, _lives) = collect_sites(&cfg, &actual_url);
 
     // 无主子站 = 已注册的 TVBox 源里、sidecar 记着 source_url=None 的
     let sources = local_tvbox_sources(state)?;
@@ -3304,11 +3328,11 @@ pub async fn check_tvbox_updates(
                 ext: ext.clone(),
                 in_link: url_of(sid).as_deref() == Some(url.as_str()),
             })
+            .filter(|site| site.in_link)
             .collect();
         groups.insert(url.clone(), pool);
     }
 
-    let client = probe_client();
     let mut items = Vec::new();
     for (url, locals) in groups.iter() {
         // 这条链接"拥有"的源（别的订阅的源不算在内）
@@ -3319,14 +3343,14 @@ pub async fn check_tvbox_updates(
             .collect();
         ids.sort();
 
-        let text = match fetch_config_text(&client, url).await {
+        let (text, actual_url) = match crate::source_catalog::fetch_tvbox(state, url).await {
             Ok(t) => t,
             Err(e) => {
                 items.push(serde_json::json!({
                     "sourceUrl": url,
                     "ids": ids,
                     "ok": false,
-                    "error": format!("下载配置失败：{e}"),
+                    "error": e,
                 }));
                 continue;
             }
@@ -3345,7 +3369,7 @@ pub async fn check_tvbox_updates(
         };
         // 链接后来变成了「多仓」—— 如实说明，不硬凑一份对比
         if cfg.get("sites").and_then(|v| v.as_array()).is_none() {
-            let repos = multi_repo_repos(&cfg, url);
+            let repos = multi_repo_repos(&cfg, &actual_url);
             items.push(serde_json::json!({
                 "sourceUrl": url,
                 "ids": ids,
@@ -3361,7 +3385,7 @@ pub async fn check_tvbox_updates(
             continue;
         }
 
-        let (jobs, skipped, _lives) = collect_sites(&cfg, url);
+        let (jobs, skipped, _lives) = collect_sites(&cfg, &actual_url);
         let remote: Vec<RemoteSite> = jobs
             .iter()
             .map(|j| RemoteSite {
@@ -3514,10 +3538,8 @@ async fn update_tvbox_source_inner(
     };
 
     // ── 下载 + 解析 ─────────────────────────────────────────────────
-    let client = probe_client();
-    let text = fetch_config_text(&client, &url)
-        .await
-        .map_err(|e| format!("下载配置失败（{url}）：{e}"))?;
+    let client = state.proxy.client_for("tvbox", None).map_err(|e| e.message)?;
+    let (text, actual_url) = crate::source_catalog::fetch_tvbox(state, &url).await?;
     let cfg = parse_loose_json(&text).map_err(|e| format!("配置不是合法 JSON：{e}"))?;
     if cfg.get("sites").and_then(|v| v.as_array()).is_none() {
         return Err(format!(
@@ -3548,9 +3570,10 @@ async fn update_tvbox_source_inner(
             ext: ext.clone(),
             in_link: in_link(sid),
         })
+        .filter(|site| site.in_link)
         .collect();
 
-    let (jobs, skipped, _lives) = collect_sites(&cfg, &url);
+    let (jobs, skipped, _lives) = collect_sites(&cfg, &actual_url);
     let remote: Vec<RemoteSite> = jobs
         .iter()
         .map(|j| RemoteSite {
@@ -3569,7 +3592,8 @@ async fn update_tvbox_source_inner(
     if diff.added.is_empty() && diff.changed.is_empty() && !want_delete {
         // ★ 「远端与本地一致」也是一次成功的核对 ⇒ 盖成功章。
         //   不盖的话这条链接在定时器眼里永远没更新过，每 60s 都会重复下载。
-        stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
+        crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
+    stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
         return Ok(serde_json::json!({
             "updated": false,
             "reason": "远端配置与本地一致，无需更新",
@@ -3604,13 +3628,14 @@ async fn update_tvbox_source_inner(
     let mut set = tokio::task::JoinSet::new();
     for (idx, (remote_idx, _)) in todos.iter().enumerate() {
         let client = client.clone();
+        let proxy = state.proxy.clone();
         let sem = sem.clone();
         // ★ 与首次导入同一条探测路由（csp 源不能拿去当苹果CMS 探）
         let job = jobs.get(*remote_idx).cloned();
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
             match job {
-                Some(job) => (idx, probe_site(&client, &job).await),
+                Some(job) => (idx, probe_site(&client, &job, Some(proxy)).await),
                 None => (idx, Err("远端站点下标越界".to_string())),
             }
         });
@@ -3784,6 +3809,7 @@ async fn update_tvbox_source_inner(
         write_tvbox_meta(&state.data_dir, sid, meta)?;
     }
     // ★ 成功路径收尾：同链接下**没变化**的源也要补章（见 stamp_link_update 的注释）
+    crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
     stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
 
     // ── 远端消失的站：默认只报告 ────────────────────────────────────
@@ -4024,8 +4050,8 @@ pub async fn restore_tvbox_js(
         csp: None,
         ext: String::new(),
     };
-    let client = probe_client();
-    let ok = probe_site(&client, &job)
+    let client = state.proxy.client_for("tvbox", None).map_err(|e| e.message)?;
+    let ok = probe_site(&client, &job, Some(state.proxy.clone()))
         .await
         .map_err(|e| format!("上游探测失败（{upstream}）：{e} —— 迁移 js 保持原样，未做任何改动"))?;
 
@@ -4672,13 +4698,13 @@ mod imports_e2e {
         port
     }
 
-    /// 源码断言：生产入口 try_parsers 必须只有一行委托，逻辑全在 try_parsers_with。
+    /// 源码断言：生产入口的配置解析器和内置兜底都委托给 try_parsers_with。
     ///
     /// 这条断言防的是「以后有人把解析逻辑再抄回 try_parsers」—— 那样公网
     /// PARSE_SERVICES 就会绕过下面那个测试缝，让 E2E 变成在测一个不存在的分支。
     #[test]
     fn production_entry_delegates_to_injectable_seam() {
-        let src = include_str!("tvbox.rs");
+        let src = include_str!("tvbox.rs").replace("\r\n", "\n");
 
         let start = src
             .find("async fn try_parsers(")
@@ -4689,6 +4715,10 @@ mod imports_e2e {
             .expect("找不到 try_parsers 的函数体结尾");
         let body = &rest[..end];
 
+        assert!(
+            body.contains("self.try_parsers_with(page_url, &refs).await"),
+            "配置解析器也必须走 try_parsers_with，实际函数体：\n{body}"
+        );
         assert!(
             body.contains("self.try_parsers_with(page_url, &PARSE_SERVICES).await"),
             "生产入口必须把 PARSE_SERVICES 原样交给 try_parsers_with，实际函数体：\n{body}"
@@ -5107,7 +5137,11 @@ mod task5_ab_restart {
             !PARSE_SERVICES.is_empty(),
             "★ 解析服务列表不能为空 —— 空的话任何非 m3u8 的地址都解析不出来"
         );
-        assert_eq!(count("if !url.to_lowercase().contains(\".m3u8\") {"), 1, "resolve 里的 .m3u8 短路判断应存在且唯一");
+        assert_eq!(
+            count("if !url.to_lowercase().contains(\".m3u8\") && !is_direct_file_url(&url) {"),
+            1,
+            "resolve 应直接播放 m3u8 和媒体文件，只有网页地址进入解析器"
+        );
         assert_eq!(count("found = self.try_parsers(&page_url).await;"), 1, "resolve 必须真的走到 try_parsers");
         for svc in PARSE_SERVICES {
             assert_eq!(
@@ -5770,7 +5804,25 @@ mod task12_subscription {
 
         // ── ④-4 变更：链接切到 v3（k1 换接口）→ changed ─────────────────
         let v3 = format!("{}/cfg/v3.json", sink.url());
-        set_tvbox_source(&st, &ids[0], &v3).expect("改链接失败");
+        let origin = crate::source_catalog::catalog(&st)
+            .expect("读取订阅失败")
+            .origins
+            .into_iter()
+            .find(|origin| origin.provider_ids.contains(&ids[0]))
+            .expect("应找到 k1/k2/k3 所属订阅");
+        assert_eq!(origin.provider_ids.len(), 3, "三个站应属于同一订阅");
+        crate::source_catalog::command_set_origin(
+            &st,
+            &serde_json::json!({"id": origin.id, "primaryUrl": v3}),
+        )
+        .expect("迁移整条订阅到 v3 失败");
+        for id in [&ids[0], &ids[1], &new_id] {
+            assert_eq!(
+                read_tvbox_meta(&dir, id).unwrap().source_url.as_deref(),
+                Some(v3.as_str()),
+                "迁移订阅应同步所有子站的链接"
+            );
+        }
         let chk3 = check_tvbox_updates(&st, None).await.expect("检测失败");
         println!("[EVIDENCE] T12-check-v3 {chk3}");
         let items3 = chk3["items"].as_array().cloned().unwrap_or_default();
@@ -5802,7 +5854,11 @@ mod task12_subscription {
 
         // ── ④-5 deleteMissing=true 才删（用户明确勾选）──────────────────
         let v2 = format!("{}/cfg/v2.json", sink.url());
-        set_tvbox_source(&st, &ids[0], &v2).expect("改回 v2 失败");
+        crate::source_catalog::command_set_origin(
+            &st,
+            &serde_json::json!({"id": origin.id, "primaryUrl": v2}),
+        )
+        .expect("迁移整条订阅回 v2 失败");
         let upd4 = update_tvbox_source(&st, &ids[0], true, true).await.expect("带删除的更新失败");
         println!("[EVIDENCE] T12-update-delete-missing {upd4}");
         assert_eq!(upd4["deleted"].as_array().map(|a| a.len()), Some(1), "勾选后才应删：{upd4}");

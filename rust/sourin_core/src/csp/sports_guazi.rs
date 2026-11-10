@@ -270,19 +270,18 @@ fn m3u8_re() -> Regex {
 crate::csp::register_site!(SportsGuazi);
 
 pub struct SportsGuazi {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl SportsGuazi {
     pub const CLASS: &'static str = "SportsGuazi";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
             .no_proxy()
-            .build()
-            .expect("build sports_guazi http client");
+        );
         Self { client }
     }
 
@@ -292,6 +291,7 @@ impl SportsGuazi {
         let url = format!("{host}{path}?parameter={}", urlencoding::encode(&param));
         let resp = self
             .client
+            .client()?
             .get(&url)
             .header("user-platform", USER_PLATFORM)
             .header("client-version", CLIENT_VERSION)
@@ -347,6 +347,10 @@ impl Default for SportsGuazi {
 
 #[async_trait]
 impl CspSite for SportsGuazi {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -463,18 +467,22 @@ impl CspSite for SportsGuazi {
 }
 
 #[cfg(test)]
+#[path = "sports_guazi_proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     /// 真实列表明文（2026-10-28 00:0x 从那台接口解出来的前两场，**逐字**，
-    /// 只把无关字段裁掉；`line_list` 是真实 m3u8）
+    /// 只把无关字段裁掉；`line_list` 使用等形合成地址，不保留访问签名）
     const REAL_LIST: &str = r#"[
       {"mid": 8448906, "match_id": 4602035, "event_name": "沙特甲", "stage": "第5轮",
        "match_time": 1793107800, "hot": 0, "ball_type": 1, "m_status": 2,
        "match_status_info": "进行中",
        "home": {"name": "吉达国民", "logo": "https://resource.nj82wbp.top/data/resources/images/team/foot/aa.png", "score": "1"},
        "visiting": {"name": "利雅得胜利", "logo": "", "score": "0"},
-       "line_list": [{"name": "高清", "url": "https://pullgz721.qmuiw.com/live/sd-1-4602035.m3u8?auth_key=1793116818-0-0-9d6ee328b3ee2f2bce51fe38e8260f54"}]},
+       "line_list": [{"name": "高清", "url": "https://media.example.invalid/live/sample.m3u8?auth_key=synthetic-fixture"}]},
       {"mid": 8523997, "match_id": 4656347, "event_name": "阿塞杯", "stage": "",
        "match_time": 1793107800, "hot": 0, "ball_type": 1, "m_status": 1,
        "match_status_info": "完场",

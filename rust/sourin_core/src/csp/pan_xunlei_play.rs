@@ -280,13 +280,17 @@ pub async fn resolve(share_id: &str, passcode: &str) -> Result<CspPlay, String> 
     resolve_with(&XunleiEndpoints::default(), credential.as_deref(), share_id, passcode).await
 }
 
-fn http_client() -> reqwest::Client {
+pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(UA)
         .timeout(std::time::Duration::from_secs(15))
         .no_proxy()
-        .build()
-        .expect("HTTP client 构建失败（TLS 后端不可用）")
+}
+
+fn http_client() -> reqwest::Client {
+    super::pan_episode_select::current_operation()
+        .and_then(|operation| operation.xunlei_client())
+        .unwrap_or_else(|| http_client_builder().build().expect("HTTP client 构建失败（TLS 后端不可用）"))
 }
 
 struct ShareListing {
@@ -296,7 +300,10 @@ struct ShareListing {
 
 /// The share API itself validates availability before any file is restored.
 pub async fn list_share_files(share_id: &str, passcode: &str) -> Result<Vec<XunleiFile>, String> {
-    let client = http_client();
+    list_share_files_with_client(share_id, passcode, http_client()).await
+}
+
+pub(crate) async fn list_share_files_with_client(share_id: &str, passcode: &str, client: reqwest::Client) -> Result<Vec<XunleiFile>, String> {
     let ep = XunleiEndpoints::default();
     let anonymous = list_share_with(&client, &ep, None, share_id, passcode).await;
     match anonymous {

@@ -230,9 +230,20 @@ fn resolve_uri(base: &str, uri: &str) -> String {
     }
 }
 
-async fn fetch_text(url: &str, headers: &[(String, String)]) -> Option<String> {
-    let mut req = probe_client().get(url);
+#[derive(Clone)]
+enum ProbeClient {
+    Direct,
+    Stream(std::sync::Arc<crate::streamproxy::StreamProxy>),
+}
+
+async fn fetch_text(source: &ProbeClient, url: &str, headers: &[(String, String)]) -> Option<String> {
+    let client = match source {
+        ProbeClient::Direct => probe_client().clone(),
+        ProbeClient::Stream(proxy) => proxy.probe_client(url).ok()?,
+    };
+    let mut req = client.get(url);
     for (k, v) in headers {
+        if k.eq_ignore_ascii_case("accept-encoding") { continue; }
         // 头解析失败就丢这一条（探测是 best-effort，绝不因头坏而失败）
         if let (Ok(name), Ok(val)) = (
             reqwest::header::HeaderName::from_bytes(k.as_bytes()),
@@ -241,11 +252,12 @@ async fn fetch_text(url: &str, headers: &[(String, String)]) -> Option<String> {
             req = req.header(name, val);
         }
     }
+    req = req.header(reqwest::header::ACCEPT_ENCODING, "identity");
     let resp = req.send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    resp.text().await.ok()
+    crate::streamproxy::read_playlist_text(resp).await.ok()
 }
 
 /// 读清单事实并按硬约束产出两个字段（task-8 接线入口）
@@ -257,14 +269,18 @@ async fn fetch_text(url: &str, headers: &[(String, String)]) -> Option<String> {
 ///       子清单才是分片；master 本身 EXTINF 求和恒为 0）。
 /// ```
 pub async fn probe_playlist(url: &str, headers: &[(String, String)]) -> PlaylistProbe {
+    probe_playlist_using(&ProbeClient::Direct, url, headers).await
+}
+
+async fn probe_playlist_using(source: &ProbeClient, url: &str, headers: &[(String, String)]) -> PlaylistProbe {
     let mut out = PlaylistProbe::default();
     let work = async {
-        let text = fetch_text(url, headers).await?;
+        let text = fetch_text(source, url, headers).await?;
         let facts = parse_playlist_facts(&text);
         let facts = if facts.is_master {
             let uri = master_variant_uri(&text)?;
             let child = resolve_uri(url, &uri);
-            let child_text = fetch_text(&child, headers).await?;
+            let child_text = fetch_text(source, &child, headers).await?;
             parse_playlist_facts(&child_text)
         } else {
             facts
@@ -338,6 +354,18 @@ pub async fn probe_candidate(c: &mut crate::model::StreamCandidate) {
 /// 剩余代价（如实记录）：worst case 仍会为首帧前探测花到 2500ms（只在候选多
 /// 且上游慢时出现）；彻底消除需把探测挪到起播后台回填，那要动推送通道，另议。
 pub async fn probe_candidates(list: &mut [crate::model::StreamCandidate]) {
+    probe_candidates_using(list, ProbeClient::Direct).await;
+}
+
+/// Production probes share live playback policy, including each master child.
+pub async fn probe_candidates_with_proxy(
+    list: &mut [crate::model::StreamCandidate],
+    proxy: std::sync::Arc<crate::streamproxy::StreamProxy>,
+) {
+    probe_candidates_using(list, ProbeClient::Stream(proxy)).await;
+}
+
+async fn probe_candidates_using(list: &mut [crate::model::StreamCandidate], source: ProbeClient) {
     /// 同时在飞的探测上限（与 registry 搜索并发取 12 同源：不给同一上游砸满并发）
     const PROBE_MAX_CONCURRENCY: usize = 8;
     /// 整批硬截止（与候选数无关）—— 超预算的候选留 None，绝不为凑齐而拖住起播
@@ -360,7 +388,7 @@ pub async fn probe_candidates(list: &mut [crate::model::StreamCandidate]) {
     }
     let _ = tokio::time::timeout(
         std::time::Duration::from_millis(PROBE_BATCH_DEADLINE_MS),
-        drain_probes(list, targets, PROBE_MAX_CONCURRENCY),
+        drain_probes(list, targets, PROBE_MAX_CONCURRENCY, source),
     )
     .await;
     // 超时 ⇒ 上面的 future 被丢弃，未回填的候选保持 None/false（约束③）。
@@ -385,14 +413,15 @@ struct ProbeTarget {
 }
 
 /// 并发探测并把结果回填到 list[idx]，限流 max_in_flight
-async fn drain_probes(list: &mut [crate::model::StreamCandidate], targets: Vec<ProbeTarget>, max_in_flight: usize) {
+async fn drain_probes(list: &mut [crate::model::StreamCandidate], targets: Vec<ProbeTarget>, max_in_flight: usize, source: ProbeClient) {
     let mut set = tokio::task::JoinSet::new();
     let mut launched = 0usize;
     while launched < max_in_flight.min(targets.len()) {
         let mut t = targets[launched].clone();
+        let source = source.clone();
         launched += 1;
         set.spawn(async move {
-            let probe = probe_playlist(&t.url, &t.headers).await;
+            let probe = probe_playlist_using(&source, &t.url, &t.headers).await;
             t.total_ms = probe.total_ms;
             t.discontinuous = probe.discontinuous;
             t
@@ -433,9 +462,10 @@ async fn drain_probes(list: &mut [crate::model::StreamCandidate], targets: Vec<P
         }
         if launched < targets.len() {
             let mut t = targets[launched].clone();
+            let source = source.clone();
             launched += 1;
             set.spawn(async move {
-                let probe = probe_playlist(&t.url, &t.headers).await;
+                let probe = probe_playlist_using(&source, &t.url, &t.headers).await;
                 t.total_ms = probe.total_ms;
                 t.discontinuous = probe.discontinuous;
                 t

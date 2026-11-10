@@ -104,15 +104,15 @@ pub fn save_order(dir: &std::path::Path, list: &[String]) -> Result<(), String> 
 pub fn list_providers(state: &AppState) -> Result<Vec<crate::model::ProviderManifest>, String> {
     let disabled = load_disabled(&state.data_dir);
     let mut list = state.registry.manifests();
-    for m in &mut list {
-        m.enabled = Some(!disabled.iter().any(|x| x == &m.id));
-    }
-    // TVBox test mode limits both visible providers and command-level searches.
-    // The aggregate retains its enabled imported children without rewriting
-    // persistent enable preferences for unrelated sources.
+    // Startup converts legacy solo scope to saved switches. Display and fanout
+    // use the same selection, while settings can still enable any other source.
     let agg = crate::tvbox_aggregate::load(&state.data_dir);
-    if agg.solo {
-        list.retain(|m| m.id == crate::tvbox_aggregate::AGGREGATE_ID);
+    list.retain(|m| m.id != crate::tvbox_aggregate::AGGREGATE_ID && m.kind != "declarative");
+    for m in &mut list {
+        m.enabled = Some(crate::source_catalog::provider_enabled(m, &disabled, &agg));
+        if m.kind == "tvbox" {
+            m.hidden = false;
+        }
     }
     Ok(list)
 }
@@ -120,7 +120,11 @@ pub fn list_providers(state: &AppState) -> Result<Vec<crate::model::ProviderMani
 /// 读取某个源是否启用
 pub fn get_provider_enabled(state: &AppState, id: &str) -> Result<bool, String> {
     let disabled = load_disabled(&state.data_dir);
-    Ok(!disabled.iter().any(|x| x == id))
+    let aggregate = crate::tvbox_aggregate::load(&state.data_dir);
+    Ok(state.registry.get(id).map_or_else(
+        || !disabled.iter().any(|value| value == id),
+        |provider| crate::source_catalog::provider_enabled(provider.manifest(), &disabled, &aggregate),
+    ))
 }
 
 /// 读取当前源顺序（未设置过时返回注册顺序）
@@ -230,6 +234,10 @@ pub fn continue_watching(
     limit: Option<u32>,
 ) -> Result<Vec<crate::store::Progress>, String> {
     state.db.continue_watching(limit.unwrap_or(20))
+}
+
+pub fn continue_watching_count(state: &AppState) -> Result<u64, String> {
+    state.db.continue_watching_count()
 }
 
 /// Library display path; synchronization still uses the durable DB representation.
@@ -411,18 +419,7 @@ pub fn list_platform_history(
 ///    UI 据此明确告知用户「哪些源没搜到」，而不是静默失败
 /// ```
 fn search_registry(state: &AppState) -> std::sync::Arc<crate::registry::Registry> {
-    if !crate::tvbox_aggregate::load(&state.data_dir).solo {
-        return state.registry.clone();
-    }
-    let scoped = std::sync::Arc::new(crate::registry::Registry::new());
-    if state.registry.enabled_manifests().iter()
-        .any(|m| m.id == crate::tvbox_aggregate::AGGREGATE_ID)
-    {
-        if let Some(aggregate) = state.registry.get(crate::tvbox_aggregate::AGGREGATE_ID) {
-            scoped.register(aggregate);
-        }
-    }
-    scoped
+    state.registry.clone()
 }
 
 pub async fn search_all(

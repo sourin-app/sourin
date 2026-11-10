@@ -100,6 +100,8 @@ pub struct AggregateConfig {
     /// ???????????????????????????????????
     pub solo: bool,
     pub enabled_site_ids: Vec<String>,
+    /// Distinguishes a saved empty selection from legacy default-all configs.
+    pub site_selection_explicit: bool,
     pub hidden_site_ids: Vec<String>,
     pub pan: PanConfig,
 }
@@ -111,6 +113,7 @@ impl Default for AggregateConfig {
             note: String::new(),
             solo: false,
             enabled_site_ids: Vec::new(),
+            site_selection_explicit: false,
             hidden_site_ids: Vec::new(),
             pan: PanConfig::default(),
         }
@@ -124,6 +127,7 @@ impl AggregateConfig {
             "note": self.note,
             "solo": self.solo,
             "enabledSiteIds": self.enabled_site_ids,
+            "siteSelectionExplicit": self.has_explicit_site_selection(),
             "hiddenSiteIds": self.hidden_site_ids,
             "pan": {
                 "shareText": self.pan.share_text,
@@ -146,6 +150,9 @@ impl AggregateConfig {
             .to_string();
         out.solo = v.get("solo").and_then(|x| x.as_bool()).unwrap_or(false);
         out.enabled_site_ids = str_list(v.get("enabledSiteIds"));
+        out.site_selection_explicit = v.get("siteSelectionExplicit")
+            .and_then(|x| x.as_bool()).unwrap_or(false)
+            || !out.enabled_site_ids.is_empty();
         out.hidden_site_ids = str_list(v.get("hiddenSiteIds"));
         if let Some(pan) = v.get("pan") {
             out.pan.share_text = pan
@@ -160,6 +167,10 @@ impl AggregateConfig {
                 .map(|s| s.to_string());
         }
         out
+    }
+
+    fn has_explicit_site_selection(&self) -> bool {
+        self.site_selection_explicit || !self.enabled_site_ids.is_empty()
     }
 }
 
@@ -193,9 +204,11 @@ pub fn load(data_dir: &Path) -> AggregateConfig {
 /// 写配置（错误文案逐字给用户看）
 pub fn save(data_dir: &Path, cfg: &AggregateConfig) -> Result<(), String> {
     let p = data_dir.join(FILE_NAME);
+    let tmp = p.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(&cfg.to_json())
         .map_err(|e| format!("写聚合配置失败：{e}"))?;
-    std::fs::write(&p, text).map_err(|e| format!("写聚合配置失败：{e}"))?;
+    std::fs::write(&tmp, text).map_err(|e| format!("写聚合配置失败：{e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| format!("写聚合配置失败：{e}"))?;
     Ok(())
 }
 
@@ -247,6 +260,7 @@ pub fn apply_patch(
         // 去重但**保序**（用户勾选顺序就是展示顺序）
         let mut seen = std::collections::BTreeSet::new();
         next.enabled_site_ids = enabled.iter().filter(|x| seen.insert((*x).clone())).cloned().collect();
+        next.site_selection_explicit = true;
         next.hidden_site_ids = derive_hidden(&next.enabled_site_ids);
     }
     if let Some(t) = &patch.pan_share_text {
@@ -333,6 +347,14 @@ pub fn enabled_children(
     data_dir: &Path,
 ) -> Vec<Arc<dyn MediaProvider>> {
     let cfg = load(data_dir);
+    enabled_children_for_config(registry, data_dir, &cfg)
+}
+
+fn enabled_children_for_config(
+    registry: &Arc<Registry>,
+    data_dir: &Path,
+    cfg: &AggregateConfig,
+) -> Vec<Arc<dyn MediaProvider>> {
     let imported = cfg.solo.then(|| crate::tvbox::load_tvbox_metas(data_dir));
     let eligible: std::collections::HashSet<String> = registry
         .enabled_manifests()
@@ -344,7 +366,7 @@ pub fn enabled_children(
 
     // An explicit selection that becomes disabled, removed or out of scope is
     // empty. Falling back here would silently search sources the user did not pick.
-    if !cfg.enabled_site_ids.is_empty() {
+    if cfg.has_explicit_site_selection() {
         return cfg.enabled_site_ids.iter()
             .filter(|id| eligible.contains(*id))
             .filter_map(|id| registry.get(id))
@@ -703,9 +725,12 @@ impl MediaProvider for TvboxAggregate {
         // `category_id` 可能是 `<子站>::<原分类>`；没有前缀就当"所有子站都用这个分类"
         match req.category_id.split_once(SEP) {
             Some((cid, rest)) => {
-                let p = self.registry.get(cid).ok_or_else(|| {
-                    ProviderError::new(ErrorKind::Other, format!("找不到子站 {cid}"))
-                })?;
+                let p = self.enabled_children().into_iter()
+                    .find(|p| p.manifest().id == cid)
+                    .ok_or_else(|| ProviderError::new(
+                        ErrorKind::Other,
+                        format!("子站 {cid} 已被移除或未启用"),
+                    ))?;
                 let out = p
                     .list(ListRequest {
                         category_id: rest.to_string(),
@@ -921,6 +946,9 @@ pub fn command_get(
 
 /// 组装响应（`get` 与 `set` 共用：契约要求 set 回读一次再返回）
 fn build_response(st: &crate::state::AppState, cfg: &AggregateConfig) -> serde_json::Value {
+    let enabled: std::collections::HashSet<String> =
+        enabled_children_for_config(&st.registry, &st.data_dir, cfg)
+            .into_iter().map(|p| p.manifest().id.clone()).collect();
     let sites: Vec<serde_json::Value> = tvbox_sites(st)
         .into_iter()
         .map(|(id, name, api)| {
@@ -935,20 +963,8 @@ fn build_response(st: &crate::state::AppState, cfg: &AggregateConfig) -> serde_j
                 "api": api,
                 "kindTag": if api.starts_with("csp_") { "csp" } else { "appleCms" },
                 "implemented": implemented,
-                /*
-                 * ★★★ 2026-10-28（Owner：「tvbox 编辑，这些都没勾选是啥意思？我看不懂」）
-                 * ```text
-                 * 改前：`enabled` 直接查 `enabled_site_ids`。而他的配置里这个数组是**空**的
-                 * ⇒ 47 条全部"未勾选"，但实际**全都在用**（空数组 = 全部启用，见 enabled_children
-                 *   的兜底语义）。⇒ 界面说"没选"，行为是"全选"，自相矛盾。
-                 * ⇒ 空数组时按"全部启用"回报（与扇出/渠道条同一份判据）。
-                 * ```
-                 */
-                "enabled": if cfg.enabled_site_ids.is_empty() {
-                    true
-                } else {
-                    cfg.enabled_site_ids.iter().any(|x| x == &id2(&id))
-                },
+                // Match search and home, including registry disables and solo scope.
+                "enabled": implemented && enabled.contains(&id),
                 // ★ 未实现类不许显示成可启用：这里给出与导入报告**同一句**原因
                 "reason": if implemented { serde_json::Value::Null }
                           else { serde_json::Value::String(unimplemented_reason(&api)) },
@@ -963,16 +979,13 @@ fn build_response(st: &crate::state::AppState, cfg: &AggregateConfig) -> serde_j
         "note": cfg.note,
         "solo": cfg.solo,
         "enabledSiteIds": cfg.enabled_site_ids,
+        "siteSelectionExplicit": cfg.has_explicit_site_selection(),
         "sites": sites,
         "pan": {
             "shareText": cfg.pan.share_text,
             "pwd": cfg.pan.pwd,
         },
     })
-}
-
-fn id2(s: &String) -> String {
-    s.clone()
 }
 
 /// `tvbox_aggregate_set`（**部分更新**：只改传进来的字段）
@@ -1028,7 +1041,33 @@ pub fn command_set(
         .map(|m| (m.id.clone(), m.kind.clone()))
         .collect();
     let next = apply_patch(&st.data_dir, &known, &cur, &patch)?;
-    Ok(build_response(st, &next))
+    if patch.enabled_site_ids.is_some() {
+        // Selecting a previously disabled TVBox child is an explicit enable.
+        // Persist once before touching the registry; the generic single-source
+        // helper mutates memory before its disk write and cannot provide this.
+        let previous_disabled = crate::commands::load_disabled(&st.data_dir);
+        let disabled: Vec<String> = previous_disabled.iter()
+            .filter(|id| !next.enabled_site_ids.contains(id)).cloned().collect();
+        if disabled != previous_disabled {
+            if let Err(error) = crate::commands::save_disabled(&st.data_dir, &disabled) {
+                return match save(&st.data_dir, &cur) {
+                    Ok(()) => Err(format!("保存子源启用状态失败：{error}")),
+                    Err(rollback) => Err(format!(
+                        "保存子源启用状态失败：{error}；恢复聚合选择失败：{rollback}"
+                    )),
+                };
+            }
+        }
+        for id in &next.enabled_site_ids {
+            st.registry.set_enabled(id, true);
+        }
+    }
+    if next.solo {
+        let persisted = st.third_party.read().map_err(|_| "源配置不可读")?;
+        crate::source_catalog::migrate_legacy_solo(&st.registry, &st.data_dir, &persisted)?;
+    }
+    crate::source_catalog::sync_enabled(&st.registry, &st.data_dir);
+    Ok(build_response(st, &load(&st.data_dir)))
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1510,6 +1549,37 @@ mod tests {
         assert_eq!(deselected["implemented"], true);
         assert_eq!(deselected["enabled"], false);
         assert_eq!(command_get(&st).unwrap(), updated);
+
+        crate::commands_provider::set_enabled_persisted(&st, "native-https", false).unwrap();
+        let disabled_response = command_get(&st).unwrap();
+        assert_eq!(disabled_response["sites"].as_array().unwrap().iter()
+            .find(|s| s["id"] == "native-https").unwrap()["enabled"], false);
+        let reenabled = command_set(&st, &serde_json::json!({
+            "enabledSiteIds": ["native-https"]
+        })).unwrap();
+        assert_eq!(reenabled["sites"].as_array().unwrap().iter()
+            .find(|s| s["id"] == "native-https").unwrap()["enabled"], true);
+        assert!(!crate::commands::load_disabled(&dir).contains(&"native-https".into()));
+
+        let empty = command_set(&st, &serde_json::json!({"enabledSiteIds": []})).unwrap();
+        assert!(empty["sites"].as_array().unwrap().iter().all(|s| s["enabled"] == false));
+        assert_eq!(command_get(&st).unwrap(), empty);
+        assert!(load(&dir).has_explicit_site_selection());
+
+        // A failed enable write must retain both the empty aggregate choice and
+        // the disabled registry flag. This does not touch an Owner data folder.
+        crate::commands_provider::set_enabled_persisted(&st, "native-http", false).unwrap();
+        let before_failure = load(&dir);
+        let blocked_temp = dir.join("disabled-providers.json.tmp");
+        std::fs::create_dir(&blocked_temp).unwrap();
+        let failure = command_set(&st, &serde_json::json!({
+            "enabledSiteIds": ["native-http"]
+        })).unwrap_err();
+        assert!(failure.contains("保存子源启用状态失败"));
+        assert_eq!(load(&dir), before_failure);
+        assert!(!st.registry.enabled_manifests().iter().any(|m| m.id == "native-http"));
+        assert!(crate::commands::load_disabled(&dir).contains(&"native-http".into()));
+        std::fs::remove_dir(&blocked_temp).unwrap();
         drop(st);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2036,6 +2106,66 @@ mod tests {
         assert!(c.enabled_site_ids.is_empty());
         std::fs::write(dir.join(FILE_NAME), "这不是 json").unwrap();
         assert_eq!(load(&dir), AggregateConfig::default(), "坏文件 ⇒ 默认值，不 panic");
+    }
+
+    #[test]
+    fn aggregate_selection_preserves_legacy_defaults_and_explicit_empty() {
+        let legacy_default = AggregateConfig::from_json(&serde_json::json!({
+            "enabledSiteIds": []
+        }));
+        assert!(!legacy_default.has_explicit_site_selection());
+        let legacy_selection = AggregateConfig::from_json(&serde_json::json!({
+            "enabledSiteIds": ["tvbox1"]
+        }));
+        assert!(legacy_selection.has_explicit_site_selection());
+        let dir = tmp_dir("explicit-empty-roundtrip");
+        let empty = apply_patch(&dir, &[], &legacy_selection, &SetPatch {
+            enabled_site_ids: Some(vec![]), ..Default::default()
+        }).unwrap();
+        assert!(empty.enabled_site_ids.is_empty());
+        assert!(empty.has_explicit_site_selection());
+        assert_eq!(load(&dir), empty);
+        let renamed = apply_patch(&dir, &[], &empty, &SetPatch {
+            note: Some("只改备注".into()), ..Default::default()
+        }).unwrap();
+        assert!(renamed.has_explicit_site_selection());
+        assert!(renamed.enabled_site_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn aggregate_saved_selection_filters_home_search_and_stale_categories() {
+        let (agg, dir, reg) = agg_disabled(
+            "saved-selection-filters", &["sub-a", "sub-b"], &[], &[],
+        );
+        for id in ["sub-a", "sub-b"] {
+            crate::tvbox::write_tvbox_meta(&dir, id, &crate::tvbox::TvboxSourceMeta {
+                api: "https://content.invalid/api".into(), ..Default::default()
+            }).unwrap();
+        }
+        let known = vec![("sub-a".into(), "tvbox".into()), ("sub-b".into(), "tvbox".into())];
+        let selected = apply_patch(&dir, &known, &load(&dir), &SetPatch {
+            enabled_site_ids: Some(vec!["sub-b".into()]), ..Default::default()
+        }).unwrap();
+        assert_eq!(channels_of(&reg, &dir).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["sub-b"]);
+        let results = agg.search("条目", 1).await.unwrap();
+        assert_eq!(results.items.len(), 1);
+        assert!(results.items[0].id.native.starts_with("sub-b::"));
+        assert!(channel_home_of(&reg, &dir, "sub-a").await.is_err());
+        assert!(channel_home_of(&reg, &dir, "sub-b").await.is_ok());
+        let error = agg.list(ListRequest {
+            category_id: "sub-a::c1".into(), page: 1, filters: Default::default(),
+        }).await.unwrap_err();
+        assert!(error.to_string().contains("未启用"));
+
+        apply_patch(&dir, &known, &selected, &SetPatch {
+            enabled_site_ids: Some(vec![]), ..Default::default()
+        }).unwrap();
+        // Reconstructing the provider must retain "none" after a restart.
+        let reopened = TvboxAggregate::new(reg.clone(), dir.clone());
+        assert!(channels_of(&reg, &dir).is_empty());
+        assert!(reopened.search("条目", 1).await.unwrap().items.is_empty());
+        assert!(channel_home_of(&reg, &dir, "sub-b").await.is_err());
+        assert_eq!(reg.enabled_manifests().len(), 2, "Aggregate choices do not rewrite other provider preferences");
     }
 
     /// 最小假子站：只实现了 `home()`，且**标题写死**（不看 id）——
@@ -2711,31 +2841,22 @@ mod tests {
         );
     }
 
-    /// ★★★ R2-B **真数据复现**（卡里的硬要求）：用 Owner 真实停用名单的**逐字副本**跑一次真扇出
-    ///
-    /// ```text
-    /// 夹具由 `.probe/r2-t13-realdata-copy.py` 生成（**只读**真实目录；
-    ///   铁律 store.rs:4457：用户真实库绝不能碰）。
-    /// 形状 = Owner 机器现状：enabledSiteIds 空 + disabled 51 条（含全部 16 个 csp 子站）。
-    ///
-    /// ★ 为什么必须有这一条：上面几条用的是**造出来的** 2 个子站 ⇒
-    ///   可能"造得像"而"真形状不同"（51 条、名字前缀 csp-*）。
-    ///   这条用**真名单 + 真配置形状**跑，是"真读数"而非推理。
-    /// ★ 反空真（铁律 149）：先断言夹具**确实**是那个形状（条数/前缀/空集合），
-    ///   否则"扇出为空"可能是"因为夹具根本是空的"这种空真。
-    /// ```
+    /// R2-B integration check using an explicitly supplied, approved isolated fixture.
+    /// Set R2B_REALDATA_DIR to that fixture and run this ignored test explicitly.
+    /// This test never discovers or copies the Owner profile. Fixture shape assertions
+    /// ensure that an empty input cannot pass the no-fanout regression check.
     #[test]
+    #[ignore = "requires an approved isolated fixture supplied through R2B_REALDATA_DIR"]
     fn r2b_realdata_shape_fans_out_nothing() {
         let real_dir = std::env::var("R2B_REALDATA_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir().join("r2b-realdata"));
+            .expect("Set R2B_REALDATA_DIR to an approved isolated fixture before running this test");
         let dis_file = real_dir.join("disabled-providers.json");
         let agg_file = real_dir.join("tvbox-aggregate.json");
         if !dis_file.exists() || !agg_file.exists() {
-            // 夹具没生成 ⇒ **不静默跳过**（静默跳过 = 永久绿的空门禁）
+            // Explicit execution must fail when the supplied fixture is incomplete.
             panic!(
-                "★★ 真数据夹具不存在：{}\n\
-                 先跑 `.probe/r2-t13-realdata-copy.py`（它**只读**真实目录并复刻到 %TEMP%\\r2b-realdata）",
+                "Isolated fixture is missing disabled-providers.json or tvbox-aggregate.json: {}",
                 real_dir.display()
             );
         }

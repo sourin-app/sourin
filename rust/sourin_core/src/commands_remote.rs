@@ -600,9 +600,23 @@ pub async fn install_plugin(
     state: &AppState,
     url: &str,
 ) -> Result<serde_json::Value, String> {
+    install_plugin_with_backups(state, url, &[]).await
+}
+
+pub async fn install_plugin_with_backups(
+    state: &AppState,
+    url: &str,
+    backups: &[String],
+) -> Result<serde_json::Value, String> {
     let resolved = crate::plugins::resolve_plugin_url(url)?;
-    let (source, used_url) =
-        crate::plugins::fetch_plugin_source(Some(&state.proxy), &resolved).await?;
+    let resolved_backups = backups.iter().map(|u| crate::plugins::resolve_plugin_url(u)).collect::<Result<Vec<_>, _>>()?;
+    let urls = crate::source_catalog::validated_urls(&resolved, &resolved_backups)?;
+    let (source, used_url, endpoint) = crate::source_catalog::fetch_validated(&state.proxy, "plugin", &urls, None, |text| {
+        let meta = crate::plugins::parse_meta(text);
+        if meta.id.is_empty() || meta.name.is_empty() { return Err(crate::source_catalog::Validation::Invalid("内容不是有效 JS 插件".into())); }
+        crate::plugins::validate_source_syntax(text).map_err(crate::source_catalog::Validation::Invalid)?;
+        Ok(text.to_owned())
+    }).await?;
 
     // 先解析元信息校验 —— 不合法的内容不写盘（免得留下一个坏文件）
     let meta = crate::plugins::parse_meta(&source);
@@ -648,6 +662,7 @@ pub async fn install_plugin(
 
     // 立即重载，让新插件马上可用
     let n = crate::commands_provider::reload_plugins(state).await?;
+    crate::source_catalog::record_plugin(state, &meta.id, &meta.name, &resolved, &resolved_backups, &used_url, &endpoint)?;
 
     log::info!("已安装插件 {}（{file}, {bytes} 字节），当前共 {n} 个", meta.id);
 
@@ -713,38 +728,8 @@ pub async fn import_declarative_provider(
     state: &AppState,
     json: &str,
 ) -> Result<crate::model::ProviderManifest, String> {
-    let p = crate::providers::DeclarativeProvider::from_json(json)
-        .map(|p| p.with_data_dir(state.data_dir.clone()))
-        .map_err(|e| format!("{:?}: {}", e.kind, e.message))?;
-    let manifest = crate::provider::MediaProvider::manifest(&p).clone();
-    // Replacing a provider creates a fresh enabled handle at the end of the
-    // registry. Preserve user preferences before the UI refreshes the list.
-    let order = crate::commands::get_provider_order(state)?;
-    let disabled = crate::commands::load_disabled(&state.data_dir);
-    state.registry.register(std::sync::Arc::new(p));
-    state.registry.reorder(&order);
-    if disabled.iter().any(|id| id == &manifest.id) {
-        state.registry.set_enabled(&manifest.id, false);
-    }
-
-    // ★ 记住来源，重启后自动重建（否则用户每次开机都要重装）
-    {
-        let mut list = state
-            .third_party
-            .write()
-            .map_err(|_| "第三方源列表被污染".to_string())?;
-        // 同 id 覆盖：支持用户改了 JSON 再导入
-        list.retain(|x| x.id() != manifest.id);
-        list.push(crate::model::PersistedProvider::Declarative {
-            id: manifest.id.clone(),
-            json: json.to_string(),
-        });
-    }
-    crate::commands_provider::persist_from_registry(state)?;
-    // 标记改动时间：云同步据此判断「本地是新的」
-    crate::commands_provider::touch_providers(state);
-
-    Ok(manifest)
+    let _ = (state, json);
+    Err("声明式源已停止支持，请使用 TVBox 或 JS 插件".into())
 }
 
 /// 安装 HTTP 源（连上去读契约，自动生成 manifest）

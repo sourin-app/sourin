@@ -82,26 +82,26 @@ const WANGYI: &str = "https://cc.163.com";
 pub const PLATFORMS: &[(&str, &str)] = &[("hu\u{79}a", "\u{864e}\u{7259}"), ("dou\u{79}u", "\u{6597}\u{9c7c}"), ("wangyi", "\u{7f51}\u{6613}CC")];
 
 pub struct AllLive {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl AllLive {
     pub const CLASS: &'static str = "ALLLive";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // 本仓既定惯例：不读系统代理（否则「平台可用」会被测成「全宕」）
+            // Ignore environment proxies; an injected context applies the app's policy.
             .no_proxy()
-            .build()
-            .expect("build all_live http client");
+        );
         Self { client }
     }
 
     async fn get_json(&self, url: &str, ua: &str, referer: &str) -> Result<Value, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
             .header(reqwest::header::REFERER, referer)
@@ -322,6 +322,10 @@ pub fn parse_platform_a_detail(v: &Value) -> Result<(String, Option<String>, Vec
 
 #[async_trait]
 impl CspSite for AllLive {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -467,6 +471,10 @@ impl CspSite for AllLive {
 //  ③ 真网取到数据 —— home 平台A 60 条 / platform_b 30 条 / wangyi 20 条 / platform_a detail 真 m3u8）
 // ═══════════════════════════════════════════════════════════════════════
 crate::csp::register_site!(AllLive);
+
+#[cfg(test)]
+#[path = "all_live_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

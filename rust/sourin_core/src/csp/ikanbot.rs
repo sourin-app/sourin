@@ -58,7 +58,7 @@ const REFERER: &str = "https://www.douban.com";
 const GET_TIMEOUT: Duration = Duration::from_secs(12);
 
 pub struct Ikanbot {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Ikanbot {
@@ -86,12 +86,11 @@ impl Ikanbot {
     ];
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(GET_TIMEOUT)
             .no_proxy() // 同其它 csp 源：不读系统代理
-            .build()
-            .expect("build ikanbot http client");
+        );
         Self { client }
     }
 
@@ -116,6 +115,7 @@ impl Ikanbot {
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::REFERER, REFERER)
             .send()
@@ -134,6 +134,7 @@ impl Ikanbot {
     async fn get_res(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::REFERER, REFERER)
             .header(reqwest::header::ACCEPT, "*/*")
@@ -491,6 +492,10 @@ pub fn lines_of(v: &serde_json::Value) -> Vec<(String, Vec<(String, String)>)> {
 
 #[async_trait]
 impl CspSite for Ikanbot {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -671,6 +676,10 @@ impl CspSite for Ikanbot {
 //    那段读数是**寄存器级反汇编**得出的。
 // ```
 crate::csp::register_site!(Ikanbot);
+
+#[cfg(test)]
+#[path = "ikanbot_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

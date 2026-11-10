@@ -323,7 +323,7 @@ pub fn require_token(token: String) -> Result<String, String> {
 // ═══════════════════════════════════════════════════════════════════════
 
 pub struct App99 {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
     /// 握手后才有；`None` 表示还没 init
     state: Mutex<Option<Handshaken>>,
 }
@@ -420,13 +420,12 @@ impl App99 {
     pub const CLASS: &'static str = "App99";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(REQ_BUDGET)
-            // 与 pan_web_share 同一条纪律：不读系统代理（代理会把"站点可用"测成"全宕"）
+            // Ignore environment proxies; an injected context applies the app's policy.
             .no_proxy()
-            .build()
-            .expect("build app99 http client");
+        );
         Self {
             client,
             state: Mutex::new(None),
@@ -494,8 +493,8 @@ impl App99 {
         nonce: &str,
         token: &str,
         encrypted: &str,
-    ) -> reqwest::RequestBuilder {
-        self.client.post(url)
+    ) -> Result<reqwest::RequestBuilder, String> {
+        Ok(self.client.client()?.post(url)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json; charset=utf-8")
             .header("client_type", "android")
@@ -505,7 +504,7 @@ impl App99 {
             .header("timestamp", timestamp)
             .header("nonce", nonce)
             .header("sign", sign_of(encrypted, timestamp, nonce, token))
-            .body(encrypted.to_string())
+            .body(encrypted.to_string()))
     }
 
     fn transport_failure(stage: &str, error: &reqwest::Error) -> String {
@@ -583,7 +582,7 @@ impl App99 {
         let enc = encrypt_body(key, &body, &iv)?;
         let url = format!("{host}{login_path}");
         let resp = self
-            .signed_post(&url, uuid, header_version, &ts, &nonce, "", &enc)
+            .signed_post(&url, uuid, header_version, &ts, &nonce, "", &enc)?
             .send()
             .await
             .map_err(|e| Self::transport_failure("userInfo", &e))?;
@@ -658,7 +657,7 @@ impl App99 {
         let enc = encrypt_body(&key, &body, &iv)?;
         let url = format!("{host}/app/systemInit");
         let resp = self
-            .signed_post(&url, &uuid, &header_version, &ts, &nonce, "", &enc)
+            .signed_post(&url, &uuid, &header_version, &ts, &nonce, "", &enc)?
             .send()
             .await
             .map_err(|e| Self::transport_failure("systemInit", &e))?;
@@ -847,7 +846,7 @@ impl App99 {
         };
         let url = format!("{host}{path}");
         let resp = self
-            .signed_post(&url, &uuid, &version, &ts, &nonce, &token, &enc)
+            .signed_post(&url, &uuid, &version, &ts, &nonce, &token, &enc)?
             .send()
             .await
             .map_err(|e| Self::transport_failure("业务", &e))?;
@@ -959,7 +958,7 @@ impl App99 {
     }
 
     async fn verify_media_response(&self, url: &str) -> Result<(), String> {
-        let mut response = self.client.get(url).header("Range", "bytes=0-511")
+        let mut response = self.client.client()?.get(url).header("Range", "bytes=0-511")
             .send().await.map_err(|_| "无法读取这条线路的媒体，请稍后重试".to_string())?;
         if !response.status().is_success() {
             return Err(format!("媒体请求返回 HTTP {}，请切换线路", response.status().as_u16()));
@@ -1028,6 +1027,10 @@ fn ensure_search_hits(
 
 #[async_trait]
 impl CspSite for App99 {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -1239,6 +1242,10 @@ fn detail_of(
 // ```
 crate::csp::register_site!(App99);
 
+#[cfg(test)]
+#[path = "app99_proxy_tests.rs"]
+mod proxy_tests;
+
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
@@ -1247,7 +1254,7 @@ crate::csp::register_site!(App99);
 mod tests {
     use super::*;
 
-    fn seal_fixture(key: &[u8], plain: &serde_json::Value) -> String {
+    pub(super) fn seal_fixture(key: &[u8], plain: &serde_json::Value) -> String {
         use std::io::Write as _;
         let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         z.write_all(plain.to_string().as_bytes()).unwrap();
@@ -1262,7 +1269,7 @@ mod tests {
         b64_encode(&[iv.as_slice(), ct].concat())
     }
 
-    fn open_request(key: &[u8], body: &str) -> serde_json::Value {
+    pub(super) fn open_request(key: &[u8], body: &str) -> serde_json::Value {
         let mut all = b64_decode(body).unwrap();
         let (iv, ct) = all.split_at_mut(16);
         let plain = Aes256CbcDec::new_from_slices(key, iv)
@@ -1304,7 +1311,7 @@ mod tests {
         let request = App99::new().signed_post(
             &format!("http://{addr}/vod/parser"), uuid, "fixture-version",
             timestamp, &nonce, "", &encrypted,
-        );
+        ).unwrap();
         let response = tokio::time::timeout(Duration::from_secs(5), request.send()).await;
         server.abort();
         let _ = server.await;
@@ -1868,7 +1875,7 @@ mod tests {
             selected.flag, index, selected.title);
         let mut url = reqwest::Url::parse(&plays[0].url).expect("resolver returns an HTTP URL");
         for depth in 0..6 {
-            let mut request = site.client.get(url.clone()).header("Range", "bytes=0-4095");
+            let mut request = site.client.client().unwrap().get(url.clone()).header("Range", "bytes=0-4095");
             for (key, value) in &plays[0].headers {
                 request = request.header(key, value);
             }

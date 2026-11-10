@@ -291,7 +291,7 @@ pub async fn resolve_stream(
      *   （Cookie/Referer/UA），本地代理地址读清单没有意义。
      * ```
      */
-    crate::hls_facts::probe_candidates(&mut list).await;
+    crate::hls_facts::probe_candidates_with_proxy(&mut list, state.stream_proxy.clone()).await;
     {
         let id_head: String = id.chars().take(24).collect();
         // ★ T9-P1 分段②：探测结束（含上游 resolve 全程；P9 的 2500ms 批截止在这段里）
@@ -322,7 +322,7 @@ pub async fn resolve_stream(
     for c in &mut list {
         if let Some(local) =
             crate::streamproxy::maybe_proxy(&state.stream_proxy, &c.url, &c.headers, c.not_web_ready)
-                .await
+                .await?
         {
             c.url = local;
             seg_proxied += 1;
@@ -336,7 +336,7 @@ pub async fn resolve_stream(
                 &c.headers,
                 c.not_web_ready,
             )
-            .await
+            .await?
             {
                 c.audio_url = Some(local);
             }

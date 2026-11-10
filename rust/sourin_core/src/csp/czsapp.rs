@@ -131,19 +131,18 @@ pub const CATEGORIES: &'static [(&'static str, &'static str)] = &[
 ];
 
 pub struct Czsapp {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Czsapp {
     pub const CLASS: &'static str = "Czsapp";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
             .no_proxy()
-            .build()
-            .expect("build czsapp http client");
+        );
         Self { client }
     }
 
@@ -168,6 +167,7 @@ impl Czsapp {
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .header(reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9")
@@ -348,6 +348,10 @@ pub fn play_from_html(html: &str) -> Option<String> {
 
 #[async_trait]
 impl CspSite for Czsapp {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -538,6 +542,10 @@ impl CspSite for Czsapp {
 //   实现仍照 DEX 写全协议（上游**会换域名**，换到没 WAF 的域名即立刻可用）
 // ```
 crate::csp::register_site!(Czsapp);
+
+#[cfg(test)]
+#[path = "czsapp_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试

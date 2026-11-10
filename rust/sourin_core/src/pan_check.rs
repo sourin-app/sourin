@@ -57,10 +57,11 @@
 //! ```text
 //! · 批内并发上限 Semaphore(4)（hls_facts/registry 的限流先例）；
 //! · 429 / 风控文案响应 ⇒ 该 host 冷却 30s（冷却期内的请求直接 uncertain，不硬重试）；
-//! · reqwest 一律 .no_proxy()（pan_list 纪律③：本机代理会把 200 变 502）。
+//! · 应用命令按当前全局代理策略创建整批不可变 transport；未绑定的旧内部调用保留直连。
 //! ```
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -276,14 +277,68 @@ pub const MAX_CHECK_ITEMS: usize = 100;
 //  执行器
 // ══════════════════════════════════════════════════════════════════════
 
+/// Holding the store prevents pointer reuse while a cache entry is alive.
+#[derive(Clone)]
+struct PolicyNamespace {
+    store: Arc<crate::proxy::ProxyStore>,
+    revision: u64,
+    provider: String,
+}
+
+impl PartialEq for PolicyNamespace {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.store, &other.store)
+            && self.revision == other.revision
+            && self.provider == other.provider
+    }
+}
+
+impl Eq for PolicyNamespace {}
+
+impl Hash for PolicyNamespace {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.store).hash(state);
+        self.revision.hash(state);
+        self.provider.hash(state);
+    }
+}
+
+impl PolicyNamespace {
+    fn is_current(&self) -> bool {
+        self.store.policy_revision() == self.revision
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    policy: Option<PolicyNamespace>,
+    url: String,
+    password: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CooldownKey {
+    policy: Option<PolicyNamespace>,
+    host: String,
+}
+
+struct OperationTransport {
+    namespace: PolicyNamespace,
+    client: reqwest::Client,
+    baidu_client: reqwest::Client,
+    drive_client: reqwest::Client,
+    xunlei_client: reqwest::Client,
+}
+
 struct Shared {
     endpoints: PanEndpoints,
     client: reqwest::Client,
     sem: Arc<tokio::sync::Semaphore>,
-    /// drive_check_cache 语义：键 = 归一化 URL，值 = (结果, 过期时刻)
-    cache: Mutex<HashMap<String, (CheckOutcome, Instant)>>,
-    /// 风控冷却：键 = host，值 = 冷却截止时刻
-    cooldown: Mutex<HashMap<String, Instant>>,
+    /// Results and cooldowns are isolated by store, provider and policy revision.
+    cache: Mutex<HashMap<CacheKey, (CheckOutcome, Instant)>>,
+    cooldown: Mutex<HashMap<CooldownKey, Instant>>,
+    /// One reusable transport; old operations keep their own immutable Arc.
+    transport: Mutex<Option<Arc<OperationTransport>>>,
 }
 
 /// 预检执行器（缓存/冷却/并发上限长在 `Arc<Shared>` 上 ⇒ 批内任务可共享，
@@ -291,6 +346,7 @@ struct Shared {
 #[derive(Clone)]
 pub struct PanChecker {
     shared: Arc<Shared>,
+    operation: Option<Arc<OperationTransport>>,
 }
 
 impl Default for PanChecker {
@@ -308,7 +364,7 @@ impl PanChecker {
     /// 测试用：注入假服务器端点
     pub fn with_endpoints(endpoints: PanEndpoints) -> Self {
         let client = reqwest::Client::builder()
-            // ★ 硬纪律：直连（pan_list 纪律③——本机代理会把 200 变 502）
+            // Legacy internal callers have no application policy bound yet.
             .no_proxy()
             .timeout(HTTP_TIMEOUT)
             .build()
@@ -320,8 +376,111 @@ impl PanChecker {
                 sem: Arc::new(tokio::sync::Semaphore::new(4)),
                 cache: Mutex::new(HashMap::new()),
                 cooldown: Mutex::new(HashMap::new()),
+                transport: Mutex::new(None),
             }),
+            operation: None,
         }
+    }
+
+    /// Capture one policy revision before spawning the batch. Neither settings
+    /// changes nor another source can replace clients underneath an operation.
+    pub(crate) async fn check_with_proxy(
+        &self,
+        items: &[Value],
+        proxy: Arc<crate::proxy::ProxyStore>,
+        provider: &str,
+    ) -> Result<Vec<Value>, String> {
+        let needs_network = items.iter().any(|item| {
+            let share = crate::pan::parse_share(item["url"].as_str().unwrap_or(""));
+            is_implemented(share.kind) && !share.share_id.is_empty()
+        });
+        if !needs_network {
+            return Ok(self.check(items).await);
+        }
+        let checker = Self {
+            shared: self.shared.clone(),
+            operation: Some(self.transport(proxy, provider)?),
+        };
+        Ok(checker.check(items).await)
+    }
+
+    fn transport(
+        &self,
+        proxy: Arc<crate::proxy::ProxyStore>,
+        provider: &str,
+    ) -> Result<Arc<OperationTransport>, String> {
+        // Both recipes must use the same revision. A bounded retry fails closed
+        // when configuration keeps changing; no partially built route is used.
+        for _ in 0..3 {
+            let namespace = PolicyNamespace {
+                store: proxy.clone(),
+                revision: proxy.policy_revision(),
+                provider: provider.to_string(),
+            };
+            if let Ok(cached) = self.shared.transport.lock() {
+                if let Some(transport) = cached.as_ref().filter(|t| t.namespace == namespace) {
+                    return Ok(transport.clone());
+                }
+            }
+            let clients = (|| -> Result<_, String> {
+                let client = proxy.client_builder_for(
+                    provider,
+                    reqwest::Client::builder().timeout(HTTP_TIMEOUT),
+                ).map_err(|_| "网盘预检网络策略不可用".to_string())?
+                    .build().map_err(|_| "网盘预检 HTTP 客户端初始化失败".to_string())?;
+                let baidu_client = proxy.client_builder_for(
+                    provider,
+                    crate::csp::pan_baidu_play::inspection_client_builder(),
+                ).map_err(|_| "网盘预检网络策略不可用".to_string())?
+                    .build().map_err(|_| "百度 HTTP 客户端初始化失败".to_string())?;
+                let drive_client = proxy.client_builder_for(provider,
+                    crate::csp::pan_drive::PanDrive::client_builder())
+                    .map_err(|_| "网盘文件网络策略不可用".to_string())?
+                    .build().map_err(|_| "网盘文件 HTTP 客户端初始化失败".to_string())?;
+                let xunlei_client = proxy.client_builder_for(provider,
+                    crate::csp::pan_xunlei_play::http_client_builder())
+                    .map_err(|_| "网盘文件网络策略不可用".to_string())?
+                    .build().map_err(|_| "网盘文件 HTTP 客户端初始化失败".to_string())?;
+                Ok((client, baidu_client, drive_client, xunlei_client))
+            })();
+            if !namespace.is_current() {
+                continue;
+            }
+            let (client, baidu_client, drive_client, xunlei_client) = clients?;
+            let transport = Arc::new(OperationTransport { namespace, client, baidu_client, drive_client, xunlei_client });
+            if let Ok(mut cached) = self.shared.transport.lock() {
+                *cached = Some(transport.clone());
+            }
+            return Ok(transport);
+        }
+        Err("网盘预检期间网络配置持续变化，请重试".to_string())
+    }
+
+    /// One immutable policy for the complete precheck/listing operation.
+    pub(crate) fn for_share_operation(&self, proxy: Arc<crate::proxy::ProxyStore>, provider: &str) -> Result<Self, String> {
+        Ok(Self { shared: self.shared.clone(), operation: Some(self.transport(proxy, provider)?) })
+    }
+
+    pub(crate) fn drive_client(&self) -> Option<reqwest::Client> {
+        self.operation.as_ref().map(|operation| operation.drive_client.clone())
+    }
+    pub(crate) fn baidu_client(&self) -> Option<reqwest::Client> {
+        self.operation.as_ref().map(|operation| operation.baidu_client.clone())
+    }
+    pub(crate) fn xunlei_client(&self) -> Option<reqwest::Client> {
+        self.operation.as_ref().map(|operation| operation.xunlei_client.clone())
+    }
+
+    fn client(&self) -> &reqwest::Client {
+        self.operation.as_ref().map_or(&self.shared.client, |operation| &operation.client)
+    }
+
+    fn policy(&self) -> Option<PolicyNamespace> {
+        self.operation.as_ref().map(|operation| operation.namespace.clone())
+    }
+
+    fn policy_is_current(&self) -> bool {
+        self.operation.as_ref().is_none_or(|operation| operation.namespace.is_current())
     }
 
     /// 批量预检：results 与 items 等长等序（见模块头的 JSON 形状）
@@ -331,9 +490,8 @@ impl PanChecker {
         for (idx, item) in items.iter().enumerate() {
             let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let pwd = item.get("pwd").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let shared = Arc::clone(&self.shared);
+            let checker = self.clone();
             join.spawn(async move {
-                let checker = PanChecker { shared };
                 (idx, checker.check_one(&url, pwd.as_deref()).await)
             });
         }
@@ -364,7 +522,11 @@ impl PanChecker {
         // 提取码：调用方显式给的 > URL/正文里抓的
         let pwd_owned: Option<String> = pwd.map(|s| s.to_string()).or(share.pwd_in_url);
         // 同一链接补提取码后必须重新检查，不能沿用无码时的 locked 缓存。
-        let key = format!("{}\u{0}{}", url.trim(), pwd_owned.as_deref().unwrap_or(""));
+        let key = CacheKey {
+            policy: self.policy(),
+            url: url.trim().to_string(),
+            password: pwd_owned.as_deref().unwrap_or("").to_string(),
+        };
 
         // ① 分类层第一刀：**不是分享链接**（认不出网盘）⇒ bad + 链接格式无效（hp0.d）
         if kind == PanKind::Unknown {
@@ -381,7 +543,11 @@ impl PanChecker {
             return (CheckOutcome::new(CheckState::Bad, TEXT_INVALID), kind, share_id);
         }
         // ④ 缓存（写也在本层：调用方走 check() 批层或直接 check_one 语义一致）
-        if let Ok(c) = self.shared.cache.lock() {
+        if let Ok(mut c) = self.shared.cache.lock() {
+            let now = Instant::now();
+            c.retain(|key, (_, until)| {
+                *until > now && key.policy.as_ref().is_none_or(PolicyNamespace::is_current)
+            });
             if let Some((outcome, until)) = c.get(&key) {
                 if *until > Instant::now() {
                     return (outcome.clone(), kind, share_id);
@@ -389,8 +555,12 @@ impl PanChecker {
             }
         }
         // ⑤ 该 host 冷却中 ⇒ 直接 uncertain（退避，不是硬重试）
-        let host = host_of(url.trim());
-        if let Ok(cd) = self.shared.cooldown.lock() {
+        let host = CooldownKey { policy: self.policy(), host: host_of(url.trim()) };
+        if let Ok(mut cd) = self.shared.cooldown.lock() {
+            let now = Instant::now();
+            cd.retain(|key, until| {
+                *until > now && key.policy.as_ref().is_none_or(PolicyNamespace::is_current)
+            });
             if let Some(until) = cd.get(&host) {
                 if *until > Instant::now() {
                     return (
@@ -414,7 +584,9 @@ impl PanChecker {
                     _ => unreachable!("外层 match 已收窄"),
                 };
                 // 风控/签名被拒（unverifiable）⇒ 该 host 进冷却
-                if out.state == CheckState::Uncertain && out.summary == TEXT_UNVERIFIABLE {
+                if out.state == CheckState::Uncertain && out.summary == TEXT_UNVERIFIABLE
+                    && self.policy_is_current()
+                {
                     if let Ok(mut cd) = self.shared.cooldown.lock() {
                         cd.insert(host, Instant::now() + COOLDOWN);
                     }
@@ -423,7 +595,7 @@ impl PanChecker {
             }
             _ => unreachable!("② 已拦截未接入的盘"),
         };
-        if outcome.cacheable {
+        if outcome.cacheable && self.policy_is_current() {
             if let Ok(mut c) = self.shared.cache.lock() {
                 c.insert(key, (outcome.clone(), Instant::now() + CACHE_TTL));
             }
@@ -437,7 +609,7 @@ impl PanChecker {
         ua: &str,
         headers: &[(&str, String)],
     ) -> Result<(u16, String), String> {
-        let mut req = self.shared.client.get(url).header(reqwest::header::USER_AGENT, ua);
+        let mut req = self.client().get(url).header(reqwest::header::USER_AGENT, ua);
         for (k, v) in headers {
             req = req.header(*k, v);
         }
@@ -448,7 +620,7 @@ impl PanChecker {
     }
 
     async fn page_cookies(&self, page: &str, ua: &str) -> String {
-        match self.shared.client.get(page).header(reqwest::header::USER_AGENT, ua).send().await {
+        match self.client().get(page).header(reqwest::header::USER_AGENT, ua).send().await {
             Ok(r) => cookies_of(&r),
             Err(_) => String::new(),
         }
@@ -512,8 +684,7 @@ impl PanChecker {
         let cookies = self.page_cookies(page, ua).await;
         // ② token（匿名，提交已知提取码）
         let mut req = self
-            .shared
-            .client
+            .client()
             .post(token_url)
             .query(&[("pr", pr), ("fr", fr)])
             .header(reqwest::header::USER_AGENT, ua)
@@ -584,14 +755,21 @@ impl PanChecker {
 
     async fn check_baidu(&self, share_id: &str, pwd: Option<&str>) -> CheckOutcome {
         use crate::csp::pan_baidu_play::{
-            inspect_anonymous, BaiduEndpoints, BaiduFailureCause, BaiduInspection, BaiduStage,
+            inspect_anonymous, inspect_anonymous_with_client, BaiduEndpoints,
+            BaiduFailureCause, BaiduInspection, BaiduStage,
         };
         let endpoints = BaiduEndpoints {
             page: self.shared.endpoints.baidu_page.clone(),
             verify: self.shared.endpoints.baidu_verify.clone(),
             list: self.shared.endpoints.baidu_list.clone(),
         };
-        match inspect_anonymous(&endpoints, share_id, pwd.unwrap_or("")).await {
+        let inspection = match &self.operation {
+            Some(operation) => inspect_anonymous_with_client(
+                &endpoints, share_id, pwd.unwrap_or(""), operation.baidu_client.clone(),
+            ).await,
+            None => inspect_anonymous(&endpoints, share_id, pwd.unwrap_or("")).await,
+        };
+        match inspection {
             Ok(BaiduInspection::Files) => CheckOutcome::new(CheckState::Ok, TEXT_OK),
             Ok(BaiduInspection::Empty) => CheckOutcome::new(CheckState::Bad, TEXT_NO_FILE),
             Ok(BaiduInspection::NeedsPasscode) => CheckOutcome::new(CheckState::Locked, TEXT_LOCKED),
@@ -832,13 +1010,33 @@ pub(crate) fn global_checker() -> &'static PanChecker {
 ///   `truncated`（被丢弃的条数）。截断是防御，不是错误——调用方一次塞几千条
 ///   线路不该把并发打穿（限流再加倍也兜不住批量扇出）。
 pub async fn command_check(items_json: &str) -> Result<Value, String> {
+    command_check_with_policy(items_json, None).await
+}
+
+/// Command entry used by FFI; retains the actual application's shared store.
+pub(crate) async fn command_check_for_state(
+    state: &crate::state::AppState,
+    provider: &str,
+    items_json: &str,
+) -> Result<Value, String> {
+    command_check_with_policy(items_json, Some((state.proxy.clone(), provider))).await
+}
+
+async fn command_check_with_policy(
+    items_json: &str,
+    policy: Option<(Arc<crate::proxy::ProxyStore>, &str)>,
+) -> Result<Value, String> {
     let mut items: Vec<Value> =
         serde_json::from_str(items_json).map_err(|e| format!("items 不是 JSON 数组：{e}"))?;
     let truncated = items.len().saturating_sub(MAX_CHECK_ITEMS);
     if truncated > 0 {
         items.truncate(MAX_CHECK_ITEMS);
     }
-    let results = global_checker().check(&items).await;
+    let checker = global_checker();
+    let results = match policy {
+        Some((proxy, provider)) => checker.check_with_proxy(&items, proxy, provider).await?,
+        None => checker.check(&items).await,
+    };
     Ok(json!({ "ok": true, "results": results, "truncated": truncated }))
 }
 
@@ -849,6 +1047,10 @@ pub async fn command_check(items_json: &str) -> Result<Value, String> {
 #[cfg(test)]
 #[path = "pan_check_baidu_protocol_tests.rs"]
 mod baidu_protocol_tests;
+
+#[cfg(test)]
+#[path = "pan_check_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

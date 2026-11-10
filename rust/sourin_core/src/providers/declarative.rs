@@ -1335,39 +1335,5 @@ mod tests {
         );
     }
 
-    /// ★ 门禁：**两个构造点都**挂了 `with_data_dir`
-    ///
-    /// # 这条防的是一个最难查的分裂
-    ///
-    /// 声明式源有两处构造点：
-    /// ① `state.rs` 启动恢复（`PersistedProvider::Declarative`）
-    /// ② `commands_remote.rs` `import_declarative_provider`
-    ///
-    /// 只挂一处 ⇒ **导入后能用、重启后失效**（或反之）。
-    /// 两个文件都在 `providers/` 之外，光跑本模块的测试**抓不到**，
-    /// 所以只能读源码断言。这是本仓"两条路径发散"教训的直接移植。
-    #[test]
-    fn overlay_is_wired_on_both_construction_sites() {
-        let state_src = include_str!("../state.rs");
-        assert!(
-            state_src.contains("DeclarativeProvider::from_json(json)")
-                && state_src.contains(".map(|p| p.with_data_dir(data_dir.clone()))"),
-            "★ state.rs 的启动恢复路径必须给声明式源挂 data_dir，\
-             否则重启后覆盖层静默失效（导入时还正常，最难查）"
-        );
 
-        let remote_src = include_str!("../commands_remote.rs");
-        assert!(
-            remote_src.contains("DeclarativeProvider::from_json(json)")
-                && remote_src.contains(".map(|p| p.with_data_dir(state.data_dir.clone()))"),
-            "★ commands_remote.rs 的导入路径必须给声明式源挂 data_dir，\
-             否则刚导入的源覆盖层不生效（重启后才生效 —— 同样是分裂）"
-        );
-
-        // 反面对照：全仓 `DeclarativeProvider::from_json` 的构造点必须**只有这两处**
-        // （多出第三处而没挂 with_data_dir，就是新的漏洞）
-        let providers_src = include_str!("mod.rs");
-        assert!(!providers_src.contains("from_json(json).unwrap()"),
-            "providers/mod.rs 不该自己构造声明式源");
-    }
 }

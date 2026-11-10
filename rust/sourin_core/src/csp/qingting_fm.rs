@@ -76,8 +76,7 @@
 // ```text
 // · 空结果：list 第 1 页 0 条 ⇒ Err（可能改版/风控壳页）；第 2 页起 0 条 ⇒ Ok（真没有更多）
 //   —— 与 `app_fox.rs` 同一条口径。
-// · 代理：`.timeout()` 之后、`.build()` 之前必须 `.no_proxy()`
-//   —— 装了系统代理时会把"站点可用"测成"全宕"（全仓判据会扫这一行）。
+// · 代理：忽略环境代理，由 CspHttpContext 应用当前应用代理策略。
 // · 不新增依赖：只用 serde_json / reqwest（Cargo.toml 零 diff）。
 // ```
 
@@ -168,22 +167,20 @@ pub const CATS: &[(&str, &str)] = &[
 ];
 
 pub struct QingtingFM {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl QingtingFM {
     pub const CLASS: &'static str = "QingtingFM";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(TIMEOUT)
-            // ★ 与 `app99` / `pan_web_share` 同一条纪律：不读系统代理。
-            //   改前错在哪：本机 `HTTP_PROXY=127.0.0.1:7890` 时，走代理会拿到 502/超时，
-            //   于是"站点可用"被误判成"全宕"，整个类被错误地标成不可用。
-            .no_proxy()
-            .build()
-            .expect("build qingting_fm http client");
+        let client = super::http_context::CspHttpContext::new(|| {
+            reqwest::Client::builder()
+                .user_agent(UA)
+                .timeout(TIMEOUT)
+                // Ignore environment proxies; CspHttpContext applies app policy.
+                .no_proxy()
+        });
         Self { client }
     }
 
@@ -191,10 +188,15 @@ impl QingtingFM {
     ///
     /// ★ 只发 `{"query": …}`：这个网关是 GraphQL，不是 REST。
     async fn graphql(&self, query: &str) -> Result<Value, String> {
+        self.graphql_url(BFF, query).await
+    }
+
+    async fn graphql_url(&self, url: &str, query: &str) -> Result<Value, String> {
         let body = serde_json::json!({ "query": query }).to_string();
         let resp = self
             .client
-            .post(BFF)
+            .client()?
+            .post(url)
             .header(reqwest::header::REFERER, BASE)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
@@ -212,6 +214,28 @@ impl QingtingFM {
         }
         crate::tvbox::parse_loose_json(&text)
             .map_err(|e| format!("{BFF} 不是 JSON：{e}（前 120 字：{}）", head(&text)))
+    }
+
+    async fn detail_url(&self, url: &str, rid: &str) -> Result<CspDetail, String> {
+        let resp = self
+            .client
+            .client()?
+            .get(url)
+            .header(reqwest::header::REFERER, BASE)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败（{url}）：{e}"))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("读取失败（{url}）：{e}"))?;
+        if !status.is_success() {
+            return Err(format!("HTTP {status}（{url}）：{}", head(&text)));
+        }
+        let v = crate::tvbox::parse_loose_json(&text)
+            .map_err(|e| format!("{url} 不是 JSON：{e}（前 120 字：{}）", head(&text)))?;
+        detail_of(&v, rid)
     }
 }
 
@@ -343,6 +367,10 @@ pub fn live_url(id: &str) -> String {
 
 #[async_trait]
 impl CspSite for QingtingFM {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -408,24 +436,7 @@ impl CspSite for QingtingFM {
             return Err("音频 id 为空".to_string());
         }
         let url = format!("{RADIO_API}{rid}");
-        let resp = self
-            .client
-            .get(&url)
-            .header(reqwest::header::REFERER, BASE)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败（{url}）：{e}"))?;
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("读取失败（{url}）：{e}"))?;
-        if !status.is_success() {
-            return Err(format!("HTTP {status}（{url}）：{}", head(&text)));
-        }
-        let v = crate::tvbox::parse_loose_json(&text)
-            .map_err(|e| format!("{url} 不是 JSON：{e}（前 120 字：{}）", head(&text)))?;
-        detail_of(&v, rid)
+        self.detail_url(&url, rid).await
     }
 
     async fn search(&self, kw: &str, page: u32, _ext: &str) -> Result<CspList, String> {
@@ -645,16 +656,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn client_builder_turns_off_proxy() {
-        // ★ 断言的**对象是源码形态**：`.timeout(…)` 之后、`.build()` 之前必须有 `.no_proxy()`
-        let src = crate::csp::shared::impl_src_only(include_str!("qingting_fm.rs"));
-        let t = src.find(".timeout(TIMEOUT)").expect("必须有 timeout");
-        let n = src.find(".no_proxy()").expect("★ 必须有 .no_proxy()");
-        let b = src.find(".build()").expect("必须有 build");
-        assert!(t < n && n < b, "★ .no_proxy() 必须在 timeout 之后、build 之前");
-    }
-
     #[tokio::test]
     async fn empty_id_is_rejected_before_any_request() {
         let s = QingtingFM::new();
@@ -803,3 +804,9 @@ mod tests {
         );
     }
 }
+
+// Replaces the old builder-source assertion with actual direct/proxy requests
+// through both GraphQL and detail helpers.
+#[cfg(test)]
+#[path = "qingting_fm_proxy_tests.rs"]
+mod proxy_tests;

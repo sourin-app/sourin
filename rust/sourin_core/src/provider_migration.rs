@@ -48,6 +48,23 @@ const MARKER: &str = "provider-migration.json";
 /// 标记里的键（版本化：将来再加迁移就加新键）
 const KEY: &str = "restore_searchable_v1";
 
+/// A later explicit source selection supersedes this historical restore.
+/// Record completion without enabling anything, including on the next restart.
+pub fn preserve_current_selection(data_dir: &Path) -> Result<(), String> {
+    let marker = data_dir.join(MARKER);
+    let mut value = std::fs::read_to_string(&marker)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    value.insert(KEY.into(), serde_json::Value::Bool(true));
+    let temporary = marker.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::Value::Object(value).to_string())
+        .map_err(|error| format!("保存源选择迁移标记失败：{error}"))?;
+    std::fs::rename(temporary, marker)
+        .map_err(|error| format!("替换源选择迁移标记失败：{error}"))
+}
+
 /// 纯函数：给定"当前停用列表"和"可搜索源 id 集合"，算出恢复后应该留下的列表
 ///
 /// # 返回

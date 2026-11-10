@@ -65,20 +65,19 @@ const DEFAULT_SITE: &str = "https://4kzn.cc";
 const DEFAULT_TID: &str = "books:zuixin";
 
 pub struct Zhinan {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Zhinan {
     pub const CLASS: &'static str = "4KZhinan";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(std::time::Duration::from_secs(20))
-            // 与 pan_web_share 同一条纪律：不读系统代理（代理会把"站点可用"测成"全宕"）
+            // Ignore environment proxies; an injected context applies the app's policy.
             .no_proxy()
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+        );
         Self { client }
     }
 
@@ -102,6 +101,7 @@ impl Zhinan {
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
             .send()
@@ -455,6 +455,10 @@ pub fn pan_label(url: &str) -> String {
 
 #[async_trait]
 impl CspSite for Zhinan {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -595,6 +599,10 @@ impl CspSite for Zhinan {
 //   局限（不做 DOM 树）写在本文件头注释里。
 // ```
 crate::csp::register_site!(Zhinan);
+
+#[cfg(test)]
+#[path = "zhinan_proxy_tests.rs"]
+mod proxy_tests;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试：一半是**假 HTML**（hermetic），一半是**真网络**（CSP_LIVE=1 + #[ignore]）

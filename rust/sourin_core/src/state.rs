@@ -75,7 +75,7 @@ pub struct AppState {
     /// ★ 本地流代理（给「播放需要自定义请求头」的流用，如 外部视频站的 Referer）
     pub stream_proxy: Arc<StreamProxy>,
     /// Serializes background cover repair and advances past unavailable items.
-    pub(crate) cover_repair_cursor: tokio::sync::Mutex<usize>,
+    pub(crate) cover_repair: tokio::sync::Mutex<crate::library_covers::CoverRepairState>,
     /// ★ 内容源配置的最后修改时间（毫秒）—— 云同步的 LWW 判据
     ///
     /// 每次导入 / 编辑 / 移除源时刷新。**必须由所有写路径维护**，
@@ -151,7 +151,7 @@ impl AppState {
         log::info!("内置 Provider 已清空（源改由 plugins/ 下的 JS 插件提供）");
 
         // ⑥ 站点代理
-        let proxy = Arc::new(ProxyStore::new());
+        let proxy = Arc::new(ProxyStore::open(&data_dir)?);
 
         /*
          * ⑦ ★ 加载 JS 插件（**这一步决定了界面上有没有源**）
@@ -271,19 +271,8 @@ impl AppState {
         let mut ok = 0usize;
         for item in &persisted {
             match item {
-                PersistedProvider::Declarative { id, json } => {
-                    match crate::providers::DeclarativeProvider::from_json(json)
-                        .map(|p| p.with_data_dir(data_dir.clone()))
-                    {
-                        Ok(p) => {
-                            registry.register(Arc::new(p));
-                            ok += 1;
-                        }
-                        // 单个源失败只跳过它自己 —— 不影响其余源与内置插件
-                        Err(e) => {
-                            log::warn!("声明式源 {id} 恢复失败（已跳过）: {}", e.message)
-                        }
-                    }
+                PersistedProvider::Declarative { .. } => {
+                    // Retain legacy rows for history/backups, but no longer register them.
                 }
                 PersistedProvider::Http {
                     id,
@@ -294,7 +283,8 @@ impl AppState {
                 }
                 // m3u/txt 播放列表直播源：纯 HTTP，同步重建即可（不联网）
                 PersistedProvider::M3uLive { id, name, url } => {
-                    let p = crate::providers::m3u_live::M3uLiveProvider::new(name, url);
+                    let p = crate::providers::m3u_live::M3uLiveProvider::new(name, url)
+                        .with_context(proxy.clone(), data_dir.clone());
                     registry.register(Arc::new(p));
                     let _ = id;
                     ok += 1;
@@ -354,7 +344,7 @@ impl AppState {
                             true,
                         ) {
                             Ok(p) => {
-                                registry.register(Arc::new(p));
+                                registry.register(Arc::new(p.with_proxy(proxy.clone())));
                                 ok += 1;
                             }
                             Err(e) => {
@@ -496,7 +486,7 @@ impl AppState {
                 true,
             ) {
                 Ok(p) => {
-                    registry.register(std::sync::Arc::new(p));
+                    registry.register(std::sync::Arc::new(p.with_proxy(proxy.clone())));
                     builtin_csp += 1;
                 }
                 Err(e) => {
@@ -521,7 +511,9 @@ impl AppState {
          *      ??? disabled-providers.json ? ????????? 47 ??14 ?????
          *      ?? `provider_migration.rs` ????"???????????"??
          */
-        crate::provider_migration::run_once(&data_dir, &registry.manifests());
+        if !crate::source_catalog::migrate_legacy_solo(&registry, &data_dir, &persisted)? {
+            crate::provider_migration::run_once(&data_dir, &registry.manifests());
+        }
 
         let disabled = crate::commands::load_disabled(&data_dir);
         let mut restored = 0usize;
@@ -533,6 +525,7 @@ impl AppState {
         if restored > 0 {
             log::info!("已恢复 {restored} 个源的停用状态");
         }
+        crate::source_catalog::sync_enabled(&registry, &data_dir);
 
         /*
          * ⑨ 应用用户保存的源顺序（**同步阶段这一次**）
@@ -566,20 +559,24 @@ impl AppState {
         let state = Arc::new(Self {
             registry,
             db: Arc::new(db),
-            proxy,
+            proxy: proxy.clone(),
             sync: tokio::sync::RwLock::new(None),
             device_id,
             data_dir: data_dir.clone(),
             third_party: RwLock::new(persisted),
             remote: Arc::new(RemoteHub::new()),
-            stream_proxy: Arc::new(StreamProxy::new()),
-            cover_repair_cursor: tokio::sync::Mutex::new(0),
+            stream_proxy: Arc::new(StreamProxy::with_proxy_store(proxy.clone())),
+            cover_repair: tokio::sync::Mutex::new(Default::default()),
             // 启动时以「现在」为基线：本地磁盘上的配置就是本机当前状态，
             // 若云端更新，下一次同步会正确地采用云端那份
             providers_updated_at: AtomicI64::new(chrono::Utc::now().timestamp_millis()),
             // 循环尚未起（下面 ③ 才决定要不要起）
             auto_loop_started: AtomicBool::new(false),
         });
+
+        // Repair legacy source ownership before any update can use persisted
+        // addresses. Catalog reads and later mutations keep it normalized.
+        crate::source_catalog::catalog(&state)?;
 
         /*
          * ⑪ ★ 后台重连 HTTP 源（**不阻塞启动**）
@@ -665,7 +662,10 @@ impl AppState {
                                 }
                             }
                             registry_for_http
-                                .register(Arc::new(p.with_proxy(proxy_for_http.clone())));
+                                .register_with_default_enabled(
+                                    Arc::new(p.with_proxy(proxy_for_http.clone())),
+                                    !crate::commands::load_disabled(&dir_for_http).contains(&pid),
+                                );
                             done += 1;
                         }
                         // ★ 隔离失败：服务没起只是这个源不可用，不影响其它源
@@ -1303,43 +1303,65 @@ mod tests {
         )
     }
 
-    /// ★★★ 回归测试：**重启后第三方源必须回到 registry**
-    ///
-    /// # 这个测试防的是什么（一个真实发布过的 bug）
-    ///
-    /// `bootstrap` 原来只做 `load_persisted()`，把清单塞进 `AppState.third_party`
-    /// 就结束了 —— 而 `registry.manifests()` 只遍历 `registry.providers`，
-    /// 两个字段之间**没有桥**。
-    ///
-    /// 症状：用户导入的源重启后从界面消失（文件还在磁盘上，但列表里没有、
-    /// 删不掉、也点不到「编辑」）。
-    ///
-    /// # 为什么这个断言是有效的
-    ///
-    /// 它断言的是**用户可见的结果**（`registry.manifests()` 里有这个源），
-    /// 而不是"某个函数被调用了"。只 load 不 register 的写法会直接失败。
+    /// Retired declarative sources stay available to backups and history, but
+    /// cannot return to the source picker or search after repeated restarts.
     #[tokio::test]
-    async fn third_party_declarative_is_registered_on_boot() {
-        let dir = tmp_dir("tp-decl");
-        write_persisted(
-            &dir,
-            &[PersistedProvider::Declarative {
-                id: "tp-demo".into(),
-                json: good_spec("tp-demo"),
-            }],
-        );
+    async fn retired_declarative_stays_unregistered_and_preserves_config_and_history() {
+        let dir = tmp_dir("retired-decl");
+        let legacy = PersistedProvider::Declarative {
+            id: "tp-demo".into(),
+            json: good_spec("tp-demo"),
+        };
+        write_persisted(&dir, &[legacy.clone()]);
+        let history = crate::store::HistoryEntry {
+            key: "tp-demo:legacy-title".into(),
+            provider: "tp-demo".into(),
+            native_id: "legacy-title".into(),
+            title: "Legacy title".into(),
+            cover: Some("https://example.invalid/cover.jpg".into()),
+            episode_title: Some("Episode 2".into()),
+            position: 120,
+            duration: 1800,
+            watched_at: 5000,
+        };
+        {
+            let db = Db::open(dir.join("dsh-media.db")).unwrap();
+            db.add_history(&history).unwrap();
+        }
 
-        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+        for _ in 0..2 {
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap failed");
+            assert!(st.registry.get("tp-demo").is_none());
+            assert!(!st.registry.enabled_manifests().iter().any(|m| m.id == "tp-demo"));
+            assert!(!crate::commands::list_providers(&st).unwrap().iter().any(|m| m.id == "tp-demo"));
+            assert!(!crate::commands_provider::set_enabled_persisted(&st, "tp-demo", true).unwrap(),
+                "retained configuration must not make the retired source enableable");
 
-        let ids: Vec<String> = st.registry.manifests().into_iter().map(|m| m.id).collect();
-        assert!(
-            ids.iter().any(|x| x == "tp-demo"),
-            "第三方声明式源重启后必须回到 registry（这正是那个 bug）；实际: {ids:?}"
-        );
-        // 同时清单也要留着 —— 否则用户「编辑」时读不到原始配置
-        let cfg = crate::commands_provider::get_provider_config(&st, "tp-demo").unwrap();
-        assert!(cfg.is_some(), "third_party 清单里必须还有这条，供「编辑」回填");
+            // Isolate this source from optional bundled providers; search must
+            // not dispatch the retained declarative configuration itself.
+            for manifest in st.registry.manifests() {
+                if manifest.id != "tp-demo" {
+                    st.registry.set_enabled(&manifest.id, false);
+                }
+            }
+            let search = crate::commands::search_all(&st, "legacy title", 1).await.unwrap();
+            assert!(search.results.is_empty() && search.skipped.is_empty());
+            let mut events = Vec::new();
+            crate::commands::search_all_stream(&st, "legacy title", 1, |event| {
+                events.push(event);
+                true
+            }).await.unwrap();
+            assert!(events.is_empty());
 
+            let retained = crate::commands_provider::get_provider_config(&st, "tp-demo")
+                .unwrap().expect("legacy configuration must remain readable");
+            assert_eq!(serde_json::to_value(retained).unwrap(), serde_json::to_value(&legacy).unwrap());
+            assert_eq!(serde_json::to_value(crate::persist::load_persisted(&dir)).unwrap(),
+                serde_json::to_value([&legacy]).unwrap());
+            assert_eq!(serde_json::to_value(st.db.list_history(10).unwrap()).unwrap(),
+                serde_json::to_value([&history]).unwrap());
+            drop(st);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1397,104 +1419,117 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ★ 隔离失败：坏源只跳过自己，不能拖垮后面的好源
-    ///
-    /// 布局刻意**交错**（好-坏-好）—— 若实现是"遇到坏的就中断"，
-    /// 第二个好源就不会在册，本测试失败。
+    /// A malformed supported source only skips itself, including when another
+    /// valid TVBox source follows it in the persisted list.
     #[tokio::test]
-    async fn broken_source_does_not_block_the_next_one() {
+    async fn broken_tvbox_source_does_not_block_later_valid_sources() {
         let dir = tmp_dir("tp-iso");
-        write_persisted(
-            &dir,
-            &[
-                PersistedProvider::Declarative {
-                    id: "ok-1".into(),
-                    json: good_spec("ok-1"),
-                },
-                // JSON 语法坏 —— from_json 必失败
-                PersistedProvider::Declarative {
-                    id: "bad-json".into(),
-                    json: "{ this is not json ".into(),
-                },
-                PersistedProvider::Declarative {
-                    id: "ok-2".into(),
-                    json: good_spec("ok-2"),
-                },
-                // base 不是 http(s) —— 也会被 from_json 拒
-                PersistedProvider::Declarative {
-                    id: "bad-base".into(),
-                    json: r#"{"id":"bad-base","name":"B","base":"ftp://x","endpoints":{}}"#.into(),
-                },
-                PersistedProvider::Declarative {
-                    id: "ok-3".into(),
-                    json: good_spec("ok-3"),
-                },
-            ],
-        );
+        let rows: Vec<_> = [
+            ("ok-1", "https://example.invalid/first/vod"),
+            ("bad-empty", ""),
+            ("ok-2", "https://example.invalid/second/vod"),
+            ("bad-scheme", "ftp://example.invalid/vod"),
+            ("ok-3", "https://example.invalid/third/vod"),
+        ].into_iter().map(|(id, api)| PersistedProvider::Tvbox {
+            id: id.into(), name: id.into(), api: api.into(),
+            categories: vec![], parsers: vec![], ext: None,
+        }).collect();
+        write_persisted(&dir, &rows);
 
-        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
-        let ids: Vec<String> = st.registry.manifests().into_iter().map(|m| m.id).collect();
-
+        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap failed");
+        let listed = crate::commands::list_providers(&st).unwrap();
         for good in ["ok-1", "ok-2", "ok-3"] {
-            assert!(
-                ids.iter().any(|x| x == good),
-                "{good} 应该被注册（坏源不能拖垮它后面的源）；实际: {ids:?}"
-            );
+            assert!(st.registry.get(good).is_some(), "valid source {good} must be restored");
+            assert!(listed.iter().any(|m| m.id == good && !m.hidden),
+                "valid source {good} must remain visible after a bad entry");
         }
-        for bad in ["bad-json", "bad-base"] {
-            assert!(
-                !ids.iter().any(|x| x == bad),
-                "{bad} 是坏源，不该进 registry"
-            );
+        for bad in ["bad-empty", "bad-scheme"] {
+            assert!(st.registry.get(bad).is_none(), "invalid source {bad} must be skipped");
+            assert!(!listed.iter().any(|m| m.id == bad));
         }
-
+        assert_eq!(serde_json::to_value(crate::persist::load_persisted(&dir)).unwrap(),
+            serde_json::to_value(rows).unwrap(), "failed restore must not delete the saved configuration");
+        drop(st);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ★ 注册必须早于「应用停用状态」，否则停用的源会自己「活」过来
-    ///
-    /// 这是 ⑧ 那条注释记的坑：注册会把 handle 的 `enabled` 重置回 true。
-    ///
-    /// ⚠️ 断言必须用 `enabled_manifests()` 而不是 `manifests()`：
-    ///    `manifests()` 直接 clone 了 provider 自己的 manifest，而那份的
-    ///    `enabled` 恒为 `None` —— 真正的启用标志在 `ProviderHandle.enabled` 上
-    ///    （`provider.rs:468`）。用错 API 会得到一个**永远失败**的测试。
-    ///    （命令层的 `list_providers` 是拿 disabled 文件覆盖 manifest 的，
-    ///      所以它看到的 enabled 是对的。）
+    /// Real JS fixtures exercise saved switches, source order and both search
+    /// paths before/after reload and across repeated bootstraps.
     #[tokio::test]
-    async fn disabled_third_party_source_stays_disabled_after_boot() {
-        let dir = tmp_dir("tp-disabled");
-        write_persisted(
-            &dir,
-            &[PersistedProvider::Declarative {
-                id: "tp-off".into(),
-                json: good_spec("tp-off"),
-            }],
-        );
-        crate::commands::save_disabled(&dir, &["tp-off".to_string()]).unwrap();
+    async fn disabled_js_source_stays_listed_and_unsearched_after_reload_and_restart() {
+        let dir = tmp_dir("tp-disabled-js");
+        let pdir = plugins_dir(&dir);
+        std::fs::create_dir_all(&pdir).unwrap();
+        let script = r#"/**
+ * @id tp-off
+ * @name JS fixture
+ * @version 1.0.0
+ */
+ globalThis.plugin = {
+   capabilities: { vod: true, search: true },
+   async home() { return []; },
+   async search(keyword, page) { return { items: [], page: page }; }
+ };"#;
+        for id in ["tp-off", "tp-on"] {
+            std::fs::write(pdir.join(format!("{id}.js")), script.replace("tp-off", id)).unwrap();
+        }
 
-        let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap 失败");
+        let initial = AppState::bootstrap(dir.clone()).await.unwrap();
+        let plugin = initial.registry.get("tp-off").expect("real JS fixture must load");
+        assert!(plugin.manifest().working && plugin.manifest().capabilities.search);
+        for manifest in initial.registry.manifests() {
+            if manifest.id != "tp-off" {
+                initial.registry.set_enabled(&manifest.id, false);
+            }
+        }
+        let before = crate::commands::search_all(&initial, "fixture", 1).await.unwrap();
+        assert_eq!(before.skipped, vec![("tp-off".into(), String::new())],
+            "positive control: enabled JS search must execute and return its empty page");
+        assert!(crate::commands_provider::set_enabled_persisted(&initial, "tp-off", false).unwrap());
+        assert!(crate::commands_provider::set_enabled_persisted(&initial, "tp-on", true).unwrap());
+        let expected_order = crate::commands_provider::set_provider_order(
+            &initial, &["tp-off".into(), "tp-on".into()],
+        ).unwrap();
+        drop(plugin);
+        drop(initial);
 
-        // ① 停用的源仍然要在 registry 里（只是关掉）—— 否则设置页看不到它，
-        //    用户就没法再把它打开
-        let all: Vec<String> = st.registry.manifests().into_iter().map(|m| m.id).collect();
-        assert!(
-            all.iter().any(|x| x == "tp-off"),
-            "停用的第三方源也该在 registry 里（enabled=false），否则用户无法再启用它"
-        );
-
-        // ② 它必须是**停用**状态
-        let on: Vec<String> = st
-            .registry
-            .enabled_manifests()
-            .into_iter()
-            .map(|m| m.id)
-            .collect();
-        assert!(
-            !on.iter().any(|x| x == "tp-off"),
-            "用户上次停用的第三方源重启后不该自己「活」过来"
-        );
-
+        for _ in 0..2 {
+            let st = AppState::bootstrap(dir.clone()).await.expect("bootstrap failed");
+            for reload in [false, true] {
+                if reload {
+                    crate::commands_provider::reload_plugins(&st).await.unwrap();
+                }
+                assert!(st.registry.get("tp-off").is_some(), "disabled supported source remains registered");
+                let actual_order: Vec<_> = st.registry.manifests().into_iter().map(|m| m.id).collect();
+                assert_eq!(actual_order, expected_order, "reload must retain the saved registry order");
+                let listed = crate::commands::list_providers(&st).unwrap();
+                assert!(listed.iter().any(|m| m.id == "tp-off" && m.enabled == Some(false)));
+                assert!(listed.iter().any(|m| m.id == "tp-on" && m.enabled == Some(true)));
+                assert!(!crate::commands::get_provider_enabled(&st, "tp-off").unwrap());
+                assert!(!st.registry.enabled_manifests().iter().any(|m| m.id == "tp-off"));
+                assert!(st.registry.enabled_manifests().iter().any(|m| m.id == "tp-on"));
+                assert!(crate::commands::load_disabled(&dir).iter().any(|id| id == "tp-off"));
+                for manifest in st.registry.manifests() {
+                    if manifest.id != "tp-off" && manifest.id != "tp-on" {
+                        st.registry.set_enabled(&manifest.id, false);
+                    }
+                }
+                let search = crate::commands::search_all(&st, "fixture", 1).await.unwrap();
+                assert!(search.results.is_empty());
+                assert_eq!(search.skipped, vec![("tp-on".into(), String::new())],
+                    "only enabled JS must receive a non-streaming search");
+                let mut events = Vec::new();
+                crate::commands::search_all_stream(&st, "fixture", 1, |event| {
+                    events.push(event);
+                    true
+                }).await.unwrap();
+                assert_eq!(events.len(), 1);
+                assert!(matches!(&events[0], crate::commands::SearchStreamEvent::Miss { provider, reason }
+                    if provider == "tp-on" && reason.is_empty()),
+                    "only enabled JS must receive a streaming search");
+            }
+            drop(st);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

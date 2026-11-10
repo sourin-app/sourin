@@ -31,6 +31,7 @@ pub struct M3uLiveProvider {
     manifest: ProviderManifest,
     /// 播放列表地址
     url: String,
+    context: Option<(std::sync::Arc<crate::proxy::ProxyStore>, std::path::PathBuf)>,
     /// 上次解析出来的频道（`live_stream` 按 id 反查 URL 用）
     ///
     /// 用 `Mutex<Vec<_>>` 而不是每次重拉：`live_stream` 是**高频**调用
@@ -74,9 +75,15 @@ impl M3uLiveProvider {
             hidden: false,
         },
             url: url.trim().to_string(),
+            context: None,
             cache: Mutex::new(Vec::new()),
             urls: Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub fn with_context(mut self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, dir: std::path::PathBuf) -> Self {
+        self.context = Some((proxy, dir));
+        self
     }
 
     pub fn source_url(&self) -> &str {
@@ -88,36 +95,26 @@ impl M3uLiveProvider {
         if self.url.is_empty() {
             return Err(ProviderError::unsupported("直播列表地址为空"));
         }
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .build()
-            .map_err(|e| ProviderError::network(format!("创建 HTTP 客户端失败：{e}")))?;
-        let resp = client
-            .get(&self.url)
-            .send()
-            .await
-            .map_err(|e| ProviderError::network(format!("拉取直播列表失败：{e}")))?;
-        if !resp.status().is_success() {
-            return Err(ProviderError::network(format!(
-                "直播列表返回 HTTP {}",
-                resp.status().as_u16()
-            )));
+        let Some((proxy, dir)) = &self.context else {
+            return Err(ProviderError::network("直播源缺少全局代理配置"));
+        };
+        let urls = crate::source_catalog::urls_for(dir, "live", Some(&self.manifest.id), &self.url);
+        let (text, actual, endpoint) = crate::source_catalog::fetch_validated(proxy, &self.manifest.id, &urls, None, |text| {
+            if !valid_playlist(text, &self.manifest.id) {
+                return Err(crate::source_catalog::Validation::Invalid("直播配置没有可用频道".into()));
+            }
+            Ok(text.to_owned())
+        }).await.map_err(ProviderError::network)?;
+        crate::source_catalog::record_live_success(dir, &self.manifest.id, &self.url, &actual, &endpoint);
+        let text = absolutize_playlist(&text, &actual);
+        let mut channels = crate::m3u::parse_playlist(&text, &self.manifest.id);
+        if let Ok(base) = reqwest::Url::parse(&actual) {
+            for channel in &mut channels {
+                if let Some(logo) = &channel.logo {
+                    if let Ok(url) = base.join(logo) { channel.logo = Some(url.to_string()); }
+                }
+            }
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ProviderError::network(format!("读取直播列表失败：{e}")))?;
-        // 播放列表体量很小（几百 KB 顶天），超过 4 MiB 基本是拿错了地址
-        const MAX: usize = 4 * 1024 * 1024;
-        if bytes.len() > MAX {
-            return Err(ProviderError::parse(format!(
-                "直播列表体积异常（{} 字节，上限 {MAX}）",
-                bytes.len()
-            )));
-        }
-        let text = String::from_utf8_lossy(&bytes);
-        let channels = crate::m3u::parse_playlist(&text, &self.manifest.id);
         // 填缓存（id → url 供 live_stream 反查）
         // ★ 重新解析一遍文本拿 url 映射：`parse_playlist` 只回 LiveChannel，
         //   而 LiveChannel 模型里**没有**存播放地址的字段（那是设计如此，
@@ -135,6 +132,27 @@ impl M3uLiveProvider {
         }
         Ok(channels)
     }
+}
+
+/// Resolve stream paths against the endpoint that actually supplied the playlist.
+pub(crate) fn absolutize_playlist(text: &str, base: &str) -> String {
+    let Ok(base) = reqwest::Url::parse(base) else { return text.to_owned(); };
+    text.lines().map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') { return line.to_owned(); }
+        if let Some((name, address)) = trimmed.split_once(',') {
+            if address.trim() == "#genre#" { return line.to_owned(); }
+            return base.join(address.trim()).map(|u| format!("{name},{u}")).unwrap_or_else(|_| line.to_owned());
+        }
+        base.join(trimmed).map(|u| u.to_string()).unwrap_or_else(|_| line.to_owned())
+    }).collect::<Vec<_>>().join("\n")
+}
+
+pub(crate) fn valid_playlist(text: &str, id: &str) -> bool {
+    let body = text.trim_start_matches('\u{feff}').trim_start();
+    if body.starts_with('<') || body.starts_with('{') || body.starts_with('[') { return false; }
+    let resolved = absolutize_playlist(body, "https://playlist.invalid/base/");
+    !crate::m3u::parse_playlist(&resolved, id).is_empty()
 }
 
 #[async_trait]
@@ -217,6 +235,16 @@ impl MediaProvider for M3uLiveProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_playlist_uses_successful_endpoint_directory() {
+        let text = "#EXTM3U\n#EXTINF:-1,Channel\n../stream/main.m3u8\n";
+        let normalized = absolutize_playlist(text, "https://backup.test/catalog/list.m3u");
+        let parsed = crate::m3u::parse_playlist_with_urls(&normalized, "source");
+        assert_eq!(parsed[0].1, "https://backup.test/stream/main.m3u8");
+        assert!(!valid_playlist("<html>error,a</html>", "source"));
+        assert!(!valid_playlist("{\"error\":123,\"code\":500}", "source"));
+    }
 
     #[test]
     fn id_is_derived_from_url_so_reimport_is_stable() {

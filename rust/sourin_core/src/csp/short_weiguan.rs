@@ -284,25 +284,26 @@ pub fn parse_detail(text: &str, one_id: &str) -> Result<CspDetail, String> {
 crate::csp::register_site!(ShortWeiguan);
 
 pub struct ShortWeiguan {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl ShortWeiguan {
     pub const CLASS: &'static str = "ShortWeiguan";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
-            .build()
-            .expect("build short_weiguan http client");
+        );
         Self { client }
     }
 
     async fn get(&self, url: &str) -> Result<String, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
             .send()
@@ -325,6 +326,10 @@ impl Default for ShortWeiguan {
 
 #[async_trait]
 impl CspSite for ShortWeiguan {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -345,6 +350,7 @@ impl CspSite for ShortWeiguan {
         });
         let text = self
             .client
+            .client()?
             .post(format!("{host}/drama/home/search?{q}"))
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
             .header(reqwest::header::CONTENT_TYPE, "application/json; charset=utf-8")
@@ -378,6 +384,7 @@ impl CspSite for ShortWeiguan {
         });
         let text = self
             .client
+            .client()?
             .post(format!("{host}/drama/home/search?{q}"))
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
             .header(reqwest::header::CONTENT_TYPE, "application/json; charset=utf-8")
@@ -448,6 +455,10 @@ impl CspSite for ShortWeiguan {
         }])
     }
 }
+
+#[cfg(test)]
+#[path = "short_weiguan_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

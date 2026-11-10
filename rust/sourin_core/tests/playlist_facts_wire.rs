@@ -226,9 +226,10 @@ async fn probe_candidate_fills_mislabeled_mp4_hls() {
 #[test]
 fn playback_probes_via_candidate_entry() {
     let src = include_str!("../src/playback.rs").replace("\r\n", "\n");
+    let compact: String = src.split_whitespace().collect();
     // ★ P9 后的接线契约：必须走**批处理入口**一次探完，不许退回按候选串行 await。
     assert!(
-        src.contains("crate::hls_facts::probe_candidates(&mut list).await;"),
+        compact.contains("crate::hls_facts::probe_candidates_with_proxy(&mutlist,state.stream_proxy.clone()).await;"),
         "playback.rs 必须经 probe_candidates 批处理探测（串行 = 起播延迟随线路数线性增长）"
     );
     assert!(
@@ -237,7 +238,7 @@ fn playback_probes_via_candidate_entry() {
     );
     // 批探测必须在 maybe_proxy 之前 —— 代理后的本地地址读不到上游清单
     let i_batch = src
-        .find("crate::hls_facts::probe_candidates(&mut list).await;")
+        .find("crate::hls_facts::probe_candidates_with_proxy(")
         .expect("批探测调用点缺失");
     let i_proxy = src
         .find("crate::streamproxy::maybe_proxy(")

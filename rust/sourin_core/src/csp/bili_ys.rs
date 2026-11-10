@@ -53,8 +53,8 @@
 //
 // # 代理纪律
 // ```text
-// client 在 `.timeout(TIMEOUT)` 之后、`.build()` 之前显式 `.no_proxy()`
-// （本机代理会把可用的上游测成 502 ⇒ 误判"站点死"）。
+// client 配方在 `.timeout(TIMEOUT)` 之后显式 `.no_proxy()`。
+// 未绑定实例保持直连；绑定后由 CspHttpContext 按应用当前策略构建客户端。
 // ```
 
 use async_trait::async_trait;
@@ -98,7 +98,7 @@ const WBI_MIXIN_TABLE: [usize; 64] = [
 ];
 
 pub struct BiliYS {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
     /// cookie 解析缓存（`Some(None)` = 试过但拿不到）
     cookie_cache: std::sync::Mutex<Option<Option<String>>>,
 }
@@ -107,13 +107,12 @@ impl BiliYS {
     pub const CLASS: &'static str = "BiliYS";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // ★ 直连（顺序有门禁扫：timeout → no_proxy → build）
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
-            .build()
-            .expect("build bili_ys http client");
+        );
         Self {
             client,
             cookie_cache: std::sync::Mutex::new(None),
@@ -166,21 +165,22 @@ impl BiliYS {
         resolved
     }
 
-    fn with_headers(&self, url: &str, cookie: Option<&str>) -> reqwest::RequestBuilder {
+    fn with_headers(&self, url: &str, cookie: Option<&str>) -> Result<reqwest::RequestBuilder, String> {
         let mut req = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::REFERER, REFERER)
             .header(reqwest::header::ACCEPT, "application/json, text/plain, */*");
         if let Some(c) = cookie {
             req = req.header(reqwest::header::COOKIE, c);
         }
-        req
+        Ok(req)
     }
 
     async fn get_text(&self, url: &str) -> Result<String, String> {
         let resp = self
-            .with_headers(url, None)
+            .with_headers(url, None)?
             .send()
             .await
             .map_err(|e| format!("请求失败（{url}）：{e}"))?;
@@ -194,7 +194,7 @@ impl BiliYS {
 
     async fn get_json(&self, url: &str, cookie: Option<&str>) -> Result<Value, String> {
         let resp = self
-            .with_headers(url, cookie)
+            .with_headers(url, cookie)?
             .send()
             .await
             .map_err(|e| format!("请求失败（{url}）：{e}"))?;
@@ -530,6 +530,10 @@ pub fn parse_search(v: &Value, page: u32, what: &str) -> Result<CspList, String>
 
 #[async_trait]
 impl CspSite for BiliYS {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -706,6 +710,10 @@ crate::csp::register_site!(BiliYS);
 // ═══════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[path = "bili_ys_proxy_tests.rs"]
+mod proxy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -869,10 +877,11 @@ mod tests {
     #[test]
     fn http_client_disables_proxy_after_timeout() {
         let flat = crate::csp::shared::impl_src_only(include_str!("bili_ys.rs"));
+        let c = flat.find("CspHttpContext::new").expect("HTTP context builder recipe");
         let t = flat.find(".timeout(TIMEOUT)").expect("timeout");
         let p = flat.find(".no_proxy()").expect("★ no_proxy 必须存在");
-        let b = flat.find(".build()").expect("build");
-        assert!(t < p && p < b, "timeout → no_proxy → build");
+        assert!(c < t && t < p, "context recipe → timeout → no_proxy");
+        assert!(flat.contains(".client()?"), "requests must obtain the policy-aware client");
     }
 
     /// ★ 上游根地址必须与基线**逐字节**一致（编译期拼接只许改写法，不许改值）

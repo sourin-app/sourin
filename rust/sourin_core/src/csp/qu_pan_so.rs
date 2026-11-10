@@ -71,21 +71,19 @@ pub const ICON_ALI: &str =
     "https://img.51shazhu.com/autoupload/gE6Y0Af2tjXBCNig6CtNDI12_FRYNb81z6UPhMWD8iI/20260503/8Yr6/1200X800/aliyun.jpg/webp";
 
 pub struct QuPanSo {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl QuPanSo {
     pub const CLASS: &'static str = "QuPanSo";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(TIMEOUT)
-            // 与 pan_web_share / zhinan 同一条纪律：不读系统代理
-            //（代理会把"站点可用"测成"全宕"，且错误文本不含真因）
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
-            .build()
-            .expect("build qu_pan_so http client");
+        );
         Self { client }
     }
 
@@ -201,6 +199,10 @@ crate::csp::register_site!(QuPanSo);
 
 #[async_trait]
 impl CspSite for QuPanSo {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -231,6 +233,7 @@ impl CspSite for QuPanSo {
         let body = Self::body_of(kw, page);
         let resp = self
             .client
+            .client()?
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header(reqwest::header::ORIGIN, host.as_str())
@@ -321,6 +324,10 @@ impl CspSite for QuPanSo {
         }])
     }
 }
+
+#[cfg(test)]
+#[path = "qu_pan_so_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {
@@ -469,14 +476,15 @@ mod tests {
         assert!(e.contains("必须是网盘分享页"), "{e}");
     }
 
-    /// ★ 结构性判据：`.no_proxy()` 必须在 `.timeout(…)` 之后、`.build()` 之前
+    /// 构造配方保留 timeout/no_proxy；实际请求通过 context 获取客户端。
     #[test]
-    fn client_disables_proxy_between_timeout_and_build() {
+    fn client_recipe_keeps_timeout_and_disables_implicit_proxy() {
         let flat = crate::csp::shared::impl_src_only(include_str!("qu_pan_so.rs"));
+        let c = flat.find("CspHttpContext::new").expect("HTTP context builder recipe");
         let t = flat.find(".timeout(TIMEOUT)").expect("必须有 .timeout");
         let n = flat.find(".no_proxy()").expect("★ 必须 .no_proxy()");
-        let b = flat.find(".build()").expect("必须有 .build()");
-        assert!(t < n && n < b, "★ 位置必须是 timeout → no_proxy → build");
+        assert!(c < t && t < n, "context recipe → timeout → no_proxy");
+        assert!(flat.contains(".client()?"), "requests must obtain the policy-aware client");
     }
 
     // ══════════════════════════════════════════════════════════════════

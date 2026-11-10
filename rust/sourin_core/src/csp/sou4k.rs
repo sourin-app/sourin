@@ -125,7 +125,7 @@ pub const SEARCH_PAGE_SIZE: u32 = 100;
 const GET_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub struct Sou4K {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl Sou4K {
@@ -145,26 +145,19 @@ impl Sou4K {
     ];
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        let client = super::http_context::CspHttpContext::new(|| reqwest::Client::builder()
             .user_agent(UA)
             .timeout(GET_TIMEOUT)
-            // 与本仓 csp 既定惯例一致 —— **不读系统代理**
-            // ```text
-            // 代理会把"站点可用"测成"全宕"（见 `app99.rs:342` 同一条纪律）。
-            // ★ 实测依据（Lead 跨批一致性审计发现，我复现并扩面 7/8 类）：
-            //   本机装了代理时 `reqwest` 会**默认读系统代理**；把代理指向死端口 `:9`
-            //   ⇒ 本类 live FAILED（含糊的 `error sending request for url …`）；
-            //   而同条件下**有** `.no_proxy()` 的类（app99 / app_drama）**仍 ok**。
-            // ```
+            // Unbound sites remain direct; the context applies the current app policy.
             .no_proxy()
-            .build()
-            .expect("build Sou4K http client");
+        );
         Self { client }
     }
 
     async fn get_json(&self, url: &str) -> Result<serde_json::Value, String> {
         let resp = self
             .client
+            .client()?
             .get(url)
             .header(reqwest::header::REFERER, REFERER)
             .header(reqwest::header::ACCEPT, ACCEPT)
@@ -198,6 +191,14 @@ impl Sou4K {
         items: &[(String, String, String)],
     ) -> Result<serde_json::Value, String> {
         let url = format!("{BASE}/api/check-links");
+        self.post_check_links_url(&url, items).await
+    }
+
+    async fn post_check_links_url(
+        &self,
+        url: &str,
+        items: &[(String, String, String)],
+    ) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({
             "items": items
                 .iter()
@@ -210,7 +211,8 @@ impl Sou4K {
         });
         let resp = self
             .client
-            .post(&url)
+            .client()?
+            .post(url)
             .header(reqwest::header::REFERER, REFERER)
             .header(reqwest::header::ACCEPT, ACCEPT)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -543,6 +545,10 @@ pub fn disk_label(disk_type: &str) -> &'static str {
 
 #[async_trait]
 impl CspSite for Sou4K {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -747,6 +753,10 @@ crate::csp::register_site!(Sou4K);
 // ═══════════════════════════════════════════════════════════════════════
 //  测试
 // ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+#[path = "sou4k_proxy_tests.rs"]
+mod proxy_tests;
 
 #[cfg(test)]
 mod tests {

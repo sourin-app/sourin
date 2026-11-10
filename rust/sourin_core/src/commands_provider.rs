@@ -42,19 +42,31 @@ pub fn set_enabled_persisted(
     id: &str,
     enabled: bool,
 ) -> Result<bool, String> {
-    let ok = state.registry.set_enabled(id, enabled);
-    if !ok {
+    if state.registry.get(id).is_none() {
         // 源不存在 —— 返回 false 而不是报错（前端据此提示"源已不存在"）
         return Ok(false);
     }
 
     let mut list = super::commands::load_disabled(&state.data_dir);
+    let previous_disabled = list.clone();
     if enabled {
         list.retain(|x| x != id);
     } else if !list.iter().any(|x| x == id) {
         list.push(id.to_string());
     }
     super::commands::save_disabled(&state.data_dir, &list)?;
+    if state.registry.get(id).is_some_and(|p| p.manifest().kind == "tvbox") {
+        let mut aggregate = crate::tvbox_aggregate::load(&state.data_dir);
+        if aggregate.site_selection_explicit || !aggregate.enabled_site_ids.is_empty() {
+            aggregate.enabled_site_ids.retain(|p| p != id);
+            if enabled { aggregate.enabled_site_ids.push(id.to_owned()); }
+            if let Err(error) = crate::tvbox_aggregate::save(&state.data_dir, &aggregate) {
+                super::commands::save_disabled(&state.data_dir, &previous_disabled)?;
+                return Err(error);
+            }
+        }
+    }
+    state.registry.set_enabled(id, enabled);
     Ok(true)
 }
 
@@ -270,8 +282,15 @@ pub async fn reload_plugins(state: &AppState) -> Result<usize, String> {
     let (plugins, failed) =
         crate::plugins::load_plugins_hydrated(&dir, Some(state.proxy.clone())).await;
     let n = plugins.len();
+    let disabled = crate::commands::load_disabled(&state.data_dir);
+    let aggregate = crate::tvbox_aggregate::load(&state.data_dir);
     for p in plugins {
-        state.registry.register(std::sync::Arc::new(p));
+        let enabled = crate::source_catalog::provider_enabled(p.manifest(), &disabled, &aggregate);
+        state.registry.register_with_default_enabled(std::sync::Arc::new(p), enabled);
+    }
+    let order = crate::commands::load_order(&state.data_dir);
+    if !order.is_empty() {
+        state.registry.reorder(&order);
     }
 
     for (f, why) in failed {
@@ -630,7 +649,8 @@ pub async fn check_plugin_update(
     let dir = plugins_dir(&state.data_dir);
     let (file, local_src, version, meta) = plugin_state(&dir, id)?;
 
-    let Some(url) = meta.as_ref().and_then(|m| m.source_url.clone()) else {
+    let Some(url) = crate::source_catalog::primary_for(&state.data_dir, "js", id)
+        .or_else(|| meta.as_ref().and_then(|m| m.source_url.clone())) else {
         // ★ 手动放入的插件 —— 如实报告"无法检测"，绝不假装"已是最新"
         return Ok(PluginUpdateInfo {
             id: id.to_string(),
@@ -646,7 +666,7 @@ pub async fn check_plugin_update(
     };
 
     // ★ 复用已有的下载路径（原版「导入/覆盖安装」那条）—— 别另写一套
-    let fetched = crate::plugins::fetch_plugin_source(Some(&state.proxy), &url).await;
+    let fetched = crate::source_catalog::fetch_plugin(state, id, &url).await;
 
     match fetched {
         Err(e) => Ok(PluginUpdateInfo {
@@ -782,14 +802,13 @@ pub async fn update_plugin_from_source(
     let dir = plugins_dir(&state.data_dir);
     let (file, local_src, version, meta) = plugin_state(&dir, id)?;
 
-    let url = meta
-        .as_ref()
-        .and_then(|m| m.source_url.clone())
+    let url = crate::source_catalog::primary_for(&state.data_dir, "js", id)
+        .or_else(|| meta.as_ref().and_then(|m| m.source_url.clone()))
         .ok_or_else(|| {
             format!("插件 {id} 没有安装链接（可能是手动放入的），无法通过链接更新")
         })?;
 
-    let (remote_src, _used) = crate::plugins::fetch_plugin_source(Some(&state.proxy), &url).await?;
+    let (remote_src, _used) = crate::source_catalog::fetch_plugin(state, id, &url).await?;
 
     // ③ 校验 @id 一致
     let rm = crate::plugins::parse_meta(&remote_src);

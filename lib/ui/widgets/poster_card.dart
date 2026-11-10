@@ -145,9 +145,9 @@ class PosterCard extends StatefulWidget {
           (m) => String.fromCharCode(m.group(0)!.codeUnitAt(0) - 0xFEE0),
         )
         .replaceAll(RegExp(r'\s+'), '');
-    final full = RegExp(r'^全(\d+)[集话話](?:[·・/|｜（(]?(?:已)?完结[）)]?)?$')
+    final full = RegExp(r'^全(\d+)[集话話](?:[·・/|｜,，（(]?(?:已)?完结[）)]?)?$')
         .firstMatch(latest);
-    final completed = RegExp(r'^(?:已)?完结(?:[·・/|｜]?全(\d+)[集话話])?$')
+    final completed = RegExp(r'^(?:已)?完结(?:[·・/|｜,，]?全(\d+)[集话話])?$')
         .firstMatch(latest);
     final lastCompleted = RegExp(r'^第(\d+)[集话話][（(]?(?:已)?完结[）)]?$')
         .firstMatch(latest);

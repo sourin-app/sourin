@@ -2,6 +2,9 @@
 
 Status: implemented
 
+Fullscreen return and late native resumes follow the
+[playback restoration ownership contract](2026-11-11-live-return-playback-ownership.md).
+
 本篇与既有直播笔记的关系：接在 [Shell 直播播放快照交接](2026-10-23-live-shell-playback-handoff.md) 之后——那篇解决"路由返回时拿不到播放状态"，本篇解决"拿到状态后如何在内嵌播放器里保住用户意图，并让往返/释放各自可观测"。两篇为**部分重叠**：本篇新增静音意图分离与三条回执，未推翻快照交接的决定，故两篇都保留、不归档。
 
 ## Problem

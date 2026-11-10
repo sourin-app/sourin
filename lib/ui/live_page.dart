@@ -836,6 +836,16 @@ class LivePageState extends State<LivePage> {
   bool _userPaused = false;
   bool _pausedByHide = false;
   bool _pausedForFullscreen = false;
+  int _fullscreenHandoffGeneration = 0;
+  bool _fullscreenHandoffInFlight = false;
+
+  bool _ownsFullscreenHandoff(
+    int generation,
+    LiveEmbeddedPlayerState? embedded,
+  ) => mounted &&
+      _fullscreenHandoffInFlight &&
+      generation == _fullscreenHandoffGeneration &&
+      identical(_embedKey.currentState, embedded);
 
   /// ★★★ task-53【#4b】全屏里切过的台 —— pop 回来后**由本页接手播放**
   ///
@@ -1025,7 +1035,7 @@ class LivePageState extends State<LivePage> {
       unawaited(st.pause());
       _pausedByHide = true;
       debugPrint('[LIVE] 本页不可见 ⇒ 暂停内嵌播放器（切回时续播）');
-    } else if (_pausedByHide) {
+    } else if (_pausedByHide && !_fullscreenHandoffInFlight) {
       _pausedByHide = false;
       /*
        * ★★ 只在"用户没主动暂停"时才续播
@@ -2829,23 +2839,68 @@ class LivePageState extends State<LivePage> {
       _select(channel, provider: provider);
 
   Future<void> _watchLive({LiveRoundtripReceipt? receipt}) async {
+    if (!mounted || _fullscreenHandoffInFlight || _selected == null) return;
+    if (widget.onWatchLive == null && widget.onWatchLivePlayback == null) return;
+    // Claim return playback before pause or navigation can yield. Generic
+    // visible-again handling must not resume under the pre-fullscreen intent.
+    final generation = ++_fullscreenHandoffGeneration;
+    final embedded = _embedKey.currentState;
+    _fullscreenHandoffInFlight = true;
+    try {
+      await _watchLiveOwned(generation, embedded, receipt);
+    } catch (_) {
+      // A refused/failed navigation must release ownership and restore only
+      // the last accepted intent, without masking the original operation error.
+      if (_ownsFullscreenHandoff(generation, embedded)) {
+        final restore = _pausedForFullscreen || _pausedByHide;
+        _pausedForFullscreen = false;
+        if (widget.visible?.value ?? true) {
+          _pausedByHide = false;
+          try {
+            if (_userPaused) {
+              await embedded?.pause();
+            } else if (restore) {
+              await embedded?.resume();
+            }
+          } catch (_) {
+            // Preserve the original handoff error for its caller/receipt.
+          }
+        }
+      }
+      rethrow;
+    } finally {
+      if (generation == _fullscreenHandoffGeneration) {
+        _fullscreenHandoffInFlight = false;
+      }
+    }
+  }
+
+  Future<void> _watchLiveOwned(
+    int generation,
+    LiveEmbeddedPlayerState? embedded,
+    LiveRoundtripReceipt? receipt,
+  ) async {
     final s = _selected;
     if (s == null) return;
     final legacyCallback = widget.onWatchLive;
     final playbackCallback = widget.onWatchLivePlayback;
     if (legacyCallback == null && playbackCallback == null) return;
 
-    final embedded = _embedKey.currentState;
     final initialPlayback =
         embedded?.playbackSnapshot ??
         LivePlaybackSnapshot(playing: !_userPaused, muted: true, volume: 100);
 
-    // ① 跳转前暂停内嵌（只在它真的在放时才暂停/记标记）
+    // ① 跳转前暂停内嵌，同时作废仍在等待原生命令的续播。
     final wasPlaying = embedded?.isPlaying ?? false;
-    if (wasPlaying) {
-      await embedded?.pause();
-      _pausedForFullscreen = true;
-      debugPrint('[LIVE] 进全屏 ⇒ 暂停内嵌播放器（返回时续播）');
+    _pausedForFullscreen = wasPlaying;
+    if (embedded != null) {
+      // Even a not-yet-playing instance can have an awaited resume in flight.
+      // A pause claim cancels that continuation before handing off the player.
+      await embedded.pause();
+      if (!_ownsFullscreenHandoff(generation, embedded)) return;
+      if (wasPlaying) {
+        debugPrint('[LIVE] 进全屏 ⇒ 暂停内嵌播放器（返回时续播）');
+      }
     }
 
     // ② 等全屏页真正 pop（Future 在 pop 时完成）
@@ -2856,6 +2911,7 @@ class LivePageState extends State<LivePage> {
     final returnedPlayback = playbackCallback == null
         ? null
         : await playbackCallback(_providerOf(s), s.id, s.name, initialPlayback);
+    if (!_ownsFullscreenHandoff(generation, embedded)) return;
     Future<bool?> cb(String provider, String channelId, String name) async {
       if (playbackCallback == null) {
         return await legacyCallback!(provider, channelId, name);
@@ -2867,7 +2923,7 @@ class LivePageState extends State<LivePage> {
     receipt?._markRouteReturned();
 
     // ③ 回来后（可能已 dispose / 已切走 tab / 用户手动暂停过）
-    if (!mounted) return;
+    if (!_ownsFullscreenHandoff(generation, embedded)) return;
 
     /*
      * 2026-10-18（N-PAUSE）Owner 原话（逐字）：
@@ -2937,11 +2993,17 @@ class LivePageState extends State<LivePage> {
      *    现在已经不在全屏了，留着会污染下一次可见性变化。
      */
     if (returnedPlayback != null) {
-      await _embedKey.currentState?.applyPlaybackSnapshot(
+      // Retire a pre-existing native resume before metadata-only restoration.
+      // restorePlaying:false restores audio fields; it is deliberately not pause.
+      if (!returnedPlayback.playing) {
+        await embedded?.pause();
+        if (!_ownsFullscreenHandoff(generation, embedded)) return;
+      }
+      await embedded?.applyPlaybackSnapshot(
         returnedPlayback,
         restorePlaying: false,
       );
-      if (!mounted) return;
+      if (!_ownsFullscreenHandoff(generation, embedded)) return;
       // A paused embedded player may have been resumed in fullscreen.
       _pausedForFullscreen = true;
     }
@@ -2971,12 +3033,18 @@ class LivePageState extends State<LivePage> {
       return;
     }
     if (_userPaused) {
+      _pausedByHide = false;
       debugPrint('[LIVE] 从全屏返回，但用户此前主动暂停过 ⇒ 不续播');
       return;
     }
     final st = _embedKey.currentState;
     if (st == null) return;
+    _pausedByHide = false;
     await st.resume();
+    if (!_ownsFullscreenHandoff(generation, embedded) ||
+        !(widget.visible?.value ?? true)) {
+      return;
+    }
     debugPrint('[LIVE] 从全屏返回 ⇒ 续播内嵌播放器');
   }
 

@@ -2053,40 +2053,50 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// ```
   Future<void> pause() async {
     if (_disposed) return;
+    final generation = ++_playbackCommandGeneration;
+    _resumeRequested = false;
     final p = _player;
     if (p != null && !_visibleNow && !_muted) {
       final cur = p.state.volume;
       if (cur > 0) _volumeBeforeHide = cur;
       await p.setVolume(0);
+      if (!_ownsPlaybackCommand(generation, p)) return;
       debugPrint(
         '[LIVE] 不可见 ⇒ 压音量到 0（原 $_volumeBeforeHide，'
         'playing=${p.state.playing}）',
       );
     }
-    await p?.pause();
+    if (p != null && _ownsPlaybackCommand(generation, p)) await p.pause();
   }
 
   /// 续播（只该在"确实是我们暂停的"情况下调用）
   Future<void> resume() async {
     if (_disposed) return;
+    final generation = ++_playbackCommandGeneration;
+    _resumeRequested = true;
     final p = _player;
-    if (p != null) {
-      /*
+    if (p == null || !_visibleNow) return;
+    /*
        * ★ 先还原音量**再** play：反过来的话会有一小段「出声但音量为 0」，
        *   而 `play()` 之后紧接着的 setVolume 在 mpv 上是异步属性写，
        *   用户可能听到一个音量跳变。
        */
-      // ★ 静音态 ⇒ 不还原（见 pause() 的注释：用户的静音意图优先）
-      final v = _volumeBeforeHide;
-      if (!_muted && v != null && v > 0) {
-        _volumeBeforeHide = null;
-        await p.setVolume(v);
-      }
+    // ★ 静音态 ⇒ 不还原（见 pause() 的注释：用户的静音意图优先）
+    final v = _volumeBeforeHide;
+    if (!_muted && v != null && v > 0) {
+      _volumeBeforeHide = null;
+      await p.setVolume(v);
     }
-    await p?.play();
-    if (p != null) {
-      debugPrint('[LIVE] 续播（visible=$_visibleNow，playing=${p.state.playing}）');
+    if (!_ownsPlaybackCommand(generation, p) || !_visibleNow) {
+      await _settleCancelledResume(p);
+      return;
     }
+    await p.play();
+    if (!_ownsPlaybackCommand(generation, p) || !_visibleNow) {
+      await _settleCancelledResume(p);
+      return;
+    }
+    debugPrint('[LIVE] 续播（visible=$_visibleNow，playing=${p.state.playing}）');
     /*
      * ★ 第 16 项对齐：**恢复播放 ⇒ 重新开始"3 秒后收起"**
      *
@@ -2103,6 +2113,32 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   ///
   /// ★ 见 [pause] 的长注释：恢复时要用它还原，**不能**写死 100。
   double? _volumeBeforeHide;
+  int _playbackCommandGeneration = 0;
+  bool _resumeRequested = false;
+
+  bool _ownsNativePlayer(Player player) =>
+      mounted && !_disposed && identical(_player, player);
+
+  bool _ownsPlaybackCommand(int generation, Player player) =>
+      _ownsNativePlayer(player) && generation == _playbackCommandGeneration;
+
+  Future<void> _settleCancelledResume(Player player) async {
+    // Settle for the current paused/hidden request, not the obsolete resume.
+    // Native commands already sent cannot be revoked by this generation guard.
+    final generation = _playbackCommandGeneration;
+    if (!_ownsPlaybackCommand(generation, player) ||
+        (_resumeRequested && _visibleNow)) {
+      return;
+    }
+    if (!_visibleNow) {
+      await player.setVolume(0);
+      if (!_ownsPlaybackCommand(generation, player) ||
+          (_resumeRequested && _visibleNow)) {
+        return;
+      }
+    }
+    if (!_resumeRequested || !_visibleNow) await player.pause();
+  }
 
   @override
   bool get isPlaying => _player?.state.playing ?? false;
@@ -2122,13 +2158,23 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     bool restorePlaying = true,
   }) async {
     if (_disposed) return;
+    final generation = restorePlaying
+        ? ++_playbackCommandGeneration
+        : _playbackCommandGeneration;
+    if (restorePlaying) _resumeRequested = snapshot.playing;
+    final p = _player;
     _volumeBeforeMute = snapshot.volume;
     _volumeBeforeHide = _visibleNow ? null : snapshot.volume;
     if (mounted) setState(() => _muted = snapshot.muted);
-    await _player?.setVolume(
+    await p?.setVolume(
       snapshot.muted || !_visibleNow ? 0 : snapshot.volume,
     );
-    if (!restorePlaying || _disposed) return;
+    if (p != null && _ownsNativePlayer(p) && !_visibleNow) {
+      // Hiding can overtake an already-sent positive volume restoration.
+      _volumeBeforeHide = snapshot.volume;
+      await p.setVolume(0);
+    }
+    if (!restorePlaying || p == null || !_ownsPlaybackCommand(generation, p)) return;
     if (snapshot.playing && _visibleNow) {
       await resume();
     } else {
@@ -2307,6 +2353,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     final a = oldWidget.stream?.url;
     final b = widget.stream?.url;
     if (a != b) {
+      _playbackCommandGeneration++;
+      _resumeRequested = widget.playWhenReady;
       if (b == null) {
         // Cancelling selection also cancels native-policy/open continuations.
         // Clearing only the pending value cannot invalidate an awaited open.
@@ -2334,6 +2382,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _playbackCommandGeneration++;
     /*
      * ★ task-91：画面输出层看门狗作废（它是个 while 轮询，最多跑满预算）
      *

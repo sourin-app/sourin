@@ -157,6 +157,19 @@ class _ProxyPanelState extends State<ProxyPanel> {
 
   bool _testing = false;
   ProxyTestResult? _testResult;
+  int _configurationRevision = 0;
+  int _probeRevision = 0;
+
+  // Draft changes and new configuration writes advance local ownership.
+  // Completing a save or probe cannot make an older intent current again.
+  void _invalidateConfiguration() {
+    _configurationRevision++;
+    _probeRevision++;
+    _testing = false;
+    _testResult = null;
+  }
+
+  bool _ownsProbe(int revision) => mounted && revision == _probeRevision;
 
   /// 系统代理提示（检测到环境变量代理时给用户一条提示）
   String? _sysHint;
@@ -254,6 +267,9 @@ class _ProxyPanelState extends State<ProxyPanel> {
   /// ```
   /// 而用户清空输入框拿到的是空串，所以必须在这里归一化。
   Future<bool> _save({bool notify = true}) async {
+    // Every configuration write is a new local intent, even when values match.
+    // This also lets a test's prerequisite save supersede a pending clear.
+    final revision = ++_configurationRevision;
     final mode = _cfg?.mode ?? ProxyMode.direct;
     String? orNull(String s) => s.trim().isEmpty ? null : s.trim();
 
@@ -271,15 +287,19 @@ class _ProxyPanelState extends State<ProxyPanel> {
     try {
       await SourinApi.setProxyConfig(widget.providerId, cfg);
       if (!mounted) return true;
-      setState(() {
-        // 保留原来的 hasPassword 标记（密码不走这里，见 _savePassword）
-        _cfg = cfg.copyWith(hasPassword: _cfg?.hasPassword ?? false);
-        if (notify) _err = '';
-      });
+      if (revision == _configurationRevision) {
+        setState(() {
+          // 保留原来的 hasPassword 标记（密码不走这里，见 _savePassword）
+          _cfg = cfg.copyWith(hasPassword: _cfg?.hasPassword ?? false);
+          if (notify) _err = '';
+        });
+      }
+      // A successful persisted write still notifies its mounted host; only its
+      // obsolete local draft/result is withheld.
       widget.onSaved?.call();
       return true;
     } catch (e) {
-      if (mounted) {
+      if (mounted && revision == _configurationRevision) {
         setState(() => _err = '保存代理失败：${userErrorText(e, fallback: '请稍后重试')}');
       }
       return false;
@@ -308,26 +328,34 @@ class _ProxyPanelState extends State<ProxyPanel> {
 
   /// 清除代理（回到直连）
   Future<void> _clear() async {
+    setState(_invalidateConfiguration);
+    final revision = _configurationRevision;
     try {
       await SourinApi.clearProxyConfig(widget.providerId);
       if (!mounted) return;
-      setState(() {
-        _cfg = const ProxyConfig();
-        _err = '';
-        _urlCtrl.clear();
-        _userCtrl.clear();
-        _passCtrl.clear();
-        _bypassCtrl.clear();
-        _testResult = null;
-      });
+      if (revision == _configurationRevision) {
+        setState(() {
+          _cfg = const ProxyConfig();
+          _err = '';
+          _urlCtrl.clear();
+          _userCtrl.clear();
+          _passCtrl.clear();
+          _bypassCtrl.clear();
+          _testResult = null;
+        });
+      }
+      // The persisted clear still succeeded even if a newer local draft owns
+      // the controls now, matching the successful-save notification contract.
       widget.onSaved?.call();
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || revision != _configurationRevision) return;
       setState(() => _err = '清除失败：${userErrorText(e, fallback: '请稍后重试')}');
     }
   }
 
   Future<void> _test() async {
+    if (!mounted || _testing) return;
+    final revision = ++_probeRevision;
     setState(() {
       _testing = true;
       _testResult = null;
@@ -335,18 +363,20 @@ class _ProxyPanelState extends State<ProxyPanel> {
     });
     try {
       // 测试前先保存（否则测的是旧配置 —— 用户刚填完地址就点测试会困惑）
-      if (!await _save(notify: false)) {
-        if (mounted) setState(() => _testing = false);
+      final saved = await _save(notify: false);
+      if (!_ownsProbe(revision)) return;
+      if (!saved) {
+        setState(() => _testing = false);
         return;
       }
       final out = await SourinApi.testProxy(widget.providerId);
-      if (!mounted) return;
+      if (!_ownsProbe(revision)) return;
       setState(() {
         _testResult = out;
         _testing = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!_ownsProbe(revision)) return;
       setState(() {
         _testResult = ProxyTestResult(
           ok: false,
@@ -359,6 +389,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
 
   void _setMode(ProxyMode m) {
     setState(() {
+      _invalidateConfiguration();
       _cfg = (_cfg ?? const ProxyConfig()).copyWith(mode: m);
       // 切到非直连时自动展开（原版行为：让用户接着填地址）
       if (m != ProxyMode.direct) _open = true;
@@ -557,6 +588,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
                 for (final s in ProxyScope.values)
                   _modePill2(s.label, cfg.scope == s, colors, () {
                     setState(() {
+                      _invalidateConfiguration();
                       _cfg = cfg.copyWith(scope: s);
                     });
                     _save();
@@ -670,6 +702,7 @@ class _ProxyPanelState extends State<ProxyPanel> {
       controller: controller,
       obscureText: obscure,
       style: const TextStyle(fontSize: FontSizes.sm),
+      onChanged: (_) => setState(_invalidateConfiguration),
       onSubmitted: onDone == null ? null : (_) => onDone(),
       decoration: InputDecoration(
         hintText: hint,

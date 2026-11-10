@@ -2,6 +2,9 @@
 
 Status: implemented
 
+The shared global settings panel follows
+[configuration feedback ownership](../bug-fix/2026-11-11-global-proxy-feedback-ownership.md).
+
 Applies: 2026-11-09, the shared CSP HTTP context and engines explicitly migrated to it.
 
 ## Problem

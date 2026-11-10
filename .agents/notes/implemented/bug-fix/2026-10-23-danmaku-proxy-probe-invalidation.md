@@ -2,6 +2,9 @@
 
 Status: implemented
 
+The shared global settings panel follows
+[configuration feedback ownership](../bug-fix/2026-11-11-global-proxy-feedback-ownership.md).
+
 ## Problem
 
 设置页的服务地址和令牌变化已经使在途探测失效，但代理模式和自定义代理地址变化此前只保存偏好并刷新界面。旧请求随后成功、离线或抛异常时，仍可把旧连接条件下的结论渲染到新配置页面；成功路径还可能保存发起时的服务地址和令牌。

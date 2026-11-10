@@ -76,13 +76,18 @@
 
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/disk_cache.dart';
+import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/follow_page.dart';
 import 'package:sourin_spike/ui/widgets/my_shelf.dart';
+import 'package:sourin_spike/ui/widgets/shelf_tabs.dart';
+
+import 'support/library_load_fixture.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  测试数据构造
@@ -142,6 +147,66 @@ Set<String> visibleTexts(WidgetTester tester) {
     if (t != null && t.isNotEmpty) out.add(t);
   }
   return out;
+}
+
+/// Explicit local read failures, with no native binding, network or disk profile.
+/// The four historical instrument-broken tests below retain their own fixtures.
+LibraryReadFixture isolateLegacyLibraryReads() {
+  final previousTransport = SourinCore.debugCallAsyncTransport;
+  final previousDirectory = DiskCache.dataDir;
+  final previousLoad = debugShelfLoadOverride;
+  final previousPreload = debugShelfPreloadOverride;
+  final reads = LibraryReadFixture(LibraryReadData.empty)..rejectReads = true;
+  DiskCache.debugResetForTest();
+  debugShelfLoadOverride = null;
+  debugShelfPreloadOverride = () async => null;
+  SourinCore.debugCallAsyncTransport = reads.call;
+  addTearDown(() {
+    reads.releaseAll();
+    SourinCore.debugCallAsyncTransport = previousTransport;
+    DiskCache.debugResetForTest(previousDirectory);
+    debugShelfLoadOverride = previousLoad;
+    debugShelfPreloadOverride = previousPreload;
+    expect(reads.unexpectedCommands, isEmpty);
+  });
+  return reads;
+}
+
+Finder legacyShelfTab(String label) => find.descendant(
+  of: find.byType(ShelfTabs),
+  matching: find.text(label),
+);
+
+Finder legacyTapTargets(Finder scope) => find.descendant(
+  of: scope,
+  matching: find.byWidgetPredicate(
+    (widget) => widget is GestureDetector && widget.onTap != null,
+  ),
+);
+
+/// Measure the actual opaque tap regions, not text or a fixed segment width.
+List<double> legacyTabHeights(WidgetTester tester) {
+  final row = find.byType(miuix.MiuixGlassSegmentedTabRow);
+  expect(row, findsOneWidget);
+  final targets = legacyTapTargets(row);
+  expect(targets, findsNWidgets(3));
+  final bounds = <Rect>[];
+  for (var index = 0; index < 3; index++) {
+    final target = targets.at(index);
+    expect(target.hitTestable(), findsOneWidget);
+    expect(
+      find.descendant(of: target, matching: find.text('${ShelfTabs.labels[index]} 0')),
+      findsOneWidget,
+    );
+    final detector = tester.widget<GestureDetector>(target);
+    expect(detector.behavior, HitTestBehavior.opaque);
+    bounds.add(tester.getRect(target));
+  }
+  expect(bounds.toSet(), hasLength(3), reason: 'Three distinct hit regions');
+  for (var index = 1; index < bounds.length; index++) {
+    expect(bounds[index].left, greaterThanOrEqualTo(bounds[index - 1].right));
+  }
+  return [for (final rect in bounds) rect.height];
 }
 
 void main() {
@@ -417,23 +482,22 @@ void main() {
   // ```
   group('③ ★★★ 刷新失败必须保留旧数据（不许清空）', () {
     testWidgets('★★ 重拉失败后，已有的卡片**仍在屏幕上**', (tester) async {
+      isolateLegacyLibraryReads();
       final cap = capturePrint();
       try {
         await tester.binding.setSurfaceSize(const Size(1280, 800));
         addTearDown(() => tester.binding.setSurfaceSize(null));
 
         final key = GlobalKey<MyShelfState>();
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: MyShelf(
-                key: key,
-                onOpenDetail: (_, __) {},
-                onPlay: (_, __, ___, ____, _____) {},
-              ),
-            ),
-          ),
-        );
+        await tester.pumpWidget(libraryLoadHost(MyShelf(
+          key: key,
+          onOpenDetail: (_, __) {},
+          onPlay: (_, __, ___, ____, _____) {},
+        )));
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+        });
         await tester.pump();
         key.currentState!.debugSetData(
           following: [fav('cycani', 'a1', '追更片')],
@@ -449,8 +513,8 @@ void main() {
         /*
          * ★ 触发一次**必然失败**的重拉。
          *
-         * 在 `flutter_test` 里 FFI 一定加载不了（没有 sourin_core.dll）
-         * ⇒ 三路全失败。这正是要模拟的场景："刷新失败时会不会清空"。
+         * 现有 async transport 夹具明确拒绝各路本地读取；不绑定 DLL，
+         * 不借用环境加载错误。这是要模拟的"读取失败时会不会清空"。
          */
         key.currentState!.load();
         await tester.pump();
@@ -477,11 +541,11 @@ void main() {
          *    更严格的场景：连续多次失败刷新之后，数据仍然不许丢。
          */
         for (final entry in {
-          '最近追更': '追更片',
-          '最近收藏': '收藏片',
-          '播放历史': '历史片',
+          '追更 1': '追更片',
+          '收藏 1': '收藏片',
+          '历史 1': '历史片',
         }.entries) {
-          await tester.tap(find.text(entry.key));
+          await tester.tap(legacyShelfTab(entry.key));
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 300));
           expect(
@@ -558,26 +622,19 @@ void main() {
   //
   // ⇒ 我们原来用 `Sp.x2(8)`，与原版明确**否掉**的那一版一样。
   group('④ 手机版触控目标（项目规范 ≥34px）', () {
-    /// 量「我的」三个 tab 的 InkWell 高度
+    /// Measure all three real Miuix hit regions without guessing their widths.
     Future<List<double>> shelfTabHeights(WidgetTester tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MyShelf(onOpenDetail: (_, __) {}, onPlay: (_, __, ___, ____, _____) {}),
-          ),
-        ),
-      );
+      isolateLegacyLibraryReads();
+      await tester.pumpWidget(libraryLoadHost(MyShelf(
+        onOpenDetail: (_, __) {},
+        onPlay: (_, __, ___, ____, _____) {},
+      )));
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      });
       await tester.pump();
-      final hs = <double>[];
-      for (final e in find
-          .descendant(of: find.byType(MyShelf), matching: find.byType(InkWell))
-          .evaluate()) {
-        final box = e.renderObject as RenderBox?;
-        if (box == null) continue;
-        // 只取 tab（宽 96），排除海报卡
-        if ((box.size.width - 96).abs() < 0.5) hs.add(box.size.height);
-      }
-      return hs;
+      return legacyTabHeights(tester);
     }
 
     testWidgets('★★ 「我的」三个 tab 的高度 ≥34px（手机尺寸下量）',
@@ -615,9 +672,14 @@ void main() {
           home: Scaffold(
             body: Center(
               child: SizedBox(
+                key: const ValueKey('legacy-small-hit-target'),
                 width: 200,
                 height: 20, // ← 已知偏小
-                child: InkWell(onTap: () {}, child: const Text('小')),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {},
+                  child: const Text('小'),
+                ),
               ),
             ),
           ),
@@ -625,67 +687,35 @@ void main() {
       );
       await tester.pump();
 
-      final box = find.byType(InkWell).evaluate().first.renderObject as RenderBox;
-      expect(box.size.height, lessThan(34.0),
+      final small = legacyTapTargets(find.byKey(const ValueKey('legacy-small-hit-target')));
+      expect(small, findsOneWidget);
+      expect(small.hitTestable(), findsOneWidget);
+      expect(tester.getSize(small).height, lessThan(34.0),
           reason: '★★ 阳性对照：一个 20px 高的控件必须被判为不达标。'
               '若这里也"通过"，说明测量方法无效，上面那条断言作废。');
     });
 
     testWidgets('★★ 追更页三个 tab 的高度也 ≥34px（两处必须一起改）',
         (tester) async {
+      isolateLegacyLibraryReads();
       await tester.binding.setSurfaceSize(const Size(412, 915));
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: FollowPage(
-              isTv: false,
-              onUnreadChanged: (_) {},
-              onOpenDetail: (_, __) {},
-              onPlay: (_, __, ___, ____, _____) {},
-            ),
-          ),
-        ),
-      );
+      await tester.pumpWidget(libraryLoadHost(FollowPage(
+        isTv: false,
+        onUnreadChanged: (_) {},
+        onOpenDetail: (_, __) {},
+        onPlay: (_, __, ___, ____, _____) {},
+      )));
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      });
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      final hs = <double>[];
-      /*
-       * ★ 2026-10-19（漂移修正）：定位器从 `InkWell` 换成 `GestureDetector`
-       *
-       * # 断言本意（未变）
-       *   追更页那三个 tab 的**触控目标高度 ≥34px**（DEVELOPMENT.md 坑 35），
-       *   且必须与首页「我的」逐字同构 —— 只改一处会变成"一个页面对、
-       *   一个页面不对"。
-       *
-       * # 为什么定位器必须改（产品改动是**有意**的，不是退化）
-       * ```text
-       * 2026-10-18 轨道 E · 玻璃化 M2：follow_page.dart:1605/2033
-       *   `InkWell` → `_GlassTapSurface`（内部走 GlassButton.custom）
-       * ⇒ 追更页的 InkWell 数量从 3 变成 **0**
-       * ⇒ 旧定位器量到 0 个 ⇒ `hs.length` = 0 ⇒ 报「量到 0 个 ⇒ 假绿」
-       * ```
-       * 而首页「我的」的 `_ShelfTabChip` **仍是 InkWell**（my_shelf.dart:2383），
-       * 所以上面那条「我的」用例没红 —— 两条用例的定位器**本来就是分开的**。
-       *
-       * # 新定位器为什么是 GestureDetector
-       * ```text
-       * 实测（.probe/rv6/probe_t36b.dart）：
-       *   追更页 InkWell = 0
-       *   GestureDetector = 3，尺寸全是 96.0x41.0
-       *   （GlassButton 内部就是 GestureDetector，见
-       *     liquid_glass_widgets-1.13.0/.../glass_button.dart:1035/1049）
-       * ⇒ 仍用「宽 96」作为 tab 的辨识特征，量的是同一个 render box 高度，
-       *   断言值 34px 未动。
-       * ```
-       */
-      for (final e in find.byType(GestureDetector).evaluate()) {
-        final box = e.renderObject as RenderBox?;
-        if (box == null) continue;
-        if ((box.size.width - 96).abs() < 0.5) hs.add(box.size.height);
-      }
+      // Both pages use the same label-scoped real Miuix tap-region measure.
+      final hs = legacyTabHeights(tester);
 
       expect(hs.length, 3,
           reason: '★ 追更页也必须有 3 个 tab（量到 0 个 ⇒ 假绿）');
@@ -705,21 +735,21 @@ void main() {
   group('⑤ 切 tab 不许闪骨架（缓存语义）', () {
     testWidgets('★ 已有数据时切 tab，内容**原地替换**而不是塌成骨架',
         (tester) async {
+      final reads = isolateLegacyLibraryReads();
       await tester.binding.setSurfaceSize(const Size(1280, 800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
 
       final key = GlobalKey<MyShelfState>();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MyShelf(
-              key: key,
-              onOpenDetail: (_, __) {},
-              onPlay: (_, __, ___, ____, _____) {},
-            ),
-          ),
-        ),
-      );
+      await tester.pumpWidget(libraryLoadHost(MyShelf(
+        key: key,
+        onOpenDetail: (_, __) {},
+        onPlay: (_, __, ___, ____, _____) {},
+      )));
+      addTearDown(() async {
+        reads.releaseAll();
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      });
       await tester.pump();
       key.currentState!.debugSetData(
         following: [fav('cycani', 'a1', '追更片')],
@@ -730,22 +760,37 @@ void main() {
 
       // 切一圈，每切一次都检查"有没有塌成骨架"
       for (final entry in {
-        '最近收藏': '收藏片',
-        '播放历史': '历史片',
-        '最近追更': '追更片',
+        '收藏 1': '收藏片',
+        '历史 1': '历史片',
+        '追更 1': '追更片',
       }.entries) {
-        await tester.tap(find.text(entry.key));
+        // Hold the real refresh at the core seam, so the first-frame assertion
+        // cannot pass only because an immediate request already completed.
+        reads.rejectReads = false;
+        final held = (await tester.runAsync(() async => reads.hold()))!;
+        await tester.tap(legacyShelfTab(entry.key));
         /*
          * ⚠️ 只 pump **一帧**就断言 —— 骨架如果会出现，就在这一帧。
          *    pump 完动画再看的话，骨架可能已经过去了（漏判）。
          */
-        await tester.pump();
-        expect(find.text(entry.value), findsOneWidget,
-            reason: '★ 切到「${entry.key}」的**第一帧**就该有数据 —— '
-                '塌成骨架会让容器高度骤降，'
-                '那是文件头 ③ 记录的那条真 bug 的成因'
-                '（原版实测：浏览器把 scrollTop 钳到 261，'
-                '滚动位置记忆永远恢复不了）');
+        try {
+          await tester.pump();
+          expect(held.entered.isCompleted, isTrue,
+              reason: 'The actual tab refresh must reach the held transport');
+          expect(held.result.isCompleted, isFalse);
+          expect(find.text(entry.value), findsOneWidget,
+              reason: '★ 切到「${entry.key}」的**第一帧**就该有数据 —— '
+                  '塌成骨架会让容器高度骤降，'
+                  '那是文件头 ③ 记录的那条真 bug 的成因'
+                  '（原版实测：浏览器把 scrollTop 钳到 261，'
+                  '滚动位置记忆永远恢复不了）');
+        } finally {
+          held.complete(const LibraryReadData(
+            favorites: [], following: [], history: [], historyCount: 0,
+            failures: {'favorites', 'following', 'history', 'count'},
+          ));
+          reads.rejectReads = true;
+        }
         await tester.pump(const Duration(milliseconds: 500));
       }
     });

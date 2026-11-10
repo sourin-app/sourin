@@ -30,10 +30,16 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/disk_cache.dart';
+import 'package:sourin_spike/core/ffi.dart';
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/widgets/my_shelf.dart';
+import 'package:sourin_spike/ui/widgets/poster_card.dart';
+
+import 'support/library_load_fixture.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 //  造数据
@@ -413,24 +419,43 @@ void main() {
       return out;
     }
 
-    Future<GlobalKey<MyShelfState>> mount(WidgetTester tester) async {
+    Future<GlobalKey<MyShelfState>> mount(
+      WidgetTester tester, {
+      bool compact = false,
+    }) async {
+      final previousTransport = SourinCore.debugCallAsyncTransport;
+      final previousDirectory = DiskCache.dataDir;
+      final previousLoad = debugShelfLoadOverride;
+      final previousPreload = debugShelfPreloadOverride;
+      final reads = LibraryReadFixture(LibraryReadData.empty)..rejectReads = true;
+      DiskCache.debugResetForTest();
+      debugShelfLoadOverride = null;
+      debugShelfPreloadOverride = () async => null;
+      SourinCore.debugCallAsyncTransport = reads.call;
+      addTearDown(() {
+        reads.releaseAll();
+        SourinCore.debugCallAsyncTransport = previousTransport;
+        DiskCache.debugResetForTest(previousDirectory);
+        debugShelfLoadOverride = previousLoad;
+        debugShelfPreloadOverride = previousPreload;
+        expect(reads.unexpectedCommands, isEmpty);
+      });
       await tester.binding.setSurfaceSize(const Size(1280, 800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final k = GlobalKey<MyShelfState>();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Align(
-              alignment: Alignment.topLeft,
-              child: MyShelf(
-                key: k,
-                onOpenDetail: (_, __) {},
-                onPlay: (_, __, ___, ____, _____) {},
-              ),
-            ),
-          ),
+      await tester.pumpWidget(libraryLoadHost(Align(
+        alignment: Alignment.topLeft,
+        child: MyShelf(
+          key: k,
+          compact: compact,
+          onOpenDetail: (_, __) {},
+          onPlay: (_, __, ___, ____, _____) {},
         ),
-      );
+      )));
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      });
       await tester.pump();
       return k;
     }
@@ -471,33 +496,88 @@ void main() {
           reason: '★ 卡片标题必须在 —— 否则上面那条断言证明不了什么');
     });
 
-    testWidgets('★★ 有标题时那行仍显示（只删 fallback，不删功能）',
-        (tester) async {
-      final k = await mount(tester);
-      k.currentState!.debugSetData(
-        following: [
-          Favorite.fromJson(<String, dynamic>{
-            'key': 'cycani:b',
-            'provider': 'cycani',
-            'native_id': 'b',
-            'title': '测试剧',
-            'kind': 'series',
-            'favorited': true,
-            'following': true,
-            'last_episode_count': 12,
-            'last_episode_title': '更新至 12 集',
-            'unread_count': 0,
-          }),
-        ],
-        tab: ShelfTab.following,
-      );
-      await tester.pump();
+    for (final compact in [false, true]) {
+      testWidgets('★★ 真实更新集数仍在封面显示（compact=$compact）',
+          (tester) async {
+        final k = await mount(tester, compact: compact);
+        k.currentState!.debugSetData(
+          following: [
+            Favorite.fromJson(<String, dynamic>{
+              'key': 'cycani:b',
+              'provider': 'cycani',
+              'native_id': 'b',
+              'title': '测试剧',
+              'kind': 'series',
+              'favorited': true,
+              'following': true,
+              'last_episode_count': 12,
+              'last_episode_title': '更新至 12 集',
+              'unread_count': 0,
+            }),
+          ],
+          tab: ShelfTab.following,
+        );
+        await tester.pump();
 
-      final texts = renderTexts(tester);
-      expect(texts.contains('更新至 12 集'), isTrue,
-          reason: '★ 用户说的是删「追更中」那几个字，'
-              '**不是**把副标题功能删掉 —— 有真实标题时那行是有用的');
-    });
+        final poster = find.byType(PosterCard);
+        expect(poster, findsOneWidget);
+        final badge = find.descendant(
+          of: poster,
+          matching: find.byType(miuix.MiuixBadge),
+        );
+        expect(badge, findsOneWidget);
+        expect(find.descendant(of: badge, matching: find.text('更新至12集')),
+            findsOneWidget,
+            reason: 'Real episode metadata remains visible as the current cover badge');
+        final cover = tester.getRect(find.descendant(
+          of: poster,
+          matching: find.byType(AspectRatio),
+        ).first);
+        final status = tester.getRect(badge);
+        expect(cover.contains(status.topLeft), isTrue);
+        expect(cover.contains(status.bottomRight), isTrue);
+        final title = find.text('测试剧');
+        expect(title, findsOneWidget);
+        expect(tester.widget<Text>(title).maxLines, 1);
+        expect(tester.getRect(title).top, greaterThanOrEqualTo(cover.bottom));
+        expect(find.text('更新至 12 集'), findsNothing,
+            reason: 'Do not duplicate cover status in a second caption row');
+        expect(find.textContaining('追更中'), findsNothing);
+      });
+
+      testWidgets('★★ 非状态集名仍保留真实副标题（compact=$compact）',
+          (tester) async {
+        final k = await mount(tester, compact: compact);
+        k.currentState!.debugSetData(
+          following: [
+            Favorite.fromJson(<String, dynamic>{
+              'key': 'cycani:special',
+              'provider': 'cycani',
+              'native_id': 'special',
+              'title': '特别篇测试剧',
+              'kind': 'series',
+              'following': true,
+              'last_episode_count': 0,
+              'last_episode_title': '特别篇',
+            }),
+          ],
+          tab: ShelfTab.following,
+        );
+        await tester.pump();
+        expect(find.byType(PosterCard), findsOneWidget);
+        expect(find.text('特别篇测试剧'), findsOneWidget);
+        expect(tester.widget<Text>(find.text('特别篇测试剧')).maxLines, 1);
+        expect(find.text('特别篇'), findsOneWidget,
+            reason: 'Genuine non-status episode text must not be dropped wholesale');
+        expect(tester.getRect(find.text('特别篇')).top,
+            greaterThanOrEqualTo(tester.getRect(find.text('特别篇测试剧')).bottom));
+        expect(find.descendant(
+          of: find.byType(PosterCard),
+          matching: find.byType(miuix.MiuixBadge),
+        ), findsNothing);
+        expect(find.textContaining('追更中'), findsNothing);
+      });
+    }
 
     testWidgets('★★ 徽标 = 还剩几集；0 时不画（用户要的效果）', (tester) async {
       final k = await mount(tester);

@@ -273,6 +273,9 @@ pub fn clean_intro(html: &str) -> String {
 
 #[async_trait]
 impl CspSite for Hxq {
+    fn hls_query_policy(&self, url: &str, ext: &str) -> Option<crate::hls_query_policy::ScopedHlsQueryPolicy> {
+        playback::media_query_policy(url, ext)
+    }
     fn accepts_selected_episode_id(&self, id: &str) -> bool {
         selected_pid(id, "").is_ok()
     }

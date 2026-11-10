@@ -287,10 +287,14 @@ pub async fn resolve_stream(
      *   与 Owner 在 1.3 定的「不增加起播延迟」直接冲突。
      *   probe_candidates 内部并发（限流 8）+ 整批硬截止 2500ms；超截止的候选留 None。
      *
-     * ⚠️ 必须在 maybe_proxy **之前**读 —— 用原始上游 URL 与候选自带头
-     *   （Cookie/Referer/UA），本地代理地址读清单没有意义。
+     * Ordinary candidates are probed before wrapping. A source-scoped HLS
+     * policy registers first so fact probing uses the same origin guard and
+     * declared nested-URI semantics as playback.
      * ```
      */
+    // Scoped playlist rewriting must also guard the fact probe's requests.
+    // Other candidates retain the existing probe-before-wrapper order.
+    prepare_scoped_hls_candidates(&mut list, &state.stream_proxy).await?;
     crate::hls_facts::probe_candidates_with_proxy(&mut list, state.stream_proxy.clone()).await;
     {
         let id_head: String = id.chars().take(24).collect();
@@ -352,6 +356,21 @@ pub async fn resolve_stream(
     );
 
     Ok(list)
+}
+
+pub(crate) async fn prepare_scoped_hls_candidates(
+    list: &mut [StreamCandidate], proxy: &Arc<crate::streamproxy::StreamProxy>,
+) -> Result<(), String> {
+    for candidate in list {
+        if let Some(policy) = candidate.hls_query_policy.as_ref() {
+            if let Some(local) = crate::streamproxy::maybe_proxy_with_policy(
+                proxy, &candidate.url, &candidate.headers, candidate.not_web_ready, Some(policy),
+            ).await? {
+                candidate.url = local;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 给**单个**封面 URL 套代理（详情页用）

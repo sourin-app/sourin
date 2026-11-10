@@ -333,6 +333,11 @@ pub trait CspSite: Send + Sync {
     /// The provider never applies this hook to an ordinary content-id lookup.
     fn accepts_selected_episode_id(&self, _id: &str) -> bool { false }
 
+    /// Source-declared HLS transport semantics; absent for ordinary sources.
+    fn hls_query_policy(&self, _url: &str, _ext: &str) -> Option<crate::hls_query_policy::ScopedHlsQueryPolicy> {
+        None
+    }
+
     /// 类名（= api 去掉 `csp_` 前缀，注册表键）
     fn class(&self) -> &'static str;
 

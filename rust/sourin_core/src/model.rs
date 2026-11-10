@@ -451,6 +451,10 @@ impl StreamFlags {
 pub struct StreamCandidate {
     pub url: String,
     pub kind: StreamKind,
+    /// Consumed by core forwarding before FFI serialization; only reviewed
+    /// adapters opt in. Plugins cannot request this by supplying JSON fields.
+    #[serde(skip)]
+    pub hls_query_policy: Option<crate::hls_query_policy::ScopedHlsQueryPolicy>,
     /// 清晰度标签，如 "1080P"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<String>,
@@ -655,6 +659,7 @@ impl StreamCandidate {
         Self {
             url: url.into(),
             kind,
+            hls_query_policy: None,
             quality: None,
             label: None,
             headers: Vec::new(),

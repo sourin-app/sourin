@@ -16,6 +16,22 @@ const QUERY_SALT: &str = "2E159Q/Z8979WckQ";
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MEDIA_ORIGIN: &str = "https://voldn-ser01.51touxiang.com";
 
+pub(super) fn media_query_policy(url: &str, ext: &str) -> Option<crate::hls_query_policy::ScopedHlsQueryPolicy> {
+    let disabled = serde_json::from_str::<Value>(ext).ok()
+        .and_then(|value| value.get("use_proxy").cloned())
+        .is_some_and(|value| {
+            let value = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
+            value == "0" || value.eq_ignore_ascii_case("false")
+        });
+    if disabled { return None; }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.origin() != reqwest::Url::parse(MEDIA_ORIGIN).ok()?.origin()
+        || !parsed.path().to_ascii_lowercase().ends_with(".m3u8") {
+        return None;
+    }
+    crate::hls_query_policy::ScopedHlsQueryPolicy::new(url, &["pid", "utk", "uk", "spl", "t", "sign", "ip"])
+}
+
 // The reference client runs decrypted media values through Hxq.L. Its media
 // origin/scheme correction is part of this source protocol, not a generic CDN
 // fallback. Keep the original raw query: parsing/re-encoding would alter signs.

@@ -225,6 +225,13 @@ pub struct StreamEntry {
     /// 复用同一个 token 还带来一个好处：改写出的分片地址**稳定**，
     /// 播放器的分片缓存与重试都能命中。
     pub hdr_token: String,
+    pub hls_query_policy: Option<crate::hls_query_policy::ScopedHlsQueryPolicy>,
+}
+
+#[derive(Clone)]
+struct HeaderEntry {
+    headers: Vec<(String, String)>,
+    hls_query_policy: Option<crate::hls_query_policy::ScopedHlsQueryPolicy>,
 }
 
 // Preserve per-image metadata for saved library records; the actual HTTP request
@@ -286,7 +293,7 @@ pub struct StreamProxy {
      * 直接编码在 URL 路径里（`/p/<token>/<scheme>/<host>/<path>`），
      * 代理据此直连。表只随「换集次数」增长，与分片数量无关。
      */
-    hdr_table: Mutex<HashMap<String, Vec<(String, String)>>>,
+    hdr_table: Mutex<HashMap<String, HeaderEntry>>,
     /// 流表的**登记顺序**（FIFO），只用于「表满时淘汰最旧的一半」
     ///
     /// ★ issue #9：`table` 是 `HashMap`，**没有顺序** —— 改前正因为拿不到
@@ -634,6 +641,12 @@ impl StreamProxy {
         client.map_err(|_| "无法建立代理连接".to_string())
     }
 
+    fn scoped_forward_client(&self, kind: ForwardKind, policy: Option<&crate::hls_query_policy::ScopedHlsQueryPolicy>) -> Result<reqwest::Client, String> {
+        let Some(policy) = policy else { return self.forward_client(kind); };
+        let store = self.proxy_store.as_ref().ok_or("媒体连接策略未绑定")?;
+        store.scoped_stream_client(policy).map_err(|_| "无法建立媒体连接".to_string())
+    }
+
     /// Our loopback wrapper handles proxy policy at its upstream boundary.
     pub(crate) fn owns_url(&self, url: &str) -> bool {
         let Ok(url) = reqwest::Url::parse(url) else { return false; };
@@ -904,6 +917,11 @@ impl StreamProxy {
     /// 见 [`StreamProxy::order`]：全清会把**正在播的那条**也清掉，
     /// 表现就是「播到一半突然 404 → 取流地址已失效」。
     pub fn register_at(&self, url: &str, headers: Vec<(String, String)>, port: u16) -> String {
+        self.register_at_with_policy(url, headers, port, None)
+    }
+
+    fn register_at_with_policy(&self, url: &str, headers: Vec<(String, String)>, port: u16,
+        hls_query_policy: Option<crate::hls_query_policy::ScopedHlsQueryPolicy>) -> String {
         let token = new_token();
         {
             let mut t = self.table.lock().unwrap_or_else(|e| e.into_inner());
@@ -951,12 +969,13 @@ impl StreamProxy {
                         h.remove(&v);
                     }
                 }
-                h.insert(hdr_token.clone(), headers.clone());
+                h.insert(hdr_token.clone(), HeaderEntry { headers: headers.clone(), hls_query_policy: hls_query_policy.clone() });
             }
             t.insert(token.clone(), StreamEntry {
                 url: url.to_string(),
                 headers,
                 hdr_token,
+                hls_query_policy,
             });
         }
         /*
@@ -1080,7 +1099,7 @@ impl StreamProxy {
             let (request_url, headers) = crate::cover_request::decode(url, headers);
             tbl.insert(token.clone(), CoverEntry {
                 original_url: url.to_string(),
-                request: StreamEntry { url: request_url, headers, hdr_token: token.clone() },
+                request: StreamEntry { url: request_url, headers, hdr_token: token.clone(), hls_query_policy: None },
             });
         }
         drop(idx);
@@ -1376,12 +1395,12 @@ async fn handle_proxied(
     // 查头（插件的 Referer 等）
     let headers = {
         let t = proxy.hdr_table.lock().unwrap_or_else(|e| e.into_inner());
-        t.get(&token).cloned().map(|headers| (headers, ForwardKind::Media))
+        t.get(&token).cloned().map(|entry| (entry.headers, ForwardKind::Media, entry.hls_query_policy))
     }.or_else(|| {
         proxy.cover_table.lock().unwrap_or_else(|e| e.into_inner())
-            .get(&token).map(|entry| (entry.request.headers.clone(), ForwardKind::Cover))
+            .get(&token).map(|entry| (entry.request.headers.clone(), ForwardKind::Cover, None))
     });
-    let Some((headers, kind)) = headers else {
+    let Some((headers, kind, policy)) = headers else {
         // ★ issue #9：同 `/s/` 的 404 —— 改前完全静默（log::* 被丢弃）
         splog!(
             "404 分片查不到头: token={} rest={}（代理地址已失效）",
@@ -1410,7 +1429,7 @@ async fn handle_proxied(
     let mut url = format!("{scheme}://{host}/{path}");
     if let Some(query) = query { url.push('?'); url.push_str(&query); }
 
-    forward_request(&proxy, kind, &token, &headers, &url, &req_headers).await
+    forward_request(&proxy, kind, &token, &headers, &url, &req_headers, policy.as_ref()).await
 }
 
 /// 转发一次取流
@@ -1573,7 +1592,7 @@ async fn handle_stream(
 
     let t_start = std::time::Instant::now();
     let resp = forward_request(&proxy, kind, &entry.hdr_token, &entry.headers,
-                               &upstream_url, &req_headers).await;
+                               &upstream_url, &req_headers, entry.hls_query_policy.as_ref()).await;
     splog!(
         "OUT status={} elapsed={}ms upstream={}",
         resp.status().as_u16(),
@@ -2358,6 +2377,7 @@ async fn forward_request(
     headers: &[(String, String)],
     upstream_url: &str,
     req_headers: &HeaderMap,
+    hls_query_policy: Option<&crate::hls_query_policy::ScopedHlsQueryPolicy>,
 ) -> Response {
     /*
      * ★★★ task-57：用**共享**的 Client（连接池复用），不再每请求新建。
@@ -2366,7 +2386,10 @@ async fn forward_request(
      * ⇒ 池永远空 ⇒ 每次都要 DNS + TCP + TLS。
      * 详见 `StreamProxy::client` 字段上的说明。
      */
-    let client = match proxy.forward_client(kind) {
+    if hls_query_policy.is_some_and(|policy| !policy.allows_str(upstream_url)) {
+        return (StatusCode::BAD_GATEWAY, "播放列表包含未声明的媒体来源").into_response();
+    }
+    let client = match proxy.scoped_forward_client(kind, hls_query_policy) {
         Ok(client) => client,
         Err(_) => return (StatusCode::BAD_GATEWAY, "代理配置不可用，请检查全局代理设置").into_response(),
     };
@@ -2430,11 +2453,14 @@ async fn forward_request(
     let upstream = match send_headers(rb).await {
         Ok(r) => r,
         Err((e, is_conn)) => {
-            splog!(
-                "UP send FAILED after {}ms: {e}; upstream={}; conn={is_conn}",
-                t_up.elapsed().as_millis(),
-                redact_url(upstream_url),
-            );
+            if hls_query_policy.is_some() {
+                splog!("UP scoped request FAILED after {}ms; conn={is_conn}", t_up.elapsed().as_millis());
+            } else {
+                splog!(
+                    "UP send FAILED after {}ms: {e}; upstream={}; conn={is_conn}",
+                    t_up.elapsed().as_millis(), redact_url(upstream_url),
+                );
+            }
             // Production obeys the selected policy, including ApiOnly's direct
             // media path. Connection errors never select a different route.
             if proxy.proxy_store.is_some() {
@@ -2660,7 +2686,14 @@ async fn forward_request(
          *    于是分片请求查不到头 → 「代理地址已失效」→ 全部播不了。
          */
         let local_base = format!("http://127.0.0.1:{}/p/{hdr_token}/", proxy.port());
-        let rewritten = rewrite_playlist(&text, final_upstream_url.as_str(), &local_base);
+        let rewritten = if let Some(policy) = hls_query_policy {
+            match policy.rewrite(&text, final_upstream_url.as_str(), &local_base) {
+                Ok(text) => text,
+                Err(message) => return (StatusCode::BAD_GATEWAY, message).into_response(),
+            }
+        } else {
+            rewrite_playlist(&text, final_upstream_url.as_str(), &local_base)
+        };
 
         // 改写后长度会变，必须去掉上游的 Content-Length（否则截断）
         return Response::builder()
@@ -3016,12 +3049,20 @@ pub async fn maybe_proxy(
     headers: &[(String, String)],
     not_web_ready: bool,
 ) -> Result<Option<String>, String> {
+    maybe_proxy_with_policy(proxy, url, headers, not_web_ready, None).await
+}
+
+pub(crate) async fn maybe_proxy_with_policy(
+    proxy: &Arc<StreamProxy>, url: &str, headers: &[(String, String)], not_web_ready: bool,
+    policy: Option<&crate::hls_query_policy::ScopedHlsQueryPolicy>,
+) -> Result<Option<String>, String> {
     if proxy.owns_url(url) { return Ok(None); }
-    if !proxy.global_stream_proxy_enabled() && (!not_web_ready || headers.is_empty()) {
+    if policy.is_none() && !proxy.global_stream_proxy_enabled() && (!not_web_ready || headers.is_empty()) {
         return Ok(None);
     }
     // Fail before handing a URL to the player if proxy configuration is invalid.
-    proxy.upstream_client()?;
+    if policy.is_some_and(|policy| !policy.allows_str(url)) { return Err("媒体地址超出声明范围".into()); }
+    proxy.scoped_forward_client(ForwardKind::Media, policy)?;
     /*
      * ★★★ issue #9（次修 2）：**用 `ensure_started` 返回的端口**，
      * 不再让 `register` 回读 `self.port()` —— 两步之间代理可能已退出
@@ -3044,7 +3085,7 @@ pub async fn maybe_proxy(
             return Err("无法启动本地视频代理，请重试".to_string());
         }
     };
-    let local = proxy.register_at(url, headers.to_vec(), port);
+    let local = proxy.register_at_with_policy(url, headers.to_vec(), port, policy.cloned());
     // 本地地址形如 http://127.0.0.1:<port>/s/<token>/ ⇒ 取倒数第二段就是 token
     let tok_short: String = local.rsplit('/').nth(1).unwrap_or("").chars().take(12).collect();
     splog!(
@@ -3058,6 +3099,10 @@ pub async fn maybe_proxy(
 #[cfg(test)]
 #[path = "streamproxy_global_proxy_tests.rs"]
 mod global_proxy_tests;
+
+#[cfg(test)]
+#[path = "streamproxy_hls_query_tests.rs"]
+mod hls_query_tests;
 
 #[cfg(test)]
 #[path = "streamproxy_cover_diagnostics_tests.rs"]

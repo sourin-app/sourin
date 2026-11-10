@@ -619,6 +619,8 @@ impl MediaProvider for CspProvider {
                 }
             }
             let mut c = StreamCandidate::new(p.url, StreamKind::Mp4).with_headers(p.headers);
+            c.hls_query_policy = self.site.hls_query_policy(&c.url, &self.ext);
+            if c.hls_query_policy.is_some() { c.kind = StreamKind::Hls; }
             if let Some(label) = p.label {
                 c = c.with_label(label);
             }

@@ -213,6 +213,7 @@ impl MediaProvider for M3uLiveProvider {
         Ok(vec![StreamCandidate {
             url,
             kind: StreamKind::Hls,
+            hls_query_policy: None,
             quality: None,
             label: None,
             headers: vec![],

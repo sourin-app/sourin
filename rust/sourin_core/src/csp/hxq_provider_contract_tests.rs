@@ -7,17 +7,53 @@ use md5::{Digest, Md5};
 use std::sync::Arc;
 
 fn encrypted_media(uk: &str) -> String {
+    encrypted_media_at(uk, "https://media.invalid/selected-episode.m3u8")
+}
+
+fn encrypted_media_at(uk: &str, url: &str) -> String {
     let mut bytes = crate::csp::app99::b64_decode(uk).unwrap();
     let uid = cbc::Decryptor::<aes::Aes128>::new_from_slices(b"f349wghhe784tqwh", b"d3w8hf94fidk38lk").unwrap()
         .decrypt_padded_mut::<Pkcs7>(&mut bytes).unwrap();
     let identity = format!("{:x}", Md5::digest(uid));
     let key = format!("{:x}", Md5::digest(format!("{identity}34F9Q53w/HJW8E6Q").as_bytes()));
-    let plain = br#"{"playUrl":"https://media.invalid/selected-episode.m3u8","header":{"User-Agent":"FixtureMediaUA"}}"#;
+    let plain = serde_json::json!({"playUrl":url,"header":{"User-Agent":"FixtureMediaUA"}}).to_string();
+    let plain = plain.as_bytes();
     let mut buffer = vec![0; (plain.len() / 16 + 1) * 16];
     buffer[..plain.len()].copy_from_slice(plain);
     let cipher = cbc::Encryptor::<aes::Aes128>::new_from_slices(&key.as_bytes()[..16], &key.as_bytes()[16..]).unwrap()
         .encrypt_padded_mut::<Pkcs7>(&mut buffer, plain.len()).unwrap();
     crate::csp::app99::b64_encode(cipher)
+}
+
+#[tokio::test]
+async fn hxq_provider_preserves_internal_declared_media_policy_and_ext_disable() {
+    let fixture = serve(|request| match request.uri.path() {
+        "/api/common/configs" => axum::Json(serde_json::json!({"rescode":0})).into_response(),
+        "/api/series2/episode/detail" => axum::Json(serde_json::json!({"playItem":{
+            "pid":"selected-pid","sources":[{"scid":"source"}]}})).into_response(),
+        "/api/series/rslvV4" => {
+            let data = encrypted_media_at(request.headers["uk"].to_str().unwrap(),
+                "https://voldn-ser01.51touxiang.com/m3u8/fixture.m3u8?pid=selected-pid&sign=issued%2f");
+            axum::Json(serde_json::json!({"rescode":0,"datas":[{"data":data}]})).into_response()
+        }
+        _ => panic!("unexpected fixture request"),
+    }).await;
+    for (ext, enabled) in [("", true), (r#"{"use_proxy":false}"#, false)] {
+        let mut site = Hxq::new();
+        site.base_override = Some(fixture.url.clone());
+        let provider = crate::csp::provider::CspProvider::for_test("policy-fixture", Arc::new(site), ext);
+        let list = provider.resolve(&MediaId::new("policy-fixture", "content"),
+            &PlayRequest { episode_id:Some("selected-pid".into()), ..Default::default() }).await.unwrap();
+        assert_eq!(list[0].hls_query_policy.is_some(), enabled);
+        assert_eq!(matches!(list[0].kind, crate::model::StreamKind::Hls), enabled);
+        let encoded = serde_json::to_value(&list[0]).unwrap();
+        assert!(encoded.get("hls_query_policy").is_none());
+        assert!(encoded.get("hlsQueryPolicy").is_none());
+        let mut supplied = encoded;
+        supplied["hls_query_policy"] = serde_json::json!({"origin":"https://other.invalid"});
+        let decoded: crate::model::StreamCandidate = serde_json::from_value(supplied).unwrap();
+        assert!(decoded.hls_query_policy.is_none(), "serialized plugins cannot enable this internal policy");
+    }
 }
 
 async fn http_fixture() -> crate::csp::http_context::test_support::Fixture {

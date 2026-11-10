@@ -426,14 +426,20 @@ impl ProxyStore {
     /// Streaming has no whole-response timeout: a movie can last hours.
     /// Cache shares the invalidation boundary with API clients.
     pub fn stream_client(&self) -> Result<reqwest::Client, ProviderError> {
-        self.streaming_client(false)
+        self.streaming_client(false, None)
+    }
+
+    pub(crate) fn scoped_stream_client(
+        &self, policy: &crate::hls_query_policy::ScopedHlsQueryPolicy,
+    ) -> Result<reqwest::Client, ProviderError> {
+        self.streaming_client(false, Some(policy))
     }
 
     pub fn download_client(&self) -> Result<reqwest::Client, ProviderError> {
-        self.streaming_client(true)
+        self.streaming_client(true, None)
     }
 
-    fn streaming_client(&self, api: bool) -> Result<reqwest::Client, ProviderError> {
+    fn streaming_client(&self, api: bool, scoped: Option<&crate::hls_query_policy::ScopedHlsQueryPolicy>) -> Result<reqwest::Client, ProviderError> {
         let revision = self.revision.load(std::sync::atomic::Ordering::SeqCst);
         self.ensure_configured()?;
         let mut cfg = self.get(GLOBAL_PROXY);
@@ -441,8 +447,8 @@ impl ProxyStore {
             cfg.mode = ProxyMode::Direct;
         }
         let key = format!(
-            "stream|{revision}|{api}|{:?}|{:?}|{:?}|{:?}",
-            cfg.mode, cfg.url, cfg.bypass, cfg.username
+            "stream|{revision}|{api}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            cfg.mode, cfg.url, cfg.bypass, cfg.username, scoped.map(|policy| policy.origin_key())
         );
         if let Some(client) = self.clients.lock().unwrap().get(&key) {
             return Ok(client.clone());
@@ -452,6 +458,9 @@ impl ProxyStore {
             reqwest::header::ACCEPT_ENCODING,
             reqwest::header::HeaderValue::from_static("identity"),
         );
+        if scoped.is_some() {
+            headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("*/*"));
+        }
         let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(3))
             // Media headers belong to the source, including across redirects.
@@ -460,6 +469,15 @@ impl ProxyStore {
             .no_gzip()
             .no_deflate()
             .no_brotli();
+        if let Some(policy) = scoped.cloned() {
+            builder = builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() >= 5 || !policy.allows(attempt.url()) {
+                    attempt.error("媒体跳转超出声明范围")
+                } else {
+                    attempt.follow()
+                }
+            }));
+        }
         match cfg.mode {
             ProxyMode::Direct => builder = builder.no_proxy(),
             ProxyMode::System => {

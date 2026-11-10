@@ -5,6 +5,23 @@ use std::sync::{Arc, Mutex};
 
 const PLAYBACK_ORIGIN: &str = "http://anonymous-playback-fixture.invalid";
 
+#[test]
+fn declared_media_query_policy_is_source_local_and_honors_explicit_disable() {
+    let source = Hxq::new();
+    let url = "https://voldn-ser01.51touxiang.com/m3u8/fixture.m3u8?pid=fixture&sign=issued%2f";
+    for ext in ["", "{}", r#"{"use_proxy":true}"#, r#"{"use_proxy":1}"#] {
+        assert!(source.hls_query_policy(url, ext).is_some());
+    }
+    for ext in [r#"{"use_proxy":false}"#, r#"{"use_proxy":0}"#, r#"{"use_proxy":"0"}"#,
+        r#"{"use_proxy":"FALSE"}"#] {
+        assert!(source.hls_query_policy(url, ext).is_none());
+    }
+    for url in ["https://media.invalid/m3u8/fixture.m3u8", "https://voldn-ser01.51touxiang.com/video/a.mp4",
+        "http://voldn-ser01.51touxiang.com/m3u8/fixture.m3u8", "https://voldn-ser01.51touxiang.com:444/m3u8/a.m3u8"] {
+        assert!(source.hls_query_policy(url, "").is_none());
+    }
+}
+
 fn session() -> Session {
     Session { uid: "syntheticUser12345678".into(), said: "0123456789abcdef".into(),
         advertising: "fedcba9876543210".into(), installed: 1793062600000 }

@@ -663,6 +663,9 @@ class _DanmakuSourcePageState extends State<DanmakuSourcePage> {
             const SizedBox(height: Sp.x3),
             ui.OutlinedButton.icon(
               onPressed: () async {
+                // A pending service probe must lose ownership before this
+                // route can hide a stale result or persist its captured draft.
+                _invalidate();
                 await Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => const GlobalProxySettingsPage(),

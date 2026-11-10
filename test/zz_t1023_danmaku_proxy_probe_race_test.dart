@@ -1,227 +1,107 @@
-import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:sourin_spike/core/danmaku.dart';
-import 'package:sourin_spike/core/ui_prefs.dart';
-import 'package:sourin_spike/ui/app_theme.dart';
-import 'package:sourin_spike/ui/settings/danmaku_source_page.dart';
 
-Finder _field(String label) => find.byWidgetPredicate(
-  (widget) => widget is TextField && widget.decoration?.labelText == label,
-);
+import 'danmaku_proxy_test_support.dart';
 
 void main() {
-  const savedEndpoint = 'http://127.0.0.1:19321';
-  const draftEndpoint = 'http://127.0.0.1:19322';
-  const oldProxy = 'http://127.0.0.1:17890';
-  const newProxy = 'http://127.0.0.1:17891';
+  late DanmakuProxyFixture fixture;
+  setUp(() {
+    fixture = DanmakuProxyFixture()..install();
+  });
+  tearDown(() => fixture.restore());
 
-  tearDown(() => UiPrefs.debugResetForTest());
-
-  for (final changeAddress in [false, true]) {
-    for (final outcome in ['success', 'offline', 'exception']) {
+  // The original six outcome cases now stimulate actual global settings.
+  // They retain the late-result, persisted service and editable draft contract.
+  for (final edit in [GlobalEdit.mode, GlobalEdit.address]) {
+    for (final outcome in ServiceOutcome.values) {
       testWidgets(
-        '${changeAddress ? 'editing custom proxy' : 'switching proxy mode'} discards old $outcome probe',
+        '${edit == GlobalEdit.address ? 'editing global proxy address' : 'switching global proxy mode'} discards old ${outcome.name} service probe after return',
         (tester) async {
-          UiPrefs.debugResetForTest({
-            'dsh.danmaku.endpoint': savedEndpoint,
-            UiPrefs.danmakuTokenKey: 'saved-token',
-            UiPrefs.danmakuProxyModeKey: changeAddress ? 'custom' : 'direct',
-            UiPrefs.danmakuProxyUrlKey: oldProxy,
-          });
-          final pending = Completer<DanmakuLocalStatus>();
-          final requested = <DanmakuEndpoint?>[];
-          await tester.pumpWidget(MaterialApp(
-            theme: AppTheme.themeFor(Brightness.dark),
-            home: Scaffold(body: DanmakuSourcePage(
-              probeOverride: (endpoint) {
-                requested.add(endpoint);
-                return pending.future;
-              },
-            )),
-          ));
-          await tester.pumpAndSettle();
-          final serviceAddress = find.byType(TextField).first;
-          expect(serviceAddress, findsOneWidget);
-          await tester.ensureVisible(serviceAddress);
-          await tester.enterText(serviceAddress, draftEndpoint);
-          await tester.pumpAndSettle();
-          await tester.ensureVisible(find.text('测试连接'));
-          await tester.tap(find.text('测试连接'));
-          await tester.pump();
-          expect(requested, hasLength(1));
-          expect(requested.single?.baseUrl, draftEndpoint);
-          expect(find.text('正在测试…'), findsOneWidget);
-
-          if (changeAddress) {
-            final proxyAddress = _field('代理地址');
-            await tester.ensureVisible(proxyAddress);
-            await tester.enterText(proxyAddress, newProxy);
-          } else {
-            // ★ 与下方第二个用例块同款手法（scrollUntilVisible 而非
-            //   ensureVisible）：页面变长（T8 站源弹幕区块）后，
-            //   ensureVisible 在懒 Sliver 的滚动行程估算下会欠滚，
-            //   目标留在视口下沿外 ⇒ tap 打空（实测 'system' 断言拿到
-            //   未变更的 'direct'）。delta 负值 = 向下滚。
-            await tester.scrollUntilVisible(
-              find.text('跟随系统代理'), -250,
-              scrollable: find.byType(Scrollable).first,
+          await fixture.mount(tester);
+          await fixture.draft(tester);
+          await fixture.startProbe(tester,
+              endpoint: draftService, token: draftToken);
+          try {
+            await fixture.openGlobal(tester);
+            await fixture.editGlobal(tester, edit);
+            await fixture.closeGlobal(tester);
+            fixture.expectSaved(savedService, savedToken);
+            fixture.expectDraft(tester, draftService, draftToken);
+            fixture.expectIdle(tester);
+            fixture.finish(0, outcome);
+            await frames(tester);
+            expect(find.textContaining(staleVersion), findsNothing);
+            expect(find.textContaining(staleError), findsNothing);
+            final offline = DanmakuLocalStatus(
+              online: false,
+              endpoint: fixture.calls.single.endpoint,
             );
-            // 旧请求尚未完成，加载动画持续运行，此处只推进滚动帧。
-            await tester.pump(const Duration(milliseconds: 400));
-            await tester.tap(find.text('跟随系统代理'));
+            expect(find.text(offline.line), findsNothing);
+            fixture.expectSaved(savedService, savedToken);
+            fixture.expectDraft(tester, draftService, draftToken);
+            fixture.expectIdle(tester);
+            fixture.expectGlobal(edit);
+            expect(fixture.calls, hasLength(1),
+                reason: 'Global navigation starts no replacement service probe');
+            expect(tester.takeException(), isNull);
+          } finally {
+            fixture.releasePending();
+            await tester.pump();
           }
-          await tester.pump();
-          expect(UiPrefs.danmakuProxyMode, changeAddress ? 'custom' : 'system');
-          expect(UiPrefs.danmakuProxyUrl, changeAddress ? newProxy : '');
-
-          const staleVersion = 'stale-probe-version';
-          const staleError = 'stale-probe-exception';
-          const staleStatus = DanmakuLocalStatus(
-            online: false,
-            endpoint: DanmakuEndpoint(baseUrl: draftEndpoint),
-          );
-          if (outcome == 'exception') {
-            pending.completeError(const SocketException(staleError));
-          } else {
-            pending.complete(outcome == 'success'
-              ? const DanmakuLocalStatus(
-                  online: true,
-                  version: staleVersion,
-                  endpoint: DanmakuEndpoint(baseUrl: draftEndpoint),
-                )
-              : staleStatus);
-          }
-          await tester.pump();
-          await tester.pump(const Duration(milliseconds: 400));
-          await tester.pumpAndSettle();
-
-          await tester.scrollUntilVisible(
-            find.text('测试连接'), -250,
-            scrollable: find.byType(Scrollable).first,
-          );
-          await tester.pumpAndSettle();
-          // Read rendered output and persisted preferences, not private state.
-          expect(find.textContaining(staleVersion), findsNothing);
-          expect(find.textContaining(staleError), findsNothing);
-          expect(find.text(staleStatus.line), findsNothing);
-          expect(find.text('正在测试…'), findsNothing);
-          expect(UiPrefs.danmakuEndpoint, savedEndpoint,
-            reason: 'An old successful probe must not save its draft endpoint.');
-          expect(UiPrefs.danmakuToken, 'saved-token');
-          expect(UiPrefs.danmakuProxyMode, changeAddress ? 'custom' : 'system');
-          expect(UiPrefs.danmakuProxyUrl, changeAddress ? newProxy : '');
-          await tester.ensureVisible(find.text('测试连接'));
-          expect(tester.widget<FilledButton>(
-            find.widgetWithText(FilledButton, '测试连接'),
-          ).onPressed, isNotNull);
-          expect(tester.takeException(), isNull);
-          await tester.pumpWidget(const SizedBox.shrink());
-          await tester.pump(const Duration(milliseconds: 400));
         },
       );
     }
   }
 
-  for (final changeAddress in [false, true]) {
+  // The original four old/new interleavings now distinguish both service
+  // endpoint and Token values, so stale persistence cannot hide behind equality.
+  for (final edit in [GlobalEdit.mode, GlobalEdit.address]) {
     for (final oldThrows in [false, true]) {
       testWidgets(
-        '${changeAddress ? 'editing custom proxy' : 'switching proxy mode'} keeps newer result after old ${oldThrows ? 'exception' : 'success'}',
+        '${edit == GlobalEdit.address ? 'editing global proxy address' : 'switching global proxy mode'} keeps newer service result after old ${oldThrows ? 'exception' : 'success'}',
         (tester) async {
-          UiPrefs.debugResetForTest({
-            'dsh.danmaku.endpoint': savedEndpoint,
-            UiPrefs.danmakuTokenKey: 'saved-token',
-            UiPrefs.danmakuProxyModeKey: changeAddress ? 'custom' : 'direct',
-            UiPrefs.danmakuProxyUrlKey: oldProxy,
-          });
-          final oldRequest = Completer<DanmakuLocalStatus>();
-          final newRequest = Completer<DanmakuLocalStatus>();
-          var requests = 0;
-          await tester.pumpWidget(MaterialApp(
-            theme: AppTheme.themeFor(Brightness.dark),
-            home: Scaffold(body: DanmakuSourcePage(
-              probeOverride: (endpoint) {
-                requests++;
-                expect(endpoint?.baseUrl, savedEndpoint);
-                expect(requests, lessThanOrEqualTo(2));
-                return requests == 1 ? oldRequest.future : newRequest.future;
-              },
-            )),
-          ));
-          await tester.pumpAndSettle();
-          await tester.ensureVisible(find.text('测试连接'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('测试连接'));
-          await tester.pump();
-          expect(requests, 1);
-          expect(find.text('正在测试…'), findsOneWidget);
-
-          if (changeAddress) {
-            final proxyAddress = _field('代理地址');
-            await tester.ensureVisible(proxyAddress);
-            await tester.enterText(proxyAddress, newProxy);
-          } else {
-            await tester.scrollUntilVisible(
-              find.text('跟随系统代理'), 250,
-              scrollable: find.byType(Scrollable).first,
-            );
-            // 旧请求尚未完成，加载动画持续运行，此处只推进滚动帧。
-            await tester.pump(const Duration(milliseconds: 400));
-            await tester.tap(find.text('跟随系统代理'));
+          await fixture.mount(tester);
+          await fixture.draft(tester);
+          await fixture.startProbe(tester,
+              endpoint: draftService, token: draftToken);
+          try {
+            await fixture.openGlobal(tester);
+            await fixture.editGlobal(tester, edit);
+            await fixture.closeGlobal(tester);
+            fixture.expectSaved(savedService, savedToken);
+            fixture.expectDraft(tester, draftService, draftToken);
+            fixture.expectIdle(tester);
+            await fixture.draft(tester,
+                endpoint: nextService, token: nextToken);
+            await fixture.startProbe(tester,
+                endpoint: nextService, token: nextToken);
+            expect(fixture.calls, hasLength(2));
+            expect(fixture.calls[0].endpoint?.baseUrl, draftService);
+            expect(fixture.calls[0].endpoint?.token, draftToken);
+            fixture.finish(1, ServiceOutcome.success, version: currentVersion);
+            await frames(tester);
+            expect(find.textContaining(currentVersion), findsOneWidget);
+            fixture.expectSaved(nextService, nextToken);
+            fixture.expectDraft(tester, nextService, nextToken);
+            fixture.expectIdle(tester);
+            fixture.finish(0, oldThrows
+                ? ServiceOutcome.exception
+                : ServiceOutcome.success);
+            await frames(tester);
+            expect(find.textContaining(currentVersion), findsOneWidget,
+                reason: 'The newest successful request owns the rendered result');
+            expect(find.textContaining(staleVersion), findsNothing);
+            expect(find.textContaining(staleError), findsNothing);
+            fixture.expectSaved(nextService, nextToken);
+            fixture.expectDraft(tester, nextService, nextToken);
+            fixture.expectIdle(tester);
+            fixture.expectGlobal(edit);
+            expect(fixture.calls, hasLength(2));
+            expect(tester.takeException(), isNull);
+          } finally {
+            fixture.releasePending();
+            await tester.pump();
           }
-          await tester.pumpAndSettle();
-          expect(UiPrefs.danmakuProxyMode, changeAddress ? 'custom' : 'system');
-          expect(UiPrefs.danmakuProxyUrl, changeAddress ? newProxy : '');
-          await tester.scrollUntilVisible(
-            find.text('测试连接'), -250,
-            scrollable: find.byType(Scrollable).first,
-          );
-          await tester.pumpAndSettle();
-          expect(tester.widget<FilledButton>(
-            find.widgetWithText(FilledButton, '测试连接'),
-          ).onPressed, isNotNull);
-          await tester.tap(find.text('测试连接'));
-          await tester.pump();
-          expect(requests, 2);
-
-          newRequest.complete(const DanmakuLocalStatus(
-            online: true,
-            version: 'newer-probe-version',
-            endpoint: DanmakuEndpoint(baseUrl: savedEndpoint),
-          ));
-          await tester.pumpAndSettle();
-          expect(find.textContaining('newer-probe-version'), findsOneWidget);
-          expect(find.text('正在测试…'), findsNothing);
-
-          if (oldThrows) {
-            oldRequest.completeError(const SocketException('older-probe-error'));
-          } else {
-            oldRequest.complete(const DanmakuLocalStatus(
-              online: true,
-              version: 'older-probe-version',
-              endpoint: DanmakuEndpoint(baseUrl: savedEndpoint),
-            ));
-          }
-          await tester.pump();
-          await tester.pump(const Duration(milliseconds: 400));
-          await tester.pumpAndSettle();
-          expect(find.textContaining('newer-probe-version'), findsOneWidget,
-            reason: 'The newer successful result survives the late old response.');
-          expect(find.textContaining('older-probe-version'), findsNothing);
-          expect(find.textContaining('older-probe-error'), findsNothing);
-          expect(find.text('正在测试…'), findsNothing);
-          expect(UiPrefs.danmakuEndpoint, savedEndpoint);
-          expect(UiPrefs.danmakuToken, 'saved-token');
-          expect(UiPrefs.danmakuProxyMode, changeAddress ? 'custom' : 'system');
-          expect(UiPrefs.danmakuProxyUrl, changeAddress ? newProxy : '');
-          expect(tester.widget<FilledButton>(
-            find.widgetWithText(FilledButton, '测试连接'),
-          ).onPressed, isNotNull);
-          expect(tester.takeException(), isNull);
-          await tester.pumpWidget(const SizedBox.shrink());
-          await tester.pump(const Duration(milliseconds: 400));
         },
       );
     }

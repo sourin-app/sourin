@@ -13,11 +13,26 @@ The shared global settings panel follows
 
 ## Decision
 
-`DanmakuSourcePage._setProxy` 和 `_saveProxyUrl` 在保存代理偏好后调用既有 `_invalidate()`。模式赋值不再单独调用 `setState`，统一由失效逻辑刷新。失效逻辑递增序号、解除当前运行标记并清空结果和诊断；已有异步成功与异常分支的序号守卫丢弃旧响应。
+`DanmakuSourcePage` now opens the shared global proxy settings page. Its real
+navigation callback invalidates the current service probe **before** pushing
+that route and again after returning if still mounted. Endpoint/Token edits
+retain the same sequence guard. An old result cannot publish or save its draft
+while the source page is hidden beneath global settings, including a visit
+without configuration changes. The service draft is retained for the next
+explicit test; a successful current request still persists both fields.
 
-代理偏好仍立即保存，服务地址和令牌仍仅在有效探测成功时保存。没有取消底层请求，也没有改变诊断模块的其他工作树改动。
+The global page owns proxy writes. This source page does not revive the former
+per-danmaku proxy preferences. No network request is forcibly cancelled: the
+sequence guard rejects obsolete success, offline, exception and diagnosis
+completions. See [global feedback ownership](2026-11-11-global-proxy-feedback-ownership.md)
+for the separate proxy save/test lifecycle.
 
-新增六项 widget 行为测试挂载生产设置页，通过 `probeOverride` 和 `Completer` 控制响应时序，覆盖代理模式切换、自定义代理地址编辑与旧成功、离线、异常响应的组合。测试滚回结果区域后检查实际渲染文本、已保存偏好和测试按钮状态，避免将懒加载子项未挂载误判为结果已清除。
+The original ten tests now use the actual Miuix controls and global navigation,
+retaining completion order, write payload, source fields and result checks.
+Ten endpoint/Token ownership cases and ten route-entry/current-result cases
+exercise the same production page with delayed service responses. Positive
+existence checks ensure hidden feedback assertions do not pass because lazy
+content was unmounted.
 
 ## Alternatives considered
 
@@ -78,3 +93,22 @@ Leader 独立复跑时，模式切换两项先因查找“跟随系统”而失�
 Leader 随后独立运行完整竞态测试文件，实际终态为 `+10: All tests passed!`，退出码 `0`。完整日志保存在本地 `.probe/danmaku-interleave-bounded-pump-verification.log`，本次已重新读取核对全部十项用例与终态。此次仅修正测试交互，未修改生产代码。
 
 以上是注入探针的 widget 行为验证，不是真实代理网络验证，也不代表真实客户端验收。真实代理连通、实际客户端交互和总计划验收尚未取得。本笔记的 implemented 仅描述局部修复已经落地，不标记总任务完成。
+
+
+### 2026-11-11 global navigation boundary
+
+At the unchanged source baseline, the thirty current-control cases return
+24 passes and six behavior failures. Three late successes overwrite saved
+service fields with the unsaved draft while global settings remains current;
+three late exceptions render obsolete diagnostics on the still-mounted source
+page. Mode change, address save and an unchanged visit each reproduce both
+outcomes. The twenty migrated/input cases and four current-result/visit
+controls pass. This is separate from the older tests failing to locate removed
+controls, which do not establish a race.
+
+Adding the pre-push invalidation makes all thirty pass, and the nineteen
+existing global-panel ownership cases also pass. An initial combined command
+then reports a missing fifth test-file path; this invocation is not a green
+suite and does not count as a production failure. The corrected eleven-suite related run passes all 77 cases, including global
+proxy, service-page and route-animation regressions. Targeted analysis reports no issues. All test transports are synthetic;
+these results do not establish native proxy reachability.

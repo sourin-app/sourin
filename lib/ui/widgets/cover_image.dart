@@ -41,10 +41,21 @@ class _CoverNetworkImage extends ImageProvider<NetworkImage>
   static final HttpClient _client = HttpClient()
     ..autoUncompress = false
     ..connectionTimeout = _networkWait;
+  static final HttpClient _localClient = HttpClient()
+    ..autoUncompress = false
+    ..connectionTimeout = _networkWait
+    ..findProxy = (uri) => _isLoopback(uri)
+        ? 'DIRECT'
+        : HttpClient.findProxyFromEnvironment(uri);
+
+  static bool _isLoopback(Uri uri) =>
+      uri.host == 'localhost' ||
+      (InternetAddress.tryParse(uri.host)?.isLoopback ?? false);
 
   Future<HttpClientRequest> _open(Uri uri) {
     var expired = false;
-    final opening = _client.getUrl(uri).then((request) {
+    final client = _isLoopback(uri) ? _localClient : _client;
+    final opening = client.getUrl(uri).then((request) {
       if (expired) {
         // DNS/connection completion can arrive after our deadline. Consume its
         // abort error and release that request without sending image headers.

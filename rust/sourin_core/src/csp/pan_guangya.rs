@@ -216,19 +216,19 @@ fn human_size(b: u64) -> String {
 
 /// csp_PanGuangya
 pub struct PanGuangya {
-    client: reqwest::Client,
+    client: super::http_context::CspHttpContext,
 }
 
 impl PanGuangya {
     pub const CLASS: &'static str = "PanGuangya";
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(UA)
-            .timeout(HTTP_TIMEOUT)
-            .no_proxy()
-            .build()
-            .expect("HTTP client 构建失败（TLS 后端不可用）—— 不许退回无 no_proxy 的兜底");
+        let client = super::http_context::CspHttpContext::new(|| {
+            reqwest::Client::builder()
+                .user_agent(UA)
+                .timeout(HTTP_TIMEOUT)
+                .no_proxy()
+        });
         Self { client }
     }
 
@@ -245,6 +245,7 @@ impl PanGuangya {
     ) -> Result<serde_json::Value, String> {
         let resp = self
             .client
+            .client()?
             .post(url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/plain, */*")
@@ -270,6 +271,10 @@ impl Default for PanGuangya {
 
 #[async_trait]
 impl CspSite for PanGuangya {
+    fn set_http_context(&self, proxy: std::sync::Arc<crate::proxy::ProxyStore>, provider: &str) {
+        self.client.set_proxy(proxy, provider);
+    }
+
     fn class(&self) -> &'static str {
         Self::CLASS
     }
@@ -538,3 +543,7 @@ mod tests {
         assert!(e.contains("不支持搜索"), "{e}");
     }
 }
+
+#[cfg(test)]
+#[path = "pan_guangya_next_proxy_tests_v1.rs"]
+mod next_proxy_tests_v1;

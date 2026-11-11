@@ -1133,3 +1133,11 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - C10/C11/C13的UI失败证据保留。More单击受到生产双击识别时序影响，固定pump320只提交单击回调，未推进随后淡入/退出卸载。最终t63按有界controller、动画端点和连续几何/命中等待，五个原用例全部通过，保留真实hitTestable、enabled、相机、S计数、sheet门控和关闭卸载断言，没有为测试改变生产菜单。
 - 流取消已整合：活动token首次请求取消，停止排队业务回填，保留done/error直到Future结算并清理timer。C12 owning源快照同载荷9个旧版matcher RED、9个修正版GREEN，两次正常退出后连续8秒Job0/noforce；这验证Dart逻辑，不证明真实core取消或listener shutdown。
 - 新完整Windows包仍需从这些本地提交重新构建并绑定普通lib/shell.dart、fresh core和全部runtime文件。真实PlayerPage截图落盘/反馈、外部与网盘播放、剩余封面、稳定性与性能、普通启动退出及Owner验收继续开放。
+
+
+## 2026-11-12 后台续做：完整 C5 包、截图反馈与广雅请求路由
+
+- 完整18项及追加目标保持 active。C5 已从本地提交 5043654 构建 fresh release/lib core 和普通 lib/shell.dart 前端；package-v74 的全部59个运行文件与实际构建、清单和交付副本的大小/哈希一致，独立包审查21项通过。普通默认配置资格已核对，包未启动或替换当前客户端；构建入口没有 outer Job，不能据此认定构建派生进程全部退出或普通应用优雅退出。
+- PlayerPage 截图的软件/API链实际通过1项、无跳过：同一真实 NativePlayer 解码本地媒体，原 More 截图行调用原保存和提示实现，生成52,246字节、320×180 JPEG，真实完整路径提示及原DL日志通过。25个回调/框架阶段与正常disposed/六秒真实销毁调度窗口完成，Job0、无强制清理且绑定输入未变。v1/v2超时保留；v3通过不唯一证明旧超时原因。模拟的视频输出ID和零rect不能证明原生视频表面、真实presented首帧或Owner视觉验收。
+- 广雅请求接入既有 CspHttpContext：保留八秒超时、UA、POST、Cookie、请求体和响应判定，实际发送前取得当前全局策略。相同四用例在旧版完成3个目标断言失败和1个直连控制通过；候选实际编译后4项通过，但编译轮有一个未退出派生进程，清理资格失败并保留。单独复用该实际编译程序的runtime完成4项通过、正常drain及连续八秒Job0/无强制清理。选定兼容检查12项通过，其中包含四个新用例；两条读取pan_auth的既有用例明确排除，未作真实账号或云盘播放验收。
+- 下一完整包必须包含本次已验证的请求路由和后续通过的封面修复，重新绑定新提交、fresh core、普通shell和全部运行文件。当前外部/网盘选集播放、剩余图片、原生画面/音频、桌面交互与性能、普通启动退出和Owner验收继续开放；桌面、账户/profile和远程发布限制保持。

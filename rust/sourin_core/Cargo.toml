@@ -243,6 +243,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 rquickjs = { version = "0.14", default-features = false, features = ["bindgen", "futures", "macro", "parallel"] }
 
 [dev-dependencies]
+# Drive the actual scheduler clock while retaining real loopback requests.
+tokio = { version = "1", features = ["test-util"] }
 # 原工程的 axum 测试用 `tower::ServiceExt::oneshot` 直接给 Router 发请求
 # （不用真起 HTTP 服务器，测试快且不占端口）。
 # 抽核心时漏了这个 —— `cargo test` 才暴露出来（`cargo check` 不编译 test 段）。

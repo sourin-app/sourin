@@ -122,6 +122,8 @@ retain the user's desktop; no current client or real profile is accessed.
 
 Manual origin refresh and check-all can handle zero-VOD parents without borrowing
 another parent's identity. Provider-file, sidecar and catalog persistence remain
-separate failure boundaries. Pure-live scheduler enumeration/parent update clock,
-external services, native decoder/audio, full desktop UI/performance and Owner
-acceptance remain unproved by these background results.
+separate failure boundaries.
+[Parent clocks and scheduled ownership](2026-11-11-tvbox-parent-clock-and-scheduler.md)
+extend the actual scheduler and manual result metadata. External services, native
+decoder/audio, full desktop UI/performance and Owner acceptance remain separate
+requirements unproved by these background results.

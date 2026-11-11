@@ -4413,6 +4413,7 @@ class TvboxSourceUpdate {
   const TvboxSourceUpdate({
     this.updated = false,
     this.reason,
+    this.updateClockWarning,
     this.sourceUrl = '',
     this.added = const [],
     this.changed = const [],
@@ -4435,6 +4436,9 @@ class TvboxSourceUpdate {
 
   /// 没有改动时的原因（如「远端配置与本地一致，无需更新」）
   final String? reason;
+
+  /// 内容已应用，但父订阅更新时间未保存；核心只给安全固定提示。
+  final String? updateClockWarning;
 
   final String sourceUrl;
 
@@ -4487,6 +4491,9 @@ class TvboxSourceUpdate {
         reason: (j['reason'] as String?)?.trim().isEmpty ?? true
             ? null
             : (j['reason'] as String).trim(),
+        updateClockWarning: (j['updateClockWarning'] as String?)?.trim().isEmpty ?? true
+            ? null
+            : (j['updateClockWarning'] as String).trim(),
         sourceUrl: j['sourceUrl'] as String? ?? '',
         added: jlist(j['added'], TvboxRemoteSite.fromJson),
         changed: jlist(j['changed'], TvboxRemoteSite.fromJson),
@@ -6264,6 +6271,9 @@ class SourceOrigin {
     this.primaryUrl = '',
     this.backupUrls = const [],
     this.lastSuccessfulUrl,
+    this.lastUpdateAt = 0,
+    this.lastUpdateOk = false,
+    this.lastUpdateError,
     this.providerIds = const [],
     this.relatedProviderIds = const [],
   });
@@ -6273,6 +6283,13 @@ class SourceOrigin {
   final String primaryUrl;
   final List<String> backupUrls;
   final String? lastSuccessfulUrl;
+
+  /// 父订阅更新尝试的 Unix 秒；0 表示从未更新，不是端点可用时间。
+  final int lastUpdateAt;
+  final bool lastUpdateOk;
+
+  /// 持久化的原始失败原因；展示层不能直接输出。
+  final String? lastUpdateError;
   final List<String> providerIds;
 
   /// TVBox live descendants; these ids keep their own playlist address owner.
@@ -6286,6 +6303,11 @@ class SourceOrigin {
         .whereType<String>()
         .toList(),
     lastSuccessfulUrl: j['lastSuccessfulUrl'] as String?,
+    lastUpdateAt: (j['lastUpdateAt'] as num?)?.toInt() ?? 0,
+    lastUpdateOk: j['lastUpdateOk'] == true,
+    lastUpdateError: (j['lastUpdateError'] as String?)?.trim().isEmpty ?? true
+        ? null
+        : (j['lastUpdateError'] as String).trim(),
     providerIds: (j['providerIds'] as List? ?? const [])
         .whereType<String>()
         .toList(),

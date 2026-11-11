@@ -74,6 +74,7 @@ fn persisted_32_plugin_group_splits_and_preserves_only_identifiable_owner_edits(
         last_success_at: 100,
         provider_ids: sources.iter().map(|entry| entry.provider_ids[0].clone()).collect(),
         related_provider_ids: Vec::new(),
+        ..Default::default()
     };
     let mut catalog = SourceCatalog { origins: vec![old.clone()], ..Default::default() };
     reconcile_origins(&mut catalog, &sources);

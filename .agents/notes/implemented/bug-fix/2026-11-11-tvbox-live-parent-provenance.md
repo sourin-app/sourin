@@ -68,6 +68,7 @@ current-product baseline. The import-scoped contract does not establish manual/s
 On 2026-11-11, [actual live refresh](2026-11-11-tvbox-live-actual-refresh.md)
 extends the real representative check/update path.
 [Exact parent routing](2026-11-11-tvbox-origin-refresh-identity.md) covers manual
-zero-VOD refresh and check-all; scheduler enumeration remains a separate gate.
+zero-VOD refresh and check-all. [Parent clock ownership](2026-11-11-tvbox-parent-clock-and-scheduler.md)
+extends scheduling without moving playlist addresses or cache ownership.
 Fresh results are recorded in the implementation plan. These background tests
 do not establish native desktop UI, third-party service or decoder acceptance.

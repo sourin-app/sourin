@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:material_ui/material_ui.dart';
 
-import '../../core/ffi.dart' show userErrorText;
+import '../../core/ffi.dart' show SourinCoreException, userErrorText;
 import '../../core/source_discovery.dart';
 import '../../core/sourin_api.dart';
 import '../tokens.dart';
@@ -112,6 +112,36 @@ String sourceOriginDescription(
     'm3u_live' => remote ? '直播订阅' : '本地直播',
     _ => provider.capabilities.live ? (remote ? '直播订阅' : '本地直播') : '内置源',
   };
+}
+
+/// 仅格式化真实 TVBox 父订阅 clock，不借用播放列表或成功端点的状态。
+String? _sourceOriginLastUpdateText(SourceOrigin? origin) {
+  if (origin == null || !isTvboxSubscriptionOrigin(origin)) {
+    return null;
+  }
+  return tvboxLastUpdateText(
+    TvboxSourceInfo(
+      id: origin.id,
+      name: origin.name,
+      api: '',
+      sourceUrl: origin.primaryUrl,
+      needsSource: false,
+      lastUpdateAt: origin.lastUpdateAt,
+      lastUpdateOk: origin.lastUpdateOk,
+    ),
+  );
+}
+
+String _sourceOriginFailureText(SourceOrigin origin) {
+  // 原始原因只用于判断有没有原因；不进入异常、日志、Tooltip 或可见文案。
+  final hasReason = (origin.lastUpdateError ?? '').trim().isNotEmpty;
+  final safeReason = hasReason
+      ? '订阅更新失败，请重试或检查订阅地址'
+      : '后端没有给出原因';
+  return userErrorText(
+    SourinCoreException(safeReason, 'other'),
+    fallback: '订阅更新失败，请稍后重试',
+  );
 }
 
 class SourceManagerPage extends StatefulWidget {
@@ -279,8 +309,13 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
       sourceUrl: origin.primaryUrl,
       readOnlySourceUrl: true,
     );
-    if (!mounted || !changed) return;
-    widget.onSourcesChanged();
+    if (!mounted) {
+      return;
+    }
+    if (changed) {
+      widget.onSourcesChanged();
+    }
+    // 成功无变更和失败尝试也能更新 clock，关闭后读取持久化结果。
     await _load();
   }
 
@@ -372,6 +407,38 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
     if (mounted) await _load();
   }
 
+  Widget _originUpdateStatus(SourceOrigin origin) {
+    final text = _sourceOriginLastUpdateText(origin);
+    if (text == null) {
+      return const SizedBox.shrink();
+    }
+    final colors = Theme.of(context).colorScheme;
+    final failed = origin.lastUpdateAt > 0 && !origin.lastUpdateOk;
+    return Column(
+      key: const ValueKey('source-origin-update-status'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          text,
+          key: const ValueKey('source-origin-last-update'),
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: failed ? colors.error : colors.onSurfaceVariant,
+          ),
+        ),
+        if (failed)
+          Text(
+            '失败原因：${_sourceOriginFailureText(origin)}',
+            key: const ValueKey('source-origin-update-error'),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+          ),
+      ],
+    );
+  }
+
   Widget _filters() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -433,6 +500,7 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
               onPressed: _busy ? null : () => _updateOrigin(origin),
               child: const Text('订阅更新'),
             ),
+            _originUpdateStatus(origin),
           ],
         ),
       ],

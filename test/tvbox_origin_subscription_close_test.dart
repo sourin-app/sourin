@@ -240,7 +240,7 @@ void main() {
       await _exit(tester, 'outside');
       expect(find.byType(TvboxUpdateDialog), findsNothing);
       expect(notifications, 0);
-      expect(transport.loads, 1);
+      expect(transport.loads, 2);
       expect(tester.takeException(), isNull);
     },
   );

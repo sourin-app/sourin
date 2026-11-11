@@ -2729,8 +2729,8 @@ pub fn tvbox_update_due(last_update_at: i64, interval_secs: i64, now: i64, enabl
 ///
 /// # 为什么按链接去重
 ///
-/// 这是现行定时器的 sidecar 兼容选择器：每条链接只挑第一个到点的源。
-/// 更新入口按已解析父订阅身份处理并盖章；此选择器尚不枚举零点播父订阅。
+/// 这是旧 sidecar 的兼容选择器：每条链接只挑第一个到点的源。
+/// URL-backed 父订阅由 collect_due_refresh_targets 按精确身份另外枚举。
 pub fn collect_due_links(
     sources: &[(String, String, String, Option<String>)],
     metas: &std::collections::HashMap<String, TvboxSourceMeta>,
@@ -2755,12 +2755,63 @@ pub fn collect_due_links(
     out
 }
 
-/// 后台循环：每 60s 醒一次，把到点的订阅链接各更新一次
+/// Enumerate URL-backed parents independently, retaining uncovered legacy rows.
+fn collect_due_refresh_targets(
+    state: &crate::state::AppState,
+    schedule: &TvboxUpdateSchedule,
+    now: i64,
+) -> std::result::Result<Vec<String>, String> {
+    if !schedule.enabled || schedule.interval_secs <= 0 {
+        return Ok(Vec::new());
+    }
+    let catalog = crate::source_catalog::catalog(state)?;
+    let sources = local_tvbox_sources(state)?;
+    let metas = load_tvbox_metas(&state.data_dir);
+    let mut covered = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut due = Vec::new();
+    for origin in catalog
+        .origins
+        .iter()
+        .filter(|origin| origin.kind == "tvbox" && !origin.primary_url.trim().is_empty())
+    {
+        covered.extend(origin.provider_ids.iter().cloned());
+        if seen.insert(origin.id.clone())
+            && tvbox_update_due(
+                origin.last_update_at.unwrap_or(0),
+                schedule.interval_secs,
+                now,
+                schedule.enabled,
+            )
+        {
+            due.push(origin.id.clone());
+        }
+    }
+    // Owned VOD cannot independently make an already-current parent due.
+    let legacy: Vec<_> = sources
+        .into_iter()
+        .filter(|(id, _, _, _)| !covered.contains(id))
+        .collect();
+    for (_, id) in collect_due_links(
+        &legacy,
+        &metas,
+        schedule.enabled,
+        schedule.interval_secs,
+        now,
+    ) {
+        if seen.insert(id.clone()) {
+            due.push(id);
+        }
+    }
+    Ok(due)
+}
+
+/// 后台循环：每 60s 醒一次，把到点的父订阅或旧链接各更新一次
 ///
 /// ```text
 /// · 首轮先等 60s：避开启动恢复风暴，但仍是「冷启动超期即补一次」
 /// · 每轮重新读配置 ⇒ 用户改开关/间隔最迟 60s 生效，不用重启
-/// · 失败只 warn（update_tvbox_source 已盖章 + 落日志），绝不 panic ——
+/// · 失败只 warn（实际更新执行已盖章 + 落日志），绝不 panic ——
 ///   定时任务崩了比不跑更糟
 /// ```
 pub fn spawn_auto_update(state: &std::sync::Arc<crate::state::AppState>) {
@@ -2772,24 +2823,19 @@ pub fn spawn_auto_update(state: &std::sync::Arc<crate::state::AppState>) {
         loop {
             ticker.tick().await;
             let sched = load_tvbox_update_schedule(&st.data_dir);
-            let sources = match local_tvbox_sources(&st) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::warn!("TVBox 定时更新：列本地源失败（本轮跳过）: {e}");
+            let due = match collect_due_refresh_targets(&st, &sched, now_secs()) {
+                Ok(due) => due,
+                Err(error) => {
+                    log::warn!("TVBox 定时更新：列订阅失败（本轮跳过）：{error}");
                     continue;
                 }
             };
-            if sources.is_empty() {
-                continue;
-            }
-            let metas = load_tvbox_metas(&st.data_dir);
-            let due =
-                collect_due_links(&sources, &metas, sched.enabled, sched.interval_secs, now_secs());
-            for (url, rep) in due {
-                log::info!("TVBox 订阅定时更新开始：{url}（代表源 {rep}）");
-                match update_tvbox_source(&st, &rep, true, false).await {
-                    Ok(_) => log::info!("TVBox 订阅定时更新完成：{url}"),
-                    Err(e) => log::warn!("TVBox 订阅定时更新失败（已保留旧配置）：{e}"),
+            for id in due {
+                log::info!("TVBox 订阅定时更新开始：{id}");
+                match update_scheduled_tvbox_source(&st, &id).await {
+                    Ok(Some(_)) => log::info!("TVBox 订阅定时更新完成：{id}"),
+                    Ok(None) => log::debug!("TVBox 定时更新跳过已更新或关闭的订阅：{id}"),
+                    Err(error) => log::warn!("TVBox 订阅定时更新失败（已保留旧配置）：{error}"),
                 }
             }
         }
@@ -3726,17 +3772,142 @@ pub async fn update_tvbox_source(
     let sources = local_tvbox_sources(state)?;
     let metas = load_tvbox_metas(&state.data_dir);
     let target = resolve_tvbox_refresh_target(state, id, &sources, &metas)?;
-    let result = update_tvbox_source_inner(state, &target, apply_new, delete_missing).await;
-    if let Err(error) = &result {
-        log::warn!("TVBox 订阅更新失败：{error}");
+    update_resolved_tvbox_source(state, &target, apply_new, delete_missing).await
+}
+
+/// Recheck a scheduled target after obtaining the same manual-update lock.
+/// A manual completion or disabled schedule must retire a stale due snapshot.
+async fn update_scheduled_tvbox_source(
+    state: &crate::state::AppState,
+    id: &str,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    let _guard = UPDATE_LOCK.lock().await;
+    let schedule = load_tvbox_update_schedule(&state.data_dir);
+    if !schedule.enabled || schedule.interval_secs <= 0 {
+        return Ok(None);
+    }
+    let sources = local_tvbox_sources(state)?;
+    let metas = load_tvbox_metas(&state.data_dir);
+    let target = resolve_tvbox_refresh_target(state, id, &sources, &metas)?;
+    let now = now_secs();
+    let due = match &target.origin {
+        Some(origin) => tvbox_update_due(
+            origin.last_update_at.unwrap_or(0),
+            schedule.interval_secs,
+            now,
+            schedule.enabled,
+        ),
+        None => target
+            .ids
+            .iter()
+            .filter_map(|id| metas.get(id))
+            .any(|meta| tvbox_update_due(
+                meta.last_update_at,
+                schedule.interval_secs,
+                now,
+                schedule.enabled,
+            )),
+    };
+    if !due {
+        return Ok(None);
+    }
+    update_resolved_tvbox_source(state, &target, true, false)
+        .await
+        .map(Some)
+}
+
+/// Both callers retain UPDATE_LOCK through publication and update stamps.
+async fn update_resolved_tvbox_source(
+    state: &crate::state::AppState,
+    target: &TvboxRefreshTarget,
+    apply_new: bool,
+    delete_missing: bool,
+) -> std::result::Result<serde_json::Value, String> {
+    let mut result = update_tvbox_source_inner(state, target, apply_new, delete_missing).await;
+    let attempt_at = now_secs();
+    let (ok, error) = match &result {
+        Ok(outcome) => {
+            let error = outcome
+                .get("failed")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|failed| failed.first())
+                .map(|failed| {
+                    failed
+                        .get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|reason| !reason.is_empty())
+                        .unwrap_or("部分来源没有完成更新")
+                        .to_owned()
+                })
+                .or_else(|| {
+                    // Configuration-backed providers retain their accepted rows
+                    // on probe failure and report that failure on the result row.
+                    ["added", "changed"]
+                        .into_iter()
+                        .filter_map(|key| outcome.get(key).and_then(serde_json::Value::as_array))
+                        .flatten()
+                        .find_map(|row| {
+                            row.get("probeFailed")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::trim)
+                                .filter(|reason| !reason.is_empty())
+                                .map(str::to_owned)
+                        })
+                });
+            (error.is_none(), error)
+        },
+        Err(error) => (false, Some(error.clone())),
+    };
+    if !ok {
+        if let Some(error) = &error {
+            log::warn!("TVBox 订阅更新失败：{error}");
+        }
+        let added_ids: Vec<String> = result
+            .as_ref()
+            .ok()
+            .and_then(|outcome| outcome.get("added"))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.get("id").and_then(serde_json::Value::as_str))
+            .map(str::to_owned)
+            .collect();
         stamp_refresh_target(
             &state.data_dir,
-            &target,
-            &[],
-            now_secs(),
+            target,
+            &added_ids,
+            attempt_at,
             false,
-            Some(error.clone()),
+            error.clone(),
         );
+    }
+    if let Some(origin_id) = target.origin_id() {
+        if let Err(save_error) = crate::source_catalog::stamp_tvbox_update(
+            state,
+            origin_id,
+            attempt_at,
+            ok,
+            error,
+        ) {
+            log::warn!("保存 TVBox 订阅更新时间失败：{save_error}");
+            match &mut result {
+                Ok(outcome) => {
+                    // Content may already be applied. Preserve that outcome and
+                    // notification rather than replacing it with a clock-save error.
+                    let warning = if outcome.get("updated").and_then(serde_json::Value::as_bool) == Some(true) {
+                        "订阅内容已更新，但更新时间未保存，请稍后重试"
+                    } else {
+                        "订阅已核对，但更新时间未保存，请稍后重试"
+                    };
+                    outcome["updateClockWarning"] = serde_json::Value::String(warning.into());
+                }
+                Err(error) => {
+                    // The raw persistence error stays in the log, not the UI result.
+                    *error = format!("{error}；订阅更新时间未保存");
+                }
+            }
+        }
     }
     result
 }

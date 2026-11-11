@@ -13,6 +13,10 @@ const FILE: &str = "source-catalog.json";
 #[path = "source_catalog_tvbox_origin_refresh_tests.rs"]
 mod tvbox_origin_refresh_tests;
 
+#[cfg(test)]
+#[path = "source_catalog_tvbox_clock_tests.rs"]
+mod tvbox_clock_tests;
+
 static WRITE: Mutex<()> = Mutex::new(());
 pub const FETCH_BUDGET: Duration = Duration::from_secs(24);
 
@@ -51,6 +55,12 @@ pub struct SourceOrigin {
     pub last_successful_url: Option<String>,
     pub last_successful_endpoint: Option<String>,
     pub last_success_at: i64,
+    /// Missing means an older catalog needs migration; Some(0) is truly never updated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update_at: Option<i64>,
+    pub last_update_ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update_error: Option<String>,
     pub provider_ids: Vec<String>,
     /// TVBox live descendants have their own playlist/address origin.
     pub related_provider_ids: Vec<String>,
@@ -304,6 +314,21 @@ fn catalog_locked(state: &AppState) -> Result<SourceCatalog, String> {
             && seen.insert(id.clone())
             && sources.iter().any(|source| source.kind == "live"
                 && source.provider_ids.contains(id)));
+        if origin.kind == "tvbox"
+            && !origin.primary_url.trim().is_empty()
+            && origin.last_update_at.is_none()
+        {
+            // Only this parent's actual VOD stamps can migrate the update clock.
+            // A successful endpoint check is not an applied subscription update.
+            let (at, ok, error) = crate::tvbox::tvbox_aggregate_last_update(
+                &metas,
+                &origin.provider_ids,
+            )
+            .unwrap_or((0, false, None));
+            origin.last_update_at = Some(at);
+            origin.last_update_ok = ok;
+            origin.last_update_error = error;
+        }
     }
     out.version = 1;
     out.groups = groups.into_values().collect();
@@ -561,10 +586,38 @@ pub fn record_import(
         .filter(|id| seen.insert((*id).clone())).cloned().collect();
     origin.last_successful_url = Some(actual.to_owned());
     origin.last_successful_endpoint = Some(endpoint.to_owned());
-    origin.last_success_at = now_secs();
+    let completed_at = now_secs();
+    origin.last_success_at = completed_at;
+    if !primary.trim().is_empty() {
+        origin.last_update_at = Some(completed_at);
+        origin.last_update_ok = true;
+        origin.last_update_error = None;
+    }
     let id = origin.id.clone();
     save(&state.data_dir, &out)?;
     Ok(id)
+}
+
+/// Persist the result of one actual update against the resolved exact parent.
+/// The caller owns UPDATE_LOCK; this does not transact other provider files.
+pub(crate) fn stamp_tvbox_update(
+    state: &AppState,
+    origin_id: &str,
+    at: i64,
+    ok: bool,
+    error: Option<String>,
+) -> Result<(), String> {
+    let _guard = WRITE.lock().map_err(|_| "源配置写入锁不可用")?;
+    let mut out = load(&state.data_dir);
+    let origin = out
+        .origins
+        .iter_mut()
+        .find(|origin| origin.kind == "tvbox" && origin.id == origin_id)
+        .ok_or("没有找到此 TVBox 父订阅")?;
+    origin.last_update_at = Some(at);
+    origin.last_update_ok = ok;
+    origin.last_update_error = if ok { None } else { error };
+    save(&state.data_dir, &out)
 }
 
 /// Refresh only live attribution of an exact TVBox origin or known VOD representative.
@@ -946,6 +999,7 @@ pub fn record_plugin(
         last_success_at: now_secs(),
         provider_ids: vec![id.into()],
         related_provider_ids: Vec::new(),
+        ..Default::default()
     };
     save(&state.data_dir, &out)
 }

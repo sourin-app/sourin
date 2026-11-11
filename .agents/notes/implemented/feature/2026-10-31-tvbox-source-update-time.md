@@ -67,5 +67,7 @@ JS 插件源卡片有更新时间（task-7）但 TVBox 原生源卡片没有。
 independent live preview/outcomes. [Exact parent routing](../bug-fix/2026-11-11-tvbox-origin-refresh-identity.md)
 accepts parent IDs without VOD and stamps the resolved owned VOD IDs, including
 unchanged IDs, rather than unrelated same-URL parents. The conservative VOD-only
-deletion policy remains. The current scheduler still enumerates VOD sidecar
-links; pure-live enumeration and a parent-level update clock remain open.
+deletion policy remains. [Parent clocks and scheduled ownership](../bug-fix/2026-11-11-tvbox-parent-clock-and-scheduler.md)
+add exact parent clocks and zero-VOD enumeration. The actual scheduled branch
+rechecks current configuration and clock under the shared update lock; uncovered
+legacy sidecars retain their existing path.

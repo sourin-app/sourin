@@ -1032,6 +1032,23 @@ List<Widget> _liveOutcomeRows(ColorScheme colors, TvboxSourceUpdate r) {
   ];
 }
 
+Widget _tvboxUpdateClockWarning(ColorScheme colors, TvboxSourceUpdate r) {
+  if (r.updateClockWarning == null) {
+    return const SizedBox.shrink();
+  }
+  final text = r.updated
+      ? '订阅内容已更新，但更新时间未保存，请稍后重试'
+      : '订阅已核对，但更新时间未保存，请稍后重试';
+  return Padding(
+    padding: const EdgeInsets.only(top: Sp.x1),
+    child: Text(
+      text,
+      key: const ValueKey('tvbox-update-clock-warning'),
+      style: TextStyle(fontSize: FontSizes.cap, color: colors.error),
+    ),
+  );
+}
+
 /// 订阅「应用更新」的结果面板（**公开**，可被 widget test 直接渲染）
 ///
 /// # 为什么必须是公开 widget（2026-10-25，第 19 项 P2 第二次）
@@ -1079,6 +1096,7 @@ class TvboxUpdateResultView extends StatelessWidget {
           r.reason ?? '远端与本地一致，没有改动',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
         ),
+        _tvboxUpdateClockWarning(colors, r),
         ..._liveOutcomeRows(colors, r),
         if (r.removed.isNotEmpty) ...[
           const SizedBox(height: Sp.x1),
@@ -1112,6 +1130,7 @@ class TvboxUpdateResultView extends StatelessWidget {
           color: colors.primary,
         ),
       ),
+      _tvboxUpdateClockWarning(colors, r),
       if (!r.hasLiveOutcome ||
           r.added.isNotEmpty ||
           r.changed.isNotEmpty ||

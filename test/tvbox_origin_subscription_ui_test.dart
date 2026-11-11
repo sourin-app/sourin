@@ -466,7 +466,7 @@ void main() {
       expect(transport.sidecarWrites, isEmpty);
       await _close(tester);
       expect(notifications, 0);
-      expect(transport.catalogLoads, 1);
+      expect(transport.catalogLoads, 2);
     },
   );
 

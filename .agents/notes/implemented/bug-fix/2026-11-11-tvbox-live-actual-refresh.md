@@ -88,5 +88,6 @@ The actual VOD-representative check/update route now handles live changes withou
 resetting independent owners or pretending failed provider persistence succeeded.
 [Exact parent routing](2026-11-11-tvbox-origin-refresh-identity.md) extends
 manual refresh and check-all to zero-VOD parents. This membership decision alone
-does not prove pure-live scheduling, native UI,
-external service interoperability, decoder/audio or Owner acceptance.
+does not establish native UI, external service interoperability, decoder/audio
+or Owner acceptance. [Parent clock ownership](2026-11-11-tvbox-parent-clock-and-scheduler.md)
+extends the actual scheduler while preserving these separate persistence boundaries.

@@ -18,6 +18,12 @@ read-only in that dialog; the existing address editor owns edits. All accepted
 update exits notify/reload the mounted source manager once. This contract is
 described in [exact parent refresh](../bug-fix/2026-11-11-tvbox-origin-refresh-identity.md).
 
+TVBox parent summaries read their own stored update clock through the existing
+date/status formatter. Both unchanged and failed update attempts cause a read
+after closure; only accepted content changes notify the source owner. Raw stored
+errors and clock-save warnings use safe fixed visible hints. This metadata
+contract is documented in [parent clock ownership](../bug-fix/2026-11-11-tvbox-parent-clock-and-scheduler.md).
+
 ## Problem
 
 A Miuix palette and settings card do not change the widgets used inside source

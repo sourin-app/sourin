@@ -12,6 +12,11 @@ Independent: 接续 [2026-10-31-tvbox-source-update-time.md](../feature/2026-10-
 manual entry to zero-VOD parents and limits stamps to resolved owned VOD IDs.
 The aggregate display and link-state/save ownership decisions here remain.
 
+[Parent clock ownership](2026-11-11-tvbox-parent-clock-and-scheduler.md) adds
+manual/scheduled parent metadata and migrates missing clocks only from the
+parent's own VOD stamps. An explicit zero stays due. The aggregate display
+policy and accepted link-save ownership here remain.
+
 ## Problem
 
 真机判读（ui-judge-batch）：设置→源 的 TVBox 卡片**没有**"上次更新"行，

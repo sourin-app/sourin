@@ -1164,3 +1164,10 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 只在_showControls入口加mounted检查。已开始的真实截图保存继续完成，退出的页面不恢复控件，避免成功JPEG被误报截图失败。旧版实际完成1个正常控制和1个目标失败，候选两项通过、0跳过；四个JPEG均52,246字节，活跃页面完整路径反馈与控件保留，退出页面先真实dispose再放行保存。
 - 两轮正常退出后连续八秒Job0，无force/error，输入绑定未变。随后原两树各运行source/test单文件分析，四命令exit0：每arm共0error/27warning/10info，完整diagnostic multiset相同，仅插入guard后的行号映射变化；不称全项目或分析clean。
 - 新note与原截图helper note同步真实软件native保存/路径反馈边界。新完整包仍需绑定本地提交，native surface/audio、外部/云盘、桌面交互性能、普通退出和Owner验收继续开放。
+
+
+## 2026-11-12 后台续做：封面失败回调身份
+
+- PosterCard失败post-frame和retry timer同时校验捕获的cover/revision。原首帧就绪实现、重试间隔与上限保持。真实HTTP503后同State一帧A→B→A复现旧A回调删除新A图片：旧版1个目标失败、3个控制通过，候选四项通过、0跳过；独立实际后审39项通过。
+- 实际候选source及新test限定两次single-file machine分析exit0，共0error/0warning/5info；保留source1条括号建议和test4条import/const建议。没有本次新test同源baseline分析，旧loaded分析不能代替它。两runtime及两分析Job正常零稳定八秒、输入未变，v1编译失败仍保留。
+- 这些loopback组件结果不替代当前客户端封面像素、外部/网盘播放、桌面稳定性性能或Owner验收。新完整包待绑定最终本地提交。完整目标继续active。

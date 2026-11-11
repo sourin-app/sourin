@@ -54,3 +54,6 @@ The cases cover an initially held response; successful decode and synchronous ca
 An unresolved network image retains the neutral placeholder until its first decoded frame. Real decoded and cached artwork still retire it, while a changed cover cannot inherit the previous cover's loaded state. Error retries remain the existing bounded behavior.
 
 These checks establish the selected mounted-widget behavior with real loopback HTTP/image decoding. They do not establish native Windows pixel acceptance, faster scrolling, source/CDN availability, the whole cover lifecycle, cloud-account behavior or ordinary application graceful quit. Fixture HTTP closure and an owned runner's Job0 gate describe the isolated test processes.
+
+
+Related retained decision: [failure callback revision ownership](2026-11-12-poster-failure-callback-revision.md). The failure-callback revision decision extends current-cover ownership to queued failures and retry timers; this readiness criterion and its qualified evidence remain unchanged.

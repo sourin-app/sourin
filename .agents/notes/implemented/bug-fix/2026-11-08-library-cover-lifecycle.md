@@ -102,3 +102,6 @@ the missing-metadata recovery here without a full network scan. Recovery reads
 the first 100 history/progress entries and all favorites/follows. Revisit these
 bounds if the UI adds deeper history paging. These tests do not establish live
 source availability or final native UI acceptance.
+
+
+Related retained decision: [failure callback revision ownership](2026-11-12-poster-failure-callback-revision.md). The card failure-callback decision adds cover-revision ownership to the existing bounded two/four-second retries; durable/display conversion, requests and persistence decisions remain unchanged.

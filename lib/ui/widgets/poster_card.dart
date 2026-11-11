@@ -205,14 +205,14 @@ class _PosterCardState extends State<PosterCard> {
   Timer? _retryTimer;
   int _retryCount = 0;
 
-  void _imageFailed(String? cover) {
+  void _imageFailed(String? cover, int revision) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || cover != widget.cover || _failed) return;
+      if (!mounted || revision != _coverRevision || cover != widget.cover || _failed) return;
       setState(() => _failed = true);
       if (_retryCount >= 2) return;
       _retryCount++;
       _retryTimer = Timer(Duration(seconds: 2 * _retryCount), () {
-        if (mounted && cover == widget.cover) {
+        if (mounted && revision == _coverRevision && cover == widget.cover) {
           setState(() {
             _loaded = false;
             _failed = false;
@@ -466,7 +466,7 @@ class _PosterCardState extends State<PosterCard> {
                               },
                               errorBuilder: (context, error, stack) {
                                 // 加载失败 → 记下来，显示中性占位
-                                _imageFailed(widget.cover);
+                                _imageFailed(cover, coverRevision);
                                 return const SizedBox.shrink();
                               },
                             ),

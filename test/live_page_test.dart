@@ -93,6 +93,8 @@ import 'package:sourin_spike/ui/widgets/live_embedded_player.dart';
 import 'package:sourin_spike/ui/app_scaffold.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 
+import 'support/live_selection_fixture.dart';
+
 // ═══════════════════════════════════════════════════════════════════════
 //  工具
 // ═══════════════════════════════════════════════════════════════════════
@@ -526,68 +528,55 @@ void main() {
       );
     });
 
-    test('★ 返回本页保留选中的频道（原版 loadAll(true)）', () {
-      /*
-       * 原版 `LiveView.vue:39 loadAll(keepSelection = false)` +
-       * `:73 onActivated(() => loadAll(true))`。
-       *
-       * 原版注释（L46-51）：
-       * > 不能无脑「默认选中第一个频道」—— 用户切走又切回时，
-       * > 那样会把他在看的台**重置成第一个**，是很明显的体验倒退。
-       */
+    testWidgets('★ 返回本页保留选中的频道（原版 loadAll(true)）', (tester) async {
+      // Observe selected semantics and the actual stream; known providers cannot
+      // restore a foreign same-ID row. A caller can still request a fresh reset.
       expect(
         RegExp(r'Future<void> loadAll\(\{bool keepSelection = false\}\)')
             .hasMatch(live),
         isTrue,
-        reason: '★ 签名必须保留 `keepSelection` —— shell.dart 靠它调 '
-            '`loadAll(keepSelection: true)`',
       );
-      /*
-       * ★★★ 2026-10-25 契约迁移（逐字串随实现更新，不变量没变）
-       *
-       * ```text
-       * 实现变了：选中**身份**从"只记 id"改成"记 (provider, id)"
-       *   （跨源同 id 时只记 id 会两行同亮、`_providerOf` 取错源）。
-       * 不变量没变：**切走又切回时，用户原来在看的那个台必须还在选中**。
-       * ⇒ 三条逐字断言跟着实现改成新形态，判据强度不减：
-       *   ① id 与 provider **都**在 `keepSelection` 为真时才取（否则等于每次都重置）
-       *   ② 恢复时**先按身份**（同源同 id）找
-       *   ③ 找不到才退回按 id（老状态/频道换了源时不至于丢选中）
-       *   ④ 最后仍是"找回优先于第一个"
-       * ```
-       * ⚠️ 这里只断言**单行片段**（不含换行），避免受 CRLF/LF 影响。
-       */
+      final scene = LiveSelectionScene();
+      await scene.mount(tester);
+      await scene.pick(tester, selectionProvider, selectionB);
+      await tester.runAsync(() async {
+        await scene.key.currentState!.loadAll(keepSelection: true);
+      });
+      await scene.drain(tester);
+      scene.expectSelected(tester, selectionProvider, selectionB);
       expect(
-        live.contains('final prevId = keepSelection ? _selected?.id : null;'),
-        isTrue,
-        reason: '保留选中 = 先记住旧 id（③ 的兜底那一半），再从新列表里找回',
+        scene.streamUrl(tester),
+        selectionUrl(selectionProvider, selectionB),
       );
+
+      await tester.runAsync(() async {
+        await scene.key.currentState!.loadAll();
+      });
+      await scene.drain(tester);
+      scene.expectSelected(tester, selectionProvider, selectionA);
       expect(
-        live.contains('final prevSel = keepSelection ? _selectedSel : null;'),
-        isTrue,
-        reason: '★ 2026-10-25 起选中身份带 provider ⇒ 也要记住 (provider, id)；'
-            '同样必须受 `keepSelection` 门控（否则每次进页面都重置选中）',
+        scene.streamUrl(tester),
+        selectionUrl(selectionProvider, selectionA),
       );
+
+      await scene.pick(tester, selectionOtherProvider, selectionA);
+      final reply = scene.holdGroups();
+      late Future<void> refresh;
+      await tester.runAsync(() async {
+        refresh = scene.key.currentState!.loadAll(keepSelection: true);
+      });
+      await scene.drain(tester);
+      await scene.complete(tester, reply, [selectionGroups().first]);
+      await tester.runAsync(() async => await refresh);
+      await scene.drain(tester);
+      scene.expectSelected(tester, selectionProvider, selectionA);
       expect(
-        live.contains('if (g.provider != prevSel.provider) continue;'),
-        isTrue,
-        reason: '★★ 恢复必须**优先按身份**找：先在"同一个源"里找同 id 的台 '
-            '—— 跨源同 id 时按 id 扫全场会取到另一个源的同名台',
-      );
-      expect(
-        live.contains('c.id == prevSel.id'),
-        isTrue,
-        reason: '★ 身份匹配的另一半：同源 + 同 id',
-      );
-      expect(
-        live.contains('restored ??= prevId != null'),
-        isTrue,
-        reason: '找不到同一源的那个台时**才**退回按 id 找（老状态/换源）',
+        scene.streamUrl(tester),
+        selectionUrl(selectionProvider, selectionA),
       );
       expect(
-        live.contains('final target = restored ??'),
-        isTrue,
-        reason: '★ 找回优先于"第一个" —— 顺序反了就等于没保留',
+        find.byKey(liveChannelTileKey(selectionOtherProvider, selectionA)),
+        findsNothing,
       );
     });
 

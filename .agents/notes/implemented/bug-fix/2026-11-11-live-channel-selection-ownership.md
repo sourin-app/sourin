@@ -70,6 +70,10 @@ channel is consumed once; a newer explicit selection retires it. Hidden return
 does not fetch or open the deferred stream, and later visibility cycles do not
 reopen an already consumed channel.
 
+The [serial membership refresh drain](2026-11-11-live-membership-refresh-drain.md)
+retains notifications received while list loading is active. Each load still
+uses the latest selection and the exact-provider restoration defined here.
+
 ## Alternatives considered
 
 Identity-only guards cannot distinguish A-B-A requests. A page generation alone

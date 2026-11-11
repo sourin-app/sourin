@@ -1587,11 +1587,31 @@ class LivePageState extends State<LivePage> {
   ///    ⇒ Owner 的"第一次打开显示 0 个"不再等插件脚本跑完
   /// ② **失败不再被吞**：`catch` 里写 `_loadError` ⇒ UI 给「重试」
   ///    而不是骗用户去设置里配置
-  /// ③ **重入保护**：`_inFlight` —— 切 tab 会重复调本函数（shell 的
-  ///    `_switchTo`），两次全量拉取会**互相覆盖**（后到的赢），
-  ///    表现是"切来切去列表闪"。现在同一时刻只跑一支。
+  /// ③ 全量加载串行执行；等待中的刷新通知合并为一次后续加载。
+  ///    调用方等待整个刷新周期，源变化不会被当前旧请求吞掉。
   /// ```
-  Future<void> loadAll({bool keepSelection = false}) async {
+  Future<void> loadAll({bool keepSelection = false}) {
+    if (!mounted) return Future<void>.value();
+    // A source-manager reset must survive later tab-activation notifications.
+    _queuedLoadKeepSelection =
+        (_queuedLoadKeepSelection ?? true) && keepSelection;
+    return _loadAllFuture ??= _drainLoads();
+  }
+
+  Future<void> _drainLoads() async {
+    try {
+      while (mounted && _queuedLoadKeepSelection != null) {
+        final keepSelection = _queuedLoadKeepSelection!;
+        _queuedLoadKeepSelection = null;
+        await _loadAllOnce(keepSelection: keepSelection);
+      }
+    } finally {
+      _queuedLoadKeepSelection = null;
+      _loadAllFuture = null;
+    }
+  }
+
+  Future<void> _loadAllOnce({required bool keepSelection}) async {
     /*
      * ★ 主动把焦点拿过来（task-42）
      *
@@ -1605,27 +1625,6 @@ class LivePageState extends State<LivePage> {
         _pageFocus.requestFocus();
       }
     });
-
-    /*
-     * ★★★ ③ 重入保护
-     *
-     * # 为什么必须（不是"防御性编程"，是实测会撞上）
-     * ```text
-     * shell 的 `_switchTo(AppTab.live)` 每次切到本页都调
-     * `loadAll(keepSelection: true)`；而本页是**保活页**（切走不销毁）。
-     * 用户快速切「直播 → 首页 → 直播」时两次请求会**同时在飞**：
-     *   · 两次 `get_live_channels` 都是全量（逐个插件跑 JS）
-     *   · 后到的 `setState` 覆盖先到的 ⇒ 列表闪一下
-     *   · 更要命：两次 `_select()` 会**抢同一个播放器**（取流两次）
-     * ⇒ 加一支在飞标记：还在飞就**不重复拉**（保留选中，直接返回）。
-     * ```
-     * ⚠️ 只挡**全量重拉**；`_probeAll` 有自己的 TTL 缓存，不在这里管。
-     */
-    if (_inFlight) {
-      debugPrint('[LIVE] 已有一次加载在飞 ⇒ 跳过本次（keepSelection=$keepSelection）');
-      return;
-    }
-    _inFlight = true;
 
     /*
      * ★★★ 第 65 轮批次 D：**冷启动时序读数**（Lead 点名要"毫秒数"）
@@ -1752,7 +1751,8 @@ class LivePageState extends State<LivePage> {
           }
         }
         final target = restored ?? _firstVisible(all);
-        final targetProvider = restoredProvider ??
+        final targetProvider =
+            restoredProvider ??
             groups
                 .where((g) => g.channels.any((c) => identical(c, target)))
                 .map((g) => g.provider)
@@ -1808,7 +1808,6 @@ class LivePageState extends State<LivePage> {
         });
       }
     } finally {
-      _inFlight = false;
       if (mounted) setState(() => _loading = false);
     }
   }
@@ -1835,8 +1834,9 @@ class LivePageState extends State<LivePage> {
     return '这次没能取到直播频道。点重试再拉一次。';
   }
 
-  /// 是否有一支加载正在飞（重入保护，见 [loadAll]）
-  bool _inFlight = false;
+  /// Shared completion for serial membership loads and their queued refreshes.
+  Future<void>? _loadAllFuture;
+  bool? _queuedLoadKeepSelection;
 
   /// ★★★ 从磁盘快照预热（冷启动"首帧就有内容"）
   ///

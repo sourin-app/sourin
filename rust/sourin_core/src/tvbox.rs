@@ -1853,6 +1853,131 @@ fn persist_live_rows(
     Ok(())
 }
 
+/// A refresh may detach obsolete parent attribution, but never deletes the
+/// independent playlist owner/provider. delete_missing remains VOD-only here.
+#[derive(Default)]
+struct LiveSubscriptionRefresh {
+    related_ids: Vec<String>,
+    to_register: Vec<serde_json::Value>,
+    added: Vec<serde_json::Value>,
+    removed: Vec<serde_json::Value>,
+    not_applied: Vec<serde_json::Value>,
+    membership_changed: bool,
+}
+
+impl LiveSubscriptionRefresh {
+    fn has_changes(&self) -> bool {
+        self.membership_changed || !self.to_register.is_empty()
+    }
+}
+
+fn prepare_live_subscription_refresh(
+    state: &crate::state::AppState,
+    tvbox_provider_id: &str,
+    lives: &[serde_json::Value],
+    apply_new: bool,
+) -> std::result::Result<LiveSubscriptionRefresh, String> {
+    let catalog = crate::source_catalog::catalog(state)?;
+    let previous = catalog.origins.iter()
+        .find(|origin| origin.kind == "tvbox"
+            && origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
+        .map(|origin| origin.related_provider_ids.clone()).unwrap_or_default();
+    let known_live: HashSet<String> = catalog.origins.iter()
+        .filter(|origin| origin.kind == "live")
+        .flat_map(|origin| origin.provider_ids.iter().cloned()).collect();
+    let mut plan = LiveSubscriptionRefresh::default();
+    let mut remote_ids = HashSet::new();
+    for live in lives {
+        let name = live.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let url = live.get("url").and_then(|v| v.as_str()).unwrap_or("").trim();
+        if url.is_empty() {
+            continue;
+        }
+        let provider = crate::providers::m3u_live::M3uLiveProvider::new(name, url);
+        let manifest = crate::provider::MediaProvider::manifest(&provider);
+        let id = manifest.id.clone();
+        if !remote_ids.insert(id.clone()) {
+            continue;
+        }
+        let row = serde_json::json!({"id":id,"name":manifest.name,"url":url});
+        // New means new to this parent, including an existing shared provider.
+        // apply_new=false never silently expands this parent's source set.
+        if !previous.contains(&id) && !apply_new {
+            plan.not_applied.push(row);
+            continue;
+        }
+        plan.related_ids.push(id.clone());
+        if !previous.contains(&id) {
+            plan.added.push(row.clone());
+        }
+        // An already registered playlist keeps its display implementation,
+        // address owner, caches and user choices when another parent adopts it.
+        if !known_live.contains(&id) {
+            plan.to_register.push(row);
+        }
+    }
+    for id in &previous {
+        if !remote_ids.contains(id) {
+            let name = state.registry.get(id)
+                .map(|provider| provider.manifest().name.clone()).unwrap_or_default();
+            plan.removed.push(serde_json::json!({"id":id,"name":name}));
+        }
+    }
+    plan.membership_changed = previous != plan.related_ids;
+    Ok(plan)
+}
+
+fn apply_live_subscription_refresh(
+    state: &crate::state::AppState,
+    tvbox_provider_id: &str,
+    plan: &LiveSubscriptionRefresh,
+) -> std::result::Result<bool, String> {
+    // Leave unrelated VOD-only updates on their existing path. Do not create
+    // orphan live providers if a restore-failed representative has no owner.
+    if !plan.has_changes() {
+        return Ok(false);
+    }
+    let catalog = crate::source_catalog::catalog(state)?;
+    if !catalog.origins.iter().any(|origin| origin.kind == "tvbox"
+        && origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
+    {
+        return Err("没有找到此 TVBox 源的父订阅，未应用直播变化".into());
+    }
+    if !plan.to_register.is_empty() {
+        // Publish the staged rows only after their real providers-file save.
+        // Holding the write lock avoids rolling back unrelated concurrent edits.
+        let mut list = state.third_party.write()
+            .map_err(|_| "第三方源列表被污染".to_string())?;
+        let mut next = list.clone();
+        for row in &plan.to_register {
+            let id = row["id"].as_str().unwrap_or("");
+            next.retain(|provider| provider.id() != id);
+            next.push(crate::model::PersistedProvider::M3uLive {
+                id: id.to_owned(),
+                name: row["name"].as_str().unwrap_or("").to_owned(),
+                url: row["url"].as_str().unwrap_or("").to_owned(),
+            });
+        }
+        crate::persist::save_persisted(&state.data_dir, &next)?;
+        *list = next;
+    }
+    for row in &plan.to_register {
+        let name = row["name"].as_str().unwrap_or("");
+        let url = row["url"].as_str().unwrap_or("");
+        let provider = crate::providers::m3u_live::M3uLiveProvider::new(name, url)
+            .with_context(state.proxy.clone(), state.data_dir.clone());
+        state.registry.register(Arc::new(provider));
+    }
+    let membership_changed = crate::source_catalog::record_live_membership(
+        state, tvbox_provider_id, &plan.related_ids,
+    )?;
+    crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
+    if membership_changed || !plan.to_register.is_empty() {
+        crate::commands_provider::touch_providers(state);
+    }
+    Ok(membership_changed || !plan.to_register.is_empty())
+}
+
 pub async fn import_tvbox_config(
     state: &crate::state::AppState,
     input: &str,
@@ -3389,7 +3514,8 @@ pub async fn check_tvbox_updates(
             continue;
         }
 
-        let (jobs, skipped, _lives) = collect_sites(&cfg, &actual_url);
+        let (jobs, skipped, lives) = collect_sites(&cfg, &actual_url);
+        let live_refresh = prepare_live_subscription_refresh(state, &ids[0], &lives, true)?;
         let remote: Vec<RemoteSite> = jobs
             .iter()
             .map(|j| RemoteSite {
@@ -3412,6 +3538,9 @@ pub async fn check_tvbox_updates(
             "remoteTotalSites": cfg.get("sites").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
             "remoteConvertible": jobs.len(),
             "remoteUnsupported": skipped.len(),
+            "liveHasChanges": live_refresh.has_changes(),
+            "liveAdded": live_refresh.added,
+            "liveRemoved": live_refresh.removed,
             "added": diff.added,
             "removed": diff.removed,
             "changed": diff.changed,
@@ -3577,7 +3706,8 @@ async fn update_tvbox_source_inner(
         .filter(|site| site.in_link)
         .collect();
 
-    let (jobs, skipped, _lives) = collect_sites(&cfg, &actual_url);
+    let (jobs, skipped, lives) = collect_sites(&cfg, &actual_url);
+    let live_refresh = prepare_live_subscription_refresh(state, id, &lives, apply_new)?;
     let remote: Vec<RemoteSite> = jobs
         .iter()
         .map(|j| RemoteSite {
@@ -3596,11 +3726,19 @@ async fn update_tvbox_source_inner(
     if diff.added.is_empty() && diff.changed.is_empty() && !want_delete {
         // ★ 「远端与本地一致」也是一次成功的核对 ⇒ 盖成功章。
         //   不盖的话这条链接在定时器眼里永远没更新过，每 60s 都会重复下载。
+        let live_changed = apply_live_subscription_refresh(state, id, &live_refresh)?;
         crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
-    stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
+        stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
         return Ok(serde_json::json!({
-            "updated": false,
-            "reason": "远端配置与本地一致，无需更新",
+            "updated": live_changed,
+            "reason": if live_changed { None }
+                else if !live_refresh.not_applied.is_empty() { Some("未添加新的直播来源") }
+                else { Some("远端配置与本地一致，无需更新") },
+            "liveAdded": live_refresh.added,
+            "liveRemoved": live_refresh.removed,
+            "liveNotApplied": live_refresh.not_applied,
+            "liveDeleted": [],
+            "liveMembershipChanged": live_refresh.membership_changed,
             "sourceUrl": url,
             "added": [],
             "changed": [],
@@ -3812,6 +3950,7 @@ async fn update_tvbox_source_inner(
     for (sid, meta) in meta_writes.iter() {
         write_tvbox_meta(&state.data_dir, sid, meta)?;
     }
+    let live_changed = apply_live_subscription_refresh(state, id, &live_refresh)?;
     // ★ 成功路径收尾：同链接下**没变化**的源也要补章（见 stamp_link_update 的注释）
     crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
     stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
@@ -3838,7 +3977,7 @@ async fn update_tvbox_source_inner(
         }
     }
 
-    let updated = !added_out.is_empty() || !changed_out.is_empty() || !deleted_out.is_empty();
+    let updated = live_changed || !added_out.is_empty() || !changed_out.is_empty() || !deleted_out.is_empty();
     log::info!(
         "TVBox 订阅更新（{url}）：新增 {} 变更 {} 删除 {} 失败 {} 远端消失 {} 未加入 {} {}",
         added_out.len(),
@@ -3858,6 +3997,11 @@ async fn update_tvbox_source_inner(
         "deleted": deleted_out,
         "notApplied": not_applied,
         "failed": failed_out,
+        "liveAdded": live_refresh.added,
+        "liveRemoved": live_refresh.removed,
+        "liveNotApplied": live_refresh.not_applied,
+        "liveDeleted": [],
+        "liveMembershipChanged": live_refresh.membership_changed,
         "unchanged": diff.unchanged,
         "unchangedForeign": diff.unchanged_foreign,
         "skippedByType": skipped.len(),

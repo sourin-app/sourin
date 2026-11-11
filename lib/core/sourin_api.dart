@@ -4242,6 +4242,22 @@ class TvboxSiteChange {
   bool get apiChanged => oldApi != newApi;
 }
 
+/// 一条直播订阅归属变化；播放列表地址不是点播站的 api。
+/// 移除归属的响应可以省略 url；旧核心没有直播字段时保留空默认值。
+class TvboxLiveMembershipChange {
+  const TvboxLiveMembershipChange({this.id = '', this.name = '', this.url = ''});
+
+  final String id;
+  final String name;
+  final String url;
+
+  factory TvboxLiveMembershipChange.fromJson(Map<String, dynamic> j) => TvboxLiveMembershipChange(
+    id: j['id'] as String? ?? '',
+    name: j['name'] as String? ?? '',
+    url: j['url'] as String? ?? '',
+  );
+}
+
 /// 一个订阅链接的检测结果
 ///
 /// # ★★ 三种状态，界面必须区分对待（与 [PluginUpdateInfo] 同一条）
@@ -4265,6 +4281,9 @@ class TvboxUpdateItem {
     this.added = const [],
     this.removed = const [],
     this.changed = const [],
+    this.liveHasChanges = false,
+    this.liveAdded = const [],
+    this.liveRemoved = const [],
     this.unchanged = 0,
     this.unchangedForeign = 0,
   });
@@ -4303,6 +4322,16 @@ class TvboxUpdateItem {
 
   final List<TvboxSiteChange> changed;
 
+  /// 此父订阅的直播归属有变化；检测不会注册或删除直播。
+  final bool liveHasChanges;
+  final List<TvboxLiveMembershipChange> liveAdded;
+
+  /// 仅待解除父订阅归属，播放列表及其独立地址配置保留。
+  final List<TvboxLiveMembershipChange> liveRemoved;
+
+  bool get hasLiveChanges =>
+      liveHasChanges || liveAdded.isNotEmpty || liveRemoved.isNotEmpty;
+
   /// 完全没变的条数（只算本订阅的）
   final int unchanged;
 
@@ -4310,7 +4339,8 @@ class TvboxUpdateItem {
   final int unchangedForeign;
 
   /// 有没有值得应用的变化（新增或变更）
-  bool get hasChanges => added.isNotEmpty || changed.isNotEmpty;
+  bool get hasChanges =>
+      added.isNotEmpty || changed.isNotEmpty || hasLiveChanges;
 
   factory TvboxUpdateItem.fromJson(Map<String, dynamic> j) => TvboxUpdateItem(
     sourceUrl: j['sourceUrl'] as String? ?? '',
@@ -4327,6 +4357,9 @@ class TvboxUpdateItem {
     added: jlist(j['added'], TvboxRemoteSite.fromJson),
     removed: jlist(j['removed'], TvboxLocalSite.fromJson),
     changed: jlist(j['changed'], TvboxSiteChange.fromJson),
+    liveHasChanges: j['liveHasChanges'] == true,
+    liveAdded: jlist(j['liveAdded'], TvboxLiveMembershipChange.fromJson),
+    liveRemoved: jlist(j['liveRemoved'], TvboxLiveMembershipChange.fromJson),
     unchanged: (j['unchanged'] as num?)?.toInt() ?? 0,
     unchangedForeign: (j['unchangedForeign'] as num?)?.toInt() ?? 0,
   );
@@ -4379,6 +4412,11 @@ class TvboxSourceUpdate {
     this.deleted = const [],
     this.notApplied = const [],
     this.failed = const [],
+    this.liveAdded = const [],
+    this.liveRemoved = const [],
+    this.liveNotApplied = const [],
+    this.liveDeleted = const [],
+    this.liveMembershipChanged = false,
     this.unchanged = 0,
     this.unchangedForeign = 0,
     this.skippedByType = 0,
@@ -4410,6 +4448,25 @@ class TvboxSourceUpdate {
   /// 探测失败的（{name,api,reason}）
   final List<TvboxRemoteSite> failed;
 
+  final List<TvboxLiveMembershipChange> liveAdded;
+
+  /// 已解除此父订阅归属；不代表播放列表被删除。
+  final List<TvboxLiveMembershipChange> liveRemoved;
+
+  /// applyNew=false 时没有加入此父订阅的直播。
+  final List<TvboxLiveMembershipChange> liveNotApplied;
+
+  /// 核心当前保留播放列表；只解析核心实际报告的删除。
+  final List<TvboxLiveMembershipChange> liveDeleted;
+  final bool liveMembershipChanged;
+
+  bool get hasLiveOutcome =>
+      liveMembershipChanged ||
+      liveAdded.isNotEmpty ||
+      liveRemoved.isNotEmpty ||
+      liveNotApplied.isNotEmpty ||
+      liveDeleted.isNotEmpty;
+
   final int unchanged;
   final int unchangedForeign;
 
@@ -4429,6 +4486,11 @@ class TvboxSourceUpdate {
         deleted: jlist(j['deleted'], TvboxLocalSite.fromJson),
         notApplied: jlist(j['notApplied'], TvboxRemoteSite.fromJson),
         failed: jlist(j['failed'], TvboxRemoteSite.fromJson),
+        liveAdded: jlist(j['liveAdded'], TvboxLiveMembershipChange.fromJson),
+        liveRemoved: jlist(j['liveRemoved'], TvboxLiveMembershipChange.fromJson),
+        liveNotApplied: jlist(j['liveNotApplied'], TvboxLiveMembershipChange.fromJson),
+        liveDeleted: jlist(j['liveDeleted'], TvboxLiveMembershipChange.fromJson),
+        liveMembershipChanged: j['liveMembershipChanged'] == true,
         unchanged: (j['unchanged'] as num?)?.toInt() ?? 0,
         unchangedForeign: (j['unchangedForeign'] as num?)?.toInt() ?? 0,
         skippedByType: (j['skippedByType'] as num?)?.toInt() ?? 0,
@@ -6204,6 +6266,7 @@ class SourceOrigin {
   final List<String> backupUrls;
   final String? lastSuccessfulUrl;
   final List<String> providerIds;
+
   /// TVBox live descendants; these ids keep their own playlist address owner.
   final List<String> relatedProviderIds;
   factory SourceOrigin.fromJson(Map<String, dynamic> j) => SourceOrigin(

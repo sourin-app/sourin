@@ -56,6 +56,18 @@ import 'overlay_motion.dart';
 import '../tokens.dart';
 import '../../design/icons/app_icons.dart';
 
+List<String> _liveCheckParts(TvboxUpdateItem it) => <String>[
+  if (it.liveAdded.isNotEmpty) '直播新增 ${it.liveAdded.length}',
+  if (it.liveRemoved.isNotEmpty) '直播待解除归属 ${it.liveRemoved.length}（播放列表保留）',
+  if (it.hasLiveChanges && it.liveAdded.isEmpty && it.liveRemoved.isEmpty)
+    '直播归属有变化',
+];
+
+String _liveNames(List<TvboxLiveMembershipChange> lives) {
+  final names = lives.take(8).map((s) => s.name.isEmpty ? s.id : s.name);
+  return '${names.join('、')}${lives.length > 8 ? '，另有 ${lives.length - 8} 个' : ''}';
+}
+
 /// 把一条检测结果压成一行中文摘要（面板与弹窗共用）
 ///
 /// ⚠️ **失败绝不返回「已是最新」** —— 那是本功能唯一不能犯的错。
@@ -71,6 +83,7 @@ String tvboxUpdateSummary(TvboxUpdateItem it) {
   if (it.added.isNotEmpty) parts.add('新增 ${it.added.length}');
   if (it.changed.isNotEmpty) parts.add('变更 ${it.changed.length}');
   if (it.removed.isNotEmpty) parts.add('远端已消失 ${it.removed.length}');
+  parts.addAll(_liveCheckParts(it));
   if (parts.isEmpty) {
     return '已是最新（远端 ${it.remoteConvertible} 个可转换站点）';
   }
@@ -216,6 +229,7 @@ TvboxProbeResult tvboxProbeOf(TvboxUpdateItem? it) {
   final parts = <String>[
     if (it.added.isNotEmpty) '新增 ${it.added.length}',
     if (it.changed.isNotEmpty) '变更 ${it.changed.length}',
+    ..._liveCheckParts(it),
   ];
   return TvboxProbeResult(
     state: TvboxProbeState.ok,
@@ -673,8 +687,11 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     if (!it.ok) {
       return _failLine(colors, it.error);
     }
+    final updateDescription = it.hasLiveChanges
+        ? tvboxUpdateSummary(it)
+        : '新增 ${it.added.length} · 变更 ${it.changed.length}';
     final text = it.hasChanges
-        ? '发现更新：新增 ${it.added.length} · 变更 ${it.changed.length}'
+        ? '发现更新：$updateDescription'
         : '已是最新（远端 ${it.remoteConvertible} 个可转换站点）';
     return Text(
       text,
@@ -749,9 +766,14 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
   /// 「更新」区 —— **有变化才出现，且绝不自动应用**
   Widget _applyBox(ColorScheme colors, TvboxUpdateItem it) {
     final gone = it.removed.length;
+    final total =
+        it.added.length +
+        it.changed.length +
+        it.liveAdded.length +
+        it.liveRemoved.length;
     return _box(colors, [
       Text(
-        '远端有 ${it.added.length + it.changed.length} 处变化',
+        total > 0 ? '远端有 $total 处变化' : '远端直播归属有变化',
         style: TextStyle(
           fontSize: FontSizes.sm,
           fontWeight: FontWeight.w600,
@@ -760,18 +782,40 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
       ),
       const SizedBox(height: Sp.x1),
       Text(
-        '新增 ${it.added.length} 个站 · 变更 ${it.changed.length} 个接口'
-        '${gone > 0 ? ' · 远端已消失 $gone 个' : ''}',
+        it.hasLiveChanges
+            ? tvboxUpdateSummary(it)
+            : '新增 ${it.added.length} 个站 · 变更 ${it.changed.length} 个接口'
+                  '${gone > 0 ? ' · 远端已消失 $gone 个' : ''}',
         style: TextStyle(
           fontSize: FontSizes.cap,
           color: colors.onSurfaceVariant,
         ),
       ),
+      if (it.liveAdded.isNotEmpty) ...[
+        const SizedBox(height: Sp.x1),
+        Text(
+          '待加入此订阅的直播：${_liveNames(it.liveAdded)}',
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+      ],
+      if (it.liveRemoved.isNotEmpty) ...[
+        const SizedBox(height: Sp.x1),
+        Text(
+          '待解除此订阅归属的直播：${_liveNames(it.liveRemoved)}。播放列表保留，其他订阅及独立地址配置不受影响。',
+          style: TextStyle(
+            fontSize: FontSizes.cap,
+            color: colors.onSurfaceVariant,
+          ),
+        ),
+      ],
       const SizedBox(height: Sp.x3),
       _toggleRow(
         colors,
         label: '同时加入新增站点',
-        hint: '关掉则只更新已有源的接口，不注册新站',
+        hint: '关掉则只更新已有源的接口，不加入新增点播站或直播；已消失直播只解除此订阅归属',
         value: _applyNew,
         onChanged: (v) => setState(() => _applyNew = v),
       ),
@@ -779,7 +823,9 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
       _toggleRow(
         colors,
         label: '同时删除远端已消失的站',
-        hint: '默认不删 —— 配置作者临时删站又加回来是常事',
+        hint:
+            '默认不删 —— 配置作者临时删站又加回来是常事'
+            '。此开关只删除点播站，直播播放列表保留。',
         value: _deleteMissing,
         onChanged: (v) => setState(() => _deleteMissing = v),
       ),
@@ -914,6 +960,37 @@ Widget _resultBox(ColorScheme colors, List<Widget> children) {
   );
 }
 
+/// 使用同一份直播结果行，避免 updated=false 时漏掉未加入的直播。
+List<Widget> _liveOutcomeRows(ColorScheme colors, TvboxSourceUpdate r) {
+  final lines = <String>[
+    if (r.liveAdded.isNotEmpty)
+      '直播已加入此订阅 ${r.liveAdded.length}：${_liveNames(r.liveAdded)}',
+    if (r.liveRemoved.isNotEmpty)
+      '直播已解除此订阅归属 ${r.liveRemoved.length}：${_liveNames(r.liveRemoved)}。播放列表保留，其他订阅及独立地址配置不受影响。',
+    if (r.liveNotApplied.isNotEmpty)
+      '按你的选择未加入直播 ${r.liveNotApplied.length}：${_liveNames(r.liveNotApplied)}',
+    if (r.liveDeleted.isNotEmpty)
+      '直播已删除 ${r.liveDeleted.length}：${_liveNames(r.liveDeleted)}',
+    if (r.liveMembershipChanged &&
+        r.liveAdded.isEmpty &&
+        r.liveRemoved.isEmpty &&
+        r.liveDeleted.isEmpty)
+      '直播订阅归属已更新，播放列表保留。',
+  ];
+  return <Widget>[
+    for (final line in lines) ...[
+      const SizedBox(height: Sp.x1),
+      Text(
+        line,
+        style: TextStyle(
+          fontSize: FontSizes.cap,
+          color: colors.onSurfaceVariant,
+        ),
+      ),
+    ],
+  ];
+}
+
 /// 订阅「应用更新」的结果面板（**公开**，可被 widget test 直接渲染）
 ///
 /// # 为什么必须是公开 widget（2026-10-25，第 19 项 P2 第二次）
@@ -961,6 +1038,7 @@ class TvboxUpdateResultView extends StatelessWidget {
           r.reason ?? '远端与本地一致，没有改动',
           style: TextStyle(fontSize: FontSizes.sm, color: colors.onSurface),
         ),
+        ..._liveOutcomeRows(colors, r),
         if (r.removed.isNotEmpty) ...[
           const SizedBox(height: Sp.x1),
           Text(
@@ -993,11 +1071,17 @@ class TvboxUpdateResultView extends StatelessWidget {
           color: colors.primary,
         ),
       ),
-      const SizedBox(height: Sp.x1),
-      Text(
-        '新增 ${r.added.length} · 变更 ${r.changed.length} · 删除 ${r.deleted.length}',
-        style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
-      ),
+      if (!r.hasLiveOutcome ||
+          r.added.isNotEmpty ||
+          r.changed.isNotEmpty ||
+          r.deleted.isNotEmpty) ...[
+        const SizedBox(height: Sp.x1),
+        Text(
+          '新增 ${r.added.length} · 变更 ${r.changed.length} · 删除 ${r.deleted.length}',
+          style: TextStyle(fontSize: FontSizes.cap, color: colors.onSurface),
+        ),
+      ],
+      ..._liveOutcomeRows(colors, r),
       // ★ 「重启后需重新导入」—— 与导入面板逐字相同的共用文案
       if (unpersisted.isNotEmpty) ...[
         const SizedBox(height: Sp.x2),
@@ -1411,6 +1495,14 @@ class _TvboxSourceManagePanelState extends State<TvboxSourceManagePanel> {
             onPressed: _updating ? null : _applyUpdate,
             icon: const Icon(AppIcons.download_done, size: 16),
             label: Text(_updating ? '更新中…' : '立即更新'),
+          ),
+          const SizedBox(height: Sp.x1),
+          Text(
+            '立即更新会加入新增点播站和直播；默认不删点播站。已消失直播只解除此订阅归属，播放列表保留。',
+            style: TextStyle(
+              fontSize: FontSizes.cap,
+              color: colors.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: Sp.x2),
         ],

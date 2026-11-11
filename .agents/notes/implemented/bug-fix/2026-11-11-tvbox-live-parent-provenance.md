@@ -64,7 +64,9 @@ The clean core baseline has 32 controls and four parent-relation failures; corre
 production passes 36 cases. The final widget baseline has two relation failures
 and one legacy control; the six-suite corrected related run passes 23 cases.
 The wider run retains six old source-layout guard failures, reproduced on the
-current-product baseline. Actual update_tvbox_source currently ignores lives;
-this import-scoped contract does not establish manual/scheduled refresh.
+current-product baseline. The import-scoped contract does not establish manual/scheduled refresh.
+On 2026-11-11, [actual live refresh](2026-11-11-tvbox-live-actual-refresh.md)
+extends the real representative check/update path; exact zero-VOD routing and
+scheduler enumeration remain separate lifecycle gates.
 Fresh results are recorded in the implementation plan. These background tests
 do not establish native desktop UI, third-party service or decoder acceptance.

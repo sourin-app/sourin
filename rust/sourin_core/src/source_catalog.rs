@@ -28,6 +28,14 @@ mod lifecycle_tests;
 #[path = "source_catalog_live_parent_tests.rs"]
 mod live_parent_tests;
 
+#[cfg(test)]
+#[path = "source_catalog_live_refresh_tests.rs"]
+mod live_refresh_tests;
+
+#[cfg(test)]
+#[path = "source_catalog_live_refresh_persistence_tests.rs"]
+mod live_refresh_persistence_tests;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SourceOrigin {
@@ -553,6 +561,36 @@ pub fn record_import(
     let id = origin.id.clone();
     save(&state.data_dir, &out)?;
     Ok(id)
+}
+
+/// Refresh only the live attribution of a known TVBox VOD representative.
+/// Playlist addresses and successful endpoint state remain with live owners.
+pub fn record_live_membership(
+    state: &AppState,
+    tvbox_provider_id: &str,
+    live_ids: &[String],
+) -> Result<bool, String> {
+    let _guard = WRITE.lock().map_err(|_| "源配置写入锁不可用")?;
+    let mut out = catalog_locked(state)?;
+    let known_live: HashSet<String> = out.origins.iter()
+        .filter(|origin| origin.kind == "live")
+        .flat_map(|origin| origin.provider_ids.iter().cloned()).collect();
+    if live_ids.iter().any(|id| !known_live.contains(id)) {
+        return Err("直播归属包含尚未登记的直播来源".into());
+    }
+    let origin = out.origins.iter_mut()
+        .find(|origin| origin.kind == "tvbox"
+            && origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
+        .ok_or("没有找到此 TVBox 源的父订阅")?;
+    let mut seen = HashSet::new();
+    let ids: Vec<String> = live_ids.iter()
+        .filter(|id| seen.insert((*id).clone())).cloned().collect();
+    let changed = origin.related_provider_ids != ids;
+    if changed {
+        origin.related_provider_ids = ids;
+        save(&state.data_dir, &out)?;
+    }
+    Ok(changed)
 }
 
 pub fn urls_for(dir: &Path, kind: &str, provider_id: Option<&str>, primary: &str) -> Vec<String> {

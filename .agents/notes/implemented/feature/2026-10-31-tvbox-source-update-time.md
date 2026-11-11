@@ -59,3 +59,11 @@ JS 插件源卡片有更新时间（task-7）但 TVBox 原生源卡片没有。
 - 定时更新固定 applyNew=true/deleteMissing=false——绝不静默删站。
 - sidecar 其它写路径（import/set/remove/restore）暂在 UPDATE_LOCK 外，
   与定时循环并发可互覆盖章（低概率自愈），下批收口。
+
+
+### 2026-11-11 actual live update extension
+
+[Actual live refresh](../bug-fix/2026-11-11-tvbox-live-actual-refresh.md) adds
+independent live preview/outcomes to the representative update commands.
+The conservative VOD-only deletion choice and clock semantics above remain.
+Pure-live origin enumeration is not established by that extension.

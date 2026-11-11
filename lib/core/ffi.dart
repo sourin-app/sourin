@@ -857,6 +857,30 @@ class SourinCore {
   /// 回调里发生的异常（在流结束时抛给调用方）
   static final Map<int, Object> _streamErrors = {};
 
+  // Cancel requests belong only to active streams. Keep their terminal
+  // handlers until native acknowledges done/error or the existing timeout fires.
+  static final Set<int> _streamCancelRequested = <int>{};
+
+  static void _requestStreamCancel(int token) {
+    if (!_streamHandlers.containsKey(token) ||
+        !_streamCancelRequested.add(token)) {
+      return;
+    }
+    try {
+      _cancelStreamFn?.call(token);
+    } catch (_) {
+      // A failed transport cancellation can be retried; retain terminal handling.
+      _streamCancelRequested.remove(token);
+      rethrow;
+    }
+  }
+
+  static void _finishStream(int token, Timer timer) {
+    _streamHandlers.remove(token);
+    _streamCancelRequested.remove(token);
+    _cancelFallback(timer);
+  }
+
   /// ★ 执行一个流式命令
   ///
   /// # 与 [callAsync] 的区别
@@ -894,10 +918,11 @@ class SourinCore {
     final completer = Completer<void>();
     // 超时兜底：与 callAsync 同理（自己持有并在所有出口 cancel），
     // 不用 `future.timeout` —— 那样会在调用方提前放弃时留下悬空计时器。
-    final timer = _newFallbackTimer(const Duration(seconds: 180), () {
+    late final Timer timer;
+    timer = _newFallbackTimer(const Duration(seconds: 180), () {
       if (!completer.isCompleted) {
-        _cancelStreamFn!(token);
-        _streamHandlers.remove(token);
+        _requestStreamCancel(token);
+        _finishStream(token, timer);
         completer.completeError(
           SourinCoreException('流式命令 $cmd 超时（180 秒）', 'network'),
         );
@@ -921,14 +946,12 @@ class SourinCore {
       final kind = (ev is Map) ? ev['kind'] : null;
 
       if (kind == 'done') {
-        _streamHandlers.remove(token);
-        _cancelFallback(timer);
+        _finishStream(token, timer);
         completer.complete();
         return;
       }
       if (kind == 'error') {
-        _streamHandlers.remove(token);
-        _cancelFallback(timer);
+        _finishStream(token, timer);
         completer.completeError(
           SourinCoreException(
             (ev is Map ? ev['error'] : null)?.toString() ?? '流式命令失败',
@@ -938,20 +961,23 @@ class SourinCore {
         return;
       }
 
+      // A queued business event may arrive after the cancel request. Keep
+      // the handler for terminal acknowledgement without publishing it.
+      if (_streamCancelRequested.contains(token)) return;
+
       bool keep;
       try {
         keep = onEvent(ev);
       } catch (e) {
         // 业务回调抛异常 → 取消并让 Future 失败
-        _cancelStreamFn!(token);
-        _streamHandlers.remove(token);
-        _cancelFallback(timer);
+        _requestStreamCancel(token);
+        _finishStream(token, timer);
         completer.completeError(e);
         return;
       }
       if (!keep) {
         // ★ 通知 Rust 停止（带外信号）
-        _cancelStreamFn!(token);
+        _requestStreamCancel(token);
         /*
          * ⚠️ 这里**不立刻 complete** —— Rust 侧收到取消后会走收尾流程，
          *    最后仍会发一个 done 事件（这样调用方知道"确实结束了"）。
@@ -976,8 +1002,7 @@ class SourinCore {
         token,
       );
     } catch (e) {
-      _streamHandlers.remove(token);
-      _cancelFallback(timer);
+      _finishStream(token, timer);
       return Future.error(e);
     } finally {
       malloc.free(req);
@@ -988,13 +1013,15 @@ class SourinCore {
 
   /// 主动取消一路流式命令（幂等）
   ///
+  /// 停止业务回填，保留终态处理器。Future 与 onEvent 返回 false 一样，
+  /// 等 native 的 done/error 或原有超时后结算；不提前报告 native 已停止。
+  ///
   /// 一般不用直接调 —— [callStream] 的 `onEvent` 返回 false 时已自动取消。
   /// 但**页面被销毁**（用户直接返回）时，UI 层应该显式调一次，
   /// 否则那路流会继续跑到所有源都结束。
   static void cancelStream(int token) {
     _ensureBound();
-    _cancelStreamFn?.call(token);
-    _streamHandlers.remove(token);
+    _requestStreamCancel(token);
   }
 
   /// 测试注入口：造一条「已在途、原生还没回调」的请求，返回它的 id

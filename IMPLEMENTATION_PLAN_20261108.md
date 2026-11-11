@@ -1171,3 +1171,10 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - PosterCard失败post-frame和retry timer同时校验捕获的cover/revision。原首帧就绪实现、重试间隔与上限保持。真实HTTP503后同State一帧A→B→A复现旧A回调删除新A图片：旧版1个目标失败、3个控制通过，候选四项通过、0跳过；独立实际后审39项通过。
 - 实际候选source及新test限定两次single-file machine分析exit0，共0error/0warning/5info；保留source1条括号建议和test4条import/const建议。没有本次新test同源baseline分析，旧loaded分析不能代替它。两runtime及两分析Job正常零稳定八秒、输入未变，v1编译失败仍保留。
 - 这些loopback组件结果不替代当前客户端封面像素、外部/网盘播放、桌面稳定性性能或Owner验收。新完整包待绑定最终本地提交。完整目标继续active。
+
+
+## 2026-11-12 后台续做：外部弹幕面板的活动会话绑定
+
+- _openBiliSheet三个同步读取改用活动_provider/_contentId，打开面板时绑定、手动标记和保存P跟随真实MediaSession会话。same State/widget保持，A与返回A保留原cid41/P1；旧版两个控制通过、唯一B绑定断言失败，候选三项通过且B为cid52/P3，0跳过。
+- 原local Miuix controller→registry entry→Host的ObjectKey绘制根真实对应；18条附着阶段记录确认下一frame注册项与tabs附着、原card正常动效到Opacity1，12条sources前后记录确认真实来源页签false→true及原入口pointer tap。两臂原handle正常terminal、全部绑定前后不变、Job自然连续八秒零，无force/error；独立实际pair后审101项通过。四次source/test限定分析各自然结束exit0，每arm共0error/17warning/13info，完整带位置diagnostic multiset相同；独立后审58项通过。
+- v1缺host import编译失败，v2错误button type、v3原opener缺失且无附着诊断、v4初始tabs缺失均保留为setup失败，不计业务RED。当前三项本地挂载面板资格不扩展旧caller四例/205分组，也不替代解码、C销毁、桌面/性能、真实外部/云盘、普通退出或Owner验收；新完整包待绑定最终本地提交，完整18项及追加目标继续active。收据见2026-11-12-external-danmaku-adopted-panel-hydration Agent Note。

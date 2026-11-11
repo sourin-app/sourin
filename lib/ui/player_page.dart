@@ -10079,8 +10079,8 @@ class _PlayerPageState extends State<PlayerPage>
 
   /// 打开「外部弹幕弹幕」面板
   void _openBiliSheet() {
-    final b = loadBinding(widget.provider, widget.id);
-    final manual = isManualBinding(widget.provider, widget.id);
+    final b = loadBinding(_provider, _contentId);
+    final manual = isManualBinding(_provider, _contentId);
     /*
      * ★ 用户上次手选的 P —— 直接用 `BiliPrefs.pageKey` 读写
      *
@@ -10090,7 +10090,7 @@ class _PlayerPageState extends State<PlayerPage>
      */
     final page =
         int.tryParse(
-          UiPrefs.get(BiliPrefs.pageKey(widget.provider, widget.id)) ?? '',
+          UiPrefs.get(BiliPrefs.pageKey(_provider, _contentId)) ?? '',
         ) ??
         0;
     setState(() {

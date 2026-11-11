@@ -59,7 +59,10 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/services.dart'
     show KeyDownEvent, KeyEvent, LogicalKeyboardKey;
 import 'package:flutter/rendering.dart'
-    show RenderAbstractViewport, SliverMultiBoxAdaptorParentData, ScrollDirection;
+    show
+        RenderAbstractViewport,
+        SliverMultiBoxAdaptorParentData,
+        ScrollDirection;
 import 'package:material_ui/material_ui.dart';
 
 import 'widgets/miuix_controls.dart' as ui;
@@ -834,6 +837,8 @@ class LivePageState extends State<LivePage> {
   /// ⇒ 结论：三个标记各自回答"**是谁按的暂停**"，这是溯源问题，
   ///    不能压成一个布尔。
   bool _userPaused = false;
+  bool? _pendingUserPaused;
+  bool get _userPauseRequested => _pendingUserPaused ?? _userPaused;
   bool _pausedByHide = false;
   bool _pausedForFullscreen = false;
   int _fullscreenHandoffGeneration = 0;
@@ -842,7 +847,8 @@ class LivePageState extends State<LivePage> {
   bool _ownsFullscreenHandoff(
     int generation,
     LiveEmbeddedPlayerState? embedded,
-  ) => mounted &&
+  ) =>
+      mounted &&
       _fullscreenHandoffInFlight &&
       generation == _fullscreenHandoffGeneration &&
       identical(_embedKey.currentState, embedded);
@@ -1036,6 +1042,9 @@ class LivePageState extends State<LivePage> {
       _pausedByHide = true;
       debugPrint('[LIVE] 本页不可见 ⇒ 暂停内嵌播放器（切回时续播）');
     } else if (_pausedByHide && !_fullscreenHandoffInFlight) {
+      // The pending request owns the decision until native success/failure.
+      // Retain the hide flag so settlement can revisit the accepted intent.
+      if (_pendingUserPaused != null) return;
       _pausedByHide = false;
       /*
        * ★★ 只在"用户没主动暂停"时才续播
@@ -1048,7 +1057,7 @@ class LivePageState extends State<LivePage> {
        * ⚠️ 注意顺序：先清 `_pausedByHide`（那是"我们暂停的"这个事实，
        *    现在恢复可见了它就没意义了），再判 `_userPaused`。
        */
-      if (_userPaused) {
+      if (_userPauseRequested) {
         debugPrint('[LIVE] 恢复可见，但用户此前主动暂停过 ⇒ 不自动续播');
         return;
       }
@@ -2496,7 +2505,7 @@ class LivePageState extends State<LivePage> {
      *   也不要"替他起播" —— 后者违背他的操作，前者只是不新鲜。
      * ```
      */
-    if (restoring && _userPaused) {
+    if (restoring && _userPauseRequested) {
       setState(() {
         _selected = ch;
         _selectedProvider = prov;
@@ -2526,6 +2535,8 @@ class LivePageState extends State<LivePage> {
       return;
     }
 
+    _embedKey.currentState?.retireUserRequestsForSourceChange();
+    _pendingUserPaused = null;
     setState(() {
       _selected = ch;
       _selectedProvider = prov;
@@ -2766,6 +2777,8 @@ class LivePageState extends State<LivePage> {
       '：本页只改选中，起播交给播放页',
     );
 
+    _embedKey.currentState?.retireUserRequestsForSourceChange();
+    _pendingUserPaused = null;
     setState(() {
       _selected = next;
       _selectedProvider = prov;
@@ -2840,7 +2853,9 @@ class LivePageState extends State<LivePage> {
 
   Future<void> _watchLive({LiveRoundtripReceipt? receipt}) async {
     if (!mounted || _fullscreenHandoffInFlight || _selected == null) return;
-    if (widget.onWatchLive == null && widget.onWatchLivePlayback == null) return;
+    if (widget.onWatchLive == null && widget.onWatchLivePlayback == null) {
+      return;
+    }
     // Claim return playback before pause or navigation can yield. Generic
     // visible-again handling must not resume under the pre-fullscreen intent.
     final generation = ++_fullscreenHandoffGeneration;
@@ -2857,7 +2872,7 @@ class LivePageState extends State<LivePage> {
         if (widget.visible?.value ?? true) {
           _pausedByHide = false;
           try {
-            if (_userPaused) {
+            if (_userPauseRequested) {
               await embedded?.pause();
             } else if (restore) {
               await embedded?.resume();
@@ -2888,7 +2903,11 @@ class LivePageState extends State<LivePage> {
 
     final initialPlayback =
         embedded?.playbackSnapshot ??
-        LivePlaybackSnapshot(playing: !_userPaused, muted: true, volume: 100);
+        LivePlaybackSnapshot(
+          playing: !_userPauseRequested,
+          muted: true,
+          volume: 100,
+        );
 
     // ① 跳转前暂停内嵌，同时作废仍在等待原生命令的续播。
     final wasPlaying = embedded?.isPlaying ?? false;
@@ -2937,7 +2956,7 @@ class LivePageState extends State<LivePage> {
      * `_userPaused` 只由**内嵌播放器**上报（onUserPause），
      * 而那个回调被可见性门控挡住
      * ⇒ 用户在**播放页**里按的暂停永远写不进来
-     * ⇒ `if (_userPaused) return;` 恒不成立 ⇒ `await st.resume()` ⇒ 出来还在播。
+     * ⇒ `if (_userPauseRequested) return;` 恒不成立 ⇒ `await st.resume()` ⇒ 出来还在播。
      * ```
      *
      * # 有**两条**自动续播路径都会踩这个坑
@@ -2961,7 +2980,7 @@ class LivePageState extends State<LivePage> {
      * # 位置硬约束
      * ```text
      * 本段必须排在 `final pending = _pendingFullscreenChannel;` **之前**，
-     * 且 `if (_userPaused) return;` 排在 pending 之后（当前已是）。
+     * 且 `if (_userPauseRequested) return;` 排在 pending 之后（当前已是）。
      * 否则"全屏里切台 + 恰好暂停过" ⇒ 回来黑屏。
      * 门禁：test/zz_t66_live_pause_intent_test.dart 第三条。
      * ```
@@ -3032,7 +3051,7 @@ class LivePageState extends State<LivePage> {
       debugPrint('[LIVE] 从全屏返回，但本页已不可见 ⇒ 不续播');
       return;
     }
-    if (_userPaused) {
+    if (_userPauseRequested) {
       _pausedByHide = false;
       debugPrint('[LIVE] 从全屏返回，但用户此前主动暂停过 ⇒ 不续播');
       return;
@@ -3282,7 +3301,7 @@ class LivePageState extends State<LivePage> {
        * （`pause()`/`resume()` 的既有语义不变）。
        */
       visible: widget.visible,
-      playWhenReady: !_userPaused,
+      playWhenReady: !_userPauseRequested,
       stream: _stream,
       title: _selected?.name ?? '未选择频道',
       subtitle: _selected == null
@@ -3353,29 +3372,21 @@ class LivePageState extends State<LivePage> {
        *   这样可见性变化时**不会**把它自动播起来（尊重用户意图）。
        *   lead 明确要求这个行为（"记住用户的暂停意图"）。
        */
+      onUserPauseRequestChanged: (bool? paused, {required bool settled}) {
+        if (!mounted) return;
+        _pendingUserPaused = paused;
+        if (settled &&
+            paused == null &&
+            _pausedByHide &&
+            (widget.visible?.value ?? true)) {
+          _onVisibilityChanged();
+        }
+      },
       onUserPause: (paused) {
-        /*
-         * ★★★ 2026-10-08（Owner 第 3 条）：**可见性门控**
-         *
-         * # 为什么必须有这一层
-         * ```text
-         * 播放器侧的 `onUserPause` 只看它自己的 `p.state.playing`
-         * （Dart 侧标志，**不等于真实出声**），而且会在
-         * 「我们因不可见而 pause」时被**误触发** ——
-         * 于是 `_userPaused` 被置真，而它**没有任何复位路径**
-         * （除了换台）。
-         * ⇒ 切回本页时 `_onVisibilityChanged` 的 `if (_userPaused) return`
-         *   会把自动续播**永久拦住** = 用户报的「然后再没声音」。
-         * ```
-         *
-         * ⚠️ 判据与播放器侧 `live_embedded_player.dart` 的 `_visibleNow`
-         *    **同一套**：`widget.visible?.value ?? true`
-         *    （信号缺失时视为可见 —— 与那边一致，不能一边 true 一边 false）。
-         * ⚠️ 门控**只挡写入**，不挡「用户恢复播放」：页面可见时
-         *    paused == false 照旧能清掉标记。
-         */
-        if (!(widget.visible?.value ?? true)) {
-          debugPrint('[LIVE] 本页不可见 ⇒ 忽略播放器上报的用户暂停($paused)');
+        // A request accepted while visible may finish after the page hides.
+        // Automatic pause/resume never use this success callback.
+        if (!mounted ||
+            (_pendingUserPaused == null && !(widget.visible?.value ?? true))) {
           return;
         }
         if (_userPaused == paused) return;
@@ -4319,7 +4330,8 @@ class LiveChannelListState extends State<LiveChannelList> {
     _selectionIdentity = selected;
     if (!_shownIndexes.containsKey(selected)) selected = null;
     final targetChanged = selected != _revealTarget;
-    final shouldReveal = newSelection ||
+    final shouldReveal =
+        newSelection ||
         targetChanged ||
         !_hasShownSnapshot ||
         (changed && _revealPending);
@@ -4358,7 +4370,8 @@ class LiveChannelListState extends State<LiveChannelList> {
     final box = row.context.findRenderObject();
     if (box is! RenderBox || !box.attached || !box.hasSize) return null;
     RenderObject? child = box;
-    while (child != null && child.parentData is! SliverMultiBoxAdaptorParentData) {
+    while (child != null &&
+        child.parentData is! SliverMultiBoxAdaptorParentData) {
       child = child.parent;
     }
     final data = child?.parentData;
@@ -4413,10 +4426,11 @@ class LiveChannelListState extends State<LiveChannelList> {
             final viewport = RenderAbstractViewport.of(target.box);
             final end = viewport.getOffsetToReveal(target.box, 1).offset;
             if (!end.isFinite) return;
-            final offset = (end <= target.offset
-                    ? position.pixels.clamp(end, target.offset)
-                    : target.offset)
-                .clamp(position.minScrollExtent, position.maxScrollExtent);
+            final offset =
+                (end <= target.offset
+                        ? position.pixels.clamp(end, target.offset)
+                        : target.offset)
+                    .clamp(position.minScrollExtent, position.maxScrollExtent);
             if ((offset - position.pixels).abs() > .5) {
               if (!mounted) return;
               final duration = MotionPrefs.duration(context, Motion.medium);
@@ -5007,9 +5021,8 @@ class LiveChannelListState extends State<LiveChannelList> {
                 clipBehavior: Clip.antiAlias,
                 padding: const EdgeInsets.all(Sp.x3),
                 itemCount: shown.isEmpty ? 1 : shown.length,
-                findChildIndexCallback: (key) => key is ValueKey<String>
-                    ? _shownIndexes[key.value]
-                    : null,
+                findChildIndexCallback: (key) =>
+                    key is ValueKey<String> ? _shownIndexes[key.value] : null,
                 itemBuilder: (context, index) {
                   if (shown.isNotEmpty) {
                     final entry = shown[index];
@@ -5031,7 +5044,10 @@ class LiveChannelListState extends State<LiveChannelList> {
                        *   "还没跟上新字段"的调用点，不改它们的行为。
                        */
                       active: widget.selectedRow != null
-                          ? liveChannelRowKey(entry.provider, entry.channel.id) ==
+                          ? liveChannelRowKey(
+                                  entry.provider,
+                                  entry.channel.id,
+                                ) ==
                                 widget.selectedRow
                           : entry.channel.id == widget.selectedId,
                       // ★ N15：播放结果状态（null 回调 ⇒ unknown ⇒ 不显示徽标）

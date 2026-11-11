@@ -7,6 +7,11 @@ Fullscreen return and late native resumes follow the
 
 本篇与既有直播笔记的关系：接在 [Shell 直播播放快照交接](2026-10-23-live-shell-playback-handoff.md) 之后——那篇解决"路由返回时拿不到播放状态"，本篇解决"拿到状态后如何在内嵌播放器里保住用户意图，并让往返/释放各自可观测"。两篇为**部分重叠**：本篇新增静音意图分离与三条回执，未推翻快照交接的决定，故两篇都保留、不归档。
 
+Pending user requests follow the separate
+[user-intent request contract](2026-11-11-live-pending-user-intent.md).
+The success callback still follows native completion; it does not report a
+pending request as a successful native pause.
+
 ## Problem
 
 直播内嵌播放器（`lib/ui/widgets/live_embedded_player.dart`）有三个互相牵连的问题：

@@ -145,9 +145,9 @@ String? toggleMuteBody(String src) {
   return null;
 }
 
-/// 取消静音分支（`if (_muted) {` 与 `} else {` 之间）
+/// 取消静音分支（`if (wasMuted) {` 与 `} else {` 之间）
 String unmuteBranch(String body) {
-  final a = body.indexOf('if (_muted)');
+  final a = body.indexOf('if (wasMuted)');
   final b = body.indexOf('} else {', a < 0 ? 0 : a);
   if (a < 0 || b < 0) return '';
   return body.substring(a, b);
@@ -172,7 +172,9 @@ List<String> violationsIn(String body) {
   final iPref = un.indexOf('dsh.playprefs.lastVolume');
   final iSet = un.indexOf('setVolume(');
   final iFlip = un.indexOf('setState(() => _muted = false)');
-  final iClear = un.indexOf('_volumeBeforeMute = restore.clamp(1, 100).toDouble()');
+  final iClear = un.indexOf(
+    '_volumeBeforeMute = restore.clamp(1, 100).toDouble()',
+  );
 
   // ① 三级瀑布：快照 → 偏好
   if (iSnapshot < 0) v.add('V1-取消静音没用静音前快照');
@@ -204,7 +206,7 @@ List<String> violationsIn(String body) {
 }
 
 const String _goodFixture = '''
-    if (_muted) {
+    if (wasMuted) {
     var restore = _volumeBeforeMute ?? 0;
     if (restore <= 0) {
       final v = double.tryParse(UiPrefs.get('dsh.playprefs.lastVolume') ?? '');
@@ -225,11 +227,24 @@ const String _goodFixture = '''
 void main() {
   testWidgets('隐藏中静音后显示取消静音恢复最新用户音量', (tester) async {
     final visible = ValueNotifier<bool>(true);
-    await tester.pumpWidget(MaterialApp(home: Scaffold(body: SizedBox(
-      width: 532, height: 356,
-      child: LiveEmbeddedPlayer(stream: null, title: 'mute regression', visible: visible),
-    ))));
-    final state = tester.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 532,
+            height: 356,
+            child: LiveEmbeddedPlayer(
+              stream: null,
+              title: 'mute regression',
+              visible: visible,
+            ),
+          ),
+        ),
+      ),
+    );
+    final state = tester.state<LiveEmbeddedPlayerState>(
+      find.byType(LiveEmbeddedPlayer),
+    );
     await state.setVolume(37);
     visible.value = false;
     await state.pause();
@@ -253,47 +268,71 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     visible.dispose();
   });
-  final src =
-      File('lib/ui/widgets/live_embedded_player.dart').readAsStringSync();
+  final src = File('lib/ui/widgets/live_embedded_player.dart')
+      .readAsStringSync();
   final body = toggleMuteBody(src);
 
   group('⓪ 仪器自检（判据必须能测出反面）', () {
     test('GOOD 样本必须零违规', () {
-      expect(violationsIn(_goodFixture), isEmpty,
-          reason: '★ 自检：合规样本都不干净 ⇒ 规则写错了（过严）');
+      expect(
+        violationsIn(_goodFixture),
+        isEmpty,
+        reason: '★ 自检：合规样本都不干净 ⇒ 规则写错了（过严）',
+      );
     });
 
     test('六条 BAD 样本必须逐条被点名', () {
       final cases = <String, String>{
         'V1-取消静音没用静音前快照': _goodFixture
-            .replaceFirst('var restore = _volumeBeforeMute ?? 0;', 'var restore = 0.0;')
-            .replaceFirst('_volumeBeforeMute = restore.clamp(1, 100).toDouble();', ''),
+            .replaceFirst(
+              'var restore = _volumeBeforeMute ?? 0;',
+              'var restore = 0.0;',
+            )
+            .replaceFirst(
+              '_volumeBeforeMute = restore.clamp(1, 100).toDouble();',
+              '',
+            ),
         'V2-取消静音没读偏好音量': _goodFixture.replaceFirst(
-            "UiPrefs.get('dsh.playprefs.lastVolume')", "UiPrefs.get('x')"),
+          "UiPrefs.get('dsh.playprefs.lastVolume')",
+          "UiPrefs.get('x')",
+        ),
         'V4-取消静音写死了常量音量': _goodFixture.replaceFirst(
-            'setVolume(restore.clamp(1, 100))', 'setVolume(100)'),
+          'setVolume(restore.clamp(1, 100))',
+          'setVolume(100)',
+        ),
         'V5-先翻状态后下发（失败时会显示成功）': _goodFixture
             .replaceFirst('await p.setVolume(restore.clamp(1, 100));', '')
-            .replaceFirst('if (mounted) setState(() => _muted = false);',
-                'if (mounted) setState(() => _muted = false);\n    await p.setVolume(restore);'),
+            .replaceFirst(
+              'if (mounted) setState(() => _muted = false);',
+              'if (mounted) setState(() => _muted = false);\n    await p.setVolume(restore);',
+            ),
         'V6-静音分支没先抓快照就压 0': _goodFixture.replaceFirst(
-            'final cur = desiredVolume;\n    if (cur > 0) _volumeBeforeMute = cur;',
-            ''),
-        'V7-最新恢复音量没在下发前缓存':
-            _goodFixture.replaceFirst('_volumeBeforeMute = restore.clamp(1, 100).toDouble();', ''),
+          'final cur = desiredVolume;\n    if (cur > 0) _volumeBeforeMute = cur;',
+          '',
+        ),
+        'V7-最新恢复音量没在下发前缓存': _goodFixture.replaceFirst(
+          '_volumeBeforeMute = restore.clamp(1, 100).toDouble();',
+          '',
+        ),
       };
       cases.forEach((code, fixture) {
-        expect(violationsIn(fixture), contains(code),
-            reason: '★ 自检：$code 这条规则没能点名对应的坏样本 ⇒ 该规则恒绿');
+        expect(
+          violationsIn(fixture),
+          contains(code),
+          reason: '★ 自检：$code 这条规则没能点名对应的坏样本 ⇒ 该规则恒绿',
+        );
       });
     });
 
     test('提取器必须真的抠到函数体（防空转）', () {
-      expect(body, isNotNull,
-          reason: '★ 防空转：`Future<void> toggleMute()` 没找到 —— '
-              '要么签名变了、要么提取器坏了。');
-      expect(body!.length, greaterThan(300),
-          reason: '★ 防空转：函数体太短，不像真实现');
+      expect(
+        body,
+        isNotNull,
+        reason:
+            '★ 防空转：`Future<void> toggleMute()` 没找到 —— '
+            '要么签名变了、要么提取器坏了。',
+      );
+      expect(body!.length, greaterThan(300), reason: '★ 防空转：函数体太短，不像真实现');
       expect(body, contains('_volumeBeforeMute'));
       expect(body, contains('setVolume('));
     });
@@ -305,18 +344,20 @@ void main() {
       final iSnap = un.indexOf('_volumeBeforeMute');
       final iPref = un.indexOf('dsh.playprefs.lastVolume');
       final iFallback = un.indexOf('restore = 100');
-      expect(iSnap, greaterThanOrEqualTo(0),
-          reason: '★ 取消静音必须优先用**静音前快照**');
-      expect(iPref, greaterThan(iSnap),
-          reason: '★ 偏好只能是快照缺失时的第二级（顺序反了就永远用偏好）');
+      expect(iSnap, greaterThanOrEqualTo(0), reason: '★ 取消静音必须优先用**静音前快照**');
+      expect(iPref, greaterThan(iSnap), reason: '★ 偏好只能是快照缺失时的第二级（顺序反了就永远用偏好）');
       expect(iFallback, greaterThan(iPref), reason: '★ 出厂 100 只能是最后兜底');
     });
 
     test('★ 取消静音**不得**下发写死的常量音量（Owner 的 bug 就是回到 100）', () {
       final un = unmuteBranch(body!);
-      expect(RegExp(r'setVolume\(\s*(?:100|0)\s*\)').hasMatch(un), isFalse,
-          reason: '★★ 取消静音把音量写死成 100/0 ⇒ 拖过音量条再静音、'
-              '再点一次就被打回 100。');
+      expect(
+        RegExp(r'setVolume\(\s*(?:100|0)\s*\)').hasMatch(un),
+        isFalse,
+        reason:
+            '★★ 取消静音把音量写死成 100/0 ⇒ 拖过音量条再静音、'
+            '再点一次就被打回 100。',
+      );
       expect(un, contains('setVolume('), reason: '★ 取消静音必须真的下发音量');
     });
 
@@ -325,9 +366,13 @@ void main() {
       final iSet = un.indexOf('setVolume(');
       final iFlip = un.indexOf('setState(() => _muted = false)');
       expect(iSet, greaterThanOrEqualTo(0));
-      expect(iFlip, greaterThan(iSet),
-          reason: '★★ 顺序反了：先翻状态再下发 ⇒ setVolume 抛异常时'
-              '图标说「有声」而实际静音');
+      expect(
+        iFlip,
+        greaterThan(iSet),
+        reason:
+            '★★ 顺序反了：先翻状态再下发 ⇒ setVolume 抛异常时'
+            '图标说「有声」而实际静音',
+      );
     });
 
     test('★ 静音分支先抓快照、再压 0', () {
@@ -335,18 +380,21 @@ void main() {
       final iCur = mu.indexOf('desiredVolume');
       final iZero = mu.indexOf('setVolume(0)');
       expect(iCur, greaterThanOrEqualTo(0), reason: '★ 压 0 之前必须先读当前音量');
-      expect(iZero, greaterThan(iCur),
-          reason: '★★ 顺序反了：先压 0 再读 ⇒ 快照永远是 0，取消静音必然回落兜底值');
+      expect(
+        iZero,
+        greaterThan(iCur),
+        reason: '★★ 顺序反了：先压 0 再读 ⇒ 快照永远是 0，取消静音必然回落兜底值',
+      );
     });
 
     test('★ 最新恢复值在下发之前写入持久意图缓存', () {
       final un = unmuteBranch(body!);
-      final iClear = un.indexOf('_volumeBeforeMute = restore.clamp(1, 100).toDouble()');
+      final iClear = un.indexOf(
+        '_volumeBeforeMute = restore.clamp(1, 100).toDouble()',
+      );
       final iSet = un.indexOf('setVolume(');
-      expect(iClear, greaterThanOrEqualTo(0),
-          reason: '★ 用了快照却不清理 ⇒ 下次静音会拿过期值');
-      expect(iClear, lessThan(iSet),
-          reason: '★ 清理应在下发之前（下发抛异常也不会留下脏快照）');
+      expect(iClear, greaterThanOrEqualTo(0), reason: '★ 用了快照却不清理 ⇒ 下次静音会拿过期值');
+      expect(iClear, lessThan(iSet), reason: '★ 清理应在下发之前（下发抛异常也不会留下脏快照）');
     });
 
     test('★ 真实现的 violations 必须为空（汇总判据）', () {
@@ -358,18 +406,21 @@ void main() {
   group('② 覆盖边界（谁负责真音量属性）', () {
     test('★ 默认静音那一半的覆盖者必须仍然存在，且仍写明 setVolume 不可判定', () {
       final f = File('test/zz_t66_r5_live_mute_default_test.dart');
-      expect(f.existsSync(), isTrue,
-          reason: '★ 覆盖边界失效：默认静音的覆盖文件不见了');
+      expect(f.existsSync(), isTrue, reason: '★ 覆盖边界失效：默认静音的覆盖文件不见了');
       final t = f.readAsStringSync();
       expect(t, contains('默认静音'));
-      expect(t, contains('setVolume'),
-          reason: '★ 该文件应继续记录「setVolume 在 tester 里不完成」的依据');
+      expect(
+        t,
+        contains('setVolume'),
+        reason: '★ 该文件应继续记录「setVolume 在 tester 里不完成」的依据',
+      );
       expect(
         File('lib/ui/widgets/live_embedded_player.dart')
             .readAsStringSync()
             .contains('clamp(1, 100)'),
         isTrue,
-        reason: '★ 下发前必须 clamp(1, 100)：别把 0 下发出去'
+        reason:
+            '★ 下发前必须 clamp(1, 100)：别把 0 下发出去'
             '（那就等于「静音却显示有声」）',
       );
     });

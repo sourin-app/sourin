@@ -94,3 +94,10 @@ adds reciprocal links. Player seek generation, live quality menus, visible-row
 reveal and selected cloud-file identity retain distinct scopes. No prior
 Decision is reversed or absorbed; no new test skip or playback fixture media
 request is introduced.
+
+
+The subsequent [pending user request contract](2026-11-11-live-pending-user-intent.md)
+qualifies the opposite pause/mute completion schedules using the installed shared
+native command lock. It adds pending intent ownership rather than another queue.
+Its twenty cases do not establish native Windows audio/decoder acceptance for all
+possible interleavings, so that boundary remains separate.

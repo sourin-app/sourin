@@ -8,7 +8,7 @@ void main() {
     expect(source, contains('bool preservePlaybackIntent = false'));
     expect(source, contains('if (!preservePlaybackIntent) _userPaused = false;'));
     expect(source, contains('_select(pending, preservePlaybackIntent: true)'));
-    expect(source, contains('playWhenReady: !_userPaused'));
+    expect(source, contains('playWhenReady: !_userPauseRequested'));
   });
 
   test('both embedded open paths respect playback intent before starting', () {

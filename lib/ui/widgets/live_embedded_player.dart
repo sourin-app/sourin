@@ -348,6 +348,7 @@ class LiveEmbeddedPlayer extends StatefulWidget {
     this.onToggleFullscreen,
     this.onError,
     this.onUserPause,
+    this.onUserPauseRequestChanged,
     this.isTouchOnly = false,
     this.visible,
     this.qualityOptions = const <LiveQualityOption>[],
@@ -407,6 +408,13 @@ class LiveEmbeddedPlayer extends StatefulWidget {
   /// ```
   final void Function(bool paused)? onUserPause;
 
+  /// Pending user request, distinct from a successfully completed command.
+  /// A settled null releases visibility after native success or failure.
+  /// A retired null clears ownership without resuming the old source intent.
+  /// Automatic visibility commands do not publish through either callback.
+  final void Function(bool? paused, {required bool settled})?
+  onUserPauseRequestChanged;
+
   /// ★★ task-74 ⑤ 回归修复：本页是否可见（null = 没有信号 ⇒ 视为可见）。
   ///
   /// # 为什么必须传进来
@@ -463,7 +471,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// Capture before unmount; completion does not imply audible silence.
   LiveEmbeddedDisposalReceipt get disposalReceiptForProbe => _disposalReceipt;
 
-  /// Shared with the bottom bar; preserves native command then user intent.
+  /// Shared with the bottom bar; requests immediately and reports success later.
   /// ★ 共享动作入口（第 16 项缺口①）：**直接转调**既有实现，不复制一份
   @override
   Future<void> togglePlayPause() => toggleUserPlaybackForProbe();
@@ -471,12 +479,100 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   Future<void> toggleUserPlaybackForProbe() async {
     final p = _player;
     if (p == null || _disposed) return;
-    await runLiveUserPlaybackToggle(
-      playing: p.state.playing,
-      pause: p.pause,
-      play: p.play,
-      onUserPause: widget.onUserPause,
-    );
+    final transport = _transportGeneration;
+    final epoch = _userPlaybackRequestEpoch;
+    final request = ++_userPlaybackRequestGeneration;
+    if (_pendingUserPaused == null) {
+      // A new request adopts the current accepted automatic/returned intent.
+      // Overlapping requests instead retain earlier native success below.
+      _completedUserPaused = !_resumeRequested && !p.state.playing;
+    }
+    final paused = _pendingUserPaused == null
+        ? p.state.playing
+        : !_pendingUserPaused!;
+    _pendingUserPaused = paused;
+    // Claim the user request before an older automatic resume can continue.
+    _playbackCommandGeneration++;
+    _resumeRequested = !paused;
+    widget.onUserPauseRequestChanged?.call(paused, settled: false);
+    try {
+      await runLiveUserPlaybackToggle(
+        playing: paused,
+        pause: p.pause,
+        play: p.play,
+        onUserPause: (completedPaused) {
+          if (epoch == _userPlaybackRequestEpoch &&
+              _ownsUserRequestSource(p, transport)) {
+            _completedUserPaused = completedPaused;
+            widget.onUserPause?.call(completedPaused);
+          }
+        },
+      );
+    } catch (_) {
+      if (epoch == _userPlaybackRequestEpoch &&
+          request == _userPlaybackRequestGeneration &&
+          _ownsUserRequestSource(p, transport)) {
+        // A superseded automatic resume may already have queued a native pause.
+        // Restore the last completed intent after that failed user command,
+        // including when LivePage has consumed its visibility restore flag.
+        final completedPaused = _completedUserPaused ?? !p.state.playing;
+        _playbackCommandGeneration++;
+        _resumeRequested = !completedPaused;
+        try {
+          if (completedPaused || !_visibleNow) {
+            await pause();
+          } else {
+            await resume();
+          }
+        } catch (_) {
+          // A restoration failure cannot replace the original native error.
+        }
+      }
+      rethrow;
+    } finally {
+      // Earlier success still records its completed native result. Only the
+      // latest request may release the pending owner, including after failure.
+      if (epoch == _userPlaybackRequestEpoch &&
+          request == _userPlaybackRequestGeneration &&
+          _ownsUserRequestSource(p, transport)) {
+        _pendingUserPaused = null;
+        widget.onUserPauseRequestChanged?.call(null, settled: true);
+      }
+    }
+  }
+
+  int _userPlaybackRequestGeneration = 0;
+  int _userPlaybackRequestEpoch = 0;
+  bool? _pendingUserPaused;
+  bool? _completedUserPaused;
+
+  bool _ownsUserRequestSource(Player? player, int transport) =>
+      mounted &&
+      !_disposed &&
+      transport == _transportGeneration &&
+      identical(_player, player);
+
+  void _retireUserRequests({bool playback = true}) {
+    _muteRequestEpoch++;
+    _muteRequestGeneration++;
+    _pendingMuted = null;
+    if (!playback) return;
+    _userPlaybackRequestEpoch++;
+    _userPlaybackRequestGeneration++;
+    _completedUserPaused = null;
+    final hadPlaybackRequest = _pendingUserPaused != null;
+    _pendingUserPaused = null;
+    if (hadPlaybackRequest) {
+      widget.onUserPauseRequestChanged?.call(null, settled: false);
+    }
+  }
+
+  /// Retire old user requests before the parent builds a replacement channel.
+  /// The next stream's playWhenReady is decided from its own accepted intent.
+  void retireUserRequestsForSourceChange() {
+    _retireUserRequests();
+    _playbackCommandGeneration++;
+    _resumeRequested = false;
   }
 
   /*
@@ -1076,6 +1172,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     if (_disposed) {
       return;
     }
+    _retireUserRequests();
     final transportGeneration = ++_transportGeneration;
     final p = _player;
     final st = widget.stream;
@@ -1189,7 +1286,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
         await _applyLiveFastStart(p);
       }
       await prepareNativeMediaTransport(p.platform);
-      if (!mounted || _disposed ||
+      if (!mounted ||
+          _disposed ||
           transportGeneration != _transportGeneration ||
           !identical(_player, p)) {
         return;
@@ -1200,7 +1298,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
         return;
       }
       await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
-      if (!mounted || _disposed ||
+      if (!mounted ||
+          _disposed ||
           transportGeneration != _transportGeneration ||
           !identical(_player, p)) {
         return;
@@ -1208,7 +1307,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       if (widget.playWhenReady && _visibleNow) {
         await p.play();
       }
-      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+      if (!mounted ||
+          _disposed ||
+          transportGeneration != _transportGeneration) {
         return;
       }
       // ★ 计时：首次起播的 open+play 耗时。
@@ -1279,7 +1380,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       }
     } catch (e) {
       debugPrint('[LIVE-EMBED] 起播失败: $e');
-      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+      if (!mounted ||
+          _disposed ||
+          transportGeneration != _transportGeneration) {
         return;
       }
       _error = '起播失败：$e';
@@ -1293,6 +1396,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   /// 返回是否成功。失败时把错误写进 `_error` 并回调外层。
   Future<void> open(StreamCandidate st) async {
     if (_disposed) return;
+    _retireUserRequests();
     final transportGeneration = ++_transportGeneration;
     final p = _player;
     if (p == null) {
@@ -1331,7 +1435,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       // ★ headers 是 `Media` 的构造参数（见 `_openCurrent` 的说明）
       await _applyLiveFastStart(p); // ★ 换台路径同样要设（见 _applyLiveFastStart）
       await prepareNativeMediaTransport(p.platform);
-      if (!mounted || _disposed ||
+      if (!mounted ||
+          _disposed ||
           transportGeneration != _transportGeneration ||
           !identical(_player, p)) {
         return;
@@ -1343,7 +1448,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       }
       final tSwitch = DateTime.now();
       await p.open(Media(st.url, httpHeaders: st.httpHeaders), play: false);
-      if (!mounted || _disposed ||
+      if (!mounted ||
+          _disposed ||
           transportGeneration != _transportGeneration ||
           !identical(_player, p)) {
         return;
@@ -1351,7 +1457,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       if (widget.playWhenReady && _visibleNow) {
         await p.play();
       }
-      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+      if (!mounted ||
+          _disposed ||
+          transportGeneration != _transportGeneration) {
         return;
       }
       /*
@@ -1402,7 +1510,9 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
       }
     } catch (e) {
       debugPrint('[LIVE-EMBED] 换台失败: $e');
-      if (!mounted || _disposed || transportGeneration != _transportGeneration) {
+      if (!mounted ||
+          _disposed ||
+          transportGeneration != _transportGeneration) {
         return;
       }
       _error = '换台失败：$e';
@@ -2056,7 +2166,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     final generation = ++_playbackCommandGeneration;
     _resumeRequested = false;
     final p = _player;
-    if (p != null && !_visibleNow && !_muted) {
+    if (p != null && !_visibleNow && !_requestedMuted) {
       final cur = p.state.volume;
       if (cur > 0) _volumeBeforeHide = cur;
       await p.setVolume(0);
@@ -2083,13 +2193,22 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
        */
     // ★ 静音态 ⇒ 不还原（见 pause() 的注释：用户的静音意图优先）
     final v = _volumeBeforeHide;
-    if (!_muted && v != null && v > 0) {
+    if (!_requestedMuted && v != null && v > 0) {
       _volumeBeforeHide = null;
       await p.setVolume(v);
     }
     if (!_ownsPlaybackCommand(generation, p) || !_visibleNow) {
       await _settleCancelledResume(p);
       return;
+    }
+    // A pending unmute may fail while its visibility restoration is waiting.
+    // Recheck the completed/pending mute intent after that volume await.
+    if (_requestedMuted) {
+      await p.setVolume(0);
+      if (!_ownsPlaybackCommand(generation, p) || !_visibleNow) {
+        await _settleCancelledResume(p);
+        return;
+      }
     }
     await p.play();
     if (!_ownsPlaybackCommand(generation, p) || !_visibleNow) {
@@ -2147,8 +2266,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   double get volume => _player?.state.volume ?? 100;
 
   LivePlaybackSnapshot get playbackSnapshot => LivePlaybackSnapshot(
-    playing: isPlaying,
-    muted: muted,
+    playing: _pendingUserPaused == null ? isPlaying : !_pendingUserPaused!,
+    muted: _requestedMuted,
     volume: desiredVolume,
   );
 
@@ -2162,19 +2281,21 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
         ? ++_playbackCommandGeneration
         : _playbackCommandGeneration;
     if (restorePlaying) _resumeRequested = snapshot.playing;
+    _retireUserRequests(playback: restorePlaying);
+    if (restorePlaying) _completedUserPaused = !snapshot.playing;
     final p = _player;
     _volumeBeforeMute = snapshot.volume;
     _volumeBeforeHide = _visibleNow ? null : snapshot.volume;
     if (mounted) setState(() => _muted = snapshot.muted);
-    await p?.setVolume(
-      snapshot.muted || !_visibleNow ? 0 : snapshot.volume,
-    );
+    await p?.setVolume(snapshot.muted || !_visibleNow ? 0 : snapshot.volume);
     if (p != null && _ownsNativePlayer(p) && !_visibleNow) {
       // Hiding can overtake an already-sent positive volume restoration.
       _volumeBeforeHide = snapshot.volume;
       await p.setVolume(0);
     }
-    if (!restorePlaying || p == null || !_ownsPlaybackCommand(generation, p)) return;
+    if (!restorePlaying || p == null || !_ownsPlaybackCommand(generation, p)) {
+      return;
+    }
     if (snapshot.playing && _visibleNow) {
       await resume();
     } else {
@@ -2200,6 +2321,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   Future<void> setVolume(double v) async {
     if (_disposed || !v.isFinite) return;
     final next = v.clamp(0, 100).toDouble();
+    _retireUserRequests(playback: false);
     if (next > 0) _volumeBeforeMute = next;
     if (!_visibleNow) _volumeBeforeHide = next;
     if (mounted) setState(() => _muted = next == 0);
@@ -2243,45 +2365,66 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   Future<void> toggleMute() async {
     if (_disposed) return;
     final p = _player;
+    final transport = _transportGeneration;
+    final epoch = _muteRequestEpoch;
+    final wasMuted = _requestedMuted;
+    final request = ++_muteRequestGeneration;
+    _pendingMuted = !wasMuted;
     AppLog.write(
       'LIVE',
       '静音按钮被点击：_muted=$_muted '
           'volume=${p?.state.volume}',
     );
-    if (_muted) {
-      /*
-       * 取消静音：三级瀑布求恢复目标（**绝不下发 0**）
-       * ```text
-       * 1) 快照（本次静音前的真实音量，最准）
-       * 2) 偏好 dsh.playprefs.lastVolume（跨会话的「用户习惯音量」）
-       * 3) 出厂 100（理论上到不了，纯粹兜底）
-       * ```
-       * ★ 与 VOD 侧 `player_page.dart::_toggleMute` 的瀑布**同一套语义**
-       *   （那里是 `_volumeBeforeMute` → `_lastVolume*100` → 100）。
-       *
-       * ⚠️ 默认静音进来时快照是 null ⇒ 走第 2 级 ——
-       *   用户第一次点"取消静音"应该听到**他习惯的音量**，不是 100。
-       */
-      var restore = _volumeBeforeMute ?? 0;
-      if (restore <= 0) {
-        final v = double.tryParse(
-          UiPrefs.get('dsh.playprefs.lastVolume') ?? '',
-        );
-        restore = (v != null && v >= 0 && v <= 1) ? v * 100 : 100;
+    try {
+      if (wasMuted) {
+        /*
+         * 取消静音：三级瀑布求恢复目标（**绝不下发 0**）
+         * ```text
+         * 1) 快照（本次静音前的真实音量，最准）
+         * 2) 偏好 dsh.playprefs.lastVolume（跨会话的「用户习惯音量」）
+         * 3) 出厂 100（理论上到不了，纯粹兜底）
+         * ```
+         * ★ 与 VOD 侧 `player_page.dart::_toggleMute` 的瀑布**同一套语义**
+         *   （那里是 `_volumeBeforeMute` → `_lastVolume*100` → 100）。
+         *
+         * ⚠️ 默认静音进来时快照是 null ⇒ 走第 2 级 ——
+         *   用户第一次点"取消静音"应该听到**他习惯的音量**，不是 100。
+         */
+        var restore = _volumeBeforeMute ?? 0;
+        if (restore <= 0) {
+          final v = double.tryParse(
+            UiPrefs.get('dsh.playprefs.lastVolume') ?? '',
+          );
+          restore = (v != null && v >= 0 && v <= 1) ? v * 100 : 100;
+        }
+        if (restore <= 0) restore = 100;
+        _volumeBeforeMute = restore.clamp(1, 100).toDouble();
+        if (!_visibleNow) _volumeBeforeHide = _volumeBeforeMute;
+        await p?.setVolume(_visibleNow ? _volumeBeforeMute! : 0);
+        if (epoch != _muteRequestEpoch ||
+            !_ownsUserRequestSource(p, transport)) {
+          return;
+        }
+        if (mounted) setState(() => _muted = false);
+        AppLog.write('LIVE', '取消静音 ⇒ 音量还原到 ${restore.round()}');
+      } else {
+        // 静音：先抓快照再压 0（顺序不能反 —— 反了就抓不到原音量）
+        final cur = desiredVolume;
+        if (cur > 0) _volumeBeforeMute = cur;
+        await p?.setVolume(0);
+        if (epoch != _muteRequestEpoch ||
+            !_ownsUserRequestSource(p, transport)) {
+          return;
+        }
+        if (mounted) setState(() => _muted = true);
+        AppLog.write('LIVE', '已静音 ⇒ 音量压到 0（快照 $_volumeBeforeMute）');
       }
-      if (restore <= 0) restore = 100;
-      _volumeBeforeMute = restore.clamp(1, 100).toDouble();
-      if (!_visibleNow) _volumeBeforeHide = _volumeBeforeMute;
-      await p?.setVolume(_visibleNow ? _volumeBeforeMute! : 0);
-      if (mounted) setState(() => _muted = false);
-      AppLog.write('LIVE', '取消静音 ⇒ 音量还原到 ${restore.round()}');
-    } else {
-      // 静音：先抓快照再压 0（顺序不能反 —— 反了就抓不到原音量）
-      final cur = desiredVolume;
-      if (cur > 0) _volumeBeforeMute = cur;
-      await p?.setVolume(0);
-      if (mounted) setState(() => _muted = true);
-      AppLog.write('LIVE', '已静音 ⇒ 音量压到 0（快照 $_volumeBeforeMute）');
+    } finally {
+      if (epoch == _muteRequestEpoch &&
+          request == _muteRequestGeneration &&
+          _ownsUserRequestSource(p, transport)) {
+        _pendingMuted = null;
+      }
     }
   }
 
@@ -2293,6 +2436,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   @override
   bool get muted => _muted;
   bool _muted = true;
+  int _muteRequestGeneration = 0;
+  int _muteRequestEpoch = 0;
+  bool? _pendingMuted;
+  bool get _requestedMuted => _pendingMuted ?? _muted;
 
   /// 静音前的音量（null = 没静音过）
   double? _volumeBeforeMute;
@@ -2353,6 +2500,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     final a = oldWidget.stream?.url;
     final b = widget.stream?.url;
     if (a != b) {
+      _retireUserRequests();
       _playbackCommandGeneration++;
       _resumeRequested = widget.playWhenReady;
       if (b == null) {
@@ -2382,6 +2530,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _retireUserRequests();
     _playbackCommandGeneration++;
     /*
      * ★ task-91：画面输出层看门狗作废（它是个 while 轮询，最多跑满预算）

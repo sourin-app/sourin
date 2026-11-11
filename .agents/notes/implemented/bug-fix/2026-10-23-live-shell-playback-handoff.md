@@ -5,6 +5,11 @@ Status: implemented
 Fullscreen return and late native resumes follow the
 [playback restoration ownership contract](2026-11-11-live-return-playback-ownership.md).
 
+Pending user requests follow the separate
+[user-intent request contract](2026-11-11-live-pending-user-intent.md).
+The success callback still follows native completion; it does not report a
+pending request as a successful native pause.
+
 ## Problem
 
 Shell 的直播全屏回调接收 initialPlayback，但未传入 PlayerPage；退出快照没有订阅，也没有在路由完成后返回。内嵌播放器与全屏播放器已有快照接口，实际入口却断线，源码字符串测试未覆盖该边界。

@@ -8422,6 +8422,7 @@ class _PlayerPageState extends State<PlayerPage>
     required DanmakuInfoSource primarySource,
     required int token,
   }) async {
+    final generation = _playSessionGen;
     final inputs = <DanmakuFeedInput>[
       DanmakuFeedInput(
         kind: primaryKind,
@@ -8462,7 +8463,9 @@ class _PlayerPageState extends State<PlayerPage>
          *   返回**只有主源**的聚合 —— 调用方紧接着还会再比一次 token，
          *   所以这里返回什么都不会被画上去；返回主源是为了不抛。
          */
-        if (!mounted || token != _danmakuFetchToken) {
+        if (!mounted ||
+            token != _danmakuFetchToken ||
+            generation != _playSessionGen) {
           return DanmakuAggregator.merge(<DanmakuFeedInput>[
             DanmakuFeedInput(
               kind: primaryKind,
@@ -8570,6 +8573,11 @@ class _PlayerPageState extends State<PlayerPage>
         (prev) => <DanmakuComment>[...prev, ...f.comments],
         ifAbsent: () => List<DanmakuComment>.of(f.comments),
       );
+    }
+    if (!mounted ||
+        token != _danmakuFetchToken ||
+        generation != _playSessionGen) {
+      return agg;
     }
     _danmakuFeedSamples = samples;
     debugPrint('[DMK] 聚合：${agg.summary}（逐路原料 ${samples.length} 组）');
@@ -10425,6 +10433,7 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   Future<void> _loadBiliDanmaku(int cid) async {
+    final generation = _playSessionGen;
     final token = ++_danmakuFetchToken;
     if (mounted) {
       setState(() {
@@ -10442,7 +10451,11 @@ class _PlayerPageState extends State<PlayerPage>
       force: true,
       intervalMinutes: biliAutoUpdateInterval(),
     );
-    if (!mounted || token != _danmakuFetchToken) return;
+    if (!mounted ||
+        token != _danmakuFetchToken ||
+        generation != _playSessionGen) {
+      return;
+    }
     if (!r.ok) {
       final e = DanmakuException(r.error);
       setState(() {
@@ -10510,7 +10523,11 @@ class _PlayerPageState extends State<PlayerPage>
       primarySource: DanmakuInfoSource.bili,
       token: token,
     );
-    if (!mounted || token != _danmakuFetchToken) return;
+    if (!mounted ||
+        token != _danmakuFetchToken ||
+        generation != _playSessionGen) {
+      return;
+    }
     setState(() {
       _danmakuComments = agg.comments;
       // ★ OPS-10 B：UI 如实反映来源（见 _loadDanmakuNamed 里那段说明）
@@ -10581,6 +10598,7 @@ class _PlayerPageState extends State<PlayerPage>
      *    与本条**共用**同一个令牌 ⇒ 两条都通过校验 ⇒ 后落地的那个覆盖前一个，
      *    画面上的弹幕会随机变成"哪条先回来算哪条"。
      */
+    final generation = _playSessionGen;
     final token = ++_danmakuFetchToken;
     final agg = await _aggregateDanmaku(
       primary: r.comments,
@@ -10589,7 +10607,11 @@ class _PlayerPageState extends State<PlayerPage>
       primarySource: DanmakuInfoSource.bili,
       token: token,
     );
-    if (!mounted || token != _danmakuFetchToken) return;
+    if (!mounted ||
+        token != _danmakuFetchToken ||
+        generation != _playSessionGen) {
+      return;
+    }
     setState(() {
       _danmakuComments = agg.comments;
       // ★ OPS-10 B：UI 如实反映来源（见 _loadDanmakuNamed 里那段说明）

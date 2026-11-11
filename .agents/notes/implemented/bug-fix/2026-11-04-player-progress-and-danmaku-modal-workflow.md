@@ -115,6 +115,15 @@ functional red evidence.
 
 ## Relations
 
+[External aggregation session ownership](2026-11-11-external-danmaku-aggregation-session-ownership.md)
+extends ownership for already-entered external-load/manual-update aggregation
+publication and private feed-sample writes, including plugin exception returns.
+Its eight frozen cases separately test changed-session rejection and current
+publication controls. Caller fetches that enter the apply helper only after a
+session change and the auto-refresh caller's later sheet-state writes remain
+outside that verified scope. The progress, binding-storage, preview, layout and
+pinned-fallback decisions below remain in effect.
+
 [Pinned fallback cancellation](2026-11-11-pinned-danmaku-fallback-cancellation.md)
 extends the existing comment-load ownership without changing the progress,
 binding-storage, draft, preview or layout decisions below. Its four frozen

@@ -71,6 +71,9 @@ input, external availability, account playback or final-package acceptance.
 The guard ends the pinned failure continuation before its fallback begins. It
 does not abort already-issued transport requests or add cancellation between
 the internal matching/search steps of `ExternalDanmakuClient.loadFor`. Normal
-primary/plugin aggregation keeps its existing behavior. Other external comment
-entry points retain their independent fetch-token checks; this note does not
-claim new playback-generation coverage for them.
+primary/plugin merge keeps its existing behavior for current work.
+[External aggregation session ownership](2026-11-11-external-danmaku-aggregation-session-ownership.md)
+separately checks generation at external-load/manual-update aggregation
+publication and guards private feed-sample writes. That note records its own
+success/exception controls and remaining caller boundaries. This pinned note
+claims only the fallback I/O boundary established above.

@@ -43,6 +43,7 @@ class _Native extends Fake implements Player {
   final opened = <({Media media, bool play})>[];
   final held = <_HeldOpen>[];
   _HeldOpen? nextOpen;
+  _HeldOpen? nextVolume;
   bool disposed = false;
   int disposals = 0;
 
@@ -105,8 +106,16 @@ class _Native extends Fake implements Player {
   Future<void> stop() =>
       _dispatch('stop', () => _state = _state.copyWith(playing: false));
   @override
-  Future<void> setVolume(double value) =>
-      _dispatch('volume', () => _state = _state.copyWith(volume: value));
+  Future<void> setVolume(double value) {
+    final held = nextVolume;
+    nextVolume = null;
+    return _dispatch(
+      'volume',
+      () => _state = _state.copyWith(volume: value),
+      wait: held,
+    );
+  }
+
   @override
   Future<void> dispose() => _dispatch('dispose', () {
     disposed = true;
@@ -121,6 +130,7 @@ class _Scene {
   final visible = ValueNotifier(true);
   final native = _Native();
   final streamRequests = <String>[];
+  List<Map<String, Object?>>? groupRowsOverride;
   final unexpected = <String>[];
   final handoffs =
       <({String provider, String id, LivePlaybackSnapshot initial})>[];
@@ -136,10 +146,18 @@ class _Scene {
   late Future<List<LiveGroup>> Function()? previousGroups;
   late Future<List<StreamCandidate>> Function(String, String)? previousStreams;
 
-  void _projectVisibility() => visible.value = observer.occluders.value == 0;
+  bool externalVisible = true;
+  void _projectVisibility() =>
+      visible.value = externalVisible && observer.occluders.value == 0;
+
+  void setExternalVisible(bool value) {
+    externalVisible = value;
+    _projectVisibility();
+  }
 
   Future<dynamic> _core(String command, Map<String, dynamic>? args) async {
     if (command == 'get_live_channels') {
+      if (groupRowsOverride != null) return groupRowsOverride!;
       return [
         {
           'provider': 'guard-a',
@@ -749,4 +767,514 @@ Future<void> verifyLegacyInitialPausedPolicy(WidgetTester tester) async {
   expect(native.state.playing, isFalse);
   expect(native.events.where((event) => event == 'play:done'), isEmpty);
   await finish();
+}
+
+Future<void> _returnWhileExternallyHidden(
+  _Scene scene,
+  WidgetTester tester,
+  LivePlaybackSnapshot snapshot,
+) async {
+  scene.setExternalVisible(false);
+  expect(scene.visible.value, isFalse);
+  scene.navigator.currentState!.pop<LivePlaybackSnapshot>(snapshot);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 500));
+  await scene.drain(tester);
+  await tester.runAsync(() async => await scene.watching);
+  expect(
+    scene.visible.value,
+    isFalse,
+    reason: 'Route pop must not override the live tab visibility',
+  );
+  expect(
+    identical(
+      scene.embedded,
+      tester.state<LiveEmbeddedPlayerState>(find.byType(LiveEmbeddedPlayer)),
+    ),
+    isTrue,
+  );
+  expect(scene.embedded.disposalReceiptForProbe.started, isFalse);
+}
+
+Future<void> verifyHiddenSwitchedReturn(
+  WidgetTester tester, {
+  required bool playing,
+}) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  final picked = scene.live.currentState!.stepChannelForFullscreen(2);
+  expect(picked?.provider, 'guard-b');
+  expect(picked?.channel.id, _third.id);
+  await scene.drain(tester);
+  expect(scene.streamRequests, ['guard-a:one']);
+  expect(scene.native.opened, isEmpty);
+  final playsBefore = scene.native.events
+      .where((event) => event == 'play:done')
+      .length;
+  final snapshot = LivePlaybackSnapshot(
+    playing: playing,
+    muted: !playing,
+    volume: 64,
+  );
+  await _returnWhileExternallyHidden(scene, tester, snapshot);
+
+  // The returned snapshot must have reached the actual embedded owner before
+  // testing deferred stream adoption. This is observed independently of parent
+  // constructor properties, which may remain stale without a parent rebuild.
+  expect(scene.embedded.muted, snapshot.muted);
+  expect(scene.embedded.desiredVolume, snapshot.volume);
+  expect(_displayedVolume(tester), snapshot.muted ? 0 : snapshot.volume);
+  expect(
+    scene.native.state.volume,
+    0,
+    reason: 'A hidden returned owner must keep native output silent',
+  );
+  expect(scene.native.state.playing, isFalse);
+  expect(
+    scene.native.events.where((event) => event == 'play:done').length,
+    playsBefore,
+  );
+  expect(scene.streamRequests, ['guard-a:one']);
+  expect(
+    scene.native.opened,
+    isEmpty,
+    reason: 'Hidden return must defer the new stream load',
+  );
+
+  scene.setExternalVisible(true);
+  await scene.drain(tester);
+  expect(
+    scene.streamRequests,
+    ['guard-a:one', 'guard-b:three'],
+    reason: 'Visibility restoration must resolve the channel selected in fullscreen',
+  );
+  final actual = tester.widget<LiveEmbeddedPlayer>(
+    find.byType(LiveEmbeddedPlayer),
+  );
+  expect(actual.title, _third.name);
+  expect(actual.stream?.url, _url('guard-b', _third.id));
+  expect(actual.playWhenReady, playing);
+  expect(scene.native.opened, hasLength(1));
+  expect(scene.native.opened.single.media.uri, _url('guard-b', _third.id));
+  expect(scene.native.opened.single.media.httpHeaders, {
+    'Referer': 'https://legacy-guard.invalid/guard-b',
+  });
+  expect(scene.native.opened.single.play, isFalse);
+  expect(scene.native.state.playing, playing);
+  expect(scene.embedded.muted, snapshot.muted);
+  expect(scene.embedded.desiredVolume, snapshot.volume);
+  expect(scene.native.state.volume, snapshot.muted ? 0 : snapshot.volume);
+  expect(_displayedVolume(tester), snapshot.muted ? 0 : snapshot.volume);
+  if (!playing) {
+    expect(
+      scene.native.events.where((event) => event == 'play:done').length,
+      playsBefore,
+    );
+  }
+
+  // A consumed deferred channel cannot be reopened on later tab visits.
+  scene.setExternalVisible(false);
+  await scene.drain(tester);
+  scene.setExternalVisible(true);
+  await scene.drain(tester);
+  expect(scene.streamRequests, ['guard-a:one', 'guard-b:three']);
+  expect(scene.native.opened, hasLength(1));
+  expect(scene.native.state.playing, playing);
+  await scene.finish(tester);
+}
+
+Future<void> verifyVisibleSwitchedPlayingReturn(WidgetTester tester) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  final picked = scene.live.currentState!.stepChannelForFullscreen(2);
+  expect(picked?.provider, 'guard-b');
+  await scene.drain(tester);
+  await scene.returnFullscreen(
+    tester,
+    LivePlaybackSnapshot(playing: true, muted: false, volume: 64),
+  );
+  expect(scene.streamRequests, ['guard-a:one', 'guard-b:three']);
+  expect(scene.native.opened, hasLength(1));
+  expect(scene.native.opened.single.play, isFalse);
+  expect(scene.native.opened.single.media.uri, _url('guard-b', _third.id));
+  expect(scene.native.state.playing, isTrue);
+  expect(scene.native.state.volume, 64);
+  expect(scene.embedded.muted, isFalse);
+  expect(_displayedVolume(tester), 64);
+  await scene.finish(tester);
+}
+
+Future<void> verifyHiddenReturnNewerSelectionWins(WidgetTester tester) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  final picked = scene.live.currentState!.stepChannelForFullscreen(2);
+  expect(picked?.provider, 'guard-b');
+  await scene.drain(tester);
+  await _returnWhileExternallyHidden(
+    scene,
+    tester,
+    LivePlaybackSnapshot(playing: true, muted: false, volume: 64),
+  );
+  expect(scene.embedded.desiredVolume, 64);
+  expect(scene.native.opened, isEmpty);
+  await tester.runAsync(
+    () => scene.live.currentState!.selectChannelForProbe(
+      _second,
+      provider: 'guard-a',
+    ),
+  );
+  await scene.drain(tester);
+  expect(scene.streamRequests, ['guard-a:one', 'guard-a:two']);
+  expect(
+    scene.native.opened,
+    isEmpty,
+    reason: 'The newer hidden selection resolves but does not load native',
+  );
+  scene.setExternalVisible(true);
+  await scene.drain(tester);
+  final actual = tester.widget<LiveEmbeddedPlayer>(
+    find.byType(LiveEmbeddedPlayer),
+  );
+  expect(actual.title, _second.name);
+  expect(actual.stream?.url, _url('guard-a', _second.id));
+  expect(
+    scene.streamRequests,
+    ['guard-a:one', 'guard-a:two'],
+    reason: 'A deferred fullscreen target cannot overtake a newer explicit selection',
+  );
+  expect(scene.native.opened, hasLength(1));
+  expect(scene.native.opened.single.media.uri, _url('guard-a', _second.id));
+  expect(scene.native.opened.single.play, isFalse);
+  expect(scene.native.state.playing, isTrue);
+  await scene.finish(tester);
+}
+
+Future<void> verifyRefreshDuringFullscreenOwnsNoStream(
+  WidgetTester tester,
+) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  expect(
+    scene.live.currentState!.stepChannelForFullscreen(2)?.provider,
+    'guard-b',
+  );
+  await scene.drain(tester);
+  final before = List<String>.of(scene.streamRequests);
+  // Same owning calls and ordering as shell._switchTo(AppTab.live): update
+  // active-tab visibility projection, then refresh the production live list.
+  scene.setExternalVisible(false);
+  scene.setExternalVisible(true);
+  expect(
+    scene.visible.value,
+    isFalse,
+    reason: 'Fullscreen route is still an occluder',
+  );
+  await tester.runAsync(
+    () => scene.live.currentState!.loadAll(keepSelection: true),
+  );
+  await scene.drain(tester);
+  expect(
+    scene.streamRequests,
+    before,
+    reason: 'Refreshing membership while fullscreen owns playback cannot resolve an embedded stream',
+  );
+  expect(scene.native.opened, isEmpty);
+  await scene.returnFullscreen(
+    tester,
+    LivePlaybackSnapshot(playing: false, muted: true, volume: 64),
+  );
+  expect(scene.streamRequests, ['guard-a:one', 'guard-b:three']);
+  expect(scene.native.state.playing, isFalse);
+  await scene.finish(tester);
+}
+
+Future<void> verifyShellOrderedVisibleRefresh(
+  WidgetTester tester, {
+  required bool playing,
+}) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  expect(
+    scene.live.currentState!.stepChannelForFullscreen(2)?.provider,
+    'guard-b',
+  );
+  await scene.drain(tester);
+  await _returnWhileExternallyHidden(
+    scene,
+    tester,
+    LivePlaybackSnapshot(playing: playing, muted: !playing, volume: 64),
+  );
+  // Do not drain between visibility and loadAll: shell calls these one after
+  // the other. Preserve that ordering to expose source/native duplicate work.
+  scene.setExternalVisible(true);
+  await tester.runAsync(
+    () => scene.live.currentState!.loadAll(keepSelection: true),
+  );
+  await scene.drain(tester);
+  final actual = tester.widget<LiveEmbeddedPlayer>(
+    find.byType(LiveEmbeddedPlayer),
+  );
+  expect(actual.stream?.url, _url('guard-b', _third.id));
+  expect(actual.playWhenReady, playing);
+  expect(scene.native.state.playing, playing);
+  expect(scene.native.state.volume, playing ? 64 : 0);
+  expect(scene.embedded.desiredVolume, 64);
+  expect(
+    scene.native.opened,
+    hasLength(1),
+    reason:
+        'The tab membership refresh cannot reopen the same deferred channel',
+  );
+  expect(scene.native.opened.single.media.uri, _url('guard-b', _third.id));
+  expect(scene.native.opened.single.play, isFalse);
+  await scene.finish(tester);
+}
+
+Future<void> verifyVisibleDuringReturnMetadata(
+  WidgetTester tester, {
+  required bool playing,
+}) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  expect(
+    scene.live.currentState!.stepChannelForFullscreen(2)?.provider,
+    'guard-b',
+  );
+  await scene.drain(tester);
+  scene.setExternalVisible(false);
+  final held = _HeldOpen();
+  scene.native.held.add(held);
+  scene.native.nextVolume = held;
+  scene.navigator.currentState!.pop<LivePlaybackSnapshot>(
+    LivePlaybackSnapshot(playing: playing, muted: !playing, volume: 64),
+  );
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 500));
+  await scene.drain(tester);
+  expect(
+    held.entered.isCompleted,
+    isTrue,
+    reason:
+        'The real return snapshot restoration must be waiting on native volume',
+  );
+  expect(scene.visible.value, isFalse);
+  scene.setExternalVisible(true);
+  await scene.drain(tester);
+  expect(
+    scene.native.opened,
+    isEmpty,
+    reason: 'Visible event during active handoff must defer channel adoption',
+  );
+  expect(scene.streamRequests, ['guard-a:one']);
+  held.finish();
+  await scene.drain(tester);
+  await tester.runAsync(() async => await scene.watching);
+  await scene.drain(tester);
+  expect(scene.streamRequests, ['guard-a:one', 'guard-b:three']);
+  expect(scene.native.opened, hasLength(1));
+  expect(scene.native.opened.single.media.uri, _url('guard-b', _third.id));
+  expect(scene.native.opened.single.play, isFalse);
+  expect(scene.native.state.playing, playing);
+  expect(scene.native.state.volume, playing ? 64 : 0);
+  expect(scene.embedded.desiredVolume, 64);
+  await scene.finish(tester);
+}
+
+Future<void> verifyFullscreenMembershipRemovedFallback(
+  WidgetTester tester,
+) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  expect(
+    scene.live.currentState!.stepChannelForFullscreen(2)?.provider,
+    'guard-b',
+  );
+  await scene.drain(tester);
+  scene.groupRowsOverride = [
+    {
+      'provider': 'guard-a',
+      'providerName': 'Refreshed A',
+      'channels': [
+        {'id': _second.id, 'name': 'Current replacement channel'},
+      ],
+    },
+  ];
+  await tester.runAsync(
+    () => scene.live.currentState!.loadAll(keepSelection: true),
+  );
+  await scene.drain(tester);
+  expect(
+    scene.streamRequests,
+    ['guard-a:one'],
+    reason: 'Removed-membership fallback is selection-only while fullscreen owns playback',
+  );
+  expect(scene.native.opened, isEmpty);
+  final list = tester.widget<LiveChannelList>(
+    find.byType(LiveChannelList, skipOffstage: false),
+  );
+  expect(list.selectedRow, liveChannelRowKey('guard-a', _second.id));
+  final selection = scene.live.currentState!.channelsForFullscreen();
+  expect(selection?.channels.map((c) => c.id).toList(), [_second.id]);
+  expect(selection?.channels.single.name, 'Current replacement channel');
+  await scene.returnFullscreen(
+    tester,
+    LivePlaybackSnapshot(playing: false, muted: true, volume: 64),
+  );
+  expect(scene.streamRequests, ['guard-a:one', 'guard-a:two']);
+  expect(scene.native.opened, hasLength(1));
+  expect(scene.native.opened.single.media.uri, _url('guard-a', _second.id));
+  expect(scene.native.opened.single.play, isFalse);
+  expect(scene.native.state.playing, isFalse);
+  expect(
+    tester.widget<LiveEmbeddedPlayer>(find.byType(LiveEmbeddedPlayer)).title,
+    'Current replacement channel',
+  );
+  await scene.finish(tester);
+}
+
+Future<void> verifyFullscreenMembershipEmpty(
+  WidgetTester tester, {
+  required bool playing,
+  required bool emptyGroups,
+}) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  final originalOwner = scene.embedded;
+  final disposal = originalOwner.disposalReceiptForProbe;
+  await scene.beginFullscreen(tester);
+  expect(
+    scene.live.currentState!.stepChannelForFullscreen(2)?.provider,
+    'guard-b',
+  );
+  await scene.drain(tester);
+  scene.groupRowsOverride = emptyGroups
+      ? []
+      : [
+          {
+            'provider': 'guard-b',
+            'providerName': 'Empty member source',
+            'channels': <Object?>[],
+          },
+        ];
+  await tester.runAsync(
+    () => scene.live.currentState!.loadAll(keepSelection: true),
+  );
+  await scene.drain(tester);
+  expect(scene.streamRequests, ['guard-a:one']);
+  expect(scene.native.opened, isEmpty);
+  expect(scene.live.currentState!.channelsForFullscreen(), isNull);
+  // Empty membership renders the actual product empty state and unmounts the
+  // old embedded owner. It does not leave a paused player offstage.
+  expect(find.text('没有可用的直播源', skipOffstage: false), findsOneWidget);
+  expect(
+    find.byType(LiveChannelList, skipOffstage: false),
+    findsNothing,
+    reason: 'Empty membership exposes no selected row from an old source',
+  );
+  expect(find.byType(LiveEmbeddedPlayer, skipOffstage: false), findsNothing);
+  for (var frame = 0; frame < 20 && disposal.completedAt == null; frame++) {
+    await tester.pump(const Duration(milliseconds: 50));
+    await scene.drain(tester);
+  }
+  expect(disposal.started, isTrue);
+  expect(disposal.completedAt, isNotNull);
+  expect(disposal.error, isNull);
+  expect(scene.native.disposals, 1);
+  expect(scene.native.disposed, isTrue);
+  expect(scene.native.state.playing, isFalse);
+  final commandsAfterDisposal = List<String>.of(scene.native.events);
+
+  // Pop the real route without the nonempty fixture's same-mounted-owner
+  // expectation. A returned snapshot must never be applied to a disposed owner.
+  scene.navigator.currentState!.pop<LivePlaybackSnapshot>(
+    LivePlaybackSnapshot(playing: playing, muted: !playing, volume: 64),
+  );
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 500));
+  await scene.drain(tester);
+  await tester.runAsync(() async => await scene.watching);
+  expect(scene.visible.value, isTrue);
+  expect(find.text('没有可用的直播源'), findsOneWidget);
+  expect(find.byType(LiveChannelList), findsNothing);
+  expect(find.byType(LiveEmbeddedPlayer), findsNothing);
+  expect(scene.streamRequests, ['guard-a:one']);
+  expect(scene.native.opened, isEmpty);
+  expect(
+    scene.native.events,
+    commandsAfterDisposal,
+    reason: 'Returned playing/paused snapshots cannot submit a command to the retired owner',
+  );
+  expect(scene.native.disposals, 1);
+
+  scene.setExternalVisible(false);
+  await scene.drain(tester);
+  scene.setExternalVisible(true);
+  await scene.drain(tester);
+  expect(scene.streamRequests, ['guard-a:one']);
+  expect(scene.native.opened, isEmpty);
+  expect(
+    scene.native.events,
+    commandsAfterDisposal,
+    reason:
+        'Later visibility changes cannot revive the disposed empty-state owner',
+  );
+  expect(scene.native.state.playing, isFalse);
+  expect(tester.takeException(), isNull);
+  await scene.finish(tester);
+}
+
+Future<void> verifyFullscreenMembershipRestoresCurrentObject(
+  WidgetTester tester,
+) async {
+  final scene = _Scene();
+  await scene.mount(tester);
+  await scene.beginFullscreen(tester);
+  expect(
+    scene.live.currentState!.stepChannelForFullscreen(2)?.provider,
+    'guard-b',
+  );
+  await scene.drain(tester);
+  scene.groupRowsOverride = [
+    {
+      'provider': 'guard-b',
+      'providerName': 'Refreshed source',
+      'channels': [
+        {'id': _third.id, 'name': 'Updated member title'},
+      ],
+    },
+  ];
+  await tester.runAsync(
+    () => scene.live.currentState!.loadAll(keepSelection: true),
+  );
+  await scene.drain(tester);
+  expect(scene.streamRequests, ['guard-a:one']);
+  expect(scene.native.opened, isEmpty);
+  final selection = scene.live.currentState!.channelsForFullscreen();
+  expect(selection?.channels.single.name, 'Updated member title');
+  expect(selection?.index, 0);
+  final list = tester.widget<LiveChannelList>(
+    find.byType(LiveChannelList, skipOffstage: false),
+  );
+  expect(list.selectedRow, liveChannelRowKey('guard-b', _third.id));
+  await scene.returnFullscreen(
+    tester,
+    LivePlaybackSnapshot(playing: false, muted: true, volume: 64),
+  );
+  expect(scene.streamRequests, ['guard-a:one', 'guard-b:three']);
+  expect(scene.native.opened, hasLength(1));
+  expect(scene.native.opened.single.media.uri, _url('guard-b', _third.id));
+  expect(
+    tester.widget<LiveEmbeddedPlayer>(find.byType(LiveEmbeddedPlayer)).title,
+    'Updated member title',
+    reason: 'Deferred adoption must use the refreshed channel object rather than stale fullscreen metadata',
+  );
+  expect(scene.native.state.playing, isFalse);
+  await scene.finish(tester);
 }

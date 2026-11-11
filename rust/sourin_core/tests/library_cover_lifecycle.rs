@@ -159,7 +159,9 @@ async fn fixture() -> (
                 (axum::http::StatusCode::FORBIDDEN, b"missing header".as_slice())
             }
         }))
-        .route("/unknown", axum::routing::get(|| async { "<html>not an image</html>" }))
+        // Keep this unknown-format control distinct from completed HTML,
+        // which the dedicated HTML recovery cases classify as non-image.
+        .route("/unknown", axum::routing::get(|| async { "opaque unrecognized image fixture" }))
         .route("/offline", axum::routing::get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }))
         .route("/gone", axum::routing::get(|| async { axum::http::StatusCode::GONE }))
         .route("/playlist.m3u8", axum::routing::get(|| async {

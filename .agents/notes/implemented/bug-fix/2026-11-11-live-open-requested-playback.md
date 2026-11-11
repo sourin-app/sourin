@@ -81,3 +81,5 @@ by an intentionally failing test is not evidence of a graceful route exit.
 The background-only restriction continues: isolated profiles, below-normal
 priority, two logical CPUs and one compiler/test worker. The visible client,
 loaded DLL and real user data are not part of these runs.
+
+The [live selection ownership contract](2026-11-11-live-channel-selection-ownership.md) determines which selected stream may reach native open. Cache and deferred-channel ownership complement current playback intent without another native queue.

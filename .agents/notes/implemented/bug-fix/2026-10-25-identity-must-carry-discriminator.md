@@ -89,3 +89,5 @@ Current Miuix fixture targeting is specified by the
 - csp id：真网络 `csp_ids_survive_reorder_on_reimport` 证明重排后 id 不变；注入回退旧算法 ⇒
   `[EVIDENCE] A=tvbox1/tvbox2 B=tvbox2/tvbox1` 直接暴露漂移。
 - `state.rs`：`stale_restore_failures_are_deleted_after_clean_boot`；注入把守卫加回去 ⇒ FAILED。
+
+The [live selection ownership contract](2026-11-11-live-channel-selection-ownership.md) extends provider/native identity with request lifetime and exact membership restoration. Known provider removal cannot restore another source by native ID alone; DNS and CSP identity decisions remain unchanged.

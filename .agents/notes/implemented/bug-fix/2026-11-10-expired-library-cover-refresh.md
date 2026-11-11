@@ -41,6 +41,9 @@ work. This repair uses the existing library refresh path and exact IDs instead.
 
 ## Consequences
 
+[Completed HTML recovery and check publication](2026-11-11-html-cover-recovery-after-save.md)
+adds bounded complete-HTML evidence and leaves failed saves immediately retryable.
+
 A real local HTTP regression first failed with zero repairs, then verified that
 expired singleton covers update favorites/progress/history without changing their
 other fields. Controls cover unknown/outage responses, failed or unchanged new

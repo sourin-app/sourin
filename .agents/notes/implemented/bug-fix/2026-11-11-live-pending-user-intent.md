@@ -135,3 +135,5 @@ decoder disposal or Owner UI acceptance.
 The note audit classifies shell handoff, embedded mute and fullscreen ownership
 as partial overlaps and links them above; none is absorbed or reversed. Seek,
 quality menu, selected cloud file identity and row reveal remain distinct scopes.
+
+The [live selection ownership contract](2026-11-11-live-channel-selection-ownership.md) guards page responses and shared cache publication separately from user-command success. Exact-provider restoration and hidden channel adoption preserve accepted/pending intent rules.

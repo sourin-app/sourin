@@ -346,6 +346,7 @@ class SourinApi {
   @visibleForTesting
   static void debugClearLiveStreamCache() {
     _liveStreamCache.clear();
+    _liveStreamMissOwners.clear();
     // ★ CodeRabbit PR#5 N1：表里没有的键（正在飞、尚未写回）也必须作废
     //   ⇒ 抬「全局代次基准」一次作废所有键。见 [_liveStreamGenBase]。
     _liveStreamGenBase++;
@@ -367,6 +368,7 @@ class SourinApi {
   static void invalidateLiveStream(String provider, String channelId) {
     final key = '$provider|$channelId';
     _liveStreamCache.remove(key);
+    _liveStreamMissOwners.remove(key);
     // ★ CodeRabbit PR#5 N1：**只删条目是不够的** —— 见 [_liveStreamGen]。
     _liveStreamGen[key] = (_liveStreamGen[key] ?? 0) + 1;
   }
@@ -1256,6 +1258,10 @@ class SourinApi {
   /// ```
   static final Map<String, int> _liveStreamGen = {};
 
+  // Only the newest in-flight cache miss for a key may publish its result.
+  // Keep this separate from explicit invalidation and clean up on failure.
+  static final Map<String, Object> _liveStreamMissOwners = {};
+
   /// 全局代次基准：`debugClearLiveStreamCache()` 用它一次作废**所有**键，
   /// 包括「正在飞、还没写回」的那些（它们不在 [_liveStreamCache] 里，
   /// 按键抬不到）。
@@ -1293,38 +1299,49 @@ class SourinApi {
     //   之后的 await 期间若有 invalidateLiveStream / debugClearLiveStreamCache
     //   发生，代次就会前进 ⇒ 这次的结果属于「已被作废的旧世界」，不许写回。
     final gen = _liveStreamGenOf(key);
-    final fake = debugLiveStreamFetcher;
-    final List<StreamCandidate> list;
-    if (fake != null) {
-      // 门禁/探针注入：fake 顶替核心层传输，**缓存逻辑照常生效**
-      // （仪器在缓存之下 —— 见 [debugLiveStreamFetcher] 的说明）。
-      // 生产路径永为 null。
-      list = await fake(provider, channelId);
-    } else {
-      final r = await SourinCore.callAsync('get_live_stream', {
-        'provider': provider,
-        'channel_id': channelId,
-      });
-      list = jlist<StreamCandidate>(r, StreamCandidate.fromJson).toList();
+    final owner = Object();
+    _liveStreamMissOwners[key] = owner;
+    try {
+      final fake = debugLiveStreamFetcher;
+      final List<StreamCandidate> list;
+      if (fake != null) {
+        // 门禁/探针注入：fake 顶替核心层传输，**缓存逻辑照常生效**
+        // （仪器在缓存之下 —— 见 [debugLiveStreamFetcher] 的说明）。
+        // 生产路径永为 null。
+        list = await fake(provider, channelId);
+      } else {
+        final r = await SourinCore.callAsync('get_live_stream', {
+          'provider': provider,
+          'channel_id': channelId,
+        });
+        list = jlist<StreamCandidate>(r, StreamCandidate.fromJson).toList();
+      }
+      // ★ N1：只有代次未变才写回 —— 变了说明这次取址已被期间的失效作废，
+      //   写回就等于把旧地址又塞回缓存（失效白做）。丢弃 ≠ 错：
+      //   调用方本次照样拿到 list，只是它不进缓存。
+      /*
+       * ★★ task-33：直播出口同样过一遍预处理
+       *
+       * 点播与直播是**两条独立代码路径**（player_page 里按 _isLive 分叉），
+       * 只挂一条会留下「另一边静默黑屏」的口子 ——
+       * 本仓历史上正是这么漏的（见 live_audio_only_notice_test 里那条“两条通道都要有”）。
+       *
+       * ⚠⚠ 必须在**写缓存之前**预处理：否则缓存里存的是「没解的播放页 URL」，
+       * 30s 内再次切台会直接拿到它并当成可播地址。
+       */
+      final prepared = await StreamPreparer.prepare(list);
+      if (prepared.isNotEmpty &&
+          _liveStreamGenOf(key) == gen &&
+          identical(_liveStreamMissOwners[key], owner)) {
+        _liveStreamCache[key] = (DateTime.now(), prepared);
+      }
+      return prepared;
+    } finally {
+      // An older completion cannot release a newer request's owner.
+      if (identical(_liveStreamMissOwners[key], owner)) {
+        _liveStreamMissOwners.remove(key);
+      }
     }
-    // ★ N1：只有代次未变才写回 —— 变了说明这次取址已被期间的失效作废，
-    //   写回就等于把旧地址又塞回缓存（失效白做）。丢弃 ≠ 错：
-    //   调用方本次照样拿到 list，只是它不进缓存。
-    /*
-     * ★★ task-33：直播出口同样过一遍预处理
-     *
-     * 点播与直播是**两条独立代码路径**（player_page 里按 _isLive 分叉），
-     * 只挂一条会留下「另一边静默黑屏」的口子 ——
-     * 本仓历史上正是这么漏的（见 live_audio_only_notice_test 里那条“两条通道都要有”）。
-     *
-     * ⚠⚠ 必须在**写缓存之前**预处理：否则缓存里存的是「没解的播放页 URL」，
-     * 30s 内再次切台会直接拿到它并当成可播地址。
-     */
-    final prepared = await StreamPreparer.prepare(list);
-    if (prepared.isNotEmpty && _liveStreamGenOf(key) == gen) {
-      _liveStreamCache[key] = (DateTime.now(), prepared);
-    }
-    return prepared;
   }
 
   /// 电子节目单（EPG）

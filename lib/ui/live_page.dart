@@ -640,6 +640,8 @@ class LivePageState extends State<LivePage> {
   /// "用户点的是哪一个" ⇒ 记下来源，选中身份 = (`_selectedProvider`, id)。
   /// ```
   String _selectedProvider = '';
+  // Identity alone cannot distinguish A -> B -> A while an older A waits.
+  int _streamRequestGeneration = 0;
   // ★ 2026-09-26【A】用户要求"删除掉节目单" ⇒ `_epg` / `_epgLoading`
   //   / `_epgKey` / `_now` / `_clock` 全部移除（含取数与定时器）
 
@@ -1041,6 +1043,14 @@ class LivePageState extends State<LivePage> {
       unawaited(st.pause());
       _pausedByHide = true;
       debugPrint('[LIVE] 本页不可见 ⇒ 暂停内嵌播放器（切回时续播）');
+    } else if (_pendingFullscreenChannel != null &&
+        !_fullscreenHandoffInFlight) {
+      // A hidden fullscreen return still owns a selected channel, not a stream.
+      final pending = _pendingFullscreenChannel!;
+      _pendingFullscreenChannel = null;
+      _pausedForFullscreen = false;
+      _pausedByHide = false;
+      unawaited(_select(pending, preservePlaybackIntent: true));
     } else if (_pausedByHide && !_fullscreenHandoffInFlight) {
       // The pending request owns the decision until native success/failure.
       // Retain the hide flag so settlement can revisit the accepted intent.
@@ -1507,6 +1517,7 @@ class LivePageState extends State<LivePage> {
 
   @override
   void dispose() {
+    _streamRequestGeneration++;
     // ★ 2026-09-26【A】`_clock?.cancel()` 已移除（定时器本身删了）
     /*
      * ★ N15：定时刷新器**必须**在这里 cancel。
@@ -1652,8 +1663,6 @@ class LivePageState extends State<LivePage> {
      * ```
      * ⚠️ 老路径（`_selectedProvider` 为空）仍按 id 恢复 —— 行为不变。
      */
-    final prevSel = keepSelection ? _selectedSel : null;
-    final prevId = keepSelection ? _selected?.id : null;
     try {
       // ★ 第 16 项验收：`debugLiveGroupsFetcher` 只在测试里非 null（生产恒走 FFI）
       final groups =
@@ -1664,6 +1673,10 @@ class LivePageState extends State<LivePage> {
         '${groups.fold<int>(0, (n, g) => n + g.channels.length)} 个频道）',
       );
       if (!mounted) return;
+      // A user can select another row while membership is loading.
+      // Restore the latest identity against the newly received groups.
+      final prevSel = keepSelection ? _selectedSel : null;
+      final prevId = keepSelection ? _selected?.id : null;
       setState(() {
         _groups = groups;
         // ★ 成功 ⇒ 清掉上一次的失败态（否则错误界面会一直挂着）
@@ -1716,22 +1729,34 @@ class LivePageState extends State<LivePage> {
          * 所以优先找回原来那个频道（见文件头注释）。
          */
         final all = groups.expand((g) => g.channels).toList();
-        /*
-         * ★ 第 15 项缺口：优先按**选中身份**（provider:id）找回；
-         *   找不到（或老状态没有 provider）再退回按 id 找 —— 行为不变。
-         */
+        // A known provider/native identity cannot restore another provider's
+        // same native ID. ID-only lookup is reserved for legacy empty providers.
         LiveChannel? restored;
-        if (prevSel != null) {
+        String? restoredProvider;
+        if (prevSel != null && prevSel.provider.isNotEmpty) {
           for (final g in groups) {
             if (g.provider != prevSel.provider) continue;
             restored = g.channels.where((c) => c.id == prevSel.id).firstOrNull;
-            if (restored != null) break;
+            if (restored != null) {
+              restoredProvider = g.provider;
+              break;
+            }
+          }
+        } else if (prevId != null) {
+          for (final g in groups) {
+            restored = g.channels.where((c) => c.id == prevId).firstOrNull;
+            if (restored != null) {
+              restoredProvider = g.provider;
+              break;
+            }
           }
         }
-        restored ??= prevId != null
-            ? all.where((c) => c.id == prevId).firstOrNull
-            : null;
         final target = restored ?? _firstVisible(all);
+        final targetProvider = restoredProvider ??
+            groups
+                .where((g) => g.channels.any((c) => identical(c, target)))
+                .map((g) => g.provider)
+                .firstOrNull;
         /*
          * ★★★ task-82【Q4】：只有"**真的找回了原来那个台**"才算 restoring。
          *
@@ -1742,7 +1767,29 @@ class LivePageState extends State<LivePage> {
          *   旧台的流"这种**自相矛盾**的状态（比原来的 bug 更糟）。
          */
         if (target != null) {
-          await _select(target, restoring: keepSelection && restored != null);
+          if (_fullscreenHandoffInFlight) {
+            if (restored != null) {
+              // Refresh membership only. Fullscreen keeps its loaded player;
+              // the accepted route return remains the embedded stream owner.
+              setState(() {
+                _selected = restored;
+                _selectedProvider = targetProvider ?? '';
+                if (_pendingFullscreenChannel != null) {
+                  _pendingFullscreenChannel = restored;
+                }
+              });
+            } else {
+              // The selected identity disappeared. Select a real current row
+              // without resolving it until fullscreen returns.
+              _adoptChannelForFullscreen(target, provider: targetProvider);
+            }
+          } else {
+            await _select(
+              target,
+              provider: targetProvider,
+              restoring: keepSelection && restored != null,
+            );
+          }
         }
       }
     } catch (e) {
@@ -2535,6 +2582,8 @@ class LivePageState extends State<LivePage> {
       return;
     }
 
+    // A newer explicit selection retires a deferred fullscreen channel.
+    _pendingFullscreenChannel = null;
     _embedKey.currentState?.retireUserRequestsForSourceChange();
     _pendingUserPaused = null;
     setState(() {
@@ -2571,11 +2620,13 @@ class LivePageState extends State<LivePage> {
   /// ⇒ 与它保持一致：`list.find((x) => !x.drm_protected) ?? list[0]`
   /// ```
   Future<void> _loadStream(String provider, String channelId) async {
+    final generation = ++_streamRequestGeneration;
     try {
       final list = await SourinApi.getLiveStream(provider, channelId);
       // ★ 第 15 项缺口：守卫要连 provider 一起比 —— 两个源撞同一 id 时，
       //   只比 id 会让"另一个源的同名台"的迟到结果落到当前台上。
       if (!mounted ||
+          generation != _streamRequestGeneration ||
           _selected?.id != channelId ||
           (_selectedProvider.isNotEmpty && _selectedProvider != provider)) {
         return;
@@ -2596,6 +2647,7 @@ class LivePageState extends State<LivePage> {
     } catch (e) {
       debugPrint('[LIVE] 取流失败 $channelId: $e');
       if (!mounted ||
+          generation != _streamRequestGeneration ||
           _selected?.id != channelId ||
           (_selectedProvider.isNotEmpty && _selectedProvider != provider)) {
         return;
@@ -2777,6 +2829,8 @@ class LivePageState extends State<LivePage> {
       '：本页只改选中，起播交给播放页',
     );
 
+    // Fullscreen owns resolution; no old embedded result may refill it.
+    _streamRequestGeneration++;
     _embedKey.currentState?.retireUserRequestsForSourceChange();
     _pendingUserPaused = null;
     setState(() {
@@ -3028,8 +3082,6 @@ class LivePageState extends State<LivePage> {
     }
     final pending = _pendingFullscreenChannel;
     if (pending != null) {
-      _pendingFullscreenChannel = null;
-      _pausedForFullscreen = false;
       final visible0 = widget.visible?.value ?? true;
       if (!visible0) {
         debugPrint(
@@ -3038,6 +3090,8 @@ class LivePageState extends State<LivePage> {
         );
         return;
       }
+      _pendingFullscreenChannel = null;
+      _pausedForFullscreen = false;
       debugPrint('[LIVE] 从全屏返回 ⇒ 接手播放全屏里切到的台：${pending.name}');
       await _select(pending, preservePlaybackIntent: true);
       return;

@@ -59,3 +59,5 @@ LiveEmbeddedDisposalReceipt 由 State 持有，探针须在卸载前保留引用
 新增 test/live_acceptance_receipts_test.dart，行为测试使用可控 Future 验证暂停与播放的命令先于意图通知、命令失败不通知、路由返回先于恢复完成、卸载或恢复失败不报告恢复成功、销毁等待与成功/错误回执；另有 stream:null 的组件卸载测试检查同步生命周期与保留回执。原生 pause/play 方法接线另以明确标注的源码契约测试防漂移，该项不是行为或原生播放证据。
 
 当前状态：待跑。按 lead 指令未运行 Flutter 测试，未进行故障注入，尚无本次测试退出码或 .probe 日志。后续串行窗口需运行基线，并分别注入提前发布意图、提前标记恢复、提前完成销毁观察的故障，记录真实失败退出码，再恢复代码并运行绿测。以上测试不证明实际声卡输出、真实生产频道往返、路由退场动画或原生播放器释放。
+
+Changed-channel hidden return follows the [live selection ownership contract](2026-11-11-live-channel-selection-ownership.md). Snapshot capture and route, restoration and native-disposal receipts retain their separate meanings.

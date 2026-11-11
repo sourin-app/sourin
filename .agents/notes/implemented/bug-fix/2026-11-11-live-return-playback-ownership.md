@@ -104,3 +104,5 @@ qualifies the opposite pause/mute completion schedules using the installed share
 native command lock. It adds pending intent ownership rather than another queue.
 Its twenty cases do not establish native Windows audio/decoder acceptance for all
 possible interleavings, so that boundary remains separate.
+
+The [live selection ownership contract](2026-11-11-live-channel-selection-ownership.md) adds changed-channel hidden return and membership refresh during fullscreen ownership. Deferred resolution retains returned pause/mute intent; native decoder/audio acceptance remains separate.

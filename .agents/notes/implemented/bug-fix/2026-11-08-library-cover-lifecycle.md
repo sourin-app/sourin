@@ -64,6 +64,10 @@ the exact provider and native identity required for persisted library records.
 
 ## Consequences
 
+[Completed HTML recovery](2026-11-11-html-cover-recovery-after-save.md) extends
+definite invalid-body evidence and publishes singleton checks after saving.
+Exact identity and conditional cover-only updates remain unchanged.
+
 Integration tests read real database rows and local HTTP responses: origin
 persistence, restart display for four library views, source-specific headers,
 aggregate child headers, metadata-preserving recovery, disabled-source exclusion,

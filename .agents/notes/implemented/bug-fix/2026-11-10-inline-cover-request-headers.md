@@ -45,6 +45,10 @@ header configuration language.
 
 ## Consequences
 
+[Completed HTML recovery](2026-11-11-html-cover-recovery-after-save.md) keeps
+durable URL/header interpretation while extending invalid-body evidence and
+post-save publication of singleton checks.
+
 The real HTTP lifecycle case checks 403 before integration, decoded URI and
 headers afterward, API proxy use, /s and /p routes, stable tokens, durable raw
 metadata and all four library views after restart. Existing proxy, cover-header

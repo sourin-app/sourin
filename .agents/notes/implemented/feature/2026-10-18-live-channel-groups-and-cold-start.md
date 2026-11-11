@@ -370,3 +370,5 @@ provider_layout_test / t27_w14_danmaku_bar_form_test / t27_w7_spinner_color_test
   没测"用户在两者间切换时数据是否始终一致"（例如先手输再回直播页勾选）。
 · 拼音搜索是**有意不做**，不是漏了（见 Alternatives）。
 ```
+
+The [live selection ownership contract](../bug-fix/2026-11-11-live-channel-selection-ownership.md) samples current selection after membership responses, guards stale stream/cache results and retains deferred channel adoption after hidden fullscreen return. Snapshot and loading policy remain in force.

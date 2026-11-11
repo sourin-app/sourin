@@ -60,6 +60,9 @@ redirect evaluation preserve those boundaries.
 
 ## Consequences
 
+[Completed HTML repair evidence](2026-11-11-html-cover-recovery-after-save.md)
+uses this existing image route; it does not alter proxy ownership or diagnostics.
+
 A local origin/proxy test first fails on the old registered-cover path, then
 checks live proxy changes, bypass, direct mode, connection reuse, source headers,
 video control and no direct fallback on a failed proxy. A second failing test

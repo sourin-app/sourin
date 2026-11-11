@@ -170,17 +170,30 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 enum CoverProbe {
     Dimensions(u32, u32),
     Missing,
+    NonImage,
     Unknown,
 }
 
 impl CoverProbe {
     fn invalid(self) -> bool {
-        matches!(self, Self::Missing) || matches!(self, Self::Dimensions(w, h) if w <= 8 && h <= 8)
+        matches!(self, Self::Missing | Self::NonImage) || matches!(self, Self::Dimensions(w, h) if w <= 8 && h <= 8)
     }
 
     fn poster(self) -> bool {
         matches!(self, Self::Dimensions(w, h) if w >= 32 && h >= 32)
     }
+}
+
+// A completed HTML response is definite non-image evidence. MIME values and
+// URL shapes alone are not; incomplete/oversized/unknown bodies stay uncertain.
+fn complete_html_body(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+    let start = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
+    let prefix: Vec<u8> = bytes[start..].iter().take(32).map(|b| b.to_ascii_lowercase()).collect();
+    [b"<html".as_slice(), b"<!doctype html".as_slice()].iter().any(|tag| {
+        prefix.starts_with(tag)
+            && prefix.get(tag.len()).is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
+    })
 }
 
 async fn probe_cover(client: &reqwest::Client, url: &str) -> CoverProbe {
@@ -189,12 +202,18 @@ async fn probe_cover(client: &reqwest::Client, url: &str) -> CoverProbe {
     if matches!(response.status().as_u16(), 404 | 410) { return CoverProbe::Missing; }
     if !response.status().is_success() { return CoverProbe::Unknown; }
     let mut bytes = Vec::new();
-    while let Ok(Some(chunk)) = response.chunk().await {
-        bytes.extend_from_slice(&chunk[..chunk.len().min(LIMIT - bytes.len())]);
-        if let Some((w, h)) = image_dimensions(&bytes) { return CoverProbe::Dimensions(w, h); }
-        if bytes.len() == LIMIT { break; }
-    }
-    CoverProbe::Unknown
+    let complete = loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                bytes.extend_from_slice(&chunk[..chunk.len().min(LIMIT - bytes.len())]);
+                if let Some((w, h)) = image_dimensions(&bytes) { return CoverProbe::Dimensions(w, h); }
+                if bytes.len() == LIMIT { break false; }
+            }
+            Ok(None) => break true,
+            Err(_) => break false,
+        }
+    };
+    if complete && complete_html_body(&bytes) { CoverProbe::NonImage } else { CoverProbe::Unknown }
 }
 
 async fn existing_replacement(
@@ -508,16 +527,17 @@ pub async fn repair(state: &AppState) -> Result<usize, String> {
         }
         while let Some(result) = tasks.join_next().await {
             let Ok((candidate, replacement, checked)) = result else { continue; };
-            if let Some((key, ttl)) = checked { checks.remember(key, ttl); }
-            let Some((invalid, cover)) = replacement else { continue; };
-            if let Some(raw) = durable(state, Some(&cover)) {
-                changed += state.db.repair_library_cover(
-                    &candidate.provider,
-                    &candidate.id,
-                    &invalid,
-                    &raw,
-                )?;
+            if let Some((invalid, cover)) = replacement {
+                if let Some(raw) = durable(state, Some(&cover)) {
+                    changed += state.db.repair_library_cover(
+                        &candidate.provider,
+                        &candidate.id,
+                        &invalid,
+                        &raw,
+                    )?;
+                }
             }
+            if let Some((key, ttl)) = checked { checks.remember(key, ttl); }
         }
     }
     Ok(changed)
@@ -633,3 +653,7 @@ mod tests {
         assert_eq!(fixture.replacement(&["slow", "unknown", "poster-a"]).await, None);
     }
 }
+
+#[cfg(test)]
+#[path = "library_covers_html_recovery_tests.rs"]
+mod html_recovery_tests;

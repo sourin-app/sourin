@@ -950,3 +950,7 @@ mod tests {
 #[cfg(test)]
 #[path = "app_drama_protocol_behavior_tests.rs"]
 mod protocol_behavior_tests;
+
+#[cfg(test)]
+#[path = "app_drama_empty_page_tests.rs"]
+mod empty_page_tests;

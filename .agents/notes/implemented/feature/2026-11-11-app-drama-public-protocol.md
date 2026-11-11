@@ -16,6 +16,11 @@ capability limit then excluded its saved categories and search participation.
 Domain reachability and legacy crypto round trips did not implement the actual
 public request sequence or retain the selected episode identity.
 
+The list/search mapper also needs to distinguish a recognized empty Page from
+unrecognized protocol data. An explicit zero-hit or exhausted Page must reach
+the provider as a normal empty result; missing fields or an unrelated protobuf
+message cannot establish that the source has no content.
+
 ## Decision
 
 Keep one registered constructor and delegate its public methods to one protocol
@@ -26,6 +31,18 @@ selected playback. No dependency or embedded runtime is added. Legacy public
 pure configuration/crypto helpers remain compatibility APIs, not the runtime
 wire implementation. A test-only old dispatch helper remains solely for the
 existing explicitly ignored historical diagnostic.
+
+The normal catalog path is `CspProvider::new` through the registered
+`AppDrama::new`, then `list_inner`/`search_inner` and their shared `list_from`
+mapper. An empty item batch is accepted only when the nonempty envelope data
+has Page field 16 as a recognized nonnegative int32 total. Missing/empty data,
+unknown-only messages, wrong-wire/negative/overflow totals, malformed rows and
+batches exceeding the existing 512-item bound remain failures. Existing
+zero-total pagination metadata remains `total=None` and `page_count=None`.
+This exception belongs to the recognized public
+Page schema, not to arbitrary empty HTML extraction or every CSP adapter; the
+[honest-response contract](2026-10-26-csp-honest-contract.md) still rejects
+unrecognized responses rather than pretending a parser found no content.
 
 Runtime metadata describes the Windows application without inventing a phone,
 Android identity or account. The protocol uses the independently recovered
@@ -87,6 +104,15 @@ returned media is not fetched. They do not call a fake site in place of the
 registered constructor. Additional negative and boundary cases cover source/
 route changes, malformed fields, bounds, cloud links, missing flags, exact expiry
 refresh and changed identities.
+
+`app_drama_empty_page_tests.rs` exercises `CspProvider::new` and the registered
+facade with independent literal protobuf envelopes. It observes zero-hit search,
+an empty category, an exhausted page's reported pagination and ordinary items
+afterward on the same session. Missing/empty data, unknown-only messages,
+wrong-wire/negative totals and malformed rows retain error controls. The
+independent inspector decrypts actual HTTP requests; exact request counts and
+zero origin requests retain the application-proxy/no-fallback boundary. These
+observations cover page mapping, not real-service catalog or playback acceptance.
 
 Three additional state tests fail the first candidate on stale home success,
 repeated malformed category requests and duplicate expired-selection refresh.

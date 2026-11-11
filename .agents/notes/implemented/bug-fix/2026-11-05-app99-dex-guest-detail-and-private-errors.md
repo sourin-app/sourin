@@ -2,6 +2,13 @@
 
 Status: implemented
 
+Applies to App99 request/privacy contracts from 2026-11-05 and bounded media
+prefix handling from 2026-11-11. The
+[directory request contract](2026-11-10-encrypted-catalog-category-request.md)
+owns list/search payloads and default list session binding. The
+[global CSP routing contract](../architecture/2026-11-09-csp-global-routing-retains-engine-recipes.md)
+continues to own transport policy.
+
 ## Problem
 
 Owner rejected FatNiu playback again on 2026-11-05 after reporting it usable
@@ -18,6 +25,11 @@ fields were nested instead of top-level, app metadata was not nested in
 version headers, and detail requests omitted `eps`, `v`, and numeric `pl`.
 HTTP errors also included response bodies, and transport errors included
 request URLs. A nominal HTTP/code success is not proof of media availability.
+
+Selected parser results can be extensionless media whose format prefix spans
+HTTP response chunks. Checking only the first transport fragment discards that
+candidate before its known signature is complete; accepting a candidate prefix
+still does not establish decoding or recovery of the rejected original line.
 
 ## Decision
 
@@ -36,11 +48,30 @@ Detail requests preserve the selected ID and send string `eps="1"`, string
 `v="2.0.0"`, and numeric `pl=1`. Do not append these fields to vodParser:
 its DEX contract remains parser ID plus the selected episode input.
 
+The selected resolve/parser path checks extensionless media with the existing
+`Range: bytes=0-511` GET through the current application client. The sniffer
+retains and examines at most 512 prefix bytes across response chunks, returning
+when the existing media signature/content-type contract succeeds, or stopping
+at EOF or that byte bound. A server ignoring Range does not enlarge the retained
+prefix; this is not a claim about total TCP bytes buffered by the transport.
+Empty bodies, HTML/JSON types, unrecognized prefixes and HTTP/transport failures
+remain errors. Selected inputs, allowed parser IDs, result URLs, headers,
+existing request/parse budgets and account-share handling keep their owners.
+
 HTTP errors retain status without echoed bodies; transport failures retain
 stage/category without URLs. This is a scoped guarantee, not a claim that
 every existing upstream message/capture path is private.
 
 ## Verification
+
+`app99_media_prefix_tests.rs` follows the registered default provider's detail,
+detail-issued episode selection, resolve, configured parser and extensionless
+media GET. An independent AES-CBC fixture checks actual signed selected inputs
+and returns MP4/HLS signatures split after three bytes. Fragmented HTML and an
+unrecognized 512-byte prefix whose body stays open retain bounded-error controls.
+Exact bootstrap/detail/parser/media request sequences and zero origin traffic
+retain the proxy/no-fallback boundary. The fixtures contain format prefixes,
+not complete decodable movies; candidate acceptance is not frame evidence.
 
 - Original DEX SHA256: `EC947FD1D5404A27EB5BE2029587AE335F3AF84CCACCD218A0454FCB0E100407`.
   Independent read-only disassembly confirmed ciphertext:timestamp:nonce:token
@@ -107,6 +138,8 @@ every existing upstream message/capture path is private.
 The request implementation now matches the observed DEX contract while
 preserving anonymous fallback, cache behavior, and selected-line identity.
 Focused gates cover the contracts and private HTTP/transport errors.
+The bounded prefix check tolerates transport fragmentation while preserving
+the existing media-recognition and rejection policy.
 
 NBY is not accepted as playable. The exact original screenshot content ID
 has not been recovered; current controlled diagnostics concern ID 234900,

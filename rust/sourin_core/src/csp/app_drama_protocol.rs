@@ -1002,8 +1002,12 @@ fn cover(message: &Message<'_>) -> Result<Option<String>> {
 fn list_from(bytes: &[u8], page: u32) -> Result<CspList> {
     let message = Message::parse(bytes)?;
     let rows = message.repeated(1)?;
-    if rows.is_empty() || rows.len() > 512 {
-        return Err(Failure::Parse("列表为空或过长"));
+    let reported_total = message.int32(16)?;
+    // Repeated items may be absent in a valid zero-hit or exhausted page.
+    // Require a recognized Page field before accepting an empty batch so that
+    // unrelated/unknown response messages cannot become successful empty pages.
+    if rows.len() > 512 || (rows.is_empty() && reported_total.is_none()) {
+        return Err(Failure::Parse("列表形态或长度"));
     }
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
@@ -1022,7 +1026,7 @@ fn list_from(bytes: &[u8], page: u32) -> Result<CspList> {
                 .map(str::to_string),
         });
     }
-    let (total, page_count) = wire::checked_page_total(message.int32(16)?)?;
+    let (total, page_count) = wire::checked_page_total(reported_total)?;
     Ok(CspList {
         items,
         page,

@@ -968,19 +968,30 @@ impl App99 {
         if content_type.contains("text/html") || content_type.contains("application/json") {
             return Err("这条线路返回的是播放网页，没有可播放的媒体，请切换线路".to_string());
         }
-        let chunk = response.chunk().await
-            .map_err(|_| "无法读取这条线路的媒体，请稍后重试".to_string())?
-            .ok_or_else(|| "这条线路没有返回媒体内容，请切换线路".to_string())?;
         let media_type = content_type.starts_with("video/") || content_type.starts_with("audio/")
             || content_type.contains("mpegurl");
-        let magic = chunk.starts_with(b"#EXTM3U") || chunk.get(4..8) == Some(b"ftyp")
-            || chunk.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
-            || (chunk.first() == Some(&0x47) && chunk.get(188) == Some(&0x47));
-        if media_type || magic {
-            Ok(())
-        } else {
-            Err("这条线路没有返回可识别的媒体内容，请切换线路".to_string())
+        // HTTP chunks are transport fragments, not complete media signatures.
+        // Keep the existing 512-byte range bound even when a server ignores it.
+        let mut prefix = Vec::with_capacity(512);
+        while prefix.len() < 512 {
+            let Some(chunk) = response.chunk().await
+                .map_err(|_| "无法读取这条线路的媒体，请稍后重试".to_string())? else {
+                break;
+            };
+            let take = chunk.len().min(512 - prefix.len());
+            prefix.extend_from_slice(&chunk[..take]);
+            let magic = prefix.starts_with(b"#EXTM3U") || prefix.get(4..8) == Some(b"ftyp")
+                || prefix.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+                || (prefix.first() == Some(&0x47) && prefix.get(188) == Some(&0x47));
+            if !prefix.is_empty() && (media_type || magic) {
+                return Ok(());
+            }
         }
+        Err(if prefix.is_empty() {
+            "这条线路没有返回媒体内容，请切换线路".to_string()
+        } else {
+            "这条线路没有返回可识别的媒体内容，请切换线路".to_string()
+        })
     }
 }
 
@@ -1052,7 +1063,8 @@ impl CspSite for App99 {
     }
 
     /// 分类列表：分类 ID 走 pid；空关键词和目录排序与搜索请求分开。
-    async fn list(&self, tid: &str, page: u32, _ext: &str) -> Result<CspList, String> {
+    async fn list(&self, tid: &str, page: u32, ext: &str) -> Result<CspList, String> {
+        self.handshake(ext).await?;
         let page = if page == 0 { 1 } else { page };
         let body = serde_json::json!({
             "kw": "",
@@ -2456,3 +2468,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "app99_first_list_tests.rs"]
+mod first_list_tests;
+
+#[cfg(test)]
+#[path = "app99_media_prefix_tests.rs"]
+mod media_prefix_tests;

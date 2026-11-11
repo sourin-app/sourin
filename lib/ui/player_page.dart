@@ -112,6 +112,7 @@ import '../core/batch_bind.dart';
 import '../core/danmaku.dart';
 import '../core/device.dart';
 import '../core/native_media_transport.dart';
+import '../core/native_screenshot.dart';
 // ★ task-38：为了 `SourinCoreException.kind`（结构化错误类别）
 //
 // `sourin_api.dart` 里没有导出这个类型（它在 ffi.dart 定义），
@@ -8325,7 +8326,8 @@ class _PlayerPageState extends State<PlayerPage>
       // ⚠️ Android 侧还缺 `libassAndroidFont` / `libassAndroidFontName`
       // （本项目从未设置），所以 **Android 大概率带不上字幕** ——
       // 这一点在报告里如实标注为能力限制，不假装两端一致。
-      final Uint8List? bytes = await _player.screenshot(
+      final Uint8List? bytes = await capturePlayerScreenshot(
+        _player,
         format: 'image/jpeg',
         includeLibassSubtitles: true,
       );

@@ -33,7 +33,7 @@ library;
 // 该断言会以另一种方式失败，而『底栏没渲染』与『按钮被删了』需要能区分。
 // ⇒ 所以先断言**同排的既有按钮**（全屏 / 设置齿轮）都在。
 //
-// # ★★★ 为什么**绝不真的点**那个按钮（这条是本文件最大的坑）
+// # ★★★ 为什么不触发截图行（允许真实点击「更多」入口）
 // media_kit 的 Player.screenshot() 在**播放器初始化完成之前不会返回、
 // 也不会抛异常**（real.dart:1185 先 await waitForPlayerInitialization，
 // 而它在 flutter_tester 里永远不完成）⇒ 点一下就等于挂起一个**永不完成的**
@@ -49,12 +49,18 @@ library;
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart' show HitTestResult;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
 
 import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/ui/player_page.dart';
+import 'package:sourin_spike/ui/player/player_bottom_bar.dart' show PlayerBottomBar, PlayerPopoverIds;
+import 'package:sourin_spike/ui/player/player_more_menu.dart';
+import 'package:sourin_spike/ui/player/player_popover.dart' show PopoverAnchorButton, PopoverMotion;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:sourin_spike/ui/remote_bridge.dart';
 
 List<Episode> eps(int n) => [
@@ -159,6 +165,176 @@ Future<void> _guard(List<String> sink, Future<void> Function() body) async {
   }
 }
 
+
+/// Scope the positive controls to the actual mounted bottom bar.
+Finder _bottomBar() => find.byType(PlayerBottomBar);
+
+Finder _fullscreenButton() => find.descendant(
+  of: _bottomBar(),
+  matching: find.byWidgetPredicate(
+    (widget) => widget is ui.IconButton && widget.tooltip == '全屏',
+    description: 'Miuix fullscreen control with the existing tooltip',
+  ),
+);
+
+Finder _moreAnchor() => find.descendant(
+  of: _bottomBar(),
+  matching: find.byWidgetPredicate(
+    (widget) =>
+        widget is PopoverAnchorButton &&
+        widget.id == PlayerPopoverIds.more &&
+        widget.tooltip == '更多',
+    description: 'mounted More popover anchor',
+  ),
+);
+
+/// Observe real geometry/blockers/hit path; never replace a reachability pass.
+void _logMoreReachability(
+  WidgetTester t,
+  Finder menu,
+  Finder row,
+  String phase,
+) {
+  final blockers = <String>[];
+  var scrollables = 0;
+  t.element(row).visitAncestorElements((element) {
+    final widget = element.widget;
+    if (widget is IgnorePointer) {
+      blockers.add('IgnorePointer=${widget.ignoring}');
+    } else if (widget is AbsorbPointer) {
+      blockers.add('AbsorbPointer=${widget.absorbing}');
+    } else if (widget is Opacity) {
+      blockers.add('Opacity=${widget.opacity}');
+    } else if (widget is AnimatedOpacity) {
+      blockers.add('AnimatedOpacity.target=${widget.opacity}');
+    } else if (widget is FadeTransition) {
+      blockers.add('FadeTransition=${widget.opacity.value}/${widget.opacity.status}');
+    } else if (widget is PopoverMotion) {
+      blockers.add('PopoverMotion.visible=${widget.visible}');
+    } else if (widget is Scrollable) {
+      scrollables++;
+    }
+    return true;
+  });
+  final controller = t.widget<PopoverAnchorButton>(_moreAnchor()).controller;
+  final hit = HitTestResult();
+  final center = t.getCenter(row);
+  t.binding.hitTestInView(hit, center, t.view.viewId);
+  final path = hit.path.map((entry) => entry.target.runtimeType.toString()).toList();
+  final barOpacity = find.descendant(of: _bottomBar(), matching: find.byType(Opacity))
+      .evaluate().map((element) => (element.widget as Opacity).opacity).toList();
+  final barIgnore = find.descendant(of: _bottomBar(), matching: find.byType(IgnorePointer))
+      .evaluate().map((element) => (element.widget as IgnorePointer).ignoring).toList();
+  debugPrint(
+    '[SHOT-MORE] $phase openId=${controller.openId} '
+    'anchor=${controller.anchorRectOf(PlayerPopoverIds.more)} '
+    'menu=${t.getRect(menu)} row=${t.getRect(row)} center=$center '
+    'view=${t.view.physicalSize / t.view.devicePixelRatio} '
+    'scrollables=$scrollables blockers=$blockers '
+    'barOpacity=$barOpacity barIgnore=$barIgnore '
+    'hit=${row.hitTestable().evaluate().length} path=$path',
+  );
+}
+
+/// Advance at most 960ms, checking the production enter/unmount phase.
+/// Pumping separately flushes pointer arbitration, post-frame anchor reports,
+/// animation registration and the existing retained-panel onEnd removal.
+Future<bool> _waitForMorePhase(WidgetTester t, {required bool open}) async {
+  final controller = t.widget<PopoverAnchorButton>(_moreAnchor()).controller;
+  Rect? previousRect;
+  for (var frame = 0; frame < 24; frame++) {
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 40));
+    final menu = find.byType(PlayerMoreMenu);
+    final menuCount = menu.evaluate().length;
+    if (!open) {
+      if (controller.openId == null && menuCount == 0) {
+        debugPrint('[SHOT-MORE-PHASE] closed frames=${frame + 1} openId=null menu=0');
+        return true;
+      }
+      continue;
+    }
+    if (controller.openId != PlayerPopoverIds.more || menuCount != 1) {
+      previousRect = null;
+      continue;
+    }
+    final shot = find.descendant(of: menu, matching: find.text('截图'));
+    if (shot.evaluate().length != 1) {
+      previousRect = null;
+      continue;
+    }
+    final row = find.ancestor(of: shot, matching: find.byType(miuix.MiuixPressable));
+    if (row.evaluate().length != 1) {
+      previousRect = null;
+      continue;
+    }
+    final element = t.element(row);
+    final fade = element.findAncestorWidgetOfExactType<FadeTransition>();
+    final motion = element.findAncestorWidgetOfExactType<PopoverMotion>();
+    final rect = t.getRect(row);
+    final atEndpoint = motion?.visible == true &&
+        fade?.opacity.value == 1.0 &&
+        fade?.opacity.status == AnimationStatus.completed;
+    final ready = atEndpoint && row.hitTestable().evaluate().length == 1;
+    if (ready && rect == previousRect) {
+      _logMoreReachability(t, menu, row, 'open-endpoint');
+      debugPrint('[SHOT-MORE-PHASE] open frames=${frame + 1} fade=1 geometry=stable hit=1');
+      return true;
+    }
+    previousRect = ready ? rect : null;
+  }
+  debugPrint('[SHOT-MORE-PHASE] timeout open=$open openId=${controller.openId} '
+      'menu=${find.byType(PlayerMoreMenu).evaluate().length}');
+  return false;
+}
+
+/// Click only More; inspect the actual menu and enabled screenshot row.
+/// This establishes reachability without claiming capture/save completion.
+Future<void> _expectMoreScreenshotReachable(WidgetTester t) async {
+  expect(_bottomBar(), findsOneWidget);
+  final more = _moreAnchor();
+  expect(more, findsOneWidget, reason: '更多入口必须仍在实际底栏上');
+  expect(
+    find.descendant(of: more, matching: find.byIcon(Icons.more_horiz)),
+    findsOneWidget,
+  );
+  expect(find.descendant(of: more, matching: find.text('更多')), findsOneWidget);
+  expect(find.byType(PlayerMoreMenu), findsNothing);
+  final before = debugPlayerScreenshotCalls();
+  expect(before, isNotNull);
+
+  await t.tap(more);
+  expect(
+    await _waitForMorePhase(t, open: true),
+    isTrue,
+    reason: '更多必须在有界时间内真正进入动画端点，截图行几何稳定且可命中',
+  );
+
+  final menu = find.byType(PlayerMoreMenu);
+  expect(menu, findsOneWidget, reason: '真实点击更多后必须渲染浮层');
+  expect(find.descendant(of: menu, matching: find.text('画面')), findsOneWidget);
+  final shot = find.descendant(of: menu, matching: find.text('截图'));
+  expect(shot, findsOneWidget, reason: '截图项必须真的渲染在更多浮层中');
+  final row = find.ancestor(of: shot, matching: find.byType(miuix.MiuixPressable));
+  expect(row, findsOneWidget);
+  _logMoreReachability(t, menu, row, 'open-ready');
+  expect(row.hitTestable(), findsOneWidget, reason: '截图项必须在可点击的画面区域');
+  expect(t.widget<miuix.MiuixPressable>(row).onPressed, isNotNull);
+  expect(
+    find.descendant(of: row, matching: find.byIcon(Icons.photo_camera)),
+    findsOneWidget,
+  );
+  expect(debugPlayerScreenshotCalls(), before, reason: '打开更多不应提前触发截图');
+
+  await t.tap(more);
+  expect(
+    await _waitForMorePhase(t, open: false),
+    isTrue,
+    reason: '再次点击后必须真正关闭并在有界时间内完成生产退场卸载',
+  );
+  expect(find.byType(PlayerMoreMenu), findsNothing, reason: '再点更多必须正常收起');
+}
+
 void main() {
   setUpAll(() {
     final dll = File('build/windows/x64/libmpv/libmpv-2.dll');
@@ -174,50 +350,18 @@ void main() {
     await mount(t);
 
     expect(
-      find.byTooltip('全屏'),
+      _fullscreenButton(),
       findsOneWidget,
-      reason:
-          '★★ 阳性对照：底栏**既有**的按钮必须在 —— 若这条不过，'
-          '说明底栏压根没渲染（仪器问题），下面的判据就没有意义',
+      reason: '★★ 阳性对照：实际底栏的既有全屏按钮必须仍在',
     );
+    expect(t.widget<ui.IconButton>(_fullscreenButton()).onPressed, isNotNull);
     expect(
-      find.byIcon(Icons.more_horiz),
-      findsOneWidget,
-      reason: '★★ 阳性对照之二：「更多」入口必须在（截图等低频项都收在它里面）',
-    );
-
-    /*
-     * ★★★ 2026-10-10（Owner 第 12 条）：判据⑫**改成了新行为**
-     * ```text
-     * 改前：底栏按钮行上有一枚相机按钮，排在齿轮左边（动作在入口左边的
-     *       「肌肉记忆契约」）。
-     * 改后：Owner 报「底部的按钮超级多」⇒ 低频项收进「更多」浮层，
-     *       相机**不再**是底栏上的一枚按钮，而是「更多 → 画面 → 截图」���一项。
-     * ```
-     * ★ 所以这里的判据是：
-     *   ① 底栏上**没有**相机按钮（收敛的证据）；
-     *   ② 「更多」那一项必须能打开、里面有截图（功能没丢的证据）。
-     * ★ 红度证明：把相机按钮重新塞回底栏按钮行 ⇒ 第①条立刻红。
-     */
-    expect(
-      find.byIcon(Icons.photo_camera),
+      find.descendant(of: _bottomBar(), matching: find.byIcon(Icons.photo_camera)),
       findsNothing,
-      reason:
-          '★★ 相机按钮不该再直接躺在底栏上 —— Owner 第 12 条要求把低频项'
-          '收进「更多」浮层。它现在是「更多 → 画面 → 截图」那一项。',
+      reason: '相机不应直接躺在底栏，低频截图项应收进更多',
     );
-    expect(
-      find.byTooltip('更多'),
-      findsOneWidget,
-      reason: '★「更多」的 tooltip 必须在（它是低频项的唯一出口）',
-    );
-    // 截图功能仍然可达：源码里那条入口必须还在
-    final src = File('lib/ui/player_page.dart').readAsStringSync();
-    expect(
-      src.contains("label: '截图'"),
-      isTrue,
-      reason: '★★ 截图功能不许删 —— 它在「更多 → 画面」分组里',
-    );
+    await _expectMoreScreenshotReachable(t);
+    await drain(t);
   });
 
   testWidgets('⑭ 1280x800 挂载后**没有** RenderFlex overflow', (t) async {
@@ -313,18 +457,12 @@ void main() {
 
   testWidgets('★ 触摸端也有截图入口（在「更多」浮层里，与桌面同一形态）', (t) async {
     await mount(t, isTouchOnly: true);
-    // ★★★ 2026-10-10（Owner 第 12 条）：判据从「触摸端有相机按钮」
-    //   **改成**「触摸端同样有截图入口」——
-    //   改后相机不再是底栏上的一枚按钮（低频项收进了「更多」），
-    //   所以这条不能再断言「相机按钮在触摸端也在」，
-    //   而要断言**功能仍然可达**（与桌面走同一形态，这本身是好事）。
-    // ★ 红度证明：把「更多」那一组从触摸端删掉 ⇒ 本条红。
     expect(
-      find.byIcon(Icons.more_horiz),
-      findsOneWidget,
-      reason:
-          '★★ 触摸端也必须有「更多」入口 —— 截图/设置/换源都在它里面。'
-          '（改前这里断言的是相机按钮；本轮它被收进了「更多」）',
+      find.descendant(of: _bottomBar(), matching: find.byIcon(Icons.photo_camera)),
+      findsNothing,
+      reason: '触摸模式也应把截图收在更多浮层中',
     );
+    await _expectMoreScreenshotReachable(t);
+    await drain(t);
   });
 }

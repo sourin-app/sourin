@@ -191,6 +191,8 @@ dependencies:
 
   window_manager: ^0.5.2
   ffi: ^2.2.0
+  # Screenshot encoding uses the existing locked image artifact.
+  image: 4.10.1
   path_provider: ^2.1.6
 
   # ★ m13655 (B)：还原窗口几何时要把它「夹」进显示器**工作区**（扣掉任务栏）。

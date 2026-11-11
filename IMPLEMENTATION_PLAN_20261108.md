@@ -1,6 +1,6 @@
 # 源影：源管理、Miuix 统一与稳定性实施计划
 
-更新：2026-11-11。状态：完整目标继续推进，全部18项反馈及多地址降级追加要求同等保留。用户新实测多数源无法播放，允许必要内嵌WASM；此前按用户许可并发3个gpt-6.1-sol/high分别推进取流能力、播放器稳定性和Miuix源管理，root负责整合、串行测试与实际验证。最新用户操作重新暴露AXTree错误，先前v43无错误仅对当时采样成立，不能扩展到现在。未完成真实播放/性能/稳定性验收，不作完成声明。
+更新：2026-11-12。状态：完整目标继续推进，全部18项反馈及多地址降级追加要求同等保留。用户新实测多数源无法播放，允许必要内嵌WASM；此前按用户许可并发3个gpt-6.1-sol/high分别推进取流能力、播放器稳定性和Miuix源管理，root负责整合、串行测试与实际验证。最新用户操作重新暴露AXTree错误，先前v43无错误仅对当时采样成立，不能扩展到现在。未完成真实播放/性能/稳定性验收，不作完成声明。
 
 2026-11-11 接手续做时，用户正在使用电脑。当前只进行隔离数据的后台测试和只读检查，测试进程采用低优先级、单编译任务与两个逻辑CPU限制。窗口激活、鼠标键盘、客户端导航、重启、热重载及更新运行中的DLL均留待用户允许界面操作后进行。
 
@@ -1123,3 +1123,13 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - The exact locally generated complete MP4 is 2,988,398 bytes, SHA256 A7F9B098190919564D466B5E6F2B46ECE3BEC6671E13748D02262DBF09307C67. The real NativePlayer decodes H.264 in software with the eight pre-open properties read back. Duration is 75,000ms and captured playback positions are 2,000ms and 3,533ms. Two actual 320x180 native bgr0 captures have stride 1,280 and 230,400 bytes each. Independent BGRA/PNG checks confirm exact color pixels, CRCs, hashes, nonuniform contrast/variance and 38,349 changed color pixels. Root also views both decoded PNGs. Typed fixture capture allocates three char-pointer slots with an explicit NULL and copies pixels before freeing the native node; it does not qualify or repair the production screenshot helper.
 - Source, main and reviewed dependency hashes remain unchanged during runtime. Both loopback servers join, Player disposal and its delayed-destruction scheduling window complete, and the owned Windows Job has zero retained processes with no forced cleanup or cleanup errors. Build and runtime use isolated profiles, below-normal child priority, two logical CPUs and one compiler task. These are fixture process cleanup facts, not ordinary application graceful-quit acceptance. Actual receipts are under .probe/qual-source-media-c5/.probe/ and .probe/source/next-complete-media-v2/runs/native-c5-b1/; the seven-section independent runtime audit is .probe/player-cover/next-complete-media-c5-review/native-c5-b1-independent.json.
 - The next isolated draft will exercise the current compiled core's real async FFI dispatch and streamproxy rewrite against the same loopback media. Performance review independently confirms that the prior offscreen shader warmup worsened its same-package startup comparison; it remains rejected. The old trace and this synthetic decoder experiment establish neither current desktop performance nor live service availability. The complete eighteen-item and additional source/proxy/protocol goal stays active: current external/cloud selected playback, artwork pixels, native audio/rendered interaction, desktop stability/performance, ordinary startup/quit and Owner acceptance remain open under the existing desktop, profile/cloud and remote-publication restrictions.
+
+
+## 2026-11-12 后台续做：截图与流取消
+
+- 当前完整18项及追加目标继续 active，真实客户端和桌面操作限制保持。三个智能体分别准备播放器、取流及UI独审；root串行运行低优先级、两个逻辑CPU的工具链。
+- C8实际走当前FFI/startAsync/callAsync、streamproxy重写和本地206请求，第二集parser ID7解码320×180，播放位置2000→3533ms，两图像有运动。夹具是两集而非七文件网盘；没有把它当外部源、网盘选集或核心自然关闭验收。
+- 原生截图的应用自有指针槽、NULL终止、成功节点释放和RGB编码实现已整合，保留C7/C9真实像素/字幕/回退证据；保存规则6项、回退3项通过。默认两native suite仍为skip，不记为native pass。播放器分析实际exit1、0error，16warning+8info与既有基线相同；helper唯一implementation_imports info保留。
+- C10/C11/C13的UI失败证据保留。More单击受到生产双击识别时序影响，固定pump320只提交单击回调，未推进随后淡入/退出卸载。最终t63按有界controller、动画端点和连续几何/命中等待，五个原用例全部通过，保留真实hitTestable、enabled、相机、S计数、sheet门控和关闭卸载断言，没有为测试改变生产菜单。
+- 流取消已整合：活动token首次请求取消，停止排队业务回填，保留done/error直到Future结算并清理timer。C12 owning源快照同载荷9个旧版matcher RED、9个修正版GREEN，两次正常退出后连续8秒Job0/noforce；这验证Dart逻辑，不证明真实core取消或listener shutdown。
+- 新完整Windows包仍需从这些本地提交重新构建并绑定普通lib/shell.dart、fresh core和全部runtime文件。真实PlayerPage截图落盘/反馈、外部与网盘播放、剩余封面、稳定性与性能、普通启动退出及Owner验收继续开放。

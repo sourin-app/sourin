@@ -50,6 +50,7 @@ class _ShellData {
       case 'list_tvbox_sources':
         return {'sources': <dynamic>[]};
       case 'get_home':
+      case 'get_provider_home':
       case 'list_favorites':
       case 'list_all_progress':
       case 'continue_watching':

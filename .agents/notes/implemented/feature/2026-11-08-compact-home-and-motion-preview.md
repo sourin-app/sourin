@@ -23,6 +23,8 @@ header, poster and navigation geometry stay governed by this layout decision.
 
 SettingsMotionPanel uses the production PageTransition implementation for an inline preview, repeats that preview on demand, and opens an ordinary MaterialPageRoute for navigation verification. It reads the same preference notifier as the shell. System reduced motion stays authoritative and is explained in place. No separate animation implementation or forced system override is introduced.
 
+A system preference change to reduced motion finishes the existing preview controller at its final value. Re-enabling animations leaves the cancelled preview settled. Changing the selected style or requesting another preview starts a fresh interval. Preserve the panel State and chosen style across this change.
+
 ## Alternatives considered
 
 - Remove the library from home: loses the user's frequent entry point.
@@ -32,3 +34,5 @@ SettingsMotionPanel uses the production PageTransition implementation for an inl
 ## Consequences
 
 At default text size, 360px and 1280px fixtures keep each card below 150px and the library region below 260px. Three layout/action tests and two animation/route tests pass, including enlarged text and reduced motion. These prove component behavior; they do not prove the user's original animation failure was caused by their system settings. Reconsider the layout after reviewing the populated native homepage in the product window.
+
+Running-preview coverage uses the rendered action, actual card geometry and its animation owner. A zero-time reduced-motion roundtrip must keep final geometry, completed owner status and no subsequent owner notifications. The ordinary control requires intermediate movement and a fresh replay after leaving reduced mode; unrelated package tickers do not define this boundary.

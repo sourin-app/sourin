@@ -10,13 +10,15 @@ Extends [compact home and motion preview](../feature/2026-11-08-compact-home-and
 
 The compact card reserves less than its fixed poster height when the system text scale is below one. Its Material card color also inherits the page background, making the full clickable region visually indistinguishable from the surrounding page.
 
-The shell always composites the outgoing page for the transition interval. Selecting no animation, or enabling system reduced motion, only disables the entering transformation; the old page remains underneath the new page.
+Disabling transition transforms without retiring the shell's outgoing page leaves old content underneath the new page. Retirement is needed both when navigation starts with no animation and when the effective preference changes during a running transition.
 
 ## Decision
 
 Keep the fixed poster and padding as the compact card's minimum height. Larger text retains the existing height expansion. Bind the card surface to the shared Miuix surface-container role, preserving the existing geometry and full-card action.
 
 Resolve the motion preference before starting the shell's outgoing transition. A direct switch removes the old page from painting in the first frame, cancels its transition timer, and stops the entering controller at its final value. The page remains mounted offstage so its state is preserved. Animated switches retain their existing outgoing interval and curve.
+
+The Shell State also observes system preference dependencies and subscribes to page-style changes. When effective motion becomes none during a pending exit, cancel its timer, clear the outgoing slot, restore the ordinary stack order and finish the shell-owned exit controller. Pages stay mounted with their State and scroll position; re-enabling animations cannot revive the cancelled interval. Remove the style listener on disposal.
 
 ## Alternatives considered
 
@@ -28,6 +30,8 @@ Resolve the motion preference before starting the shell's outgoing transition. A
 ## Consequences
 
 The compact-card checks read rendered poster bounds, the actual card surface and the detail callback. The shell checks read the production Offstage slots, require retained element identity, and retain an animated-switch positive control. These checks must run against both the changed tree and a clean f85abfe checkout; source-text presence or stored preference equality is insufficient.
+
+Running-cancellation checks require outgoing Offstage retirement at zero elapsed time, retained page State, final current-page geometry and released snapshots. Restore animations before the old interval would expire and require no content or motion to return. Compare this path against a clean baseline predating its retirement change; retain an ordinary running-animation control.
 
 Native acceptance must include light/dark populated home cards at normal and reduced font size, plus animated and direct tab switches. Widget results alone do not establish the absence of visible trailing content in the Windows renderer. The selected logo assets and Windows native icon bindings are outside this change.
 

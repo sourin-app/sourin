@@ -36,6 +36,14 @@ class _SettingsMotionPanelState extends State<SettingsMotionPanel>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Finish a running preview when the system disables motion. Removing the
+    // transform alone leaves its ticker alive and lets it resume on re-enable.
+    if (MotionPrefs.reduce(context)) _animation.value = 1;
+  }
+
+  @override
   void dispose() {
     _curved.dispose();
     _animation.dispose();

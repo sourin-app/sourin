@@ -3208,6 +3208,7 @@ class _ShellPageState extends State<ShellPage>
   @override
   void initState() {
     super.initState();
+    PageTransitionStyleStore.current.addListener(_onTransitionStyleChanged);
 
     /*
      * ★ 核心启动失败 → 打一条**可验证**的日志（任务 AM）
@@ -3899,6 +3900,32 @@ class _ShellPageState extends State<ShellPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Observe the system preference even when no exit is pending, so a later
+    // change also reaches the owner of the outer Offstage slots.
+    if (MotionPrefs.resolvedCurrent(context) == PageTransitionStyle.none) {
+      _retireTabExit();
+    }
+  }
+
+  void _onTransitionStyleChanged() {
+    if (_leavingTab != null &&
+        MotionPrefs.resolvedCurrent(context) == PageTransitionStyle.none) {
+      setState(_retireTabExit);
+    }
+  }
+
+  void _retireTabExit() {
+    if (_leavingTab == null) return;
+    _leavingTimer?.cancel();
+    _leavingTimer = null;
+    _leavingTab = null;
+    _stackOrder = AppTab.values.toList();
+    _leaveC.value = 1;
+  }
+
+  @override
   void dispose() {
     // ★ 必须注销 —— 否则页面销毁后 handler 还在，
     //   引用已 dispose 的 State 会抛异常（setState after dispose）
@@ -3912,6 +3939,7 @@ class _ShellPageState extends State<ShellPage>
     widget.liveChannelStep?.removeListener(_onLiveChannelStep);
     // ★ 2026-10-13：路由遮挡 listener 也必须注销（与 initState 配对）
     widget.occlusion?.removeListener(_syncVisibility);
+    PageTransitionStyleStore.current.removeListener(_onTransitionStyleChanged);
     // ★ 释放可见性（task-41）：权威值 + 它的 bool 投影都要释放
     //   ⚠️ 顺序无所谓（两者独立），但**两个都必须释放** ——
     //      只释放一个会漏（本项目踩过"两处同构必须一起改"）。

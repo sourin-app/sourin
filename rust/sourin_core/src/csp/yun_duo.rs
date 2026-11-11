@@ -203,7 +203,7 @@ impl YunDuo {
                 }
                 out.push(CspEpisode {
                     // ★ 编码三个值：play 要 line（vodFrom）+ 值（url）
-                    id: format!("{line}|{ep_name}|{val}"),
+                    id: encode_ep_id(&line, &ep_name, &val),
                     title: ep_name,
                     flag: line.clone(),
                 });
@@ -223,24 +223,39 @@ fn head(s: &str) -> String {
     s.chars().take(160).collect::<String>().replace('\n', " ")
 }
 
-/// 从剧集 id（`线路|集名|值`）拆出 `(线路, 值)` —— **抽成纯函数以便门禁驱动**
-///
-/// # 为什么用 `|` 而不用别的分隔符
-/// ```text
-/// 值本身是 base64url 字符集（`A-Za-z0-9_-`）+ 可能含 `%`（实测 CO4K 那条带 `%2F`）
-/// ⇒ **不含 `|`** ⇒ 用 `|` 分隔**不会歧义**。
-/// ★ 集名里可能含中文/`$`（实测"普通话版"、"20261022上"）⇒ 用 `splitn(3)` 取前两段、
-///   剩下整段都是值（不能用 `split('|')` —— 那只在多段时才安全）。
-/// ```
+/// Preserve the ordinary stored wire shape. Separator-bearing line/title fields
+/// use a tagged JSON tuple; its URL-safe base64 payload contains no pipes.
+fn encode_ep_id(line: &str, name: &str, value: &str) -> String {
+    if !line.contains('|') && !name.contains('|') {
+        return format!("{line}|{name}|{value}");
+    }
+    let tuple = serde_json::to_vec(&(line, name, value))
+        .expect("YunDuo episode identity serializes");
+    format!("yunduo:{}", super::shared::b64_encode_url(&tuple))
+}
+
+/// Both persisted pipe ids and newly escaped identities resolve to the exact
+/// selected line and opaque value. The display title never enters that value.
 pub fn parse_ep_id(id: &str) -> Option<(String, String)> {
-    let mut it = id.splitn(3, '|');
-    let line = it.next()?.trim().to_string();
-    let _name = it.next()?.trim().to_string();
-    let val = it.next()?.trim().to_string();
-    if line.is_empty() || val.is_empty() {
+    let (line, value) = if id.contains('|') {
+        let mut parts = id.splitn(3, '|');
+        let line = parts.next()?.to_string();
+        let _name = parts.next()?;
+        let value = parts.next()?.to_string();
+        (line, value)
+    } else {
+        let encoded = id.strip_prefix("yunduo:")?;
+        let bytes = super::shared::b64_decode(encoded).ok()?;
+        let (line, _name, value): (String, String, String) =
+            serde_json::from_slice(&bytes).ok()?;
+        (line, value)
+    };
+    let line = line.trim().to_string();
+    let value = value.trim().to_string();
+    if line.is_empty() || value.is_empty() {
         return None;
     }
-    Some((line, val))
+    Some((line, value))
 }
 
 #[async_trait]
@@ -251,6 +266,10 @@ impl CspSite for YunDuo {
 
     fn class(&self) -> &'static str {
         Self::CLASS
+    }
+
+    fn accepts_selected_episode_id(&self, id: &str) -> bool {
+        parse_ep_id(id).is_some()
     }
 
     /// 首页：`/api.php/web/index/home` → `data.categories[]`
@@ -775,3 +794,7 @@ mod tests {
             se.items.first().map(|i| i.title.clone()));
     }
 }
+
+#[cfg(test)]
+#[path = "yun_duo_identity_next_tests_v1.rs"]
+mod identity_next_tests_v1;

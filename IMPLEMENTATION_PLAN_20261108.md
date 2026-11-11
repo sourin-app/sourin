@@ -1150,3 +1150,10 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 五个直接相关测试文件的51用例，在旧版及候选实际都为48通过、相同3失败、无跳过。三处是既有的占位色静态检查、额外层断言和旧构造参数断言；不把该组合写成全绿。新baseline运行与既有candidate运行逐例及来源绑定对照，候选未重跑；旧candidate门禁的失败状态保留。
 - 仅分析PosterCard及新四用例文件：baseline为0错误/0警告/0info，candidate为0错误/0警告/1info（if-return括号样式）。整合保持精确已测源码，没有把此有限结果写成全项目分析通过。旧回调跨revision竞态另有源码保护审查，replacement用例不冒充强制该竞态的实测。
 - C6完整包接着绑定这两个新修复及既有截图/取消实现。loopback组件和软件截图结果不替代当前客户端封面图像、外部/云盘播放、桌面稳定性/性能、普通启动退出或Owner验收；完整目标保持active。
+
+
+## 2026-11-12 后台续做：云朵选集身份
+
+- 云朵在line或title含pipe时采用tagged三字符串tuple，普通detail ID及旧opaque值保留原字节；生产CspProvider通过同一parser识别显式选集。固定四用例旧版2个身份断言失败、2个控制通过，候选4项通过；同一新编译EXE的23个既有用例全部通过、0忽略。
+- 两轮原编译的派生进程drain门槛失败并强制清理，原compiler gate仍failed；各自同次编译EXE的独立runtime正常退出且连续八秒Job0/无force，未改写失败记录。最后源码只改一处注释versioned为tagged，与实际已测逻辑逐字相同，fresh release/package另绑定最终字节。
+- 公开匿名home/list/detail/search成功，production decoder返回一个媒体候选；尚未获取媒体、首帧或指定集live请求身份实测，不称真实外部播放恢复。收据见新云朵Agent Note。完整18项及追加目标继续active，真实云盘、桌面/性能、普通退出和Owner验收仍开放。

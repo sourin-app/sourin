@@ -108,7 +108,7 @@ void main() {
       expect(body.contains('return _failLine(colors, it.error);'), isTrue,
           reason: '★★ 失败分支必须**先于**成功分支返回');
       final iFail = body.indexOf('if (!it.ok) {');
-      final iOk = body.indexOf('final text = it.hasChanges');
+      final iOk = body.indexOf('final text = hasActionableDifference');
       expect(iFail > 0 && iOk > iFail, isTrue,
           reason: '★★ 失败判断必须在成功文案之前（顺序反了就会把失败说成最新）');
     });
@@ -124,8 +124,8 @@ void main() {
       final i = body.indexOf("'已是最新（远端 \${it.remoteConvertible} 个可转换站点）'");
       expect(i > 0, isTrue, reason: '应有已是最新文案');
       final seg = body.substring(i - 160 < 0 ? 0 : i - 160, i);
-      expect(seg.contains('it.hasChanges'), isTrue,
-          reason: '★★ 已是最新必须挂在 it.hasChanges 的 false 支上');
+      expect(seg.contains('hasActionableDifference'), isTrue,
+          reason: '★★ 已是最新必须挂在 hasActionableDifference 的 false 支上');
     });
 
     test('★ 还没检测过（_check == null）与检测失败是两种文案', () {

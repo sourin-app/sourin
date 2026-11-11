@@ -61,9 +61,11 @@ JS 插件源卡片有更新时间（task-7）但 TVBox 原生源卡片没有。
   与定时循环并发可互覆盖章（低概率自愈），下批收口。
 
 
-### 2026-11-11 actual live update extension
+## Current manual refresh scope
 
 [Actual live refresh](../bug-fix/2026-11-11-tvbox-live-actual-refresh.md) adds
-independent live preview/outcomes to the representative update commands.
-The conservative VOD-only deletion choice and clock semantics above remain.
-Pure-live origin enumeration is not established by that extension.
+independent live preview/outcomes. [Exact parent routing](../bug-fix/2026-11-11-tvbox-origin-refresh-identity.md)
+accepts parent IDs without VOD and stamps the resolved owned VOD IDs, including
+unchanged IDs, rather than unrelated same-URL parents. The conservative VOD-only
+deletion policy remains. The current scheduler still enumerates VOD sidecar
+links; pure-live enumeration and a parent-level update clock remain open.

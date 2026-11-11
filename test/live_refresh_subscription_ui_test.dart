@@ -377,7 +377,7 @@ void main() {
   for (final removedOnly in [false, true]) {
     testWidgets(
       removedOnly
-          ? 'old VOD removal-only JSON keeps its report-only gate'
+          ? 'old VOD removal-only JSON offers opt-in deletion without automatic writes'
           : 'old unchanged JSON preserves latest summary and no application',
       (tester) async {
         final oldItem = _item(
@@ -402,9 +402,15 @@ void main() {
         bool? closed;
         await _openDialog(tester, onClosed: (value) => closed = value);
         await _tap(tester, find.text('检测更新'));
-        expect(find.text('已是最新（远端 3 个可转换站点）'), findsOneWidget);
-        expect(find.text('应用更新'), findsNothing);
-        expect(find.byType(ui.SwitchListTile), findsNothing);
+        if (removedOnly) {
+          expect(find.text('发现更新：远端已消失 1'), findsOneWidget);
+          expect(find.text('应用更新'), findsOneWidget);
+          expect(tester.widget<ui.SwitchListTile>(_toggle('同时删除远端已消失的站')).value, isFalse);
+        } else {
+          expect(find.text('已是最新（远端 3 个可转换站点）'), findsOneWidget);
+          expect(find.text('应用更新'), findsNothing);
+          expect(find.byType(ui.SwitchListTile), findsNothing);
+        }
         if (removedOnly) {
           expect(find.text('远端配置里已经没有这些站（默认不删，只报告）：'), findsOneWidget);
           expect(find.text('· 旧点播站'), findsOneWidget);

@@ -17,6 +17,7 @@ import '../widgets/settings_dropdown.dart';
 import '../widgets/settings_sub_page.dart';
 import '../widgets/source_bar.dart' show sourceDisplayLabel;
 import '../widgets/source_address_fields.dart';
+import '../widgets/tvbox_source_panel.dart';
 import 'source_discovery_page.dart';
 
 enum ManagedSourceType {
@@ -269,6 +270,20 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
       .where((o) => o.id == _originId && isTvboxSubscriptionOrigin(o))
       .firstOrNull;
 
+  Future<void> _updateOrigin(SourceOrigin origin) async {
+    if (_busy) return;
+    final changed = await TvboxUpdateDialog.show(
+      context,
+      id: origin.id,
+      name: origin.name.trim().isEmpty ? 'TVBox 订阅' : origin.name,
+      sourceUrl: origin.primaryUrl,
+      readOnlySourceUrl: true,
+    );
+    if (!mounted || !changed) return;
+    widget.onSourcesChanged();
+    await _load();
+  }
+
   Future<void> _editOrigin(SourceOrigin origin) async {
     final changed = await showAppDialog<bool>(
       context: context,
@@ -412,6 +427,11 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
               key: const ValueKey('source-origin-edit'),
               onPressed: _busy ? null : () => _editOrigin(origin),
               child: const Text('编辑地址'),
+            ),
+            ui.TextButton(
+              key: const ValueKey('source-origin-update'),
+              onPressed: _busy ? null : () => _updateOrigin(origin),
+              child: const Text('订阅更新'),
             ),
           ],
         ),

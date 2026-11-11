@@ -1878,18 +1878,31 @@ fn prepare_live_subscription_refresh(
     apply_new: bool,
 ) -> std::result::Result<LiveSubscriptionRefresh, String> {
     let catalog = crate::source_catalog::catalog(state)?;
-    let previous = catalog.origins.iter()
-        .find(|origin| origin.kind == "tvbox"
-            && origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
-        .map(|origin| origin.related_provider_ids.clone()).unwrap_or_default();
-    let known_live: HashSet<String> = catalog.origins.iter()
+    let previous = catalog
+        .origins
+        .iter()
+        .find(|origin| {
+            origin.kind == "tvbox"
+                && (origin.id == tvbox_provider_id
+                    || origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
+        })
+        .map(|origin| origin.related_provider_ids.clone())
+        .unwrap_or_default();
+    let known_live: HashSet<String> = catalog
+        .origins
+        .iter()
         .filter(|origin| origin.kind == "live")
-        .flat_map(|origin| origin.provider_ids.iter().cloned()).collect();
+        .flat_map(|origin| origin.provider_ids.iter().cloned())
+        .collect();
     let mut plan = LiveSubscriptionRefresh::default();
     let mut remote_ids = HashSet::new();
     for live in lives {
         let name = live.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let url = live.get("url").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let url = live
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
         if url.is_empty() {
             continue;
         }
@@ -1918,8 +1931,11 @@ fn prepare_live_subscription_refresh(
     }
     for id in &previous {
         if !remote_ids.contains(id) {
-            let name = state.registry.get(id)
-                .map(|provider| provider.manifest().name.clone()).unwrap_or_default();
+            let name = state
+                .registry
+                .get(id)
+                .map(|provider| provider.manifest().name.clone())
+                .unwrap_or_default();
             plan.removed.push(serde_json::json!({"id":id,"name":name}));
         }
     }
@@ -1938,15 +1954,19 @@ fn apply_live_subscription_refresh(
         return Ok(false);
     }
     let catalog = crate::source_catalog::catalog(state)?;
-    if !catalog.origins.iter().any(|origin| origin.kind == "tvbox"
-        && origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
-    {
+    if !catalog.origins.iter().any(|origin| {
+        origin.kind == "tvbox"
+            && (origin.id == tvbox_provider_id
+                || origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
+    }) {
         return Err("没有找到此 TVBox 源的父订阅，未应用直播变化".into());
     }
     if !plan.to_register.is_empty() {
         // Publish the staged rows only after their real providers-file save.
         // Holding the write lock avoids rolling back unrelated concurrent edits.
-        let mut list = state.third_party.write()
+        let mut list = state
+            .third_party
+            .write()
             .map_err(|_| "第三方源列表被污染".to_string())?;
         let mut next = list.clone();
         for row in &plan.to_register {
@@ -1968,9 +1988,8 @@ fn apply_live_subscription_refresh(
             .with_context(state.proxy.clone(), state.data_dir.clone());
         state.registry.register(Arc::new(provider));
     }
-    let membership_changed = crate::source_catalog::record_live_membership(
-        state, tvbox_provider_id, &plan.related_ids,
-    )?;
+    let membership_changed =
+        crate::source_catalog::record_live_membership(state, tvbox_provider_id, &plan.related_ids)?;
     crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
     if membership_changed || !plan.to_register.is_empty() {
         crate::commands_provider::touch_providers(state);
@@ -1978,6 +1997,26 @@ fn apply_live_subscription_refresh(
     Ok(membership_changed || !plan.to_register.is_empty())
 }
 
+/// Missing sites is meaningful when lives is a real array. Present malformed
+/// sections are errors, never an empty list that could remove saved attribution.
+pub(crate) fn has_direct_tvbox_config(
+    cfg: &serde_json::Value,
+) -> std::result::Result<bool, String> {
+    for key in ["sites", "lives"] {
+        if let Some(section) = cfg.get(key) {
+            if !section.is_array() {
+                return Err(format!("配置里的 {key} 段不是数组"));
+            }
+        }
+    }
+    if cfg.get("sites").is_some() || cfg.get("lives").is_some() {
+        return Ok(true);
+    }
+    if cfg.get("urls").and_then(|value| value.as_array()).is_some() {
+        return Ok(false);
+    }
+    Err("配置缺少 sites / lives / urls".into())
+}
 pub async fn import_tvbox_config(
     state: &crate::state::AppState,
     input: &str,
@@ -2024,7 +2063,7 @@ pub async fn import_tvbox_config_with_options(
     //   ```
     //   ⚠️ 仍然**不会**把多仓当成可导入的配置（那是假装有能力）——
     //      只是把「转不了」说清楚，并给出下一步能用的东西。
-    if cfg.get("sites").and_then(|v| v.as_array()).is_none() {
+    if !has_direct_tvbox_config(&cfg)? {
         let repos = multi_repo_repos(&cfg, &base_url);
         if !repos.is_empty() {
             return Ok(serde_json::json!({
@@ -2690,9 +2729,8 @@ pub fn tvbox_update_due(last_update_at: i64, interval_secs: i64, now: i64, enabl
 ///
 /// # 为什么按链接去重
 ///
-/// 一份配置产出几十个源共用一个链接；`update_tvbox_source` 对任一代表源
-/// 调用一次就会核对整条链接并给全部 in_link 源盖章（见 `stamp_link_update`）
-/// ⇒ 每条链接只挑**第一个**到点的源当代表，绝不重复下载。
+/// 这是现行定时器的 sidecar 兼容选择器：每条链接只挑第一个到点的源。
+/// 更新入口按已解析父订阅身份处理并盖章；此选择器尚不枚举零点播父订阅。
 pub fn collect_due_links(
     sources: &[(String, String, String, Option<String>)],
     metas: &std::collections::HashMap<String, TvboxSourceMeta>,
@@ -3399,162 +3437,250 @@ pub fn remove_tvbox_source(
 ///
 /// 一份配置产出几十个源，它们共用同一个链接 —— 一次下载就能对比全部，
 /// 而不是每个源各下一遍（96 个站点就是 96 次请求）。
+#[derive(Clone)]
+struct TvboxRefreshTarget {
+    origin: Option<crate::source_catalog::SourceOrigin>,
+    url: String,
+    ids: Vec<String>,
+}
+
+impl TvboxRefreshTarget {
+    fn origin_id(&self) -> Option<&str> {
+        self.origin.as_ref().map(|origin| origin.id.as_str())
+    }
+    fn membership_key(&self) -> &str {
+        self.origin_id()
+            .or_else(|| self.ids.first().map(String::as_str))
+            .unwrap_or("")
+    }
+    async fn fetch(
+        &self,
+        state: &crate::state::AppState,
+    ) -> std::result::Result<(String, String), String> {
+        match &self.origin {
+            Some(origin) => crate::source_catalog::fetch_tvbox_origin(state, origin).await,
+            None => crate::source_catalog::fetch_validated(
+                &state.proxy,
+                "tvbox",
+                &[self.url.clone()],
+                Some(TVBOX_CONFIG_UA),
+                crate::source_catalog::validate_tvbox,
+            )
+            .await
+            .map(|(text, actual, _)| (text, actual))
+            .map_err(|error| format!("下载配置失败：{error}")),
+        }
+    }
+}
+
+fn resolve_tvbox_refresh_target(
+    state: &crate::state::AppState,
+    id: &str,
+    sources: &[(String, String, String, Option<String>)],
+    metas: &std::collections::HashMap<String, TvboxSourceMeta>,
+) -> std::result::Result<TvboxRefreshTarget, String> {
+    let catalog = crate::source_catalog::catalog(state)?;
+    let provider = sources.iter().any(|(sid, _, _, _)| sid == id);
+    let exact = catalog.origins.iter().find(|origin| origin.id == id);
+    let owners: Vec<_> = catalog
+        .origins
+        .iter()
+        .filter(|origin| origin.kind == "tvbox" && origin.provider_ids.iter().any(|sid| sid == id))
+        .collect();
+    if owners.len() > 1 {
+        return Err("点播来源的父订阅身份不明确".into());
+    }
+    if provider
+        && exact.is_some_and(|origin| {
+            owners.first().map(|owner| owner.id.as_str()) != Some(origin.id.as_str())
+        })
+    {
+        return Err("订阅与点播来源的身份冲突".into());
+    }
+    let origin = if provider {
+        owners.first().copied()
+    } else {
+        exact.filter(|origin| origin.kind == "tvbox")
+    };
+    if let Some(origin) = origin.filter(|origin| !origin.primary_url.trim().is_empty()) {
+        crate::source_catalog::validated_urls(&origin.primary_url, &origin.backup_urls)?;
+        let ids = sources
+            .iter()
+            .filter(|(sid, _, _, _)| origin.provider_ids.contains(sid))
+            .map(|(sid, _, _, _)| sid.clone())
+            .collect();
+        return Ok(TvboxRefreshTarget {
+            origin: Some(origin.clone()),
+            url: origin.primary_url.trim().to_owned(),
+            ids,
+        });
+    }
+    if !provider {
+        return Err(format!("没有找到可更新的 TVBox 订阅 {id}"));
+    }
+    let url = norm_source_url(metas.get(id).and_then(|meta| meta.source_url.as_deref()))
+        .ok_or("这个源没有订阅链接，无法更新（请先填入链接）")?;
+    // Explicit compatibility path for source rows with no URL-backed owner.
+    let ids = sources
+        .iter()
+        .filter(|(sid, _, _, _)| {
+            !catalog
+                .origins
+                .iter()
+                .any(|origin| {
+                    origin.kind == "tvbox"
+                        && !origin.primary_url.trim().is_empty()
+                        && origin.provider_ids.contains(sid)
+                })
+                && norm_source_url(metas.get(sid).and_then(|meta| meta.source_url.as_deref()))
+                    .as_deref()
+                    == Some(url.as_str())
+        })
+        .map(|(sid, _, _, _)| sid.clone())
+        .collect();
+    Ok(TvboxRefreshTarget {
+        origin: None,
+        url,
+        ids,
+    })
+}
+
+fn stamp_refresh_target(
+    dir: &std::path::Path,
+    target: &TvboxRefreshTarget,
+    added_ids: &[String],
+    now: i64,
+    ok: bool,
+    error: Option<String>,
+) {
+    let _guard = TVBOX_META_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut metas = load_tvbox_metas(dir);
+    let mut touched = false;
+    for id in target.ids.iter().chain(added_ids) {
+        if let Some(meta) = metas.get_mut(id) {
+            touched = true;
+            meta.last_update_at = now;
+            meta.last_update_ok = ok;
+            meta.last_update_error = if ok { None } else { error.clone() };
+        }
+    }
+    if !touched {
+        return;
+    }
+    if let Err(error) = save_tvbox_metas(dir, &metas) {
+        log::warn!("写 TVBox 订阅更新时间失败：{error}");
+    }
+}
+
 pub async fn check_tvbox_updates(
     state: &crate::state::AppState,
     only_id: Option<&str>,
 ) -> std::result::Result<serde_json::Value, String> {
     let sources = local_tvbox_sources(state)?;
     let metas = load_tvbox_metas(&state.data_dir);
-
-    // 按 id 过滤（只查一个源）
-    let picked: Vec<(String, String, String, Option<String>)> = match only_id {
-        Some(want) => {
-            let one = sources
-                .iter()
-                .find(|(id, _, _, _)| id == want)
-                .ok_or_else(|| format!("没有找到 TVBox 源 {want}"))?;
-            vec![one.clone()]
-        }
-        None => sources.clone(),
-    };
-
-    // 某个源属于哪个订阅链接（None = 没有链接，查不了）
-    let url_of = |id: &str| -> Option<String> {
-        metas
-            .get(id)
-            .and_then(|m| m.source_url.clone())
-            .filter(|u| !u.trim().is_empty())
-    };
-
-    // 要查的链接（去重；BTreeSet 保证顺序稳定，结果可复现）
-    let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut skipped_ids: Vec<String> = Vec::new();
-    for (id, _, _, _) in picked.iter() {
-        match url_of(id) {
-            Some(u) => {
-                wanted.insert(u);
+    let mut targets = Vec::new();
+    let mut skipped_ids = Vec::new();
+    if let Some(id) = only_id {
+        match resolve_tvbox_refresh_target(state, id, &sources, &metas) {
+            Ok(target) => targets.push(target),
+            Err(error) if error == "这个源没有订阅链接，无法更新（请先填入链接）" => {
+                skipped_ids.push(id.to_owned())
             }
-            None => skipped_ids.push(id.clone()),
+            Err(error) => return Err(error),
+        }
+    } else {
+        let catalog = crate::source_catalog::catalog(state)?;
+        for origin in catalog
+            .origins
+            .iter()
+            .filter(|origin| origin.kind == "tvbox" && !origin.primary_url.trim().is_empty())
+        {
+            targets.push(resolve_tvbox_refresh_target(
+                state, &origin.id, &sources, &metas,
+            )?);
+        }
+        for (id, _, _, _) in &sources {
+            if targets.iter().any(|target| target.ids.contains(id)) {
+                continue;
+            }
+            if norm_source_url(metas.get(id).and_then(|meta| meta.source_url.as_deref())).is_none()
+            {
+                skipped_ids.push(id.clone());
+                continue;
+            }
+            let target = resolve_tvbox_refresh_target(state, id, &sources, &metas)?;
+            if !targets.iter().any(|old| {
+                old.origin_id() == target.origin_id()
+                    && (old.origin.is_some() || old.url == target.url)
+            }) {
+                targets.push(target);
+            }
         }
     }
-
-    // 每个链接 → 配对池
-    //
-    // ★ 配对池是**全部** TVBox 源，不只是这个链接下的：
-    //   两份配置里出现同一个站是常态，认不出来就会重复注册成两张一样的卡片。
-    //   LocalSite::in_link 区分「属于本订阅」（可报 removed / 可应用变更）
-    //   与「别的订阅导入的」（只认出来、绝不动它）。
-    let mut groups: std::collections::BTreeMap<String, Vec<LocalSite>> =
-        std::collections::BTreeMap::new();
-    for url in wanted.iter() {
-        let pool: Vec<LocalSite> = sources
+    targets.sort_by(|a, b| (&a.url, a.origin_id()).cmp(&(&b.url, b.origin_id())));
+    let checked = targets.len();
+    let mut items = Vec::new();
+    for target in targets {
+        let origin_id = target.origin_id();
+        let ids = &target.ids;
+        let url = &target.url;
+        let (text, actual_url) = match target.fetch(state).await {
+            Ok(result) => result,
+            Err(error) => {
+                items.push(serde_json::json!({"sourceUrl":url,"originId":origin_id,"ids":ids,"ok":false,"error":error}));
+                continue;
+            }
+        };
+        let cfg = parse_loose_json(&text).map_err(|error| format!("配置不是合法 JSON：{error}"))?;
+        if !has_direct_tvbox_config(&cfg)? {
+            let repos = multi_repo_repos(&cfg, &actual_url);
+            items.push(serde_json::json!({"sourceUrl":url,"originId":origin_id,"ids":ids,"ok":false,
+                "multiRepo":!repos.is_empty(),"repos":repos,"error":"远端链接现在是一份多仓配置，无法直接对比站点列表"}));
+            continue;
+        }
+        let locals: Vec<LocalSite> = sources
             .iter()
+            .filter(|(sid, _, _, _)| ids.contains(sid))
             .map(|(sid, name, api, ext)| LocalSite {
                 id: sid.clone(),
-                key: metas.get(sid).map(|m| m.site_key.clone()).unwrap_or_default(),
+                key: metas
+                    .get(sid)
+                    .map(|meta| meta.site_key.clone())
+                    .unwrap_or_default(),
                 name: name.clone(),
                 api: api.clone(),
                 ext: ext.clone(),
-                in_link: url_of(sid).as_deref() == Some(url.as_str()),
+                in_link: true,
             })
-            .filter(|site| site.in_link)
             .collect();
-        groups.insert(url.clone(), pool);
-    }
-
-    let mut items = Vec::new();
-    for (url, locals) in groups.iter() {
-        // 这条链接"拥有"的源（别的订阅的源不算在内）
-        let mut ids: Vec<String> = locals
-            .iter()
-            .filter(|l| l.in_link)
-            .map(|l| l.id.clone())
-            .collect();
-        ids.sort();
-
-        let (text, actual_url) = match crate::source_catalog::fetch_tvbox(state, url).await {
-            Ok(t) => t,
-            Err(e) => {
-                items.push(serde_json::json!({
-                    "sourceUrl": url,
-                    "ids": ids,
-                    "ok": false,
-                    "error": e,
-                }));
-                continue;
-            }
-        };
-        let cfg = match parse_loose_json(&text) {
-            Ok(c) => c,
-            Err(e) => {
-                items.push(serde_json::json!({
-                    "sourceUrl": url,
-                    "ids": ids,
-                    "ok": false,
-                    "error": format!("配置不是合法 JSON：{e}"),
-                }));
-                continue;
-            }
-        };
-        // 链接后来变成了「多仓」—— 如实说明，不硬凑一份对比
-        if cfg.get("sites").and_then(|v| v.as_array()).is_none() {
-            let repos = multi_repo_repos(&cfg, &actual_url);
-            items.push(serde_json::json!({
-                "sourceUrl": url,
-                "ids": ids,
-                "ok": false,
-                "multiRepo": !repos.is_empty(),
-                "repos": repos,
-                "error": if repos.is_empty() {
-                    "远端配置里没有 sites 段（可能是直播源配置或空配置）".to_string()
-                } else {
-                    "远端链接现在是一份「多仓」配置（只有 urls，没有 sites），无法直接对比站点列表".to_string()
-                },
-            }));
-            continue;
-        }
-
         let (jobs, skipped, lives) = collect_sites(&cfg, &actual_url);
-        let live_refresh = prepare_live_subscription_refresh(state, &ids[0], &lives, true)?;
+        let live_refresh =
+            prepare_live_subscription_refresh(state, target.membership_key(), &lives, true)?;
         let remote: Vec<RemoteSite> = jobs
             .iter()
-            .map(|j| RemoteSite {
-                key: j.key.clone(),
-                name: j.name.clone(),
-                api: normalize_api_url(&j.api),
-                // 空串 ⇒ None（与落盘口径一致：没写 ≠ 写了空）
-                ext: {
-                    let e = j.ext.trim();
-                    if e.is_empty() { None } else { Some(e.to_string()) }
+            .map(|job| RemoteSite {
+                key: job.key.clone(),
+                name: job.name.clone(),
+                api: normalize_api_url(&job.api),
+                ext: if job.ext.trim().is_empty() {
+                    None
+                } else {
+                    Some(job.ext.trim().to_owned())
                 },
             })
             .collect();
         let diff = diff_sites(&locals, &remote);
-
-        items.push(serde_json::json!({
-            "sourceUrl": url,
-            "ids": ids,
-            "ok": true,
-            "remoteTotalSites": cfg.get("sites").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
-            "remoteConvertible": jobs.len(),
-            "remoteUnsupported": skipped.len(),
-            "liveHasChanges": live_refresh.has_changes(),
-            "liveAdded": live_refresh.added,
-            "liveRemoved": live_refresh.removed,
-            "added": diff.added,
-            "removed": diff.removed,
-            "changed": diff.changed,
-            "unchanged": diff.unchanged,
-            "unchangedForeign": diff.unchanged_foreign,
-        }));
+        items.push(serde_json::json!({"sourceUrl":url,"originId":origin_id,"ids":ids,"ok":true,
+            "remoteTotalSites":cfg.get("sites").and_then(|value|value.as_array()).map(|rows|rows.len()).unwrap_or(0),
+            "remoteConvertible":jobs.len(),"remoteUnsupported":skipped.len(),"liveHasChanges":live_refresh.has_changes(),
+            "liveAdded":live_refresh.added,"liveRemoved":live_refresh.removed,"added":diff.added,"removed":diff.removed,
+            "changed":diff.changed,"unchanged":diff.unchanged,"unchangedForeign":diff.unchanged_foreign}));
     }
-
-    Ok(serde_json::json!({
-        "items": items,
-        "checked": groups.len(),
-        "skipped": skipped_ids.len(),
-        "skippedIds": skipped_ids,
-    }))
+    Ok(
+        serde_json::json!({"items":items,"checked":checked,"skipped":skipped_ids.len(),"skippedIds":skipped_ids}),
+    )
 }
 
 /// 一键应用订阅链接上的更新
@@ -3562,7 +3688,7 @@ pub async fn check_tvbox_updates(
 /// # 语义（用户点的是某张卡，但更新的是整份订阅）
 ///
 /// ```text
-/// ① 重新下载这个源所属的订阅链接（同一个链接下的源一起处理）
+/// ① 重新下载这个源或父订阅的配置（按父订阅身份处理其拥有的源）
 /// ② 远端还有的站  → 重新探测 → 沿用原 id 原地覆盖
 ///    （沿用 id 才能保住用户设过的启用状态/排序/收藏）
 /// ③ 远端新增的站  → 注册进来（apply_new=false 时只报告）
@@ -3586,7 +3712,7 @@ static UPDATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// 内层 _inner 失败时只把 Err 抛给调用方 —— 手动更新界面能显示，
 /// 但定时更新只拿得到日志。这里统一收口：
 ///   · log::warn!（落日志，stderr 可见）
-///   · 给同一条链接的全部源盖「失败章」（时间 + 原因）
+///   · 给已解析目标拥有的全部点播源盖「失败章」（时间 + 原因）
 ///     ⇒ 界面的「上次更新」行如实显示失败，而不是停留在旧的成功时间
 /// 「没有找到这个源 / 没有订阅链接」不算更新失败（根本没有可更新的东西）⇒ 不盖章。
 /// ```
@@ -3597,20 +3723,22 @@ pub async fn update_tvbox_source(
     delete_missing: bool,
 ) -> std::result::Result<serde_json::Value, String> {
     let _guard = UPDATE_LOCK.lock().await;
-    let r = update_tvbox_source_inner(state, id, apply_new, delete_missing).await;
-    if let Err(e) = &r {
-        // ★ P3-2：与 stamp 同一把尺子（否则"链接带空白 + 更新失败"盖不上失败章）
-        let url = norm_source_url(
-            read_tvbox_meta(&state.data_dir, id)
-                .and_then(|m| m.source_url)
-                .as_deref(),
+    let sources = local_tvbox_sources(state)?;
+    let metas = load_tvbox_metas(&state.data_dir);
+    let target = resolve_tvbox_refresh_target(state, id, &sources, &metas)?;
+    let result = update_tvbox_source_inner(state, &target, apply_new, delete_missing).await;
+    if let Err(error) = &result {
+        log::warn!("TVBox 订阅更新失败：{error}");
+        stamp_refresh_target(
+            &state.data_dir,
+            &target,
+            &[],
+            now_secs(),
+            false,
+            Some(error.clone()),
         );
-        if let Some(url) = url {
-            log::warn!("TVBox 订阅更新失败（{url}）：{e}");
-            stamp_link_update(&state.data_dir, &url, now_secs(), false, Some(e.clone()));
-        }
     }
-    r
+    result
 }
 
 /// 给同一条订阅链接下的全部源盖一次章（成功或失败）
@@ -3618,6 +3746,8 @@ pub async fn update_tvbox_source(
 /// 一份配置产出几十个源、共用同一个链接 —— 一次下载核对的是**整条链接**，
 /// 所以章也必须盖整条：只盖 added/changed 的话，未变的源 `last_update_at`
 /// 不动，定时器每轮都会把这条链接判成超期、重复下载。
+// Legacy URL-stamp helper remains only for existing direct unit contracts.
+#[cfg(test)]
 fn stamp_link_update(
     dir: &std::path::Path,
     url: &str,
@@ -3654,50 +3784,37 @@ fn stamp_link_update(
 
 async fn update_tvbox_source_inner(
     state: &crate::state::AppState,
-    id: &str,
+    target: &TvboxRefreshTarget,
     apply_new: bool,
     delete_missing: bool,
 ) -> std::result::Result<serde_json::Value, String> {
     let sources = local_tvbox_sources(state)?;
-    if !sources.iter().any(|(sid, _, _, _)| sid == id) {
-        return Err(format!("没有找到 TVBox 源 {id}"));
-    }
-    let Some(url) = norm_source_url(
-        read_tvbox_meta(&state.data_dir, id)
-            .and_then(|m| m.source_url)
-            .as_deref(),
-    ) else {
-        return Err("这个源没有订阅链接，无法更新（请先填入链接）".to_string());
-    };
-
+    let url = target.url.clone();
     // ── 下载 + 解析 ─────────────────────────────────────────────────
-    let client = state.proxy.client_for("tvbox", None).map_err(|e| e.message)?;
-    let (text, actual_url) = crate::source_catalog::fetch_tvbox(state, &url).await?;
+    let client = state
+        .proxy
+        .client_for("tvbox", None)
+        .map_err(|e| e.message)?;
+    let (text, actual_url) = target.fetch(state).await?;
     let cfg = parse_loose_json(&text).map_err(|e| format!("配置不是合法 JSON：{e}"))?;
-    if cfg.get("sites").and_then(|v| v.as_array()).is_none() {
+    if !has_direct_tvbox_config(&cfg)? {
         return Err(format!(
             "远端链接 {url} 现在是一份「多仓」配置（只有 urls，没有 sites），\
              不能直接更新。请打开其中某个子仓，把它的链接填进来。"
         ));
     }
 
-    // 配对池 = **全部** TVBox 源，但只有同一个链接下的那些才算「本订阅的」
-    // （in_link=true）—— 见 LocalSite::in_link 的说明。
+    // 配对池只包含已解析目标拥有的点播源；共享地址的其他父订阅保持独立。
     let metas = load_tvbox_metas(&state.data_dir);
-    let in_link = |sid: &str| -> bool {
-        norm_source_url(
-            metas
-                .get(sid)
-                .and_then(|m| m.source_url.as_deref()),
-        )
-        .as_deref()
-            == norm_source_url(Some(&url)).as_deref()
-    };
+    let in_link = |sid: &str| target.ids.iter().any(|id| id == sid);
     let locals: Vec<LocalSite> = sources
         .iter()
         .map(|(sid, name, api, ext)| LocalSite {
             id: sid.clone(),
-            key: metas.get(sid).map(|m| m.site_key.clone()).unwrap_or_default(),
+            key: metas
+                .get(sid)
+                .map(|m| m.site_key.clone())
+                .unwrap_or_default(),
             name: name.clone(),
             api: api.clone(),
             ext: ext.clone(),
@@ -3707,7 +3824,8 @@ async fn update_tvbox_source_inner(
         .collect();
 
     let (jobs, skipped, lives) = collect_sites(&cfg, &actual_url);
-    let live_refresh = prepare_live_subscription_refresh(state, id, &lives, apply_new)?;
+    let live_refresh =
+        prepare_live_subscription_refresh(state, target.membership_key(), &lives, apply_new)?;
     let remote: Vec<RemoteSite> = jobs
         .iter()
         .map(|j| RemoteSite {
@@ -3716,7 +3834,11 @@ async fn update_tvbox_source_inner(
             api: normalize_api_url(&j.api),
             ext: {
                 let e = j.ext.trim();
-                if e.is_empty() { None } else { Some(e.to_string()) }
+                if e.is_empty() {
+                    None
+                } else {
+                    Some(e.to_string())
+                }
             },
         })
         .collect();
@@ -3726,9 +3848,10 @@ async fn update_tvbox_source_inner(
     if diff.added.is_empty() && diff.changed.is_empty() && !want_delete {
         // ★ 「远端与本地一致」也是一次成功的核对 ⇒ 盖成功章。
         //   不盖的话这条链接在定时器眼里永远没更新过，每 60s 都会重复下载。
-        let live_changed = apply_live_subscription_refresh(state, id, &live_refresh)?;
+        let live_changed =
+            apply_live_subscription_refresh(state, target.membership_key(), &live_refresh)?;
         crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
-        stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
+        stamp_refresh_target(&state.data_dir, target, &[], now_secs(), true, None);
         return Ok(serde_json::json!({
             "updated": live_changed,
             "reason": if live_changed { None }
@@ -3740,6 +3863,7 @@ async fn update_tvbox_source_inner(
             "liveDeleted": [],
             "liveMembershipChanged": live_refresh.membership_changed,
             "sourceUrl": url,
+            "originId": target.origin_id(),
             "added": [],
             "changed": [],
             // ★ 即使"没更新"，也要如实报告"远端已经没有的站"——
@@ -3807,153 +3931,170 @@ async fn update_tvbox_source_inner(
     let mut not_applied: Vec<serde_json::Value> = Vec::new();
     let mut failed_out: Vec<serde_json::Value> = Vec::new();
 
-    for (idx, (remote_idx, local_id)) in todos.iter().enumerate() {
-        let Some(job) = jobs.get(*remote_idx) else {
-            continue;
-        };
-        /*
-         * ★ 与首次导入**同一判据**（`keep_ext_on_probe_failure`）：
-         * 带 ext 的 csp 源探测失败 ⇒ 仍然落盘（ext 就是它的配置），
-         * 只把原因挂到报告行上。否则"检测更新"会把用户改好的 ext 又丢一次
-         * —— 那正是本卡要修的那条丢失路径的副本。
-         */
-        let mut probe_failed: Option<String> = None;
-        let ok = match results.get_mut(idx).and_then(|x| x.take()) {
-            Some(Ok(ok)) => ok,
-            Some(Err(reason)) => {
-                if !keep_ext_on_probe_failure(job) {
+    let apply_vod = || -> std::result::Result<Vec<String>, String> {
+        for (idx, (remote_idx, local_id)) in todos.iter().enumerate() {
+            let Some(job) = jobs.get(*remote_idx) else {
+                continue;
+            };
+            /*
+             * ★ 与首次导入**同一判据**（`keep_ext_on_probe_failure`）：
+             * 带 ext 的 csp 源探测失败 ⇒ 仍然落盘（ext 就是它的配置），
+             * 只把原因挂到报告行上。否则"检测更新"会把用户改好的 ext 又丢一次
+             * —— 那正是本卡要修的那条丢失路径的副本。
+             */
+            let mut probe_failed: Option<String> = None;
+            let ok = match results.get_mut(idx).and_then(|x| x.take()) {
+                Some(Ok(ok)) => ok,
+                Some(Err(reason)) => {
+                    if !keep_ext_on_probe_failure(job) {
+                        failed_out.push(serde_json::json!({
+                            "name": job.name,
+                            "api": normalize_api_url(&job.api),
+                            "reason": reason,
+                        }));
+                        continue;
+                    }
+                    probe_failed = Some(reason);
+                    // 分类留空：运行期 home() 再问（不编假分类）
+                    ProbeOk {
+                        classes: Vec::new(),
+                        total: 0,
+                    }
+                }
+                None => {
                     failed_out.push(serde_json::json!({
                         "name": job.name,
                         "api": normalize_api_url(&job.api),
-                        "reason": reason,
+                        "reason": "探测任务异常",
                     }));
                     continue;
                 }
-                probe_failed = Some(reason);
-                // 分类留空：运行期 home() 再问（不编假分类）
-                ProbeOk {
-                    classes: Vec::new(),
-                    total: 0,
+            };
+
+            let (sid, is_new) = match local_id.clone() {
+                Some(existing) => (existing, false),
+                None => {
+                    if !apply_new {
+                        // 用户没勾「同时加入新增站点」—— 如实报告，不偷偷加
+                        not_applied.push(serde_json::json!({
+                            "name": job.name,
+                            "api": normalize_api_url(&job.api),
+                        }));
+                        continue;
+                    }
+                    (unique_id(&id_base_for(job), &mut used), true)
                 }
-            }
-            None => {
-                failed_out.push(serde_json::json!({
-                    "name": job.name,
-                    "api": normalize_api_url(&job.api),
-                    "reason": "探测任务异常",
-                }));
-                continue;
-            }
-        };
+            };
 
-        let (sid, is_new) = match local_id.clone() {
-            Some(existing) => (existing, false),
-            None => {
-                if !apply_new {
-                    // 用户没勾「同时加入新增站点」—— 如实报告，不偷偷加
-                    not_applied.push(serde_json::json!({
-                        "name": job.name,
-                        "api": normalize_api_url(&job.api),
-                    }));
-                    continue;
-                }
-                (
-                    unique_id(&id_base_for(job), &mut used),
-                    true,
-                )
-            }
-        };
+            let provider = build_site_provider(
+                &sid,
+                job,
+                &ok,
+                Some(state.proxy.clone()),
+                collect_parsers(&cfg),
+            )
+            .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?;
+            let manifest = provider.manifest().clone();
+            state.registry.register(provider);
 
-        let provider = build_site_provider(
-            &sid,
-            job,
-            &ok,
-            Some(state.proxy.clone()),
-            collect_parsers(&cfg),
-        )
-        .map_err(|e| format!("生成源「{}」失败：{e}", job.name))?;
-        let manifest = provider.manifest().clone();
-        state.registry.register(provider);
-
-        let api_norm = normalize_api_url(&job.api);
-        /*
-         * ★ 与首次导入同一条规矩：csp 源**也要落盘**（含 ext）。
-         *
-         * 只改导入不改更新，会出现「更新一次，源就再也回不来了」——
-         * 比不更新更糟。两条路径必须写同一份结构（特别是 `ext`：
-         * 更新时配置里的 ext 可能与上次不同，用户改过就该被新值覆盖）。
-         */
-        to_persist.push(crate::model::PersistedProvider::Tvbox {
-            id: sid.clone(),
-            name: manifest.name.clone(),
-            api: api_norm.clone(),
-            categories: ok.classes.clone(),
-            parsers: collect_parsers(&cfg),
-            ext: {
-                let e = job.ext.trim();
-                if e.is_empty() { None } else { Some(e.to_string()) }
-            },
-        });
-        meta_writes.push((
-            sid.clone(),
-            TvboxSourceMeta {
-                source_url: Some(url.clone()),
-                site_key: job.key.clone(),
-                site_name: job.name.clone(),
+            let api_norm = normalize_api_url(&job.api);
+            /*
+             * ★ 与首次导入同一条规矩：csp 源**也要落盘**（含 ext）。
+             *
+             * 只改导入不改更新，会出现「更新一次，源就再也回不来了」——
+             * 比不更新更糟。两条路径必须写同一份结构（特别是 `ext`：
+             * 更新时配置里的 ext 可能与上次不同，用户改过就该被新值覆盖）。
+             */
+            to_persist.push(crate::model::PersistedProvider::Tvbox {
+                id: sid.clone(),
+                name: manifest.name.clone(),
                 api: api_norm.clone(),
-                installed_at: now_secs(),
-                // 走到这里的源刚被这次更新重写 ⇒ 盖成功章
-                //（同链接下没变的源由下面的 stamp_link_update 统一补章）
-                last_update_at: now_secs(),
-                last_update_ok: true,
-                last_update_error: None,
-            },
-        ));
-        let row = serde_json::json!({
-            "id": sid,
-            "name": manifest.name,
-            "api": api_norm,
-            "categories": ok.classes.len(),
-            "total": ok.total,
-            // csp 源现在也落盘 ⇒ 一律 true
-            "persisted": true,
-            // ★ 没探通但配置在：如实标（与首次导入同名字段）
-            "extLen": job.ext.trim().len(),
-            "probeFailed": probe_failed,
-        });
-        if is_new {
-            added_out.push(row);
-        } else {
-            changed_out.push(row);
-        }
-    }
-
-    // ── 先落盘新增/变更，再处理「远端消失」（顺序不能换）──────────────
-    //
-    // remove_provider 内部会 persist_from_registry —— 它写的是内存里的
-    // third_party。若先删后写，新站还没进内存就被写成清单，等于白探测。
-    if !to_persist.is_empty() {
-        {
-            let mut list = state
-                .third_party
-                .write()
-                .map_err(|_| "第三方源列表被污染".to_string())?;
-            for p in to_persist {
-                let pid = p.id().to_string();
-                list.retain(|x| x.id() != pid);
-                list.push(p);
+                categories: ok.classes.clone(),
+                parsers: collect_parsers(&cfg),
+                ext: {
+                    let e = job.ext.trim();
+                    if e.is_empty() {
+                        None
+                    } else {
+                        Some(e.to_string())
+                    }
+                },
+            });
+            meta_writes.push((
+                sid.clone(),
+                TvboxSourceMeta {
+                    source_url: Some(url.clone()),
+                    site_key: job.key.clone(),
+                    site_name: job.name.clone(),
+                    api: api_norm.clone(),
+                    installed_at: now_secs(),
+                    // 走到这里的源刚被这次更新重写 ⇒ 盖成功章
+                    //（同链接下没变的源由下面的 stamp_link_update 统一补章）
+                    last_update_at: now_secs(),
+                    last_update_ok: true,
+                    last_update_error: None,
+                },
+            ));
+            let row = serde_json::json!({
+                "id": sid,
+                "name": manifest.name,
+                "api": api_norm,
+                "categories": ok.classes.len(),
+                "total": ok.total,
+                // csp 源现在也落盘 ⇒ 一律 true
+                "persisted": true,
+                // ★ 没探通但配置在：如实标（与首次导入同名字段）
+                "extLen": job.ext.trim().len(),
+                "probeFailed": probe_failed,
+            });
+            if is_new {
+                added_out.push(row);
+            } else {
+                changed_out.push(row);
             }
         }
-        crate::commands_provider::persist_from_registry(state)?;
-        crate::commands_provider::touch_providers(state);
+
+        // ── 先落盘新增/变更，再处理「远端消失」（顺序不能换）──────────────
+        //
+        // remove_provider 内部会 persist_from_registry —— 它写的是内存里的
+        // third_party。若先删后写，新站还没进内存就被写成清单，等于白探测。
+        if !to_persist.is_empty() {
+            {
+                let mut list = state
+                    .third_party
+                    .write()
+                    .map_err(|_| "第三方源列表被污染".to_string())?;
+                for p in to_persist {
+                    let pid = p.id().to_string();
+                    list.retain(|x| x.id() != pid);
+                    list.push(p);
+                }
+            }
+            crate::commands_provider::persist_from_registry(state)?;
+            crate::commands_provider::touch_providers(state);
+        }
+        for (sid, meta) in meta_writes.iter() {
+            write_tvbox_meta(&state.data_dir, sid, meta)?;
+        }
+        Ok(added_out
+            .iter()
+            .filter_map(|row| row["id"].as_str().map(str::to_owned))
+            .collect())
+    };
+    if let Some(origin_id) = target.origin_id() {
+        crate::source_catalog::commit_tvbox_provider_update(state, origin_id, apply_vod)?;
+    } else {
+        apply_vod()?;
     }
-    for (sid, meta) in meta_writes.iter() {
-        write_tvbox_meta(&state.data_dir, sid, meta)?;
-    }
-    let live_changed = apply_live_subscription_refresh(state, id, &live_refresh)?;
-    // ★ 成功路径收尾：同链接下**没变化**的源也要补章（见 stamp_link_update 的注释）
+    let live_changed =
+        apply_live_subscription_refresh(state, target.membership_key(), &live_refresh)?;
+    // 成功路径收尾：已解析目标中没变化的点播源也要补章。
     crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
-    stamp_link_update(&state.data_dir, &url, now_secs(), true, None);
+    let added_ids: Vec<String> = added_out
+        .iter()
+        .filter_map(|row| row["id"].as_str().map(str::to_owned))
+        .collect();
+    stamp_refresh_target(&state.data_dir, target, &added_ids, now_secs(), true, None);
 
     // ── 远端消失的站：默认只报告 ────────────────────────────────────
     let mut deleted_out: Vec<serde_json::Value> = Vec::new();
@@ -3977,7 +4118,8 @@ async fn update_tvbox_source_inner(
         }
     }
 
-    let updated = live_changed || !added_out.is_empty() || !changed_out.is_empty() || !deleted_out.is_empty();
+    let updated =
+        live_changed || !added_out.is_empty() || !changed_out.is_empty() || !deleted_out.is_empty();
     log::info!(
         "TVBox 订阅更新（{url}）：新增 {} 变更 {} 删除 {} 失败 {} 远端消失 {} 未加入 {} {}",
         added_out.len(),
@@ -3986,11 +4128,16 @@ async fn update_tvbox_source_inner(
         failed_out.len(),
         diff.removed.len(),
         not_applied.len(),
-        if delete_missing { "" } else { "（未勾选删除，已保留）" }
+        if delete_missing {
+            ""
+        } else {
+            "（未勾选删除，已保留）"
+        }
     );
     Ok(serde_json::json!({
         "updated": updated,
         "sourceUrl": url,
+        "originId": target.origin_id(),
         "added": added_out,
         "changed": changed_out,
         "removed": diff.removed,

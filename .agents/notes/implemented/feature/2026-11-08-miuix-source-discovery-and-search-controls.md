@@ -12,6 +12,12 @@ overlapping behavior contracts that remain in force. Aggregate editing and
 subscription update-time notes remain applicable; no existing decision is
 fully absorbed.
 
+The selected TVBox parent summary opens the real subscription update dialog
+using its exact origin ID, including zero-VOD parents. The parent address remains
+read-only in that dialog; the existing address editor owns edits. All accepted
+update exits notify/reload the mounted source manager once. This contract is
+described in [exact parent refresh](../bug-fix/2026-11-11-tvbox-origin-refresh-identity.md).
+
 ## Problem
 
 A Miuix palette and settings card do not change the widgets used inside source

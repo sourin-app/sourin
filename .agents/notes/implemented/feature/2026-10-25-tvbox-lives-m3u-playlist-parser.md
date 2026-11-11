@@ -9,6 +9,10 @@ Status: implemented
 
 Independent: 本仓此前**没有任何播放列表解析的决策**。`streamproxy.rs` 里那些 `#EXTM3U` / `#EXT-X-KEY` 处理是 **HLS 媒体清单**（分片、密钥、码率），与**播放列表**（`#EXTINF` + 台名 + 地址）是两种格式，不能互相替代；既有 `src/tvbox.rs` 只是把 `lives[]` 原样透出，也没有做解析。因此本模块不与任何既有决定重叠或冲突。
 
+[Exact parent refresh](../bug-fix/2026-11-11-tvbox-origin-refresh-identity.md)
+uses this existing playlist provider path for pure-live subscriptions. Parent
+refresh does not replace the parser, playlist address owner or its cached streams.
+
 ## Problem
 
 TVBox 配置的 `lives[]` 是一组直播源地址，指向 `.m3u` 或 `.txt` 播放列表。

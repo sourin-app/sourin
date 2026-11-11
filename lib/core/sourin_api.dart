@@ -4270,6 +4270,7 @@ class TvboxLiveMembershipChange {
 class TvboxUpdateItem {
   const TvboxUpdateItem({
     this.sourceUrl = '',
+    this.originId = '',
     this.ids = const [],
     this.ok = false,
     this.error,
@@ -4291,7 +4292,10 @@ class TvboxUpdateItem {
   /// 这条结果对应的订阅链接
   final String sourceUrl;
 
-  /// 这个链接下的本地源 id（一份配置产出几十个源，共用一条结果）
+  /// 父订阅身份；纯直播订阅可以有 originId 且 ids 为空。
+  final String originId;
+
+  /// 此订阅实际拥有的本地点播源 id；纯直播订阅可为空。
   final List<String> ids;
 
   /// 查询是否成功（false 时看 [error] / [multiRepo]）
@@ -4344,6 +4348,7 @@ class TvboxUpdateItem {
 
   factory TvboxUpdateItem.fromJson(Map<String, dynamic> j) => TvboxUpdateItem(
     sourceUrl: j['sourceUrl'] as String? ?? '',
+    originId: j['originId'] as String? ?? '',
     ids: jstrList(j['ids']),
     ok: j['ok'] == true,
     error: (j['error'] as String?)?.trim().isEmpty ?? true
@@ -4384,10 +4389,13 @@ class TvboxUpdateCheck {
 
   final List<String> skippedIds;
 
-  /// 按 id 找这条源所属的检测结果（一份链接的 ids 里包含它）
+  /// 按父订阅 originId 或已有点播源 id 找检测结果。
   TvboxUpdateItem? itemOf(String id) {
     for (final it in items) {
-      if (it.ids.contains(id)) return it;
+      if ((it.originId.isNotEmpty && it.originId == id) ||
+          it.ids.contains(id)) {
+        return it;
+      }
     }
     return null;
   }

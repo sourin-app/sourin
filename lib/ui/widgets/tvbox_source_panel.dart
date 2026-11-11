@@ -14,9 +14,8 @@
 // 插件    1 个 .js   ↔ 1 个安装链接 → 一个 id 一个 sidecar 文件
 // TVBox   1 份配置   ↔ 1 个订阅链接 → 一份配置产出几十个源
 // ```
-// 所以 TVBox 的「检测更新」是**按链接**做的：一次下载对比全部源，
-// 而不是每个源各下一遍。用户从任意一张卡点进来，看到的都是
-// **同一条链接的同一份结果**。
+// TVBox 的「检测更新」按父订阅身份核对它拥有的源，一份订阅只下载一次。
+// 共享地址的不同父订阅独立处理；没有远程父订阅的旧源保留 sidecar 链接路径。
 //
 // # ★★ 最重要的产品原则：没有的能力不假装有
 //
@@ -43,6 +42,7 @@
 // ③ 查到了           → 新增 / 变更 / 已消失 / 未变，逐条列出来
 // ```
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_miuix/miuix.dart' as miuix;
 
@@ -313,9 +313,10 @@ class TvboxUpdateDialog extends StatefulWidget {
     required this.id,
     required this.name,
     this.sourceUrl,
+    this.readOnlySourceUrl = false,
   });
 
-  /// 源 id（后端按它查 sidecar 里的订阅链接）
+  /// 点播源 id 或源目录的父订阅 id。
   final String id;
 
   /// 显示用名字
@@ -324,16 +325,24 @@ class TvboxUpdateDialog extends StatefulWidget {
   /// 打开时已知的订阅链接（null = 这个源没有链接）
   final String? sourceUrl;
 
+  /// 父订阅地址由目录编辑器管理；这里不能写点播源 sidecar。
+  final bool readOnlySourceUrl;
+
   static Future<bool> show(
     BuildContext context, {
     required String id,
     required String name,
     String? sourceUrl,
+    bool readOnlySourceUrl = false,
   }) async {
     final r = await showAppDialog<bool>(
       context: context,
-      builder: (_) =>
-          TvboxUpdateDialog(id: id, name: name, sourceUrl: sourceUrl),
+      builder: (_) => TvboxUpdateDialog(
+        id: id,
+        name: name,
+        sourceUrl: sourceUrl,
+        readOnlySourceUrl: readOnlySourceUrl,
+      ),
     );
     return r ?? false;
   }
@@ -397,7 +406,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
   ///
   /// ⚠️ 传空字符串是**清除**链接（回到「贴文本导入」状态），不是错误。
   Future<void> _saveLink() async {
-    if (_savingLink) return;
+    if (widget.readOnlySourceUrl || _savingLink) return;
     final url = _urlCtl.text.trim();
     setState(() {
       _savingLink = true;
@@ -484,6 +493,13 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     }
   }
 
+  void _closeWithResult() {
+    if (!mounted || _savingLink || _updating) {
+      return;
+    }
+    Navigator.of(context).pop(_changed);
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -492,8 +508,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
 
     // ★ 2026-10-24（总计划第 18 项 · 弹窗外壳统一）：Material AlertDialog
     //   → 统一外壳 AppGlassDialog。逐项等价（先读原语义，不是机械替换）：
-    //   · 返回值 `bool?` 不变（「关闭」pop(context, _changed)；静默关闭 = null
-    //     ⇒ `show()` 里 `r ?? false` 一字未改）。
+    //   · 所有用户退出都返回 _changed；提交中的结果所有者保持挂载。
     //   · 宽度：原内容固定 560 宽、超 §3.5 默认 460 档 ⇒ **显式传 maxWidth: 560**
     //     （§3.5 白名单三档之一）。外壳内容区可用宽 = 560 − 48(左右各 24) = 512
     //     ⇒ 内层再写 `width: 560` 会被夹到 512（写了是误导），故只保留高度约束。
@@ -508,7 +523,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     //   ⚠️ 已知微差：原 title 是 `Row + Flexible + ellipsis`（长名字单行截断），
     //      AppGlassDialog.title 只收 String 且不设 maxLines ⇒ 超长名字改为**换行**
     //      而不是截断（不会溢出、不会抛异常，仅观感差异）。
-    return AppGlassDialog(
+    final dialog = AppGlassDialog(
       maxWidth: 560,
       title: '订阅更新 · ${widget.name}',
       content: Material(
@@ -538,38 +553,45 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                         child: ui.TextField(
                           controller: _urlCtl,
                           enabled: !busy,
+                          readOnly: widget.readOnlySourceUrl,
                           decoration: const InputDecoration(
                             isDense: true,
                             hintText: 'https://example.com/tvbox.json',
                           ),
                           style: const TextStyle(fontSize: FontSizes.cap),
-                          onSubmitted: (_) => _saveLink(),
-                        ),
-                      ),
-                      const SizedBox(width: Sp.x2),
-                      ui.FilledButton.tonal(
-                        onPressed: busy ? null : _saveLink,
-                        child: Text(
-                          _savingLink ? '保存中…' : (_hasLink ? '保存' : '填入'),
-                        ),
-                      ),
-                      if (_hasLink) ...[
-                        const SizedBox(width: Sp.x2),
-                        ui.TextButton(
-                          onPressed: busy
+                          onSubmitted: widget.readOnlySourceUrl
                               ? null
-                              : () {
-                                  _urlCtl.text = '';
-                                  _saveLink();
-                                },
-                          child: const Text('清除'),
+                              : (_) => _saveLink(),
                         ),
+                      ),
+                      if (!widget.readOnlySourceUrl) ...[
+                        const SizedBox(width: Sp.x2),
+                        ui.FilledButton.tonal(
+                          onPressed: busy ? null : _saveLink,
+                          child: Text(
+                            _savingLink ? '保存中…' : (_hasLink ? '保存' : '填入'),
+                          ),
+                        ),
+                        if (_hasLink) ...[
+                          const SizedBox(width: Sp.x2),
+                          ui.TextButton(
+                            onPressed: busy
+                                ? null
+                                : () {
+                                    _urlCtl.text = '';
+                                    _saveLink();
+                                  },
+                            child: const Text('清除'),
+                          ),
+                        ],
                       ],
                     ],
                   ),
                   const SizedBox(height: Sp.x1),
                   Text(
-                    _hasLink
+                    widget.readOnlySourceUrl
+                        ? '订阅地址由源管理页的“编辑地址”管理；这里仅检测和应用更新。'
+                        : _hasLink
                         ? '这个链接下的全部源共用同一条订阅，检测一次对比全部。'
                         : '这个源是贴文本导入的，没有订阅链接 —— 查不了更新。填入当初的配置地址即可。',
                     style: TextStyle(
@@ -601,7 +623,8 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
                    * 与 _PluginUpdateDialog 同一条：用户要的是「检测更新」，
                    * 不是「自动更新」。看到结果再决定要不要改本地。
                    */
-                  if (it != null && it.ok && it.hasChanges) ...[
+                  if (it != null && it.ok &&
+                      (it.hasChanges || it.removed.isNotEmpty)) ...[
                     _applyBox(colors, it),
                     const SizedBox(height: Sp.x2),
                   ],
@@ -641,8 +664,22 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
         ), // ← DefaultTextStyle.merge(textAlign: TextAlign.left) 收尾
       ), // ← Material(type: MaterialType.transparency) 收尾
       actions: AppTextButton(
-        onPressed: () => Navigator.pop(context, _changed),
+        onPressed: _savingLink || _updating ? null : _closeWithResult,
         child: const Text('关闭'),
+      ),
+    );
+    return PopScope<bool>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) {
+          _closeWithResult();
+        }
+      },
+      child: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): _closeWithResult,
+        },
+        child: dialog,
       ),
     );
   }
@@ -687,17 +724,18 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     if (!it.ok) {
       return _failLine(colors, it.error);
     }
-    final updateDescription = it.hasLiveChanges
+    final hasActionableDifference = it.hasChanges || it.removed.isNotEmpty;
+    final updateDescription = it.hasLiveChanges || it.removed.isNotEmpty
         ? tvboxUpdateSummary(it)
         : '新增 ${it.added.length} · 变更 ${it.changed.length}';
-    final text = it.hasChanges
+    final text = hasActionableDifference
         ? '发现更新：$updateDescription'
         : '已是最新（远端 ${it.remoteConvertible} 个可转换站点）';
     return Text(
       text,
       style: TextStyle(
         fontSize: FontSizes.cap,
-        color: it.hasChanges ? colors.primary : colors.onSurfaceVariant,
+        color: hasActionableDifference ? colors.primary : colors.onSurfaceVariant,
       ),
     );
   }
@@ -769,6 +807,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
     final total =
         it.added.length +
         it.changed.length +
+        it.removed.length +
         it.liveAdded.length +
         it.liveRemoved.length;
     return _box(colors, [
@@ -891,7 +930,9 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
       ),
       const SizedBox(height: Sp.x1),
       Text(
-        '点一个子仓，地址会填到上面的输入框，再点「填入」保存。',
+        widget.readOnlySourceUrl
+            ? '请先在源管理页的“编辑地址”里选择子仓地址。'
+            : '点一个子仓，地址会填到上面的输入框，再点「填入」保存。',
         style: TextStyle(
           fontSize: FontSizes.cap,
           color: colors.onSurfaceVariant,
@@ -900,7 +941,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
       const SizedBox(height: Sp.x2),
       for (final repo in it.repos.take(20))
         miuix.MiuixBasicComponent(
-          enabled: !_updating,
+          enabled: !_updating && !widget.readOnlySourceUrl,
           title: repo.label,
           insideMargin: const EdgeInsets.symmetric(vertical: Sp.x1),
           startAction: Icon(
@@ -908,7 +949,7 @@ class _TvboxUpdateDialogState extends State<TvboxUpdateDialog> {
             size: 14,
             color: colors.onSurfaceVariant,
           ),
-          onClick: _updating
+          onClick: _updating || widget.readOnlySourceUrl
               ? null
               : () {
                   setState(() {

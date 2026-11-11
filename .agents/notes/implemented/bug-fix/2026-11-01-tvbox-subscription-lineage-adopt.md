@@ -7,6 +7,11 @@ Status: implemented
 本批处理的是"链接根本没记上"的存量数据 —— 64 条子站 sidecar 里 source_url=None，
 `collect_due_links` 永远挑不到链接，基建全在却从不运转。
 
+[Exact parent refresh](2026-11-11-tvbox-origin-refresh-identity.md) preserves
+legacy sidecar-only refresh while preventing a row from borrowing a URL-backed
+parent's backups or stamps. URL-less local owners remain eligible after saving a
+sidecar address. The explicit validated-adoption and wrapper policies here remain.
+
 ## Problem
 
 真机聚合源 tvbox_agg 实机显示「从未更新」。取证结论（三条实物证据）：

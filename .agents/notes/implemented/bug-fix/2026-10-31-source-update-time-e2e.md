@@ -8,6 +8,10 @@ Independent: 接续 [2026-10-31-tvbox-source-update-time.md](../feature/2026-10-
 （那一篇加了字段、接了 UI、起了定时器，但真机判读发现**用户一行都看不到**——
 本篇是它的端到端收尾）。
 
+[Exact parent refresh](2026-11-11-tvbox-origin-refresh-identity.md) extends the
+manual entry to zero-VOD parents and limits stamps to resolved owned VOD IDs.
+The aggregate display and link-state/save ownership decisions here remain.
+
 ## Problem
 
 真机判读（ui-judge-batch）：设置→源 的 TVBox 卡片**没有**"上次更新"行，

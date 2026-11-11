@@ -9,6 +9,10 @@ use std::{
 };
 
 const FILE: &str = "source-catalog.json";
+#[cfg(test)]
+#[path = "source_catalog_tvbox_origin_refresh_tests.rs"]
+mod tvbox_origin_refresh_tests;
+
 static WRITE: Mutex<()> = Mutex::new(());
 pub const FETCH_BUDGET: Duration = Duration::from_secs(24);
 
@@ -563,7 +567,7 @@ pub fn record_import(
     Ok(id)
 }
 
-/// Refresh only the live attribution of a known TVBox VOD representative.
+/// Refresh only live attribution of an exact TVBox origin or known VOD representative.
 /// Playlist addresses and successful endpoint state remain with live owners.
 pub fn record_live_membership(
     state: &AppState,
@@ -572,25 +576,109 @@ pub fn record_live_membership(
 ) -> Result<bool, String> {
     let _guard = WRITE.lock().map_err(|_| "源配置写入锁不可用")?;
     let mut out = catalog_locked(state)?;
-    let known_live: HashSet<String> = out.origins.iter()
+    let known_live: HashSet<String> = out
+        .origins
+        .iter()
         .filter(|origin| origin.kind == "live")
-        .flat_map(|origin| origin.provider_ids.iter().cloned()).collect();
+        .flat_map(|origin| origin.provider_ids.iter().cloned())
+        .collect();
     if live_ids.iter().any(|id| !known_live.contains(id)) {
         return Err("直播归属包含尚未登记的直播来源".into());
     }
-    let origin = out.origins.iter_mut()
-        .find(|origin| origin.kind == "tvbox"
-            && origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
+    let origin = out
+        .origins
+        .iter_mut()
+        .find(|origin| {
+            origin.kind == "tvbox"
+                && (origin.id == tvbox_provider_id
+                    || origin.provider_ids.iter().any(|id| id == tvbox_provider_id))
+        })
         .ok_or("没有找到此 TVBox 源的父订阅")?;
     let mut seen = HashSet::new();
-    let ids: Vec<String> = live_ids.iter()
-        .filter(|id| seen.insert((*id).clone())).cloned().collect();
+    let ids: Vec<String> = live_ids
+        .iter()
+        .filter(|id| seen.insert((*id).clone()))
+        .cloned()
+        .collect();
     let changed = origin.related_provider_ids != ids;
     if changed {
         origin.related_provider_ids = ids;
         save(&state.data_dir, &out)?;
     }
     Ok(changed)
+}
+
+/// Hold catalog ownership across first VOD publication and exact attribution.
+/// The closure retains the existing VOD persistence path; this is not a
+/// transaction covering registry, providers, sidecar and catalog files.
+pub(crate) fn commit_tvbox_provider_update<F>(
+    state: &AppState,
+    origin_id: &str,
+    apply: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<Vec<String>, String>,
+{
+    let _guard = WRITE.lock().map_err(|_| "源配置写入锁不可用")?;
+    let mut out = load(&state.data_dir);
+    let index = out
+        .origins
+        .iter()
+        .position(|origin| origin.kind == "tvbox" && origin.id == origin_id)
+        .ok_or("没有找到此 TVBox 父订阅")?;
+    // No reconciliation can infer ownership between registry/sidecar publication
+    // inside apply and this raw-catalog exact binding.
+    let added_ids = apply()?;
+    for id in &added_ids {
+        if out.origins.iter().enumerate().any(|(i, origin)| {
+            i != index && origin.kind == "tvbox" && origin.provider_ids.contains(id)
+        }) {
+            return Err("新增点播来源已经属于另一个父订阅".into());
+        }
+    }
+    let mut changed = false;
+    for id in added_ids {
+        if !out.origins[index].provider_ids.contains(&id) {
+            out.origins[index].provider_ids.push(id);
+            changed = true;
+        }
+    }
+    if changed {
+        save(&state.data_dir, &out)?;
+    }
+    Ok(())
+}
+
+/// Fetch a resolved parent's own endpoints and stamp only that exact identity.
+/// Existing import/legacy URL entry points keep their separate compatibility path.
+pub(crate) async fn fetch_tvbox_origin(
+    state: &AppState,
+    origin: &SourceOrigin,
+) -> Result<(String, String), String> {
+    let urls = ordered_urls(origin, now_secs())?;
+    let result = fetch_validated(
+        &state.proxy,
+        "tvbox",
+        &urls,
+        Some(crate::tvbox::TVBOX_CONFIG_UA),
+        validate_tvbox,
+    )
+    .await
+    .map_err(|error| format!("下载配置失败：{error}"))?;
+    let _guard = WRITE.lock().map_err(|_| "源配置写入锁不可用")?;
+    let mut out = load(&state.data_dir);
+    let saved = out
+        .origins
+        .iter_mut()
+        .find(|saved| saved.kind == "tvbox" && saved.id == origin.id)
+        .ok_or("没有找到此 TVBox 父订阅")?;
+    saved.last_successful_url = Some(result.1.clone());
+    saved.last_successful_endpoint = Some(result.2.clone());
+    if saved.last_success_at == 0 || now_secs() - saved.last_success_at >= 300 {
+        saved.last_success_at = now_secs();
+    }
+    save(&state.data_dir, &out)?;
+    Ok((result.0, result.1))
 }
 
 pub fn urls_for(dir: &Path, kind: &str, provider_id: Option<&str>, primary: &str) -> Vec<String> {
@@ -792,11 +880,7 @@ pub fn validate_tvbox(text: &str) -> Result<String, Validation> {
     let text = crate::tvbox::unwrap_tvbox_config_text(text).map_err(Validation::Invalid)?;
     let cfg = crate::tvbox::parse_loose_json(&text)
         .map_err(|_| Validation::Invalid("返回内容不是 TVBox JSON 配置（可能是网页）".into()))?;
-    if cfg.get("sites").and_then(|v| v.as_array()).is_none()
-        && cfg.get("urls").and_then(|v| v.as_array()).is_none()
-    {
-        return Err(Validation::Invalid("配置缺少 sites / urls".into()));
-    }
+    crate::tvbox::has_direct_tvbox_config(&cfg).map_err(Validation::Invalid)?;
     Ok(text)
 }
 

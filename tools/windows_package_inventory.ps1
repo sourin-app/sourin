@@ -16,10 +16,10 @@ function Get-WindowsPackageInventory([string]$BuildProject) {
         [void]$paths.Add($full.Substring($prefix.Length))
     }
     # These are produced by runner/plugin build commands, outside install().
-    foreach ($name in @('sourin_spike.exe', 'WebView2Loader.dll', 'native_assets.json')) {
+    foreach ($name in @('sourin_spike.exe', 'WebView2Loader.dll')) {
         [void]$paths.Add($name)
     }
-    foreach ($required in @('data/app.so', 'data/icudtl.dat', 'data/flutter_assets/AssetManifest.bin', 'flutter_windows.dll', 'sourin_core.dll')) {
+    foreach ($required in @('data/app.so', 'data/icudtl.dat', 'data/flutter_assets/AssetManifest.bin', 'data/flutter_assets/NativeAssetsManifest.json', 'flutter_windows.dll', 'sourin_core.dll')) {
         $native = $required.Replace('/', [IO.Path]::DirectorySeparatorChar)
         if (-not $paths.Contains($native)) { throw "Build install manifest lacks required runtime file: $required" }
     }

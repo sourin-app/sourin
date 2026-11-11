@@ -9,8 +9,11 @@ void main() {
   if (Platform.isWindows) {
     for (final candidate in ['pwsh', 'powershell']) {
       try {
-        if (Process.runSync(candidate, ['-NoProfile', '-Command', 'exit 0'])
-                .exitCode ==
+        if (Process.runSync(candidate, [
+              '-NoProfile',
+              '-Command',
+              'exit 0',
+            ]).exitCode ==
             0) {
           ps = candidate;
           break;
@@ -21,8 +24,11 @@ void main() {
     }
   }
   if (ps == null) {
-    test('Windows package tooling requires PowerShell on Windows', () {},
-        skip: 'Windows package tooling requires PowerShell on Windows');
+    test(
+      'Windows package tooling requires PowerShell on Windows',
+      () {},
+      skip: 'Windows package tooling requires PowerShell on Windows',
+    );
     return;
   }
   late Directory project;
@@ -50,6 +56,8 @@ void main() {
     ps!,
     [
       '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
       '-File',
       'tools/$script',
       '-BuildProject',
@@ -84,6 +92,7 @@ void main() {
       'flutter_windows.dll',
       'data/icudtl.dat',
       'data/flutter_assets/AssetManifest.bin',
+      'data/flutter_assets/NativeAssetsManifest.json',
       'data/flutter_assets/assets/logos/01-orbit.ico',
     ]) {
       paths.add(put('${release.path}/$name', utf8.encode(name)).absolute.path);
@@ -94,13 +103,14 @@ void main() {
         List.filled(6 * 1024 * 1024, 8),
       ).absolute.path,
     );
-    for (final name in [
-      'sourin_spike.exe',
-      'WebView2Loader.dll',
-      'native_assets.json',
-    ]) {
+    for (final name in ['sourin_spike.exe', 'WebView2Loader.dll']) {
       put('${release.path}/$name', utf8.encode(name));
     }
+    // The hook build intermediate is not a root runtime asset.
+    put(
+      '${release.path}/native_assets.json',
+      utf8.encode('PRIVATE-BUILD-INPUT'),
+    );
     // Real builds can accumulate these after being launched. They must stay out.
     put(
       '${release.path}/app.sourin.player/ui-prefs.json',
@@ -126,6 +136,12 @@ void main() {
       final result = run('package_owner_windows.ps1');
       expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
       expect(jsonDecode(result.stdout as String)['filesVerified'], 9);
+      expect(File('${package.path}/native_assets.json').existsSync(), isFalse);
+      expect(
+        File('${package.path}/data/flutter_assets/NativeAssetsManifest.json')
+            .readAsStringSync(),
+        'data/flutter_assets/NativeAssetsManifest.json',
+      );
       expect(
         Directory('${package.path}/app.sourin.player').existsSync(),
         isFalse,
@@ -148,8 +164,11 @@ void main() {
     final extra = put('${package.path}/extra.json', [1]);
     expect(run('verify_owner_windows_package.ps1').exitCode, isNot(0));
     expect(Process.runSync('attrib', ['+h', extra.path]).exitCode, 0);
-    expect(run('verify_owner_windows_package.ps1').exitCode, isNot(0),
-        reason: 'Hidden data is still extra package content.');
+    expect(
+      run('verify_owner_windows_package.ps1').exitCode,
+      isNot(0),
+      reason: 'Hidden data is still extra package content.',
+    );
     expect(Process.runSync('attrib', ['-h', extra.path]).exitCode, 0);
     extra.deleteSync();
     final dll = File('${package.path}/WebView2Loader.dll');
@@ -182,14 +201,39 @@ void main() {
       expect(run('package_owner_windows.ps1').exitCode, isNot(0));
     },
   );
-  test('Windows PowerShell reads UTF-8 manifest paths without a BOM', () {
-    const legacy = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-    ps = legacy;
-    final asset = put('${release.path}/data/flutter_assets/封面.png', [3]);
-    manifest.writeAsStringSync('${manifest.readAsStringSync()}\n${asset.path}');
+  test('runtime native manifest must be installed even when a build intermediate exists', () {
+    final original = manifest.readAsLinesSync();
+    manifest.writeAsStringSync(
+      original
+          .where((path) => !path.endsWith('NativeAssetsManifest.json'))
+          .join('\n'),
+    );
     final result = run('package_owner_windows.ps1');
-    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
-    expect(File('${package.path}/data/flutter_assets/封面.png').existsSync(), isTrue);
-  }, skip: File('C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe')
-      .existsSync() ? false : 'Windows PowerShell 5.1 is not installed');
+    expect(result.exitCode, isNot(0));
+    expect(result.stderr, contains('NativeAssetsManifest.json'));
+    expect(package.existsSync(), isFalse);
+  });
+  test(
+    'Windows PowerShell reads UTF-8 manifest paths without a BOM',
+    () {
+      const legacy =
+          'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+      ps = legacy;
+      final asset = put('${release.path}/data/flutter_assets/封面.png', [3]);
+      manifest.writeAsStringSync(
+        '${manifest.readAsStringSync()}\n${asset.path}',
+      );
+      final result = run('package_owner_windows.ps1');
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+      expect(
+        File('${package.path}/data/flutter_assets/封面.png').existsSync(),
+        isTrue,
+      );
+    },
+    skip:
+        File('C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe')
+            .existsSync()
+        ? false
+        : 'Windows PowerShell 5.1 is not installed',
+  );
 }

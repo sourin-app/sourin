@@ -2,7 +2,8 @@
 
 Status: implemented
 
-Scope: Flutter playback/detail UI on the November 4, 2026 working tree.
+Scope: Flutter playback/detail UI from November 4, 2026, with the pinned
+failure continuation guarded from the November 11, 2026 implementation.
 
 ## Problem
 
@@ -54,7 +55,12 @@ are rejected before writing; a throwing save call keeps the editor open.
 The search page retains its confirmed preview until the host dismisses it.
 Comment loading checks the playback-session generation as well as the existing
 fetch token. The one-shot selected episode pin belongs to the same generation,
-so an old selection cannot leak into the next episode.
+so an old selection cannot leak into the next episode. The pinned failure
+continuation checks mounted/session/token ownership before starting its normal
+match/search fallback. A newer load, disabling danmaku or unmounting ends that
+continuation without additional fallback I/O; a current failure keeps the
+existing fallback. These checks do not cancel transport work already in flight
+or add cancellation inside ExternalDanmakuClient.loadFor.
 
 ## Alternatives considered
 
@@ -108,6 +114,14 @@ test timer/scroll instrumentation failures are retained but do not count as
 functional red evidence.
 
 ## Relations
+
+[Pinned fallback cancellation](2026-11-11-pinned-danmaku-fallback-cancellation.md)
+extends the existing comment-load ownership without changing the progress,
+binding-storage, draft, preview or layout decisions below. Its four frozen
+mounted-player cases observe transport calls and actual host state. The clean
+baseline has three cancellation failures and one current-failure control pass;
+the six-line guard passes all four. This is the pinned failure continuation's
+I/O boundary, not native decode, pixel, physical input or package acceptance.
 
 Post-review recovery also guards search before its local-probe await and after
 the search response with the active playback generation and fetch token. Late

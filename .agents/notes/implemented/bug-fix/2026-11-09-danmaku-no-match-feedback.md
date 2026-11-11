@@ -20,6 +20,11 @@ records a neutral empty status, and shows it next to the direct search field in
 the existing Miuix quick panel. No failure toast is emitted for this outcome.
 The normal empty badge still expires. Request errors retain their existing
 handling, including actionable authentication feedback and session guards.
+A pinned comment failure enters that normal match/search fallback only while
+the player remains mounted and its playback generation and fetch token remain
+current. A canceled pinned request starts no further match/search I/O. A
+current failed pin can still fall back, finish empty and show the same notice;
+transport requests already in flight are not canceled by this guard.
 
 ## Alternatives considered
 
@@ -29,6 +34,16 @@ that need to know matching failed. Suppressing all errors would hide real outage
 Adding another modal would obstruct playback and duplicate the search entrance.
 
 ## Consequences
+
+The [pinned fallback cancellation](2026-11-11-pinned-danmaku-fallback-cancellation.md)
+verification isolates four named cases from the November 11 combined run:
+three obsolete-pin cases fail on extra match/search requests on the clean
+baseline, the current-failure control passes, and the six-line guard passes all
+four. The control reads the actual host no-match notice and cleared error.
+These request/host-state checks leave the earlier no-match visual and playback
+evidence below intact; they do not establish new native decoded pixels or
+final package acceptance. The final fourteen-case combination also covers
+running-motion retirement and Windows package inventory.
 
 A mounted-player test drives the real load path through successful empty HTTP
 responses, checks both matching and fallback requests, then opens the actual

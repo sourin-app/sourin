@@ -8968,6 +8968,12 @@ class _PlayerPageState extends State<PlayerPage>
           );
           return;
         } catch (e) {
+          // A canceled selection must stop before starting fallback requests.
+          if (!mounted ||
+              generation != _playSessionGen ||
+              token != _danmakuFetchToken) {
+            return;
+          }
           debugPrint('[DMK] 点选的那一条取失败（回落到匹配链路）: $e');
           // 不 return —— 继续走下面的正常链路
         }

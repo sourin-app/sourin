@@ -1945,8 +1945,10 @@ pub async fn import_tvbox_config_with_options(
     if jobs.is_empty() {
         // 即便一个点播源都用不了，直播源也可能可用 ⇒ 必须落盘
         persist_live_rows(state, &live_rows)?;
+        let live_ids: Vec<String> = live_rows.iter()
+            .filter_map(|row| row["id"].as_str().map(str::to_owned)).collect();
         let origin_id = if starts_http(trimmed) {
-            Some(crate::source_catalog::record_import(state, trimmed, &base_url, &successful_endpoint, &[], name, backup_urls)?)
+            Some(crate::source_catalog::record_import(state, trimmed, &base_url, &successful_endpoint, &[], &live_ids, name, backup_urls)?)
         } else { None };
         return Ok(serde_json::json!({
             "totalSites": cfg.get("sites").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0),
@@ -2224,7 +2226,9 @@ pub async fn import_tvbox_config_with_options(
     crate::source_catalog::sync_enabled(&state.registry, &state.data_dir);
     let origin_id = if !subscription_url.is_empty() {
         let ids: Vec<String> = meta_rows.iter().map(|row| row.0.clone()).collect();
-        Some(crate::source_catalog::record_import(state, subscription_url, &base_url, &successful_endpoint, &ids, name, backup_urls)?)
+        let live_ids: Vec<String> = live_rows.iter()
+            .filter_map(|row| row["id"].as_str().map(str::to_owned)).collect();
+        Some(crate::source_catalog::record_import(state, subscription_url, &base_url, &successful_endpoint, &ids, &live_ids, name, backup_urls)?)
     } else { None };
 
     log::info!(

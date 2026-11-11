@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Applies: 2026-11-10, flutter_miuix 1.3.0 and the Flutter product UI.
+Applies: 2026-11-11, flutter_miuix 1.3.0 and the Flutter product UI.
 
 Extends [Miuix appearance](2026-11-08-miuix-appearance.md) to the discovery,
 TVBox aggregate, subscription management and search controls. The keyword
@@ -80,6 +80,9 @@ A selected TVBox subscription shows its name, child count and Miuix address
 action in the filter area. Its address form remains reachable with zero child
 providers or when filters hide every child; the child rows remain flat. The
 summary and row editor share the same selected origin and persistence path.
+[TVBox live parent provenance](../bug-fix/2026-11-11-tvbox-live-parent-provenance.md)
+adds live descendants to that filter and count. Live rows and ordering describe
+their parent names while the live row editor retains the playlist address owner.
 Source read failures display their error and a guarded Miuix reload action.
 Loading/error states do not claim an empty match; a successful empty result keeps
 the existing empty-match message. Reload does not announce a source mutation.

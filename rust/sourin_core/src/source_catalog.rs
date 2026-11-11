@@ -24,6 +24,10 @@ mod identity_tests;
 #[path = "source_catalog_lifecycle_tests.rs"]
 mod lifecycle_tests;
 
+#[cfg(test)]
+#[path = "source_catalog_live_parent_tests.rs"]
+mod live_parent_tests;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SourceOrigin {
@@ -36,6 +40,8 @@ pub struct SourceOrigin {
     pub last_successful_endpoint: Option<String>,
     pub last_success_at: i64,
     pub provider_ids: Vec<String>,
+    /// TVBox live descendants have their own playlist/address origin.
+    pub related_provider_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -281,6 +287,11 @@ fn catalog_locked(state: &AppState) -> Result<SourceCatalog, String> {
     reconcile_origins(&mut out, &sources);
     for origin in &mut out.origins {
         origin.provider_ids.retain(|id| known.contains(id));
+        let mut seen = HashSet::new();
+        origin.related_provider_ids.retain(|id| origin.kind == "tvbox"
+            && seen.insert(id.clone())
+            && sources.iter().any(|source| source.kind == "live"
+                && source.provider_ids.contains(id)));
     }
     out.version = 1;
     out.groups = groups.into_values().collect();
@@ -500,6 +511,7 @@ pub fn record_import(
     actual: &str,
     endpoint: &str,
     ids: &[String],
+    live_ids: &[String],
     name: Option<&str>,
     backups: &[String],
 ) -> Result<String, String> {
@@ -530,6 +542,11 @@ pub fn record_import(
             origin.provider_ids.push(id.clone());
         }
     }
+    // Replace this import's descendant set. A shared playlist can belong to
+    // several parents, while its address settings keep a single live owner.
+    let mut seen = HashSet::new();
+    origin.related_provider_ids = live_ids.iter()
+        .filter(|id| seen.insert((*id).clone())).cloned().collect();
     origin.last_successful_url = Some(actual.to_owned());
     origin.last_successful_endpoint = Some(endpoint.to_owned());
     origin.last_success_at = now_secs();
@@ -806,6 +823,7 @@ pub fn record_plugin(
         last_successful_endpoint: Some(endpoint.into()),
         last_success_at: now_secs(),
         provider_ids: vec![id.into()],
+        related_provider_ids: Vec::new(),
     };
     save(&state.data_dir, &out)
 }

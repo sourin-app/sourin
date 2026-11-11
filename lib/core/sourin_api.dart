@@ -6195,6 +6195,7 @@ class SourceOrigin {
     this.backupUrls = const [],
     this.lastSuccessfulUrl,
     this.providerIds = const [],
+    this.relatedProviderIds = const [],
   });
   final String id;
   final String name;
@@ -6203,6 +6204,8 @@ class SourceOrigin {
   final List<String> backupUrls;
   final String? lastSuccessfulUrl;
   final List<String> providerIds;
+  /// TVBox live descendants; these ids keep their own playlist address owner.
+  final List<String> relatedProviderIds;
   factory SourceOrigin.fromJson(Map<String, dynamic> j) => SourceOrigin(
     id: '${j['id'] ?? ''}',
     name: '${j['name'] ?? ''}',
@@ -6213,6 +6216,9 @@ class SourceOrigin {
         .toList(),
     lastSuccessfulUrl: j['lastSuccessfulUrl'] as String?,
     providerIds: (j['providerIds'] as List? ?? const [])
+        .whereType<String>()
+        .toList(),
+    relatedProviderIds: (j['relatedProviderIds'] as List? ?? const [])
         .whereType<String>()
         .toList(),
   );

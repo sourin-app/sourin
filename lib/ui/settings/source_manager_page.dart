@@ -54,7 +54,11 @@ List<ProviderManifest> managedSourceList(
           return false;
         if (status == ManagedSourceStatus.enabled && !p.enabled) return false;
         if (status == ManagedSourceStatus.disabled && p.enabled) return false;
-        if (origin != null && !origin.providerIds.contains(p.id)) return false;
+        if (origin != null &&
+            !origin.providerIds.contains(p.id) &&
+            !origin.relatedProviderIds.contains(p.id)) {
+          return false;
+        }
         if (needle.isNotEmpty &&
             !'${p.name} ${p.id}'.toLowerCase().contains(needle))
           return false;
@@ -82,8 +86,20 @@ bool isTvboxSubscriptionOrigin(SourceOrigin origin) =>
 
 String sourceOriginDescription(
   SourceOrigin? origin,
-  ProviderManifest provider,
-) {
+  ProviderManifest provider, {
+  List<SourceOrigin> origins = const [],
+}) {
+  final parents = origins.where(
+    (o) =>
+        isTvboxSubscriptionOrigin(o) &&
+        o.relatedProviderIds.contains(provider.id),
+  );
+  if (parents.isNotEmpty) {
+    final names = parents
+        .map((o) => o.name.trim().isEmpty ? 'TVBox 订阅' : o.name.trim())
+        .toSet();
+    return '来自 ${names.join('、')}';
+  }
   if (origin != null && isTvboxSubscriptionOrigin(origin)) {
     final name = origin.name.trim();
     return '来自 ${name.isEmpty ? 'TVBox 订阅' : name}';
@@ -390,7 +406,7 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text(
-              '${origin.name.trim().isEmpty ? 'TVBox 订阅' : origin.name} · ${origin.providerIds.length} 个源',
+              '${origin.name.trim().isEmpty ? 'TVBox 订阅' : origin.name} · ${({...origin.providerIds, ...origin.relatedProviderIds}).length} 个源',
             ),
             ui.TextButton(
               key: const ValueKey('source-origin-edit'),
@@ -519,7 +535,7 @@ class _SourceManagerPageState extends State<SourceManagerPage> {
                     ),
                     const SizedBox(height: Sp.x1),
                     Text(
-                      '${sourceOriginDescription(origin, provider)}${provider.capabilities.live && provider.kind != 'm3u_live' ? ' · 直播' : ''}',
+                      '${sourceOriginDescription(origin, provider, origins: _catalog?.origins ?? const [])}${provider.capabilities.live && provider.kind != 'm3u_live' ? ' · 直播' : ''}',
                       style: TextStyle(
                         fontSize: FontSizes.sm,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -907,7 +923,7 @@ class _OriginSearchResultsState extends State<_OriginSearchResults> {
                         key: ValueKey('source-origin-option-${origin.id}'),
                         title: Text(origin.name),
                         subtitle: Text(
-                          '${origin.kind.toUpperCase()} · ${origin.providerIds.length} 个源',
+                          '${origin.kind.toUpperCase()} · ${({...origin.providerIds, ...origin.relatedProviderIds}).length} 个源',
                         ),
                         trailing: origin.id == widget.selected
                             ? const Icon(Icons.check)
@@ -1252,7 +1268,7 @@ class _SourceOrderPageState extends State<SourceOrderPage> {
             child: ui.ListTile(
               title: Text(sourceDisplayLabel(provider.name)),
               subtitle: Text(
-                '${sourceOriginDescription(origin, provider)}${provider.enabled ? '' : ' · 已关闭'}',
+                '${sourceOriginDescription(origin, provider, origins: widget.origins)}${provider.enabled ? '' : ' · 已关闭'}',
               ),
               leading: Text('${index + 1}'),
               trailing: Row(

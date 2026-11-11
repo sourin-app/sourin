@@ -38,6 +38,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import '_support/strip_comments.dart';
+import 'support/legacy_live_guard_fixture.dart';
 
 /// 仓库根（`flutter test` 的 cwd 就是它）
 const _shellPath = 'lib/shell.dart';
@@ -279,27 +280,8 @@ void main() {
       }
     });
 
-    test('★★ 直播页侧仍是"只改选中、不起播"（防双声）', () {
-      final live = File('lib/ui/live_page.dart').readAsStringSync();
-      final body = stripComments(live);
-      expect(body.contains('stepChannelForFullscreen'), isTrue,
-          reason: '★ `stepChannelForFullscreen` 没了');
-      /*
-       * ★ 该函数**不许**出现起播调用 —— 否则全屏播放页的 mpv 与
-       *   隐藏直播页的 mpv 会**同时出声**（回声/重音）。
-       */
-      final i = body.indexOf('stepChannelForFullscreen(int delta)');
-      expect(i, greaterThan(0), reason: '找不到 stepChannelForFullscreen 定义');
-      final seg = body.substring(i, (i + 3000).clamp(0, body.length));
-      // 取到函数体结束（下一个顶层 `\n  }` 之前）
-      final end = seg.indexOf('\n  }\n');
-      final fn = end > 0 ? seg.substring(0, end) : seg;
-      expect(fn.contains('_startPlayback'), isFalse,
-          reason: '★★★ `stepChannelForFullscreen` 里出现了 `_startPlayback` ⇒ '
-              '**两个 mpv 同时出声**（全屏那个 + 隐藏直播页那个）');
-      expect(fn.contains('_loadStream'), isFalse,
-          reason: '★★★ `stepChannelForFullscreen` 里出现了 `_loadStream` ⇒ 同上，会双声');
-    });
+    testWidgets('★★ 直播页侧仍是"只改选中、不起播"（防双声）',
+        verifyLegacyFullscreenSelectionOnly);
   });
 
   group('task-53【③】「所有直播」列表面板（用户第 3 条）', () {

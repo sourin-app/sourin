@@ -38,9 +38,15 @@ class _PlayerBoundary extends Fake implements Player {
   int stops = 0;
   int plays = 0;
   int disposals = 0;
+  PlayerState _state = const PlayerState();
 
   @override
-  PlayerState get state => const PlayerState();
+  PlayerState get state => _state;
+
+  @override
+  Future<void> setVolume(double volume) async {
+    _state = _state.copyWith(volume: volume);
+  }
 
   @override
   Future<void> open(Playable playable, {bool play = true}) async {
@@ -202,6 +208,8 @@ void main() {
     expect(scene.player.opened, hasLength(1));
     expect((scene.player.opened.single as Media).uri, _second.url);
     expect(scene.player.plays, 1);
+    expect(scene.player.state.volume, 0,
+        reason: 'Opening the newest stream must retain the default mute.');
     expect(scene.errors, isEmpty);
     await scene.finish(tester);
   });

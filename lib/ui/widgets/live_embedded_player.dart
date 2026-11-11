@@ -920,6 +920,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   @override
   void initState() {
     super.initState();
+    _resumeRequested = widget.playWhenReady;
     /*
      * ★ 只在**有流**（真的有画面可看）时才自动收起。
      *
@@ -1304,8 +1305,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
           !identical(_player, p)) {
         return;
       }
-      if (widget.playWhenReady && _visibleNow) {
-        await p.play();
+      if (_resumeRequested && _visibleNow) {
+        // A user command may have changed intent while native open awaited.
+        // Resume also settles an already-issued play if that owner is retired.
+        await resume();
       }
       if (!mounted ||
           _disposed ||
@@ -1454,8 +1457,8 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
           !identical(_player, p)) {
         return;
       }
-      if (widget.playWhenReady && _visibleNow) {
-        await p.play();
+      if (_resumeRequested && _visibleNow) {
+        await resume();
       }
       if (!mounted ||
           _disposed ||

@@ -41,6 +41,8 @@
 // ```
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_miuix/miuix.dart' as miuix;
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 import 'package:material_ui/material_ui.dart';
 
 import 'package:sourin_spike/core/models.dart';
@@ -49,6 +51,8 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/live_page.dart';
 import 'package:sourin_spike/ui/media_session.dart';
 import 'package:sourin_spike/ui/widgets/live_embedded_player.dart';
+
+import 'support/legacy_live_guard_fixture.dart';
 
 Widget _host(Widget child) {
   final theme = AppTheme.themeFor(Brightness.dark);
@@ -201,9 +205,16 @@ void main() {
             '音量没有回传（回退成 37 或 100 都属于"两套状态"）');
 
     // 界面上的滑块必须跟着这个真实状态走（同一份状态的投影）
-    final slider =
-        t.widget<Slider>(find.byKey(const ValueKey('live-volume-slider')));
+    final sliderHost = find.byKey(const ValueKey('live-volume-slider'));
+    final slider = t.widget<ui.Slider>(sliderHost);
     expect(slider.value, 0, reason: '静音态下滑块必须显示 0（与 `muted` 一致）');
+    final actualSlider = find.descendant(
+      of: sliderHost,
+      matching: find.byType(miuix.MiuixSlider),
+    );
+    expect(actualSlider, findsOneWidget);
+    expect(t.widget<miuix.MiuixSlider>(actualSlider).value, 0,
+        reason: '真实 Miuix 滑块也必须渲染静音值，而非只更新外层参数');
 
     await t.pumpWidget(const SizedBox.shrink());
   });
@@ -262,4 +273,14 @@ void main() {
         LivePlaybackSnapshot(playing: false, muted: false, volume: double.nan);
     expect(nan.volume, 100, reason: 'NaN 音量必须兜底成 100');
   });
+
+  testWidgets(
+    'actual native leaves and Miuix control preserve returned mute volume',
+    verifyLegacyFullscreenChannelIntent,
+  );
+  testWidgets(
+    'actual Miuix unmute restores snapshot volume without resuming playback',
+    verifyLegacyRenderedMuteRestore,
+  );
+
 }

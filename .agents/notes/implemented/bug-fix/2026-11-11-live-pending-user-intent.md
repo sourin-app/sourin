@@ -122,6 +122,10 @@ reported separately rather than called green.
 
 ## Consequences
 
+The subsequent [native-open request check](2026-11-11-live-open-requested-playback.md)
+uses this immediate request after initial/retry and channel-open awaits, where
+the last widget constructor can still carry the previous pause policy.
+
 Pending requests can protect user intent without claiming native success. Raw
 native Future errors remain observable. A failed restorative native command is
 reported through the original user-command failure and leaves real acceptance

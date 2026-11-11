@@ -76,6 +76,9 @@ error. Native Windows playback remains a separate acceptance gate.
 
 ## Consequences
 
+The subsequent [native-open request check](2026-11-11-live-open-requested-playback.md)
+also uses the existing guarded resume path after initial and channel opens.
+
 Returned pause intent has one restoration owner, and stale resume work cannot
 silently take over in the qualified schedules. The tests mount a real PlayerPage
 object only as the handoff report contract; its fullscreen native State is not

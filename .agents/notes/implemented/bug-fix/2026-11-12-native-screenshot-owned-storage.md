@@ -87,13 +87,16 @@ sentinel save-rule tests remain scoped regression evidence.
 Public SubtitleTrack.no disables/clears selection; it does not prove native
 sub-remove or deletion from track-list. A disposal timer window does not observe
 C destruction. Bound Arial input does not independently identify the active
-font provider. The helper results do not establish real PlayerPage image saving
-and path feedback, remote playback, application graceful quit or Owner package
-acceptance. Revisit the internal adapter when media_kit changes its native
+font provider. These helper-only results do not establish PlayerPage saving/path feedback;
+[the subsequent PlayerPage lifecycle qualification](2026-11-12-player-screenshot-after-dispose.md)
+adds real software-native local JPEG saving/full-path feedback for live and
+retired-page cases. Rendered surfaces, remote playback, ordinary graceful quit
+and Owner/package acceptance remain separate. Revisit the internal adapter when media_kit changes its native
 screenshot/locking/node contract or exposes an equivalent public API.
 
 The final t63 More regression uses bounded production controller and animation
 phases. It keeps all five cases, actual screenshot-row hit/enable/icon checks,
 S-key counts, sheet gating and normal menu removal. Its qualified run has five
-passes, exit 0, no forced cleanup and zero remaining Job descendants. This is
-entry/lifecycle evidence; native PlayerPage capture/save/feedback remains open.
+passes, exit 0, no forced cleanup and zero remaining Job descendants. This remains More-entry/lifecycle evidence; the linked subsequent two-case
+qualification supplies the software-native saving/feedback outcomes, without
+turning t63 into a native-pixel or Owner acceptance run.

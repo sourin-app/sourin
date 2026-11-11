@@ -15403,6 +15403,7 @@ class _PlayerPageState extends State<PlayerPage>
   }
 
   void _showControls() {
+    if (!mounted) return;
     /*
      * ★★★ task-72【④】值没变就**不要** setState
      *

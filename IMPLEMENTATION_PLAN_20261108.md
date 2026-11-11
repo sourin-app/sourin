@@ -1157,3 +1157,10 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 云朵在line或title含pipe时采用tagged三字符串tuple，普通detail ID及旧opaque值保留原字节；生产CspProvider通过同一parser识别显式选集。固定四用例旧版2个身份断言失败、2个控制通过，候选4项通过；同一新编译EXE的23个既有用例全部通过、0忽略。
 - 两轮原编译的派生进程drain门槛失败并强制清理，原compiler gate仍failed；各自同次编译EXE的独立runtime正常退出且连续八秒Job0/无force，未改写失败记录。最后源码只改一处注释versioned为tagged，与实际已测逻辑逐字相同，fresh release/package另绑定最终字节。
 - 公开匿名home/list/detail/search成功，production decoder返回一个媒体候选；尚未获取媒体、首帧或指定集live请求身份实测，不称真实外部播放恢复。收据见新云朵Agent Note。完整18项及追加目标继续active，真实云盘、桌面/性能、普通退出和Owner验收仍开放。
+
+
+## 2026-11-12 后台续做：退出后的截图保存
+
+- 只在_showControls入口加mounted检查。已开始的真实截图保存继续完成，退出的页面不恢复控件，避免成功JPEG被误报截图失败。旧版实际完成1个正常控制和1个目标失败，候选两项通过、0跳过；四个JPEG均52,246字节，活跃页面完整路径反馈与控件保留，退出页面先真实dispose再放行保存。
+- 两轮正常退出后连续八秒Job0，无force/error，输入绑定未变。随后原两树各运行source/test单文件分析，四命令exit0：每arm共0error/27warning/10info，完整diagnostic multiset相同，仅插入guard后的行号映射变化；不称全项目或分析clean。
+- 新note与原截图helper note同步真实软件native保存/路径反馈边界。新完整包仍需绑定本地提交，native surface/audio、外部/云盘、桌面交互性能、普通退出和Owner验收继续开放。

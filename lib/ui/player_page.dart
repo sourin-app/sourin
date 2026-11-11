@@ -10680,20 +10680,56 @@ class _PlayerPageState extends State<PlayerPage>
      * `isManualBinding()` = "**这一部够格**被自动更新"（数据来源，逐作品）。
      * 两个都真才更新 —— 前者不是后者的替代品。
      */
-    if (!isManualBinding(widget.provider, widget.id)) return;
-    final b = loadBinding(widget.provider, widget.id);
+    if (!mounted) return;
+    final generation = _playSessionGen;
+    final provider = _provider;
+    final id = _contentId;
+    final episodeIndex = _epIndex;
+    final episodeId = currentEpisodeId;
+    final panelToken = _biliPanelToken;
+    final fetchToken = _danmakuFetchToken;
+    if (!isManualBinding(provider, id)) return;
+    final b = loadBinding(provider, id);
     if (b == null || b.isEmpty) return;
-    final cid = b.cidFor(_epIndex);
+    final cid = b.cidFor(episodeIndex);
     if (cid <= 0) return;
     if (!shouldAutoUpdate(cid: cid)) return;
+
+    bool ownsRequest() {
+      if (!mounted ||
+          generation != _playSessionGen ||
+          provider != _provider ||
+          id != _contentId ||
+          episodeIndex != _epIndex ||
+          episodeId != currentEpisodeId ||
+          !biliAutoUpdateEnabled()) {
+        return false;
+      }
+      final currentBinding = loadBinding(provider, id);
+      return currentBinding != null &&
+          currentBinding.manual &&
+          currentBinding.bvid == b.bvid &&
+          currentBinding.aid == b.aid &&
+          currentBinding.cidFor(episodeIndex) == cid;
+    }
+
     final r = await _biliFetch(b);
-    if (!mounted) return;
+    // A late external fetch must not claim a new aggregate in another request.
+    if (!ownsRequest() ||
+        fetchToken != _danmakuFetchToken ||
+        r.cid != cid) {
+      return;
+    }
     if (!r.ok) {
       debugPrint('[BILI] 自动刷新失败（保留旧弹幕）: ${r.error}');
       return;
     }
-    await _biliApplyComments(r);
-    if (_biliSheetOpen) {
+    final applying = _biliApplyComments(r);
+    // The helper claims its token synchronously before its first await.
+    final applyToken = _danmakuFetchToken;
+    await applying;
+    if (!ownsRequest() || applyToken != _danmakuFetchToken) return;
+    if (_biliSheetOpen && panelToken == _biliPanelToken) {
       setState(() {
         _biliState = _biliState.copyWith(
           result: r,
@@ -10737,6 +10773,7 @@ class _PlayerPageState extends State<PlayerPage>
     final b = _biliState.binding;
     if (b == null || b.isEmpty) return;
     final token = _biliPanelToken;
+    final generation = _playSessionGen;
     setState(() {
       _biliState = _biliState.copyWith(
         loading: true,
@@ -10745,7 +10782,7 @@ class _PlayerPageState extends State<PlayerPage>
       );
     });
     final r = await _biliFetch(b, force: true);
-    if (!mounted) return;
+    if (!mounted || generation != _playSessionGen) return;
     setState(() {
       _biliState = _biliState.copyWith(
         loading: false,

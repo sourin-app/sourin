@@ -124,6 +124,15 @@ session change and the auto-refresh caller's later sheet-state writes remain
 outside that verified scope. The progress, binding-storage, preview, layout and
 pinned-fallback decisions below remain in effect.
 
+[Qualified external caller candidate](2026-11-11-external-danmaku-caller-session-ownership.md)
+proposes extending request ownership before the manual late external fetch enters its
+helper and after the automatic caller's already-entered aggregate returns.
+Its four caller cases pair real session changes with current publication
+controls, separately from the eight aggregation cases above. The automatic
+late-fetch, same-generation supersession, rebind, repeated-panel and helper
+unbind/preference boundaries retain their explicitly untested scope. Progress,
+binding storage, preview, layout and pinned fallback decisions remain in effect.
+
 [Pinned fallback cancellation](2026-11-11-pinned-danmaku-fallback-cancellation.md)
 extends the existing comment-load ownership without changing the progress,
 binding-storage, draft, preview or layout decisions below. Its four frozen
@@ -162,3 +171,15 @@ retained. Only the indicated entry/layout decisions are superseded:
 - [Right detail line filtering](2026-10-30-right-detail-line-filter-and-badge.md):
   current-line filtering and honest episode counts remain unchanged. This
   decision addresses progress observations, not line selection.
+
+The linked caller decision is a qualified isolated candidate; main-tree integration is pending. Its c3/c4 combinations are not full green runs, and its c5 aggregation run does not add caller-case coverage. The pre-caller v72 package retains its own source binding.
+
+## Bili fixture targeting relation
+
+The [current Miuix adapter contract](../feature/2026-11-08-miuix-controls-and-framework-bridge.md)
+owns the Bili dialog's actual controls. The related t70 migration preserves
+real input/click/drag and disabled/callback behavior; t73's active-identity
+manual gate and asynchronous stale-result assertions are governed by
+[external caller ownership](2026-11-11-external-danmaku-caller-session-ownership.md).
+These fixture updates preserve this workflow's progress, modal and binding
+decisions and do not establish physical playback or full package acceptance.

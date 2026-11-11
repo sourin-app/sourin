@@ -432,9 +432,24 @@ void main() {  // ════════════════════�
       final body = _memberSlice(_page, i0);
       expect(body.contains('final token = ++_danmakuFetchToken;'), isTrue,
           reason: '★ 换集时旧响应必须被丢掉（与 dandanplay 同一条规矩）');
-      expect(body.contains('if (!mounted || token != _danmakuFetchToken) return;'),
-          isTrue,
-          reason: '★★ 令牌判据不能省 —— 否则第 5 集会短暂显示第 3 集的弹幕');
+      // Both async boundaries must reject stale tokens and adopted sessions.
+      final compactBody = body.replaceAll(RegExp(r'\s+'), ' ');
+      final iGeneration = compactBody.indexOf('final generation = _playSessionGen;');
+      final iUpdate = compactBody.indexOf('final r = await updateDanmaku(');
+      final iFailure = compactBody.indexOf('if (!r.ok)', iUpdate);
+      final iAggregate = compactBody.indexOf('final agg = await _aggregateDanmaku(');
+      final iPublish = compactBody.indexOf('_danmakuComments = agg.comments;', iAggregate);
+      expect(iGeneration, greaterThan(-1), reason: '★ 必须捕获当前播放会话');
+      expect(iUpdate, greaterThan(iGeneration));
+      expect(iFailure, greaterThan(iUpdate));
+      expect(iAggregate, greaterThan(iFailure));
+      expect(iPublish, greaterThan(iAggregate));
+      const staleGuard = 'if (!mounted || token != _danmakuFetchToken || '
+          'generation != _playSessionGen) { return; }';
+      expect(compactBody.substring(iUpdate, iFailure).contains(staleGuard), isTrue,
+          reason: '★★ 令牌判据不能省 —— 外部请求返回后先拒绝旧令牌和旧会话');
+      expect(compactBody.substring(iAggregate, iPublish).contains(staleGuard), isTrue,
+          reason: '★★ 聚合返回后仍须拒绝旧令牌和旧会话，才能发布弹幕');
       expect(body.contains('_danmakuLoading = true;'), isTrue);
       expect(body.contains('_danmakuLoading = false;'), isTrue);
       /*
@@ -611,13 +626,16 @@ void main() {  // ════════════════════�
        */
       final i0 = _page.indexOf('Future<void> _biliAutoRefresh() async {');
       expect(i0, greaterThan(0), reason: '★ 方法还在');
-      final iGate = _page.indexOf(
-          'if (!isManualBinding(widget.provider, widget.id)) return;', i0);
-      expect(iGate, greaterThan(i0),
-          reason: '★★ 自动刷新必须先问 manual —— 只靠全局开关 = 残留也会自动刷新');
-      final iBind =
-          _page.indexOf('final b = loadBinding(widget.provider, widget.id);', i0);
-      expect(iBind, greaterThan(i0), reason: '★ 原本的读绑定还在');
+      final body = _memberSlice(_page, i0);
+      final iProvider = indexOfExactly(body, 'final provider = _provider;');
+      final iId = indexOfExactly(body, 'final id = _contentId;');
+      final iGate = indexOfExactly(
+          body, 'if (!isManualBinding(provider, id)) return;',
+          why: '★★ 自动刷新必须先问当前作品的 manual，不能套用残留绑定');
+      final iBind = indexOfExactly(body, 'final b = loadBinding(provider, id);',
+          why: '★ 用同一组捕获的当前作品身份读绑定');
+      expect(iProvider, lessThan(iGate), reason: '★ 先捕获当前 provider');
+      expect(iId, lessThan(iGate), reason: '★ 先捕获当前作品 id');
       expect(iGate, lessThan(iBind),
           reason: '★ 门控在读绑定**之前**（先判够不够格，再去取数据）');
     });

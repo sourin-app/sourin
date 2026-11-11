@@ -63,8 +63,19 @@ does not cover that schedule or claim complete external caller isolation.
 
 `_biliAutoRefresh` can write its external-sheet state after awaiting
 `_biliApplyComments`. Its post-await caller state is not guarded by this change
-or exercised by the external-load/manual-update cases. This is a remaining
-static caller risk, not a reproduced failure or a newly fixed behavior.
+or exercised by the external-load/manual-update cases. This is a separate
+caller boundary, not coverage established by this aggregation batch.
+
+## Relations
+
+[Qualified external caller candidate](2026-11-11-external-danmaku-caller-session-ownership.md)
+separately proposes preserving the manual request's generation before a late external
+fetch enters the apply helper and the automatic caller's authority to write
+its panel state after that helper returns. Its four paired caller cases have
+their own source/fixture binding and qualification evidence. They do not expand
+this note's eight already-entered aggregation cases or its plugin-error scope.
+The shared aggregation guards described here remain in effect. Complete
+external-caller, panel-incarnation and real playback acceptance are not claimed.
 
 ## Verification
 
@@ -101,3 +112,18 @@ input observations, not native decode, pixels, physical interaction, external
 availability, account playback or formal package acceptance. Early c1 teardown
 and c2 error-zone fixture failures are retained separately and are not counted
 as the final behavioral RED.
+
+The linked caller decision is a qualified isolated candidate; main-tree integration is pending. Its c3/c4 combinations are not full green runs, and its c5 aggregation run does not add caller-case coverage. The pre-caller v72 package retains its own source binding.
+
+## Later initialization diagnostic boundary
+
+November 11 c4 completed no `[external-fixture]` observations or cleanup for
+this note's unchanged eight-case fixture and ended with eight cases plus
+tearDownAll incomplete. Other caller suites' prefixes are separate evidence.
+Isolated c5 subsequently completed all eight and all native cleanup markers
+on the same fixture/candidate hashes. It does not diagnose c4 or make its
+broad run green. The independent `.probe/parallel-next-20261111/player-cover/next-initialization-diagnostic/`
+adds only synchronous stage markers, with original assertions, async steps
+and wait budgets preserved; it is unrun instrumentation, not qualification.
+
+The completed c17 isolated aggregation group also passes all eight unchanged cases. Final caller-related qualification totals 205 cases across nine separate groups; it preserves the c4/c10 incomplete-command records and does not diagnose their cause. Main caller integration remains pending.

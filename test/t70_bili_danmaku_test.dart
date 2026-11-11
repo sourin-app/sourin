@@ -70,6 +70,7 @@ import 'package:sourin_spike/core/bili/bili_bind.dart';
 import 'package:sourin_spike/core/danmaku.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/widgets/bili_import_dialog.dart';
+import 'package:sourin_spike/ui/widgets/miuix_controls.dart' as ui;
 
 // ══════════════════════════════════════════════════════════════════════
 //  夹具
@@ -1092,13 +1093,13 @@ void main() {
       expect(find.text('还没绑定外部弹幕'), findsOneWidget);
 
       // 三个按钮：只有「导入并绑定」可用
-      final FilledButton import = t.widget<FilledButton>(
-        find.widgetWithText(FilledButton, '导入并绑定'),
+      final ui.FilledButton import = t.widget<ui.FilledButton>(
+        find.widgetWithText(ui.FilledButton, '导入并绑定'),
       );
       expect(import.onPressed, isNotNull);
 
-      final TextButton update = t.widget<TextButton>(
-        find.widgetWithText(TextButton, '立即更新'),
+      final ui.TextButton update = t.widget<ui.TextButton>(
+        find.widgetWithText(ui.TextButton, '立即更新'),
       );
       expect(update.onPressed, isNull, reason: '★ 没绑定 ⇒ 没有可更新的东西');
 
@@ -1111,9 +1112,9 @@ void main() {
       await t.pumpWidget(_host(const BiliImportState(selectedPage: 2), c));
       await t.pump();
 
-      await t.enterText(find.byType(TextField), '  BV1GJ411x7h7  ');
+      await t.enterText(find.byType(ui.TextField), '  BV1GJ411x7h7  ');
       await t.pump();
-      await t.tap(find.widgetWithText(FilledButton, '导入并绑定'));
+      await t.tap(find.widgetWithText(ui.FilledButton, '导入并绑定'));
       await t.pump();
 
       expect(c.importInput, 'BV1GJ411x7h7', reason: '首尾空白要裁掉');
@@ -1125,7 +1126,7 @@ void main() {
       await t.pumpWidget(_host(const BiliImportState(), c));
       await t.pump();
 
-      await t.tap(find.widgetWithText(FilledButton, '导入并绑定'));
+      await t.tap(find.widgetWithText(ui.FilledButton, '导入并绑定'));
       await t.pump();
 
       expect(c.importInput, isNull);
@@ -1140,18 +1141,18 @@ void main() {
       await t.pump(); // ⚠️ 不能 pumpAndSettle：转圈永不静止
 
       expect(find.text('正在拉视频信息…'), findsOneWidget);
-      expect(t.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+      expect(t.widget<ui.TextField>(find.byType(ui.TextField)).enabled, isFalse);
       expect(
-        t.widget<FilledButton>(find.widgetWithText(FilledButton, '导入并绑定')).onPressed,
+        t.widget<ui.FilledButton>(find.widgetWithText(ui.FilledButton, '导入并绑定')).onPressed,
         isNull,
       );
       expect(
-        t.widget<TextButton>(find.widgetWithText(TextButton, '立即更新')).onPressed,
+        t.widget<ui.TextButton>(find.widgetWithText(ui.TextButton, '立即更新')).onPressed,
         isNull,
         reason: '★ 已经有一个请求在飞了，不许再点',
       );
       expect(find.text('解除绑定'), findsNothing, reason: '加载中不显示解除');
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(find.byType(ui.CircularProgressIndicator), findsOneWidget);
     });
 
     testWidgets('已绑定：状态 + 视频/集/P/cid 四行信息 + 按钮都可用', (WidgetTester t) async {
@@ -1176,7 +1177,7 @@ void main() {
       expect(find.text('这一集挂了 42 条弹幕'), findsOneWidget);
 
       expect(
-        t.widget<TextButton>(find.widgetWithText(TextButton, '立即更新')).onPressed,
+        t.widget<ui.TextButton>(find.widgetWithText(ui.TextButton, '立即更新')).onPressed,
         isNotNull,
       );
       expect(find.text('解除绑定'), findsOneWidget);
@@ -1233,17 +1234,17 @@ void main() {
       expect(find.text('30 分钟'), findsOneWidget);
 
       // 滑条的量程与当前值（写死在这里，改了就红）
-      final Slider slider = t.widget<Slider>(find.byType(Slider));
+      final ui.Slider slider = t.widget<ui.Slider>(find.byType(ui.Slider));
       expect(slider.min, 5);
       expect(slider.max, 240);
       expect(slider.value, 30);
 
-      await t.tap(find.byType(Switch));
+      await t.tap(find.byType(ui.Switch));
       await t.pump();
       expect(c.autoUpdate, isFalse, reason: '当前是 true，点一下变 false');
 
       // 拖到最左 ⇒ 夹到 min = 5
-      await t.drag(find.byType(Slider), const Offset(-400, 0));
+      await t.drag(find.byType(ui.Slider), const Offset(-400, 0));
       await t.pump();
       expect(c.interval, 5, reason: '★ 拖到最左必须夹在 5（不能是 0 或负数）');
     });
@@ -1253,7 +1254,7 @@ void main() {
       await t.pumpWidget(_host(BiliImportState(binding: _binding()), c));
       await t.pump();
 
-      await t.tap(find.widgetWithText(TextButton, '立即更新'));
+      await t.tap(find.widgetWithText(ui.TextButton, '立即更新'));
       await t.pump();
 
       expect(c.updateNow, 1);

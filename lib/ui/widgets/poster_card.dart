@@ -190,6 +190,15 @@ class PosterCard extends StatefulWidget {
 class _PosterCardState extends State<PosterCard> {
   /// 图片是否已加载成功
   bool _loaded = false;
+  int _coverRevision = 0;
+
+  void _imageLoaded(String? cover, int revision) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || revision != _coverRevision || cover != widget.cover ||
+          _loaded || _failed) return;
+      setState(() => _loaded = true);
+    });
+  }
 
   /// 是否加载失败（显示中性占位，并有限重试）
   bool _failed = false;
@@ -239,6 +248,7 @@ class _PosterCardState extends State<PosterCard> {
      * 列表滚动复用 widget 时特别容易触发。
      */
     if (old.cover != widget.cover) {
+      _coverRevision++;
       _retryTimer?.cancel();
       _retryCount = 0;
       setState(() {
@@ -267,6 +277,8 @@ class _PosterCardState extends State<PosterCard> {
     final colors = Theme.of(context).colorScheme;
     final releaseStatus = widget.releaseStatus;
     final subtitle = widget.subtitle;
+    final cover = widget.cover;
+    final coverRevision = _coverRevision;
     /*
      * ★★ 宽度**不许超过父级给的约束** —— 原版 `.poster { max-width: 100% }`
      *    （`base.css:687-744`，`:704-708` 那段注释就是为这个问题写的）。
@@ -433,6 +445,9 @@ class _PosterCardState extends State<PosterCard> {
                                * Flutter 的 ImageCache 直接给了这个信息。
                                */
                               frameBuilder: (context, child, frame, wasSync) {
+                                if (!_loaded && (wasSync || frame != null)) {
+                                  _imageLoaded(cover, coverRevision);
+                                }
                                 if (wasSync) return child;
                                 return AnimatedOpacity(
                                   opacity: frame == null ? 0 : 1,
@@ -442,16 +457,9 @@ class _PosterCardState extends State<PosterCard> {
                                 );
                               },
                               loadingBuilder: (context, child, progress) {
+                                // A null chunk event also occurs before the first
+                                // frame. Only frameBuilder can confirm decoded pixels.
                                 if (progress == null) {
-                                  // 加载完成
-                                  if (!_loaded) {
-                                    WidgetsBinding.instance
-                                        .addPostFrameCallback((_) {
-                                          if (mounted) {
-                                            setState(() => _loaded = true);
-                                          }
-                                        });
-                                  }
                                   return child;
                                 }
                                 return const SizedBox.shrink();

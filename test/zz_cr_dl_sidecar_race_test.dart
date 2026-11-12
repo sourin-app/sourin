@@ -54,6 +54,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'valid_cover_fixture.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -71,7 +72,6 @@ const int kSegCount = 6;
 
 /// 封面图字节数 / 填充值（便于「是不是新写的那张」一眼可验）
 const int kCoverBytes = 4096;
-const int kCoverByte = 0x5A;
 
 /// 拼 m3u8 用的换行
 String kNl() => String.fromCharCode(10);
@@ -131,7 +131,7 @@ class Upstream {
         return;
       }
       if (path == '/cover.jpg') {
-        final body = List<int>.filled(kCoverBytes, kCoverByte);
+        final body = validCoverFixture(kCoverBytes);
         req.response.headers.contentType = ContentType.parse('image/jpeg');
         req.response.headers.contentLength = body.length;
         req.response.add(body);
@@ -448,7 +448,7 @@ String? sidecarPlatformViolation({
             ' ≠ ' +
             kCoverBytes.toString() +
             ' ⇒ 还是旧的那张');
-      } else if (!bytes.every((b) => b == kCoverByte)) {
+      } else if (!listEquals(bytes, validCoverFixture(kCoverBytes))) {
         bad.add('★★ 封面内容不是这次抓下来的那张');
       }
       final tmp = File(target.path + '.tmp');
@@ -1008,7 +1008,7 @@ String? sidecarPlatformViolation({
         bad.add('★ 重试后封面必须仍然落地：' + second.toString());
       }
       final bytes = target.readAsBytesSync();
-      if (bytes.length != kCoverBytes || !bytes.every((b) => b == kCoverByte)) {
+      if (bytes.length != kCoverBytes || !listEquals(bytes, validCoverFixture(kCoverBytes))) {
         bad.add('★★ 退避后成功的那次替换没把新封面写进去（长度=' +
             bytes.length.toString() +
             '，应=' +

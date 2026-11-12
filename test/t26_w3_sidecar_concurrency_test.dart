@@ -32,6 +32,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'valid_cover_fixture.dart';
+import 'cover_temp_write_gate.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -50,7 +52,6 @@ const int kSegCount = 6;
 /// ★ 封面 7 MiB：把「写 tmp → rename」的窗口拉到十几~几十毫秒，
 ///   让并发撞名**必然**发生（> 8 MiB 会被 cacheCoverImage 直接放弃）。
 const int kCoverBytes = 7 * 1024 * 1024;
-const int kCoverByte = 0x5A;
 
 /// 同一部剧的任务数（= 并发上限 3 ⇒ 三集同时收尾）
 const int kEps = 3;
@@ -186,7 +187,7 @@ class Upstream {
         // ★ 先设头（客户端已在等 body），再进闸门 —— 这样三个请求会**真的**
         //   停在"等 body"这个 await 上，而不是停在建连阶段（建连阶段停着
         //   不会让三具收尾体同时在飞）。
-        final body = List<int>.filled(kCoverBytes, kCoverByte);
+        final body = validCoverFixture(kCoverBytes);
         req.response.headers.contentType = ContentType.parse('image/jpeg');
         req.response.headers.contentLength = body.length;
         await _passGate();
@@ -321,6 +322,7 @@ void main() {
         '_' +
         n.toString())
       ..createSync(recursive: true);
+    Future<RoundResult> runRound() async {
     // ★ 不用 DownloadDir.setConfiguredDir：它内部调 AppLog.write，
     //   而 AppLog.logDir() 会走 ClipDownloader.dataDir() → path_provider
     //   ⇒ 在 flutter_test 里是 MissingPluginException（插件没注册）。
@@ -407,6 +409,18 @@ void main() {
       allParked: allParked,
       coverRequests: ups.coverRequests,
     );
+    }
+    if (!forceCoverOverlap) return runRound();
+    final gate = CoverTempWriteGate(
+      d.path + sep + 'OPS16 剧' + sep + '_sourin-cover.jpg.tmp', kEps,
+    );
+    final result = await gate.run(runRound);
+    expect(gate.written, kEps, reason: 'All three actual temporary-file writers must reach the disk gate');
+    expect(gate.flushed, kEps, reason: 'All three production writes must use real flush');
+    expect(gate.renameCalls, greaterThanOrEqualTo(kEps), reason: 'Production must attempt real rename for every writer');
+    // ignore: avoid_print
+    print('T26W3_REAL_FILE_GATE|writers=${gate.written}|flush=${gate.flushed}|rename=${gate.renameCalls}');
+    return result;
   }
 
   test('★★ CR-06：并发 3 集同时收尾时，封面原子替换不得撞名（旁文件 coverFile 必须非 null）',
@@ -467,7 +481,7 @@ void main() {
      *
      * 现在：`Upstream` 的封面闸门把三个 /cover.jpg 全部停在"等 body"这个
      *   await 上，**确认三个都到齐**（gatePeak == kEps）后一次性放行。
-     *   ⇒ 「写 tmp → rename」三窗口必然重叠 ⇒ 撞名变成前置条件的必然结果。
+     *   ⇒ 请求同时放行；真实解码后还由 CoverTempWriteGate 确认三次 write/flush 到齐，再放行真实 rename。
      * ```
      * ⚠️ 闸门只在本条用：上一轮（开着串行化）同一目录只允许一具收尾体在跑，
      *    硬等三个会死锁。
@@ -501,7 +515,7 @@ void main() {
      *   maxRun 数的是**下载阶段**同时在跑的下载数，它成立也证明不了三具
      *   **收尾体**同时在飞 —— 而撞名只发生在收尾阶段。改前那条前置是
      *   "看着像成立"，实测就是这样：maxRun=3 却撞名=0。
-     *   ⇒ 现在直接断言"三个封面请求同时停在闸门口"：这是撞名的**充分条件**。
+     *   ⇒ 现在同时断言三个封面请求到齐与三次真实 write/flush 到齐，确认共享固定 tmp 的收尾重叠。
      */
     expect(rounds.every((r) => r.allParked), isTrue,
         reason: '★★ 前置失效：没能把三个封面请求同时压在闸门口'

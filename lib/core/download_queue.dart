@@ -48,6 +48,7 @@ import 'dart:async';
 import 'dart:convert';
 // ★ task-11 ③④：删除任务/整剧删除要碰文件系统（File/Directory/Platform）
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 
@@ -310,6 +311,21 @@ class DownloadQueue {
     _list.clear();
     tasks.value = const [];
     _maxObservedRunning = 0;
+  }
+
+  // A terminal task state (including cancellation) does not mean its async
+  // worker has released its files. Tests must drain workers before resetting
+  // shared resolvers, HTTP fixtures or directory configuration.
+  static final Set<Future<void>> _inFlightRuns = <Future<void>>{};
+
+  @visibleForTesting
+  static int get debugInFlightCount => _inFlightRuns.length;
+
+  @visibleForTesting
+  static Future<void> debugWaitForIdle() async {
+    while (_inFlightRuns.isNotEmpty) {
+      await Future.wait(List<Future<void>>.of(_inFlightRuns));
+    }
   }
 
   /*
@@ -768,7 +784,8 @@ class DownloadQueue {
          * ★ 封面图先抓：抓成功了才知道本地文件名，好一起写进旁文件。
          * ⚠️ 抓图是网络 IO ⇒ 绝不能让它挡住后面的字段写入（顺序即此）。
          */
-        final coverFile = await cacheCoverImage(t.cover, dir);
+        final coverFile = await cacheCoverImage(t.cover, dir) ??
+            await _retainedCoverFile(dir);
         final f = File('$dir${Platform.pathSeparator}$kSidecarName');
         final tmp = File('${f.path}.tmp');
         await tmp.writeAsString(jsonEncode(<String, Object?>{
@@ -959,6 +976,7 @@ class DownloadQueue {
       final bytes = await consolidateHttpClientResponseBytes(res);
       // 0 字节 / 超过 8 MiB 都不写：前者是没抓到，后者多半不是封面而是整集视频
       if (bytes.isEmpty || bytes.length > 8 * 1024 * 1024) return null;
+      await _validateCoverImage(bytes);
 
       /*
        * ★ 扩展名只从 **URL 的 path** 上取，且要白名单 ——
@@ -993,6 +1011,79 @@ class DownloadQueue {
       return null;
     } finally {
       client?.close(force: true);
+    }
+  }
+
+  // Retain the prior sidecar reference only when its own in-directory cover
+  // still decodes. Publishing null here would hide the preserved file after
+  // the next episode finishes, even though validation prevented its overwrite.
+  static Future<String?> _retainedCoverFile(String dir) async {
+    try {
+      final sidecar = File('$dir${Platform.pathSeparator}$kSidecarName');
+      if (!await sidecar.exists()) return null;
+      final meta = jsonDecode(await sidecar.readAsString());
+      if (meta is! Map<String, dynamic>) return null;
+      final name = meta[kSidecarCoverFileKey];
+      if (name is! String ||
+          !RegExp(r'^_sourin-cover\.(jpg|png|webp|gif)$').hasMatch(name)) {
+        return null;
+      }
+      final file = File('$dir${Platform.pathSeparator}$name');
+      if (!await file.exists()) return null;
+      final length = await file.length();
+      if (length == 0 || length > 8 * 1024 * 1024) return null;
+      await _validateCoverImage(await file.readAsBytes());
+      return name;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // A successful response can be an HTML error page or a transparent CDN
+  // sentinel. Decode before publishing so either response leaves an existing
+  // offline cover intact. Validation bounds decoded pixels; original bytes
+  // are still stored without conversion.
+  static Future<void> _validateCoverImage(Uint8List bytes) async {
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    try {
+      final descriptor = await ui.ImageDescriptor.encoded(buffer);
+      try {
+        final codec = await descriptor.instantiateCodec(
+          targetWidth: descriptor.width > 4096 ? 4096 : null,
+          targetHeight: descriptor.height > 4096 ? 4096 : null,
+        );
+        try {
+          final frame = await codec.getNextFrame();
+          try {
+            if (descriptor.width <= 8 && descriptor.height <= 8 &&
+                codec.frameCount == 1) {
+              final pixels = await frame.image.toByteData(
+                format: ui.ImageByteFormat.rawRgba,
+              );
+              if (pixels != null) {
+                var visible = false;
+                for (var alpha = 3; alpha < pixels.lengthInBytes; alpha += 4) {
+                  if (pixels.getUint8(alpha) != 0) {
+                    visible = true;
+                    break;
+                  }
+                }
+                if (!visible) {
+                  throw StateError('Cover image is a transparent placeholder');
+                }
+              }
+            }
+          } finally {
+            frame.image.dispose();
+          }
+        } finally {
+          codec.dispose();
+        }
+      } finally {
+        descriptor.dispose();
+      }
+    } finally {
+      buffer.dispose();
     }
   }
 
@@ -1051,7 +1142,9 @@ class DownloadQueue {
          *      否则两次迭代会挑到同一个 queued（并发重复下载同一集）。
          */
         _markRunning(i);
-        unawaited(_run(i));
+        final run = _run(i);
+        _inFlightRuns.add(run);
+        unawaited(run.whenComplete(() => _inFlightRuns.remove(run)));
       }
     } finally {
       _pumping = false;

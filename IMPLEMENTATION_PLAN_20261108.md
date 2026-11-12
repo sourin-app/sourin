@@ -1,6 +1,6 @@
 # 源影：源管理、Miuix 统一与稳定性实施计划
 
-更新：2026-11-12。状态：完整目标继续推进，全部18项反馈及多地址降级追加要求同等保留。用户新实测多数源无法播放，允许必要内嵌WASM；此前按用户许可并发3个gpt-6.1-sol/high分别推进取流能力、播放器稳定性和Miuix源管理，root负责整合、串行测试与实际验证。最新用户操作重新暴露AXTree错误，先前v43无错误仅对当时采样成立，不能扩展到现在。未完成真实播放/性能/稳定性验收，不作完成声明。
+更新：2026-11-12。状态：继续接手并推进完整18项反馈与源地址降级、JS/WASM/播放协议、统一代理、封面、稳定性和性能追加目标。当前完成的局部回归不得算作整个目标完成。
 
 2026-11-11 接手续做时，用户正在使用电脑。当前只进行隔离数据的后台测试和只读检查，测试进程采用低优先级、单编译任务与两个逻辑CPU限制。窗口激活、鼠标键盘、客户端导航、重启、热重载及更新运行中的DLL均留待用户允许界面操作后进行。
 
@@ -1190,3 +1190,14 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 两 arm 各 source/test 两个 single-file machine analyze 实际 exit0，四 Job 自然归零并分别 stable 8.0259 / 8.0304 / 8.0214 / 8.0349 秒。两 arm 各 0 ERROR / 19 WARNING / 13 INFO；完整 normalized severity/type/code/relative file/message 多重集相等，保留重复次数，新增/移除诊断与新增 WARNING 均为空。既有 WARNING/INFO 仍存在，分析资格不称 clean。actual result SHA256：99BABEFB3E8A81A8BF960357D95493D551F0187B4EF7C179B16AC4BFE83DF06E。
 - 四分析日志 SHA256（baseline source、baseline test、candidate source、candidate test）：7301DA17B6BD70A73892965832A5510237B614D3D21E391759B4235C1DC48A1D、E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855、7E2BAB2EC92C9E872D3554822EA9BBCB4B13118D22551A6F5A6EED76F638E99E、E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855。限定分析复用原 tools/dependency/qualification，没有新复制或 widget 重跑。
 - 本项证据只覆盖设置行保存语义。全部 18 项反馈及多地址降级追加目标继续 active/open；真实外部/网盘选集播放、封面像素、性能与桌面稳定性、普通启动退出、最终完整包绑定和 Owner 验收保持开放。后续正式包复用已有参数化 C7 入口和 fresh 标签，不另写模板。
+
+
+## 2026-11-12 接手：流请求头的 FIFO 所有权
+
+- 完整18项及追加目标保持 active。已核对原会话目标及当前 C8 包的59个运行文件；隔离DLL加载4项通过，本地软件解码位置2000→3533ms、320×180两张真实native像素有38349个彩色像素变化。这些结果不替代原生显示表面、音频或外部/网盘播放。
+- 同一FIFO测试载荷在纯净旧版实际0通过/3失败，保留的根播放列表200、重写分片404；一次HTTP用例实测66个保留流缺失头。候选3项全部通过/0忽略，缺失头0、分片200且真实上游头及字节正确。两次编译及两次runtime自然退出、连续八秒Job0、无force/error，baseline v1的续接中断仍保留为未完成准备。
+- 流表、登记顺序和请求头表在同锁顺序内共同登记与淘汰，去掉请求头HashMap的独立无序淘汰。已精确整合生产补丁、相同三个回归用例及已通过的两literal-loopback-host重定向用例；新组合实际编译成功；流代理83项通过、1项原有联网用例忽略，精确额外代理/HLS用例12项通过、2项原有联网用例忽略。
+- 隔离UI副本只改变启动显示：窗口创建为不激活，首帧显示至底部，跳过Shell的启动focus调用；界面、播放器、真实回调和AppTray关闭路径保留。Debug构建成功；本轮已取得首页、设置、源管理和添加直播/空地址错误的真实附着绘制截图与当前Miuix组件回调证据。测试窗口27,520次前台采样均未成为前台，零Unhandled Exception；原AppTray/window_manager退出码0，连续八秒Job0，无force/error。启动显示经过测试专用改动，仍不称普通默认启动或Owner验收。后续完整包需绑定最终提交及fresh core，当前C8包不含FIFO修复。
+
+- 原重复substring筛选轮的耗时探针失败保持原failed收据，不能据随后的通过推定其唯一原因；精确同名旧版/新版本复验保留原ratio<2断言，实测256KB旧版代理430ms/直连429ms=1.00×，新版本444ms/428ms=1.04×。额外精确选择v1遇到原ignored用例后停止，v2明确报告原ignored，未运行或计为pass。
+- UI第一次读取因独立启动无表达式编译服务而停在preflight，保留准备失败。随后只向任务自有PID接入Flutter attach；没有启动第二个产品实例、热重载、注入物理输入或切换桌面。现有Shell边界只含基础页，独立页面/弹窗按各自真实已绘制route边界取图；透明区不扩大为整个窗口背景合成验收。空地址实际错误“请填写主地址”和原关闭回调卸载均成立。客户端与attach工具均自然退出、各自连续八秒Job0，无强制清理。

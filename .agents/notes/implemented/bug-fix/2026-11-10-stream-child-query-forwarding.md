@@ -7,6 +7,11 @@ Applies from 2026-11-10 to local /p and /s child requests.
 Related decision: [cover/API routing](2026-11-10-cover-global-proxy-routing.md)
 keeps cover and media proxy policy separate. This fix retains that policy.
 
+[Stream header FIFO ownership](2026-11-12-stream-header-fifo-ownership.md)
+keeps each retained stream's child header token alive through capacity eviction.
+That lifetime contract partially overlaps at the child route and leaves URI and
+redirect forwarding unchanged.
+
 The proposed/implemented/rejected note audit found no prior owner of raw child
 query forwarding. HLS duration and homepage query redaction concern different
 contracts and remain unchanged.
@@ -61,3 +66,8 @@ direct routing and the compatibility client. Entry-directory and extensionless
 cases fail before the URL correction; the header assertion independently exposes
 the default redirect Referer replacement. These local regressions do not establish
 remote media availability or native playback acceptance.
+
+A two-host loopback regression uses distinct literal hosts for the actual
+redirect, checks source User-Agent and Referer on both requests through the
+ordinary Direct/All store, and observes automatic Referer replacement with a
+default-client control. It preserves the existing routing and credential rules.

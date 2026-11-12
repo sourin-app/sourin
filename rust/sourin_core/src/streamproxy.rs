@@ -926,6 +926,8 @@ impl StreamProxy {
         {
             let mut t = self.table.lock().unwrap_or_else(|e| e.into_inner());
             let mut ord = self.order.lock().unwrap_or_else(|e| e.into_inner());
+            // A retained stream owns one header token. Evict both together.
+            let mut h = self.hdr_table.lock().unwrap_or_else(|e| e.into_inner());
             /*
              * ★ 顺手清理：表不能无限涨
              *
@@ -941,7 +943,9 @@ impl StreamProxy {
             if t.len() > STREAM_MAX {
                 let drop_n = ord.len() / 2;
                 for victim in ord.drain(..drop_n) {
-                    t.remove(&victim);
+                    if let Some(entry) = t.remove(&victim) {
+                        h.remove(&entry.hdr_token);
+                    }
                 }
                 splog!("流表已满，淘汰最旧的一半: 淘汰 {drop_n} 条，剩 {} 条", t.len());
             }
@@ -955,22 +959,10 @@ impl StreamProxy {
              * 分片请求报「代理地址已失效」）。
              */
             let hdr_token = new_token();
-            {
-                let mut h = self.hdr_table.lock().unwrap_or_else(|e| e.into_inner());
-                /*
-                 * ★ issue #9：这里原来也是 `h.clear()`（全清）。这张表被
-                 *   **正在播的**分片请求按 token 查（`handle_proxied`），
-                 *   全清会让「代理地址已失效，请重新选择线路」突然出现在
-                 *   播放中途。与流表一致，只淘汰最旧的一半。
-                 */
-                if h.len() > STREAM_MAX {
-                    let victims: Vec<String> = h.keys().take(h.len() / 2).cloned().collect();
-                    for v in victims {
-                        h.remove(&v);
-                    }
-                }
-                h.insert(hdr_token.clone(), HeaderEntry { headers: headers.clone(), hls_query_policy: hls_query_policy.clone() });
-            }
+            h.insert(hdr_token.clone(), HeaderEntry {
+                headers: headers.clone(),
+                hls_query_policy: hls_query_policy.clone(),
+            });
             t.insert(token.clone(), StreamEntry {
                 url: url.to_string(),
                 headers,
@@ -5732,3 +5724,11 @@ https://cdn.example.com/a/b/0000001.ts
         assert_eq!(url_origin("https://cdn.com/a?x=1"), "https://cdn.com");
     }
 }
+
+#[cfg(test)]
+#[path = "streamproxy_fifo_tests.rs"]
+mod fifo_tests;
+
+#[cfg(test)]
+#[path = "streamproxy_redirect_tests.rs"]
+mod redirect_tests;

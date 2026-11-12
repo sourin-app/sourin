@@ -7365,6 +7365,7 @@ class _TvboxAutoUpdateRowState extends State<TvboxAutoUpdateRow> {
   }
 
   Future<void> _save({bool? enabled, int? intervalSecs}) async {
+    if (_saving) return;
     final cur = _sched!;
     final nextEnabled = enabled ?? cur.enabled;
     final nextSecs = intervalSecs ?? cur.intervalSecs;

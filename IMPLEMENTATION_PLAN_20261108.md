@@ -1178,3 +1178,15 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - _openBiliSheet三个同步读取改用活动_provider/_contentId，打开面板时绑定、手动标记和保存P跟随真实MediaSession会话。same State/widget保持，A与返回A保留原cid41/P1；旧版两个控制通过、唯一B绑定断言失败，候选三项通过且B为cid52/P3，0跳过。
 - 原local Miuix controller→registry entry→Host的ObjectKey绘制根真实对应；18条附着阶段记录确认下一frame注册项与tabs附着、原card正常动效到Opacity1，12条sources前后记录确认真实来源页签false→true及原入口pointer tap。两臂原handle正常terminal、全部绑定前后不变、Job自然连续八秒零，无force/error；独立实际pair后审101项通过。四次source/test限定分析各自然结束exit0，每arm共0error/17warning/13info，完整带位置diagnostic multiset相同；独立后审58项通过。
 - v1缺host import编译失败，v2错误button type、v3原opener缺失且无附着诊断、v4初始tabs缺失均保留为setup失败，不计业务RED。当前三项本地挂载面板资格不扩展旧caller四例/205分组，也不替代解码、C销毁、桌面/性能、真实外部/云盘、普通退出或Owner验收；新完整包待绑定最终本地提交，完整18项及追加目标继续active。收据见2026-11-12-external-danmaku-adopted-panel-hydration Agent Note。
+
+
+## 2026-11-12 后台续做：自动更新设置保存重入的当前事实
+
+- 当前 _TvboxAutoUpdateRowState._save 入口同步 if (_saving) return，生产差异为 26 bytes。第一项已接受的保存拥有结果，在途后续激活不排队；原失败反馈、已确认档位和后续显式 retry 保留。
+- 同一 mounted State 的两次真实 hitTestable pointer taps 之间不 pump。baseline 主断言实际得到 [43200,86400] 而期望 [43200]，retry 控制成功；candidate 两例成功。baseline 1 failed / 1 passed / 0 skipped，candidate 2 passed / 0 failed / 0 skipped；实际 CLI exits 为 1 和 0。两 Job 自然归零，stable zero 为 8.0310 / 8.0342 秒，forced cleanup=false、cleanup=[]、allBoundStateUnchanged=true。
+- 旧 v2 缺 AppThemeHost import 的编译失败仍是 setup failure。v3 仅补真实 owning import；其已完成 baseline 使用 print assertion + error isFailure=false + testDone result=error，旧 oracle 拒绝，原 pipeline 96F66A7B5A83CC5BB45F27BA2F0A2E5A2E0530DE5B4DC1EEB9BF9C5DEF155603 保持 false，不重跑已完成 baseline。
+- 精确 completed-baseline audit SHA256：856E77FFCCC4D8D0130E3A6C42B0BC820203B5083BF5641052DE1FF2DDAA2EC5；completed pair SHA256：2736346BC23ABC1BDC319B03E3F187291A43B437760F41155365CD8045EEE574；原 runtime manifest SHA256：8FE347F7F7440508C86397DB26E260599594B14FC2F81D78321451B213541ADD。
+- baseline result/log SHA256：2F1A39C284194B0EAD33CCB2EE4801B83694763C466E924C52E8A980B60EB81E / AD893F9C0109A5CDB8F7CAF7360320951F43BD0F9A370625BB3CAB56E2777D51；candidate result/log SHA256：228BA1A8EE90A924B5AE28E94DD735A7143725087806ACE03482BD669FAF2BBB / A7E8A59B9072BC739A23F79BB5D1BFE7D6A805848F73870AAF1BE67CB9082D86。
+- 两 arm 各 source/test 两个 single-file machine analyze 实际 exit0，四 Job 自然归零并分别 stable 8.0259 / 8.0304 / 8.0214 / 8.0349 秒。两 arm 各 0 ERROR / 19 WARNING / 13 INFO；完整 normalized severity/type/code/relative file/message 多重集相等，保留重复次数，新增/移除诊断与新增 WARNING 均为空。既有 WARNING/INFO 仍存在，分析资格不称 clean。actual result SHA256：99BABEFB3E8A81A8BF960357D95493D551F0187B4EF7C179B16AC4BFE83DF06E。
+- 四分析日志 SHA256（baseline source、baseline test、candidate source、candidate test）：7301DA17B6BD70A73892965832A5510237B614D3D21E391759B4235C1DC48A1D、E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855、7E2BAB2EC92C9E872D3554822EA9BBCB4B13118D22551A6F5A6EED76F638E99E、E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855。限定分析复用原 tools/dependency/qualification，没有新复制或 widget 重跑。
+- 本项证据只覆盖设置行保存语义。全部 18 项反馈及多地址降级追加目标继续 active/open；真实外部/网盘选集播放、封面像素、性能与桌面稳定性、普通启动退出、最终完整包绑定和 Owner 验收保持开放。后续正式包复用已有参数化 C7 入口和 fresh 标签，不另写模板。

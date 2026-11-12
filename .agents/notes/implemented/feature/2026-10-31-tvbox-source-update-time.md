@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Applies on 2026-11-12 to the current TVBox subscription schedule row and the existing source-update contract.
+
 Independent: 与 [2026-10-29-restore-auto-disabled-sources.md](../feature/2026-10-29-restore-auto-disabled-sources.md)
 （源启用策略）互补——那篇管"哪些源参与"，本篇管"源数据的新鲜度可见 + 自动保新鲜"。
 JS 插件源的 task-12 检测更新体系是独立机制，本篇不触碰。
@@ -32,6 +34,21 @@ JS 插件源卡片有更新时间（task-7）但 TVBox 原生源卡片没有。
    顶部定时设置行（开关 + 档位，改动即落盘，失败有可见回音）。
 ```
 
+
+The inline TvboxAutoUpdateRow accepts one save at a time. _save synchronously
+checks _saving before reading the accepted schedule or invoking the public
+asynchronous setter. A second pointer activation before the next frame returns
+while that save is pending. The first accepted change owns its persisted result
+and selected interval; additional pending activations are not queued. Success or
+failure releases the busy state through the existing completion path. A rejected
+save keeps the previously confirmed schedule, displays the existing error row,
+and permits a subsequent explicit retry.
+
+This UI boundary complements the existing process-level update lock: source
+refresh serialization does not serialize the independently rendered schedule
+row's configuration writes. The Miuix disabled callbacks take effect on rebuild;
+the synchronous guard also covers activations before that rebuild.
+
 ## Alternatives considered
 
 - **只给 added/changed 的源盖章（沿用旧行为）**：未变源时间戳不动 ⇒ 定时器
@@ -44,6 +61,39 @@ JS 插件源卡片有更新时间（task-7）但 TVBox 原生源卡片没有。
   下载）⇒ 收敛为三档白名单，其它值明确拒绝且不改写现有配置。
 
 ## Consequences
+
+
+The schedule-row regression uses the real themed/localized row, two hit-testable
+pointer taps in the same mounted State without a pump between them, and held
+public asynchronous schedule getter/setter overrides. Its separate control
+observes a rejected save, the existing error row and a subsequent actual retry.
+The frozen draft is identical in both source arms. This proves the qualified
+save boundary only when actual runtime evidence is complete; it is not a frame
+rate, startup, source-refresh, native playback or Owner acceptance measurement.
+
+Actual schedule-row evidence on 2026-11-12 uses the identical corrected test
+payload in both source arms. Baseline reproduces [43200, 86400] for the primary
+assertion expecting [43200]; its rejected-save/retry control passes. Candidate
+passes both cases. Counts are baseline 1 failed / 1 passed / 0 skipped and
+candidate 2 passed / 0 failed / 0 skipped, with actual CLI exits 1 and 0.
+Both jobs finish naturally at zero, remain zero for at least eight seconds,
+use no forced cleanup and retain all bound inputs.
+
+Completed pair SHA256 2736346BC23ABC1BDC319B03E3F187291A43B437760F41155365CD8045EEE574
+and baseline diagnostic audit SHA256
+856E77FFCCC4D8D0130E3A6C42B0BC820203B5083BF5641052DE1FF2DDAA2EC5 bind those
+completed logs. The original baseline result and pipeline remain false: the
+actual assertion uses print + error isFailure=false + testDone result=error,
+which the former reporter oracle rejects. No baseline test is rerun.
+
+Four single-file analyses (the source and regression file in each arm) all
+exit zero with natural stable Job0 and unchanged bound inputs. Each arm has
+0 ERROR / 19 WARNING / 13 INFO. Complete normalized diagnostic multisets are
+equal, duplicate multiplicity is retained, and additions/removals are empty.
+Analyzer result SHA256
+99BABEFB3E8A81A8BF960357D95493D551F0187B4EF7C179B16AC4BFE83DF06E binds the
+four logs. This qualifies the bounded no-new-warning analysis; existing
+warnings and infos remain, and no clean-analysis claim is made.
 
 - 门禁：cargo 新增 6 条 t5_ 测试 + t5_schedule_set_whitelist；Dart 16 条
   （zz_t5b_tvbox_last_update_test）；两侧注入证红均实测红→绿。

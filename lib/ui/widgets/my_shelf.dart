@@ -191,7 +191,11 @@ class _RouteGateState extends State<_RouteGate> {
        *   阶段，也顺带把刷新推离「返回帧」（与 OPS-12 ⑦ 同一纪律）。
        */
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) widget.onReturn();
+        if (mounted &&
+            (ModalRoute.isCurrentOf(context) ?? true) &&
+            TickerMode.getValuesNotifier(context).value.enabled) {
+          widget.onReturn();
+        }
       });
     }
   }
@@ -273,6 +277,11 @@ class MyShelfState extends State<MyShelf> {
   int _loadGeneration = 0;
 
   bool _ownsLoad(int generation) => mounted && generation == _loadGeneration;
+
+  // Read the effective page activity without subscribing this whole subtree.
+  // A retained, hidden Home must not start network work when another tab pops.
+  bool get _canRunRemoteWork =>
+      mounted && TickerMode.getValuesNotifier(context).value.enabled;
 
   /// 是否已完成首次加载
   ///
@@ -483,7 +492,7 @@ class MyShelfState extends State<MyShelf> {
   /// ⚠️ 不 await（`load()` 是独立数据平面），但内部判 `mounted`。
   void refreshOnReturn() {
     if (abDisableShelfRefresh) return; // A/B 实验开关（生产恒 false）
-    if (!mounted) return;
+    if (!_canRunRemoteWork) return;
     unawaited(load());
   }
 
@@ -856,11 +865,7 @@ class MyShelfState extends State<MyShelf> {
        */
       await _refreshRemaining(generation);
       if (!_ownsLoad(generation)) return;
-      unawaited(
-        LibraryCoverRecovery.repair().then((changed) async {
-          if (changed > 0 && _ownsLoad(generation)) await load();
-        }),
-      );
+      unawaited(_repairCoversAfterFrame(generation));
     } catch (e) {
       if (!_ownsLoad(generation)) return;
       debugPrint('[SHELF] 加载失败: $e');
@@ -877,6 +882,17 @@ class MyShelfState extends State<MyShelf> {
       if (_ownsLoad(generation) && _loading) {
         setState(() => _loading = false);
       }
+    }
+  }
+
+  Future<void> _repairCoversAfterFrame(int generation) async {
+    // A shell tab change can start local reads before its TickerMode updates.
+    // Admit remote work only after the selected page has actually rendered.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!_ownsLoad(generation) || !_canRunRemoteWork) return;
+    final changed = await LibraryCoverRecovery.repair();
+    if (changed > 0 && _ownsLoad(generation) && _canRunRemoteWork) {
+      await load();
     }
   }
 

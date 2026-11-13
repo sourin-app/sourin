@@ -24,6 +24,9 @@ local image servers remain supported. Proxy deduplication includes required
 headers, and cover entries own their headers independently from video streams.
 
 Library views render existing records before starting shared background recovery.
+The [library page admission contract](2026-11-11-library-load-request-ownership.md)
+requires the initiating page to remain visible at the frame boundary; hidden
+retained pages still accept local data without starting a new recovery request.
 Recovery reuses valid metadata across library tables or requests enabled source
 details. Work is serialized, limited to 24 items with concurrency four and a
 four-second detail timeout. A rotating cursor prevents permanently unavailable

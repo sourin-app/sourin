@@ -102,7 +102,11 @@ class _FollowRouteGateState extends State<_FollowRouteGate> {
       // ⚠️ 推到帧边界之后（避开构建阶段 + 推离返回帧）—— 与 my_shelf 的
       //    `_RouteGate` 同一纪律，见那里的长注释。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) widget.onReturn();
+        if (mounted &&
+            (ModalRoute.isCurrentOf(context) ?? true) &&
+            TickerMode.getValuesNotifier(context).value.enabled) {
+          widget.onReturn();
+        }
       });
     }
   }
@@ -237,6 +241,11 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   int _loadGeneration = 0;
 
   bool _ownsLoad(int generation) => mounted && generation == _loadGeneration;
+
+  // Hidden keep-alive pages still accept local data, but do not start remote
+  // repair/backfill/sweeps. This read adds no inherited rebuild dependency.
+  bool get _canRunRemoteWork =>
+      mounted && TickerMode.getValuesNotifier(context).value.enabled;
   // ★ 2026-10-18（Owner 第 12 条）：`String? _toast` 字段已删除 ——
   //   `_flash` 改走 `showAppToast`，本页不再自己持有提示状态。
 
@@ -438,7 +447,7 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   ///   （原版的 `if (mounted && _loadedOnce)` 就是这条）。
   void refreshOnReturn() {
     if (abDisableFollowRefresh) return; // A/B 实验开关（生产恒 false）
-    if (!mounted) return;
+    if (!_canRunRemoteWork) return;
     if (_loadedOnce) unawaited(_refreshOnEnter());
   }
 
@@ -638,14 +647,7 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
        *    （`build` 每帧都可能跑 ⇒ 会变成每帧一个网络请求）。
        */
       if (anyListSucceeded) {
-        unawaited(_backfillTitles());
-        unawaited(
-          LibraryCoverRecovery.repair().then((changed) async {
-            if (changed > 0 && _ownsLoad(generation)) {
-              await _load(silent: true);
-            }
-          }),
-        );
+        unawaited(_refreshRemoteAfterFrame(generation));
       }
     } catch (e) {
       if (!_ownsLoad(generation)) return;
@@ -656,6 +658,18 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
       if (_ownsLoad(generation) && _loading) {
         setState(() => _loading = false);
       }
+    }
+  }
+
+  Future<void> _refreshRemoteAfterFrame(int generation) async {
+    // Retained tab entry starts local reads before the parent rebuilds its
+    // TickerMode. Checking after that frame preserves the visible-entry refresh.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!_ownsLoad(generation) || !_canRunRemoteWork) return;
+    unawaited(_backfillTitles());
+    final changed = await LibraryCoverRecovery.repair();
+    if (changed > 0 && _ownsLoad(generation) && _canRunRemoteWork) {
+      await _load(silent: true);
     }
   }
 
@@ -842,6 +856,7 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   ///
   /// # ⚠️ 本方法**不**设 `_loading`、**不** await（由调用方 `unawaited`）
   Future<void> _backfillTitles() async {
+    if (!_canRunRemoteWork) return;
     try {
       final patched = await _backfill.backfill(_continueList);
       /*
@@ -1029,6 +1044,9 @@ class FollowPageState extends State<FollowPage> with WidgetsBindingObserver {
   ///    两者互不阻塞 —— 巡检慢（可能十几秒），不该拖住列表显示。
   Future<void> _maybeSweep() async {
     if (!mounted) return;
+    final generationAtEntry = _loadGeneration;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!_ownsLoad(generationAtEntry) || !_canRunRemoteWork) return;
     if (!shouldSweep(DateTime.now())) return;
     // ★ 先记时间再发请求 —— 否则并发调用（切 tab + 回前台同时触发）
     //   会各自看到"没跑过"，于是打两轮巡检

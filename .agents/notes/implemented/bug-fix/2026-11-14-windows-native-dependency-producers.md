@@ -50,6 +50,23 @@ paths point into the same copy so quoted includes cannot select the old headers.
 The generated shutdown correction is copied into that tree before compilation.
 MSVC retains the original source selection; no warning flags are weakened.
 
+The private desktop copy also initializes Win32 structures explicitly while
+preserving their zeroed fields and tooltip V2 size, and marks its two concrete
+COM accessibility providers final. The media copy retains its teardown changes,
+orders constructor initializers by member declaration, removes ineffective
+return qualifiers, zero-initializes structures and makes libmpv's documented
+read-only string arguments explicit at its untyped input boundary.
+
+Clang plugin copies remove redundant class qualifiers, preserve include-once
+behavior with an ordinary guard, and mark concrete volume COM providers final.
+Two unused window-manager declarations retain their values with maybe_unused.
+Dynamic color uses the existing no-argument Success overload for a null result.
+The file selector retains its own exception-enabled override as one definition;
+InAppWebView retains its upstream warning policy with the corrected 4100 spelling.
+The runner drops an unreferenced initialization flag. Source hashes and counted
+replacements stop configuration when the pinned dependencies change; generated
+content checks normalize CRLF while build receipts bind actual output bytes.
+
 No shared SDK or dependency-cache source is patched. The renderer, plugin source
 membership, warning policy, texture support and teardown overlays keep their
 existing contracts.
@@ -74,3 +91,10 @@ rule. Its source inputs and normal compiler drain are preserved. Configuration,
 source review and local commits do not establish a successful complete native
 build, ordinary startup, playback, UI, performance or complete-goal acceptance;
 those remain distinct validation gates.
+
+The eight reviewed native plugin targets compiled and linked successfully in
+native-build-reviewed-plugins-v1, with unchanged prepared inputs and natural
+Job drain for 8.000573 seconds. The preceding full plugins-v3 build remains a
+failure: InAppWebView still needs standard coroutine and explicit value-conversion
+compatibility fixes. Target compilation does not constitute install/package or
+runtime acceptance.

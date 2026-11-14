@@ -1242,3 +1242,11 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - Clang 随后拒绝桌面 WebView 自带 WIL 的参数遮蔽和仅供诊断的变量。构建私有副本采用精确、计数校验的变换，保留类型别名、函数体、volatile 写入、全部插件和 `/W4 /WX`。原失败编译单元通过且自然 Job0 8.023272 秒；实际 CMake 生成文本与已测候选一致，10 个该插件编译单元全部使用私有副本，既有退出修复字节保持。
 - 完整 Ninja v3 仍失败：下一 `default_composer.cc` 有 Win32 结构体部分初始化和 `TTTOOLINFOW_V2_SIZE` 窄化诊断，共 12 条。整场失败与原始日志保留，外层自然 Job0 8.032269 秒；不能据前几个编译单元通过认定完整包成功。MSVC 同一 WIL 单元可编译，但留下 VCTIP 并触发清理；旧 600 秒等待也未自然退出，不能改用工具链名称掩盖此限制。
 - 本轮没有启动产品。最新安全 Debug 的源码准备脚本和完整 Rust 字节等价桥接已独审，尚未执行；接下来先修复剩余原生编译问题，再完成最新包、实际封面/播放/UI、AOT 性能及普通启动退出。证据位于 `.probe/goal-takeover-20261114/` 和 `.probe/goal-resume-20261114/`；完整目标保持 active，未推送、未发布。
+
+### 2026-11-14 接续：原生插件兼容修复与实际目标构建
+
+- composer 的 Win32 初始化、桌面 WebView 两个 COM 类型 final、媒体私有副本的标准 C++ 修复通过独审。原媒体退出同步逻辑保持；文件选择器只保留其主动启用的异常定义，InAppWebView 修正原有 4100 参数引号，未改变各插件警告策略。
+- 新私有源副本处理 dynamic_color 的 null 返回、screen/window/tray 类内多余限定、window include guard 与两个 unused 声明、volume 两个 COM 具体类型。所有修改保留原始哈希和精确替换计数，生成内容按 LF 比较、实际文件按原始字节绑定；不修改共享缓存。
+- `native-build-composer-v1` 与 `native-build-plugins-v3` 两次完整构建失败均保留；后者自然 Job0 8.022670 秒、输入不变。配置 v1 因相对证据路径在启动子进程前失败，v2 被生成文件 CRLF 哈希差异拦住，v3 修正内容比较后实际通过；不将这些失败改记为成功。
+- `native-build-reviewed-plugins-v1` 对 desktop_webview、dynamic_color、file_selector、media_kit_video、screen_retriever、tray、volume、window_manager 八个目标实际编译链接通过：exit 0、自然 Job0 8.000573 秒、27,637 个输入不变、无强制清理。此命令没有完成 install，不能称完整包通过。完整构建余下 InAppWebView 协程、旧 SDK 枚举范围和显式 EncodableValue 转换错误正在处理。
+- 普通未改启动隔离路线只读复核仍无合格执行环境：已有私有桌面 GUI 初始化失败、创建窗口站拒绝访问，同会话单例边界仍未解决。最新 UI/封面/播放/性能、普通启动退出及完整包仍未验收，完整目标保持未完成。

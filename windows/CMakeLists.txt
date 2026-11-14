@@ -56,6 +56,7 @@ add_subdirectory("runner")
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
+include(cmake/plugin_compile_options.cmake)
 
 # Non-Visual-Studio generators need native NuGet inputs in their build graph.
 include(cmake/inappwebview_nuget.cmake)
@@ -66,6 +67,7 @@ include(cmake/desktop_webview_shutdown.cmake)
 include(cmake/desktop_webview_wil.cmake)
 include(cmake/inappwebview_shutdown.cmake)
 include(cmake/media_kit_video_shutdown.cmake)
+include(cmake/plugin_source_compat.cmake)
 
 
 # === Installation ===

@@ -689,7 +689,6 @@ bool g_drop_thickframe = false;
  * ```
  */
 bool g_no_shadow = true;
-bool g_no_shadow_resolved = false;
 
 /// 非客户区宽度（逻辑像素）—— 用于自己做缩放热区
 constexpr int kResizeBorderDip = 6;

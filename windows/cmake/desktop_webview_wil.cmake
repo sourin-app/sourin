@@ -144,6 +144,81 @@ function(sourin_fix_desktop_webview_wil)
   configure_file("${private_root}/windows/wil/result_macros.h.in" "${private_root}/windows/wil/result_macros.h" COPYONLY)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                "${plugin_dir}/wil/resource.h" "${plugin_dir}/wil/result_macros.h")
+  # Preserve the original aggregate zero-initialization and supplied field values.
+  file(SHA256 "${plugin_dir}/default_composer.cc" composer_hash)
+  if(NOT composer_hash STREQUAL "3e4fe1f4f6379ae2350e2d7eea527093edd7158197e1a0a7172b40f7cbf50db0")
+    message(FATAL_ERROR "desktop_webview default composer changed; review the Clang initialization fix")
+  endif()
+  file(READ "${plugin_dir}/default_composer.cc" composer)
+  string(REPLACE "\r\n" "\n" composer "${composer}")
+  set(before [====[  HIGHCONTRASTW contrast{sizeof(contrast)};]====])
+  set(after [====[  HIGHCONTRASTW contrast{};
+  contrast.cbSize = sizeof(contrast);]====])
+  sourin_wil_replace_exact(composer before after 1)
+  set(before [====[    RTL_OSVERSIONINFOW info{sizeof(info)};]====])
+  set(after [====[    RTL_OSVERSIONINFOW info{};
+    info.dwOSVersionInfoSize = sizeof(info);]====])
+  sourin_wil_replace_exact(composer before after 1)
+  set(before [====[  DTTOPTS options{sizeof(options)};]====])
+  set(after [====[  DTTOPTS options{};
+  options.dwSize = sizeof(options);]====])
+  sourin_wil_replace_exact(composer before after 1)
+  set(before [====[  NONCLIENTMETRICSW metrics{sizeof(metrics)};]====])
+  set(after [====[  NONCLIENTMETRICSW metrics{};
+  metrics.cbSize = sizeof(metrics);]====])
+  sourin_wil_replace_exact(composer before after 1)
+  set(before [====[  BP_PAINTPARAMS params{sizeof(params), BPPF_ERASE};]====])
+  set(after [====[  BP_PAINTPARAMS params{};
+  params.cbSize = sizeof(params);
+  params.dwFlags = BPPF_ERASE;]====])
+  sourin_wil_replace_exact(composer before after 1)
+  set(before [====[  MSG msg{bar.window, message, 0, MAKELPARAM(point.x, point.y)};]====])
+  set(after [====[  MSG msg{};
+  msg.hwnd = bar.window;
+  msg.message = message;
+  msg.wParam = 0;
+  msg.lParam = MAKELPARAM(point.x, point.y);]====])
+  sourin_wil_replace_exact(composer before after 1)
+  set(before [====[    TTTOOLINFOW tool{TTTOOLINFOW_V2_SIZE};]====])
+  set(after [====[    TTTOOLINFOW tool{};
+    tool.cbSize = static_cast<UINT>(TTTOOLINFOW_V2_SIZE);]====])
+  sourin_wil_replace_exact(composer before after 2)
+  set(before [====[        TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, window};]====])
+  set(after [====[        TRACKMOUSEEVENT track{};
+        track.cbSize = sizeof(track);
+        track.dwFlags = TME_LEAVE;
+        track.hwndTrack = window;]====])
+  sourin_wil_replace_exact(composer before after 1)
+  set(before [====[        TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE | TME_NONCLIENT, window};]====])
+  set(after [====[        TRACKMOUSEEVENT track{};
+        track.cbSize = sizeof(track);
+        track.dwFlags = TME_LEAVE | TME_NONCLIENT;
+        track.hwndTrack = window;]====])
+  sourin_wil_replace_exact(composer before after 1)
+  file(WRITE "${private_root}/windows/default_composer.cc.in" "${composer}")
+  configure_file("${private_root}/windows/default_composer.cc.in" "${private_root}/windows/default_composer.cc" COPYONLY)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${plugin_dir}/default_composer.cc")
+
+  # COM providers release their own exact concrete type; they have no subclasses.
+  # Mark them final without changing COM vtables or adding a virtual destructor.
+  file(SHA256 "${plugin_dir}/title_bar_accessibility.cc" accessibility_hash)
+  if(NOT accessibility_hash STREQUAL "46bfb738876d2849f9c096ae4d98389c0acabac9d428d480ba9972bae9597b52")
+    message(FATAL_ERROR "desktop_webview accessibility providers changed; review the final types")
+  endif()
+  file(READ "${plugin_dir}/title_bar_accessibility.cc" accessibility)
+  string(REPLACE "\r\n" "\n" accessibility "${accessibility}")
+  set(before "class Button : public IRawElementProviderSimple,")
+  set(after "class Button final : public IRawElementProviderSimple,")
+  sourin_wil_replace_exact(accessibility before after 1)
+  set(before "class Root : public IRawElementProviderSimple,")
+  set(after "class Root final : public IRawElementProviderSimple,")
+  sourin_wil_replace_exact(accessibility before after 1)
+  file(WRITE "${private_root}/windows/title_bar_accessibility.cc.in" "${accessibility}")
+  configure_file("${private_root}/windows/title_bar_accessibility.cc.in"
+                 "${private_root}/windows/title_bar_accessibility.cc" COPYONLY)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               "${plugin_dir}/title_bar_accessibility.cc")
+
   set(updated)
   set(shutdown_count 0)
   foreach(item IN LISTS sources)

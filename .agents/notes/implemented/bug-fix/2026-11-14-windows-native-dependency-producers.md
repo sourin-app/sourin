@@ -20,6 +20,10 @@ its WebView loader. A non-Visual-Studio generator treats those XML files as
 link inputs. The existing ALL download target neither declares its loader
 outputs nor orders the plugin compiler after package preparation.
 
+The shared warning option embeds quotes in an unquoted CMake argument. Ninja
+preserves those quotes in the compiler argument, so clang-cl rejects the warning
+number before compiling the Flutter wrapper.
+
 ## Decision
 
 The existing Flutter backend command declares its real DLL import library as a
@@ -32,6 +36,10 @@ membership, selects the target architecture, retains the existing NuGet download
 commands and orders the plugin after a checked loader-output bridge. The bridge
 fails on missing files and does not create or substitute libraries. The DLL is
 included in the application install inventory.
+
+The shared compiler settings spell the existing suppression as `/wd4100`, a
+single argument without embedded quotes. `/W4`, `/WX` and the suppressed warning
+number remain unchanged for both Visual Studio and Ninja generators.
 
 No shared SDK or dependency-cache source is patched. The renderer, plugin source
 membership, warning policy, texture support and teardown overlays keep their

@@ -8,6 +8,9 @@ from 2026-11-07.
 Independent: these native teardown fixes do not change the
 application's navigation or account flows.
 
+Related: [native dependency producers](2026-11-14-windows-native-dependency-producers.md)
+keeps the same plugins and teardown sources in non-Visual-Studio build graphs.
+
 ## Problem
 
 The desktop WebView plugin unregisters a method handler after the engine

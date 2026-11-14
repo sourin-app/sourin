@@ -1215,5 +1215,13 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - MyShelf 和 FollowPage 保留本地读取及持久化；封面修复、标题回填和巡检在页面自有帧边界后检查 mounted、当前读取代际和有效 TickerMode。路由返回另复核 current；隐藏页不启动新联网，可见快速切入和正常返回仍刷新。已开始的联网操作保留既有完成策略，正修复结果在页面隐藏后不触发回刷。
 - v82 相同组件行为用例在干净 26b 旧版得到 Expected 0 / Actual 1 的真实封面调用失败，新版通过。另十五文件相关回归 75 通过、0 失败，两个原 native-media 套件按既有配置跳过。六个限定文件分析每臂 0 error / 1 warning / 1 info，完整诊断多重集相同；旧 analyzer warning exit 2 保留。所有正式运行输入未变、正常退出、Job 连续为空至少八秒且无强制清理；独立审查分别 30/30 与 62/62。
 - 同源无窗口 Clang GUI 控制编译正常结束；新 WindowStation 控制在 CreateWindowStationW 前置步骤收到 Win32=5，未创建桌面或启动 GUI。失败及自然外层退出收据保留。Clang/Ninja 完整产品构建和普通启动仍需实际验证。
-- 两个性能候选只完成生成与源码独审：rim 按需加载和无 backdrop 的等价配置避免重绘。组件及原口径实际帧采样尚未执行，不能据此认定解决 324ms 链接或超预算帧。
+
+### 2026-11-14：性能组件、最新核心与 Ninja 依赖图
+
+- v83 固定候选完成十三个接受执行项：十场 GREEN、三场预期原版 RED；原 shaded 四根的 4→6 程序断言保持通过。缺失 rim 的 v2 三场没有子测试输出，只保留恢复和退出证据；v3 补齐原始输出后，原版 Expected null / Actual missing asset，两个候选通过。全部接受场输入不变、自然 Job0 至少八秒、无强制清理；独审通过。只接受组件语义，尚未整合候选或证明 AOT 性能改善。
+- 最新 C11 的离线 Cargo 实际解析确认 227 个 Windows 注册表来源，逐文件与锁定归档一致；全平台锁定库存的双注册表目录不会被误报为依赖缺失。当前普通 shell 元数据绑定 2,267 份源码和 25,250 份依赖/工具输入。fresh release/lib 核心实际编译成功，209 个实际依赖包、254 条实际产物消息与绑定来源一致；源码和输入未变，外层自然 Job0 8.023699 秒、无强制清理。完整包、实际播放、UI 和性能继续单列。
+- Clang 与真实单配置 Ninja Release 配置成功，安装图选中本次 fresh core，外层自然 Job0 8.026024 秒。原始完整构建在 Flutter import library 的缺失产出规则处 exit 1；未触达后续 NuGet XML 输入，失败及自然排空保留。已接入真实 backend import-library byproduct 和非 Visual Studio 的原生 NuGet 动态 loader 图；保留全部插件、纹理、原警告和关闭规则。新依赖图及最新完整包仍需实际编译、绑定和运行。
+- fresh OW/SY Desktop 的创建与关闭通过；同一无窗口静态 USER32 镜像在 full-rights 新 Desktop 仍返回 C0000142，未进入 WinMain。existing Default 对照在额外禁用错误 UI 的 helper 下进入 WinMain，真实 exit 0、未创建窗口，内外自然 Job0 至少八秒；这不唯一归因旧失败，也不算普通产品启动。普通路径仍有单实例互斥量及已有窗口激活分支，不得触发用户现有客户端或焦点。
+- 用户要求子智能体思考使用 high，三个审查均已交接到显式 high 智能体。完整十八项及追加目标继续 active，最新 Debug 前端网络/封面、完整 UI、多提供方保存重启、untraced AOT 性能、普通启动退出和最终完整包仍须逐项验收；未推送、未发布。
+- rim 按需加载和无 backdrop 的等价配置避免重绘已完成 v83 组件语义验证；原口径 untraced AOT 实际帧采样尚未执行，不能据此认定解决 324ms 链接或超预算帧。
 - v9/v10 的 24 次额外封面请求失败保持失败。下一轮网络/UI/性能必须绑定包含本次修复的新提交、实际新前端、真实模块和完整包；旧包或改标签不能验证这次 Dart 修复。完整目标继续 active，未推送、未发布。

@@ -7,6 +7,10 @@ Applies from 2026-11-08.
 Relations: extends [normal product entrypoint and data directory binding](2026-11-05-owner-package-data-directory-binding.md).
 The entrypoint, define and approved core hash checks remain mandatory.
 
+Related: [native dependency producers](2026-11-14-windows-native-dependency-producers.md)
+adds the Dynamic WebView loader to the actual application install graph for
+non-Visual-Studio generators.
+
 ## Problem
 
 The Release directory can contain data and browser caches created by earlier

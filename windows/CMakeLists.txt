@@ -57,6 +57,9 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Non-Visual-Studio generators need native NuGet inputs in their build graph.
+include(cmake/inappwebview_nuget.cmake)
+
 # Keep plugin cleanup within the engine/thread lifetime. These compatibility
 # fixes compile private source copies and leave the shared Pub cache untouched.
 include(cmake/desktop_webview_shutdown.cmake)

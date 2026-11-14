@@ -51,9 +51,12 @@ use crate::pan::PanKind;
 /// 生产值，生产行为零变化。
 const KEYRING_SERVICE: &str = "dsh-media-client-pan";
 
-/// 实际生效的钥匙串服务名：优先取环境变量，未设置用生产值
-fn service_name() -> String {
-    std::env::var("SOURIN_KEYRING_SERVICE").unwrap_or_else(|_| KEYRING_SERVICE.to_string())
+/// 未设置覆盖时使用旧服务名；无效覆盖在构造 Entry 前拒绝。
+fn service_name() -> Result<String, String> {
+    crate::credential_namespace::service_name(
+        KEYRING_SERVICE,
+        crate::credential_namespace::CredentialRole::Pan,
+    )
 }
 
 /// 一份网盘登录凭据
@@ -87,7 +90,7 @@ impl PanCredential {
 }
 
 fn entry(kind: PanKind) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(&service_name(), &format!("pan/{}", kind.code()))
+    keyring::Entry::new(&service_name()?, &format!("pan/{}", kind.code()))
         .map_err(|e| format!("系统钥匙串不可用：{e}"))
 }
 
@@ -177,7 +180,10 @@ pub fn clear(kind: PanKind) -> Result<(), String> {
 /// 那种环境下**不能假装**登录功能可用 —— 用户点了登录、cookie 存不住，
 /// 下次启动又要重登，还查不出原因。
 pub fn keyring_available() -> bool {
-    match keyring::Entry::new(&service_name(), "__probe__") {
+    let Ok(service) = service_name() else {
+        return false;
+    };
+    match keyring::Entry::new(&service, "__probe__") {
         Ok(e) => {
             // 真正读一次：能建 Entry 不代表后端能用
             match e.get_password() {

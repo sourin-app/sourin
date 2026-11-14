@@ -1225,3 +1225,11 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 用户要求子智能体思考使用 high，三个审查均已交接到显式 high 智能体。完整十八项及追加目标继续 active，最新 Debug 前端网络/封面、完整 UI、多提供方保存重启、untraced AOT 性能、普通启动退出和最终完整包仍须逐项验收；未推送、未发布。
 - rim 按需加载和无 backdrop 的等价配置避免重绘已完成 v83 组件语义验证；原口径 untraced AOT 实际帧采样尚未执行，不能据此认定解决 324ms 链接或超预算帧。
 - v9/v10 的 24 次额外封面请求失败保持失败。下一轮网络/UI/性能必须绑定包含本次修复的新提交、实际新前端、真实模块和完整包；旧包或改标签不能验证这次 Dart 修复。完整目标继续 active，未推送、未发布。
+
+### 2026-11-14：统一凭据隔离与缓存确认（未验收）
+
+- 五处 keyring Entry 入口共用 `SOURIN_KEYRING_SERVICE`：未设置时保持四个旧 service 与原 user；有效原始值保留 pan 命名，另外三类分别追加 `-proxy`、`-sync`、`-credential-key`。空、纯空白、控制字符和非 Unicode 配置在 Entry 构造前拒绝，读写、空值删除、显式 clear 和 pan probe 均接入。源码静态独审通过，旧 normal 核心的真实 RED 已执行；新提交正常核心的 GREEN 仍待实编。
+- 新回归使用内存 recording builder 触发真实公开凭据 API，记录实际 service/user/get_password/set_password/delete_credential；覆盖九个 pan key、unknown/probe、两个代理 user、WebDAV 和同步口令。测试源不访问系统凭据后端；旧 normal rlib 与 c739 的全部 349 项受跟踪核心输入等价已独审，不能以编译/链接失败冒充语义 RED。
+- C12 缓存 v3 达 deadline 后被强制清理，仍保留失败；v4 错误拒绝已审核的 private relative-external 路径，亦保留失败。v5 逐条使用完整物理坐标确认 source/private/cache/quarantine，实际成功且全量独审无失败：27,614 个逻辑输入、25,340 个 private 输入、12,235 个 registry 缓存及 3,730 个隔离文件均匹配。v5 未移动文件，43,458 个外层输入未变，exit 0、自然 Job0 8.0209507 秒、无 force/error。下一构建只复制这份明确分类的 registry 清单。
+- 同 SHA `5770FDDB2BBC96FB75936D4D72BA9CACC0B9481BF0DB07C0EA69D2BE8A57D2CF` 的四项内存后端回归已成功链接旧 normal rlib；V3 真实执行结果为 1 passed / 3 failed / 0 ignored，失败对应 namespace、missing-entry 和 invalid-override 断言。compile exit 0、test exit 101；38,397 个输入未变，外层 exit 0、自然 Job0 8.0309494 秒、无 force/error。V2 缺少 Windows 原生库的链接失败继续保留，不算语义 RED；V3 只恢复 Cargo 五条原生搜索路径及其顺序。测试未安装系统凭据后端，也未启动产品。
+- 新凭据实现需本地提交、实编新核心并绑定新完整包后，才准入完整匿名 UI。最新前端网络/封面、真实播放、多提供方保存重启、untraced AOT 性能、普通启动退出与完整十八项仍继续单列未完成；未推送、未发布。

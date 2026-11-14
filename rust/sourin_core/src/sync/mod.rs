@@ -69,7 +69,11 @@ pub mod webdav_credential {
     const SERVICE: &str = "dsh-media-client-sync";
 
     fn entry(key: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, key).map_err(|e| format!("钥匙串不可用: {e}"))
+        let service = crate::credential_namespace::service_name(
+            SERVICE,
+            crate::credential_namespace::CredentialRole::Sync,
+        )?;
+        keyring::Entry::new(&service, key).map_err(|e| format!("钥匙串不可用: {e}"))
     }
 
     /// 写入并回传（便于调用方立即使用，避免再读一次）
@@ -128,7 +132,11 @@ pub mod credentials_passphrase {
     const KEY: &str = "credentials";
 
     fn entry() -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, KEY).map_err(|e| format!("钥匙串不可用: {e}"))
+        let service = crate::credential_namespace::service_name(
+            SERVICE,
+            crate::credential_namespace::CredentialRole::CredentialKey,
+        )?;
+        keyring::Entry::new(&service, KEY).map_err(|e| format!("钥匙串不可用: {e}"))
     }
 
     /// 写入口令；空口令 = 删除（不是存空串）

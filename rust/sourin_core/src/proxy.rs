@@ -255,7 +255,11 @@ pub fn validate_proxy_url(raw: &str) -> Result<String, String> {
 // ─────────────────────────── 密钥存储 ───────────────────────────
 
 fn keyring_entry(provider: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, provider).map_err(|e| format!("钥匙串不可用: {e}"))
+    let service = crate::credential_namespace::service_name(
+        KEYRING_SERVICE,
+        crate::credential_namespace::CredentialRole::Proxy,
+    )?;
+    keyring::Entry::new(&service, provider).map_err(|e| format!("钥匙串不可用: {e}"))
 }
 
 /// 把代理密码写入系统钥匙串（**不落库、不进备份**）

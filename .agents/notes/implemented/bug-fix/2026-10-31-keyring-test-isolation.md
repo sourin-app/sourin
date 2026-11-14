@@ -1,11 +1,17 @@
-# Agent Note: pan_auth 钥匙串测试污染真实凭据 —— service 名环境变量隔离
+# Agent Note: 凭据入口的环境变量隔离
 
 Status: implemented
+
+Applies from 2026-11-14 to all Rust core keyring entry constructors. The pan
+test-isolation decision established on 2026-10-31 continues to apply.
 
 Independent: 与 [2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md](2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast.md)
 （登录协议修复）无关——本篇修的是**测试基建**破坏用户凭据的问题；
 也与 2026-10-31-aliyun-bizext-lossy-and-body-dump.md（凭据落盘路径）无关，
 本篇管的是"测试不许碰真凭据"。
+
+Relations: complements the [keyring-only credential storage contract](../architecture/2026-10-25-pan-auth-keyring-only.md).
+Storage format and production service names retain that separate contract.
 
 ## Problem（真实事故，非假设）
 
@@ -28,13 +34,26 @@ Independent: 与 [2026-10-30-pan-login-t5-aliyun-bizext-115-cookie-baidu-unicast
 覆盖/删除。pan_auth 的 cookie 只存钥匙串（实现区禁文件写入有门禁），
 ⇒ 测试污染 = 用户登录态直接蒸发。
 
+The settings UI also reads proxy, WebDAV and credential-sync passphrase entries.
+A private data directory and a pan-only service override cannot isolate those
+platform-store reads, including disconnected backup settings and availability
+probes.
+
 ## Decision
 
 ```text
-service 名改为 fn service_name()：优先读 SOURIN_KEYRING_SERVICE，
-未设置用生产值 dsh-media-client-pan（生产进程不设该变量 ⇒ 行为零变化）。
+credential_namespace::service_name resolves every Entry service before construction.
+Only an absent SOURIN_KEYRING_SERVICE uses each exact legacy service:
+dsh-media-client-pan / dsh-media-client-proxy / dsh-media-client-sync /
+dsh-media-client-credential-key. Entry users and stored-value formats stay unchanged.
+A valid configured raw Unicode value P supplies pan's exact service P and the
+separate services P-proxy, P-sync and P-credential-key. Valid values are not trimmed.
+Empty, whitespace-only, control-character or non-Unicode configured values reject
+before any Entry construction. Read helpers return None/unavailable and mutations
+return Err; no missing-entry or configuration-error branch falls back to legacy.
+The pan __probe__ constructor obeys the same rule as credential reads and writes.
 测试模块 isolate_keyring()（OnceLock 一次性设为 dsh-media-client-pan-test），
-三个钥匙串测试第一句都调它 ⇒ 任何跑法（默认/--ignored/单条）真条目物理不可达。
+三个旧钥匙串测试第一句都调它，将其平台后端条目与 legacy pan 服务分离。
 empty_cookie 摘掉运行时 return 反模式、补 #[ignore]（与兄弟一致）。
 新增源码门禁 tests_never_reference_real_keyring_service：测试模块不许出现
 裸生产服务名（判据 concat! 拼接防自证陷阱；锚点用 `mod tests` 而非
@@ -52,10 +71,29 @@ empty_cookie 摘掉运行时 return 反模式、补 #[ignore]（与兄弟一致�
 
 ## Consequences
 
-- 门禁：`cargo test --lib --release` ⇒ **1944 passed / 0 failed / 92 ignored**
+- The caller must choose a unique namespace for an isolated application instance
+  and compare all four derived service names with every legacy name. An arbitrary
+  valid override is a configuration value, not proof of isolation by itself.
+- `tests/credential_namespace.rs` installs an in-memory recording keyring builder
+  before real public reads, writes, empty-input deletes, explicit clears and pan
+  probes. It verifies actual constructor/backend service and user records, legacy
+  defaults, raw Unicode overrides, missing-entry isolation and zero backend calls
+  for invalid overrides. It invokes no platform credential backend and serializes
+  environment changes. Mock roundtrips do not establish OS keyring persistence,
+  remote authentication, application UI, startup or complete-package acceptance.
+- 2026-11-14: the frozen four-test integration fixture was actually linked to the
+  original normal core, whose complete tracked Rust inputs match the pre-fix
+  committed core. It executed 1 passed / 3 failed / 0 ignored, with actual
+  namespace, missing-entry and invalid-override assertions. The process used only
+  the recording backend, preserved its inputs and naturally drained its owned
+  job for over eight seconds. An earlier missing native-library link failure is
+  retained separately and is not semantic RED. GREEN remains pending a fresh
+  normal core built from the new local commit; no application isolation or
+  complete-product acceptance is inferred from RED.
+- Historical 2026-10-31 gate: `cargo test --lib --release` ⇒ **1944 passed / 0 failed / 92 ignored**
   （empty_cookie 从 passed 转 ignored、+1 新门禁，净变化 ±0）；
   `pan_auth --ignored` 单跑 3 passed（隔离空间里"空 cookie=登出"语义不回归）。
-- **决定性验收**：全量测试与 --ignored 前后，真实钥匙串 7 条凭据
+- Historical 2026-10-31 evidence: 全量测试与 --ignored 前后，真实钥匙串 7 条凭据
   （123/aliyun/baidu/guangya/quark/uc/xunlei）blob 逐字节 IDENTICAL（SHA-256 比对）。
 - 证红：服务名临时换回裸真名 ⇒ 新门禁 FAILED（RC=101）。
 - 边界：`-test` 命名空间偶发一条测试残留（首次并行运行出现、复跑自愈），

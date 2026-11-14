@@ -129,6 +129,8 @@ key.properties
 /data/
 *cookie*.json
 *credential*
+!rust/sourin_core/src/credential_namespace.rs
+!rust/sourin_core/tests/credential_namespace.rs
 *.session
 #
 # ★ 例外（2026-10-19，CS-1 登录态同步）：`*credential*` 是为了防**真实凭据落盘**，

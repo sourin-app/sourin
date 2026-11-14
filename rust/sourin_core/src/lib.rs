@@ -48,6 +48,7 @@ mod native_catalog_line_tests;
 pub mod hostpool;
 
 // ── 网络 ──
+mod credential_namespace;
 pub mod proxy;
 pub mod proxy_download;
 pub mod streamproxy;

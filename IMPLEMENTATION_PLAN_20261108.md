@@ -1233,3 +1233,12 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - C12 缓存 v3 达 deadline 后被强制清理，仍保留失败；v4 错误拒绝已审核的 private relative-external 路径，亦保留失败。v5 逐条使用完整物理坐标确认 source/private/cache/quarantine，实际成功且全量独审无失败：27,614 个逻辑输入、25,340 个 private 输入、12,235 个 registry 缓存及 3,730 个隔离文件均匹配。v5 未移动文件，43,458 个外层输入未变，exit 0、自然 Job0 8.0209507 秒、无 force/error。下一构建只复制这份明确分类的 registry 清单。
 - 同 SHA `5770FDDB2BBC96FB75936D4D72BA9CACC0B9481BF0DB07C0EA69D2BE8A57D2CF` 的四项内存后端回归已成功链接旧 normal rlib；V3 真实执行结果为 1 passed / 3 failed / 0 ignored，失败对应 namespace、missing-entry 和 invalid-override 断言。compile exit 0、test exit 101；38,397 个输入未变，外层 exit 0、自然 Job0 8.0309494 秒、无 force/error。V2 缺少 Windows 原生库的链接失败继续保留，不算语义 RED；V3 只恢复 Cargo 五条原生搜索路径及其顺序。测试未安装系统凭据后端，也未启动产品。
 - 新凭据实现需本地提交、实编新核心并绑定新完整包后，才准入完整匿名 UI。最新前端网络/封面、真实播放、多提供方保存重启、untraced AOT 性能、普通启动退出与完整十八项仍继续单列未完成；未推送、未发布。
+
+### 2026-11-14 接续：当前核心、凭据 GREEN 与完整包实际编译
+
+- 当前正常核心从 `91b6be6` 实编成功：351 份 Rust 输入、209 个依赖包、254 条实际产物消息核对通过；真实 rustc 为非 test 的 cdylib/rlib，DLL SHA256 为 `C281B8116161AFDADFA1C4FF946388FD6360661C9368C5521EB2FA6566FD5D0B`。外层输入不变，exit 0、自然 Job0 8.019865 秒，无强制清理。首次 cmd 路径格式错误的 v1 失败保留，v2 采用 Windows 原生路径。
+- 同 SHA `5770FDDB2BBC96FB75936D4D72BA9CACC0B9481BF0DB07C0EA69D2BE8A57D2CF` 凭据用例链接该正常 rlib 和同一 keyring 依赖：4 通过、0 失败、0 忽略，10 条实际观察完整。旧版 1 通过/3 失败保持；四类公开凭据 API 使用内存后端，未访问系统真实凭据。外层自然 Job0 8.016399 秒，独审 19 项通过。这一结果替代本项“新核心 GREEN 未执行”，不替代产品运行。
+- C14 普通 shell 的 Ninja 配置通过并实际运行完整构建。先遇到 `/wd"4100"` 引号传参错误，同编译单元仅改为 `/wd4100` 后通过，已本地提交 `bb903b1`；其 Rust 输入与上述核心完全相同。五个 Flutter wrapper 生成源码与 SDK 原件核对并纳入后续输入绑定。
+- Clang 随后拒绝桌面 WebView 自带 WIL 的参数遮蔽和仅供诊断的变量。构建私有副本采用精确、计数校验的变换，保留类型别名、函数体、volatile 写入、全部插件和 `/W4 /WX`。原失败编译单元通过且自然 Job0 8.023272 秒；实际 CMake 生成文本与已测候选一致，10 个该插件编译单元全部使用私有副本，既有退出修复字节保持。
+- 完整 Ninja v3 仍失败：下一 `default_composer.cc` 有 Win32 结构体部分初始化和 `TTTOOLINFOW_V2_SIZE` 窄化诊断，共 12 条。整场失败与原始日志保留，外层自然 Job0 8.032269 秒；不能据前几个编译单元通过认定完整包成功。MSVC 同一 WIL 单元可编译，但留下 VCTIP 并触发清理；旧 600 秒等待也未自然退出，不能改用工具链名称掩盖此限制。
+- 本轮没有启动产品。最新安全 Debug 的源码准备脚本和完整 Rust 字节等价桥接已独审，尚未执行；接下来先修复剩余原生编译问题，再完成最新包、实际封面/播放/UI、AOT 性能及普通启动退出。证据位于 `.probe/goal-takeover-20261114/` 和 `.probe/goal-resume-20261114/`；完整目标保持 active，未推送、未发布。

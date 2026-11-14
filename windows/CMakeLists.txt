@@ -63,6 +63,7 @@ include(cmake/inappwebview_nuget.cmake)
 # Keep plugin cleanup within the engine/thread lifetime. These compatibility
 # fixes compile private source copies and leave the shared Pub cache untouched.
 include(cmake/desktop_webview_shutdown.cmake)
+include(cmake/desktop_webview_wil.cmake)
 include(cmake/inappwebview_shutdown.cmake)
 include(cmake/media_kit_video_shutdown.cmake)
 

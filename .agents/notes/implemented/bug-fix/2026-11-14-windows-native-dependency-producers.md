@@ -41,6 +41,15 @@ The shared compiler settings spell the existing suppression as `/wd4100`, a
 single argument without embedded quotes. `/W4`, `/WX` and the suppressed warning
 number remain unchanged for both Visual Studio and Ninja generators.
 
+For Clang, the desktop WebView target compiles a private copy of its source tree.
+Two hash-pinned bundled WIL headers receive exact, count-checked transformations:
+template parameters have distinct names from their preserved type aliases, and
+four volatile diagnostic variables are marked `[[maybe_unused]]`. Their writes
+and runtime bodies remain unchanged. All target sources and plugin-owned include
+paths point into the same copy so quoted includes cannot select the old headers.
+The generated shutdown correction is copied into that tree before compilation.
+MSVC retains the original source selection; no warning flags are weakened.
+
 No shared SDK or dependency-cache source is patched. The renderer, plugin source
 membership, warning policy, texture support and teardown overlays keep their
 existing contracts.

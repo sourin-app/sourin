@@ -68,6 +68,7 @@ include(cmake/desktop_webview_wil.cmake)
 include(cmake/inappwebview_shutdown.cmake)
 include(cmake/media_kit_video_shutdown.cmake)
 include(cmake/plugin_source_compat.cmake)
+include(cmake/inappwebview_clang.cmake)
 
 
 # === Installation ===

@@ -1250,3 +1250,11 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - `native-build-composer-v1` 与 `native-build-plugins-v3` 两次完整构建失败均保留；后者自然 Job0 8.022670 秒、输入不变。配置 v1 因相对证据路径在启动子进程前失败，v2 被生成文件 CRLF 哈希差异拦住，v3 修正内容比较后实际通过；不将这些失败改记为成功。
 - `native-build-reviewed-plugins-v1` 对 desktop_webview、dynamic_color、file_selector、media_kit_video、screen_retriever、tray、volume、window_manager 八个目标实际编译链接通过：exit 0、自然 Job0 8.000573 秒、27,637 个输入不变、无强制清理。此命令没有完成 install，不能称完整包通过。完整构建余下 InAppWebView 协程、旧 SDK 枚举范围和显式 EncodableValue 转换错误正在处理。
 - 普通未改启动隔离路线只读复核仍无合格执行环境：已有私有桌面 GUI 初始化失败、创建窗口站拒绝访问，同会话单例边界仍未解决。最新 UI/封面/播放/性能、普通启动退出及完整包仍未验收，完整目标保持未完成。
+
+### 2026-11-14 接续：InAppWebView 全量构建与包来源缺口
+
+- InAppWebView 完整私有树采用该目标专用 C++20 协程、依赖类型的 visitor 断言和显式 EncodableValue 转换，28 文件/63 个精确转换块经独审；既有 manager 退出修复保持。私有 SDK 枚举加入原 options 已使用的内部 bit16，原公共值及 mask31 保持。原始和修改后头文件的 ABI 控制实编通过。
+- SDK 私有副本已接入现有 NuGet → 私有生成 → 插件编译的依赖链。两次 SDK 准备实际通过且冻结输出原始哈希一致；独立全新 binary 目录在 SDK 缺失时配置通过，自然 Job0 8.016839 秒，SDK 仍未生成，共享 Flutter ephemeral 文件的哈希和时间戳均未变。
+- 全量 native v1 的剩余实际错误为 string.h 中 21 次未声明 s2 和 1 次 C++20 accumulate 绑定错误。只删除 void 函数非法返回、将只读累加器改 const 引用后，再次强制重编全部 102 编译边（100 份不同源，含 RC），完整 `install` 实际通过：exit 0、自然 Job0 8.022724 秒、27,867 个输入不变、无强制清理。
+- 新执行器保留原始 pre/post Ninja 日志、依赖文件及真实时钟边界。独审确认实际 102 编译命令匹配，8 组自定义目标相对/绝对输出别名及 Windows 响应文件换行按真实生成规则处理，负例继续拒绝。包验证随后发现 19 个已消费的 Flutter/NuGet 头文件缺少编译前坐标绑定；不能事后补认旧构建，需补完整冻结并重新构建后验包。
+- 本批只推进编译和来源核验，没有启动产品或访问真实账号；最新 UI/封面/播放/性能、普通启动退出和完整目标继续未完成。仅本地提交，未推送、未发布。

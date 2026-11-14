@@ -98,3 +98,27 @@ Job drain for 8.000573 seconds. The preceding full plugins-v3 build remains a
 failure: InAppWebView still needs standard coroutine and explicit value-conversion
 compatibility fixes. Target compilation does not constitute install/package or
 runtime acceptance.
+
+InAppWebView uses its complete private source tree with the existing shutdown
+manager correction retained. Clang selects standard C++20 coroutines for this
+target alone. Explicit EncodableValue construction preserves map keys, value
+types, optional/null branches and method replies. Its string join accepts a
+const accumulator reference; a void template drops an invalid undeclared return.
+The unused in-place case-conversion templates retain their existing signatures
+and are not claimed as newly validated APIs.
+
+The pinned WebView2 options helper uses an internal channel bit beyond the
+published enum range. A private header adds that existing bit to the allowed
+enum range while preserving public values and the original 31 default mask.
+Original and modified headers passed actual size/alignment/underlying-type and
+value compile controls. The SDK copy is a build target ordered after existing
+NuGet preparation and before plugin compilation. A fresh independent binary
+directory configured successfully while that SDK remained absent; shared
+Flutter ephemeral bytes and timestamps stayed unchanged. Repeated SDK generation
+also retained every frozen output byte.
+
+The full native rebuild and install passed in native-full-inapp-strings-v1:
+102 compiler edges, natural Job0 8.022724 seconds, all 27,867 inputs unchanged.
+Package provenance validation then found 19 consumed Flutter/NuGet headers
+missing from the pre-build input map. That successful build is retained, but
+complete artifact acceptance requires a new full input freeze and native rebuild.

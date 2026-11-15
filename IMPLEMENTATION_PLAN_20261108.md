@@ -1302,3 +1302,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 7 no-activate Release follow-up：尝试在隔离编译副本为 runner 增加仅 `SOURIN_TASK_NO_ACTIVATE=1` 时使用 `SW_SHOWNOACTIVATE` 的任务专用分支，未触碰生产源码。该副本因 InAppWebView NuGet 依赖命令不可用（NUGET-NOTFOUND，exit9009）未完成构建，不能产生新包/行为结论。此前已验证的当前Release包仍保持窗口样式 `noActivate=false` 与自然关闭 forced cleanup 的失败收据；不把失败实验或旧包升级为通过。
 
 - 2026-11-16 Round 8：为 Windows runner 增加环境门控的 `SOURIN_TASK_NO_ACTIVATE=1` → `SW_SHOWNOACTIVATE` 任务专用路径，正常环境保持 `SW_SHOWNORMAL`；这是为隔离 owner runner 修复窗口样式契约，不改变普通产品默认行为。当前工作区 clean build 因 InAppWebView NuGet 下载命令缺失（exit9009）未能编出包含该字节的包，因此该改动尚未获得运行时验收，不得宣称普通启动通过。
+
+- 2026-11-16 Round 9：当前 `af2afab` 的 task-only `SW_SHOWNOACTIVATE` runner patch 已提交，但 clean Release 重建仍在 InAppWebView NuGet dependency target 处 exit9009；标准本地 NuGet caches 不含所需包，未联网补依赖。因未得到包含该patch的完整Release包，普通启动/自然退出仍不接受。

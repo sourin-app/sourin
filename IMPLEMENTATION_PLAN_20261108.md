@@ -1326,3 +1326,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 37 independent restart proof：同一隔离profile与同一59文件Release包，连续启动两个独立owned process owners；两次均实际Home render、foreground=false、tray日志显示`closeAction=quit`、SC_CLOSE exit0、各自exact Job0≥8秒、无force/cleanup error；最后读回同一profile `dsh.closeAction=quit`。收据：`.probe/goal-resume-20261115-evening/current-release-independent-restart-v2/result.json`。这闭环任务隔离的跨owner重启/偏好读回，但不升级默认用户启动或whole goal。
 
 - 2026-11-16 Round 35 status correction：独立重启实测已成立（同一隔离profile连续两次独立owner，Home render、foreground=false、quit持久化读回、两次exit0/exact Job0/no-force），`FINAL_ACTIVE_STATUS_V2.json` 将 `independentRestart=true`。其余ordinaryDefaultUser、performance、nonzeroPCM、wholeGoal仍false。
+
+- 2026-11-16 Round 40 status refresh：当前HEAD为 `9362ecd8f8df76b1ba57688da4166654a06c1a73`，分支相对origin `ahead 280`，工作区clean；`FINAL_ACTIVE_STATUS_V3.json` 重新绑定当前HEAD。当前Release包/owner生命周期、JS、独立重启证据保持有效；ordinaryDefaultUser=false、performance=false、nonzeroPCM=false、wholeGoal=false。

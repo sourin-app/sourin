@@ -1298,3 +1298,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 使用真实当前Release包与隔离profile、owned suspended CreateProcess/Job/birth/image/affinity路径尝试启动。随后通过读取真实窗口截图亲眼看到首页（49源、电影/动作片骨架与页面布局）；日志确认核心启动、FIRST_FRAME_RENDERED及首页154条数据/完成渲染。
 - 但当前包的窗口样式为 `noActivate=false`，不满足任务runner的完全不激活窗口契约；放宽样式仅作诊断后，Release包没有收到已认证VM endpoint，且WM_CLOSE场次在45秒内未自然退出，最终 forced cleanup。故 `ordinaryStartupAccepted=false`、`releasePackageRuntimeAccepted=false`；截图是有限Release首页证据，不是普通无干扰启动/自然退出通过。失败结果保留于 `.probe/goal-resume-20261115-evening/current-release-owner-launch-v4/` 与 `current-release-owner-launch-v5/`、`current-release-owner-launch-v6/`。
 - 该结果暴露的是当前Release runner/窗口关闭与既有不激活窗口契约的绑定缺口，不把放宽observer或强制清理改写成绿色。完整目标继续active；性能、非零PCM、独立重启、全量封面、完整Release自然启动退出及Owner验收仍未完成。
+
+- 2026-11-16 Round 7 no-activate Release follow-up：尝试在隔离编译副本为 runner 增加仅 `SOURIN_TASK_NO_ACTIVATE=1` 时使用 `SW_SHOWNOACTIVATE` 的任务专用分支，未触碰生产源码。该副本因 InAppWebView NuGet 依赖命令不可用（NUGET-NOTFOUND，exit9009）未完成构建，不能产生新包/行为结论。此前已验证的当前Release包仍保持窗口样式 `noActivate=false` 与自然关闭 forced cleanup 的失败收据；不把失败实验或旧包升级为通过。

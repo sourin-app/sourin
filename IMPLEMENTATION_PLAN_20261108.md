@@ -1320,3 +1320,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 20 final gate snapshot：当前工作区 clean，Agent Notes tree/format/archived gates 全通过；当前Release owner lifecycle receipt仍为 passed、Home rendered、exit0、exact Job0 8.0312012s、forcedCleanup=false。已发布树中历史文档仍含本机路径/公开账号标识（既有隐私债务，未扩大本轮范围）；本轮未新增敏感字段。默认用户普通启动、性能、PCM、独立重启及whole goal仍明确未接受。
 
 - 2026-11-16 Round 24 current Dart performance provenance：已确认 `dc6cc72` Profile运行涉及的Dart/lib/pubspec输入在当前HEAD仍未改变，预冻结输入计数3487；该静态绑定结果见 `CURRENT_DART_PERFORMANCE_BINDING_V1.json`。但运行时Profile/AOT收据仍非当前Release native包，且既有性能超预算，因此 `performanceAccepted=false`，不把静态未变更误报为当前性能通过。
+
+- 2026-11-16 Round 32 final active status freeze：`FINAL_ACTIVE_STATUS_V1.json` 汇总权威收据：Release owner lifecycle通过（Home/exit0/Job0 8.0312s/no force）、59文件包全部字节匹配且sourceCommit=af2afab、JS九项生命周期通过、公开视频位置推进且native volume>0，但nonzero PCM仍false；performanceAccepted=false、ordinaryDefaultUser=false、independentRestart=false、wholeGoal=false。目标继续active。

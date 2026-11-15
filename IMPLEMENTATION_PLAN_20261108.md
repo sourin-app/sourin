@@ -1332,3 +1332,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 42 status correction：`FINAL_ACTIVE_STATUS_V4.json` 已重新绑定当前HEAD `14b6baeb7cbdae0c196cc5f0dff2f7c03ba1197a` 与ahead281；上一V3只反映前一文档提交，不能作为当前HEAD快照。接受边界不变：Release/JS/独立重启局部通过，ordinaryDefaultUser、performance、nonzeroPCM、wholeGoal仍false。
 
 - 2026-11-16 Round 50 final active status V5：重新读取当前HEAD `0afd3b7b4cfdcd3ac405ffeb969aa7d27202e0f9`、ahead282、clean tree，并从权威Release/restart receipts重建 `FINAL_ACTIVE_STATUS_V5.json`。Release/包/独立重启仍通过；ordinaryDefaultUser/performance/nonzeroPCM/wholeGoal仍false。
+
+- 2026-11-16 Round 52 status correction：生成 `FINAL_ACTIVE_STATUS_V6.json`，将最终状态快照重新绑定当前HEAD `e44800b71fbd0ca0d9e4e310be7ff3e7630068d3` 与ahead283；Acceptance边界不变，目标仍active。

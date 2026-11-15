@@ -13,6 +13,8 @@ fn state() -> AppState {
         remote:Arc::new(RemoteHub::new()), stream_proxy:Arc::new(StreamProxy::with_proxy_store(proxy)),
         cover_repair:tokio::sync::Mutex::new(Default::default()),
         providers_updated_at:AtomicI64::new(0), auto_loop_started:AtomicBool::new(false),
+        js_mutation_epoch: std::sync::atomic::AtomicU64::new(0),
+        js_reload_sequence: std::sync::atomic::AtomicU64::new(0),
     }
 }
 

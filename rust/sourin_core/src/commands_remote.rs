@@ -611,58 +611,52 @@ pub async fn install_plugin_with_backups(
     let resolved = crate::plugins::resolve_plugin_url(url)?;
     let resolved_backups = backups.iter().map(|u| crate::plugins::resolve_plugin_url(u)).collect::<Result<Vec<_>, _>>()?;
     let urls = crate::source_catalog::validated_urls(&resolved, &resolved_backups)?;
-    let (source, used_url, endpoint) = crate::source_catalog::fetch_validated(&state.proxy, "plugin", &urls, None, |text| {
+    // Claim before the first await, even before the downloaded id is known.
+    let epoch = {
+        let _guard = crate::source_catalog::write_lock()?;
+        state.advance_js_epoch_locked()?
+    };
+    let fetched = crate::source_catalog::fetch_validated(&state.proxy, "plugin", &urls, None, |text| {
         let meta = crate::plugins::parse_meta(text);
         if meta.id.is_empty() || meta.name.is_empty() { return Err(crate::source_catalog::Validation::Invalid("内容不是有效 JS 插件".into())); }
         crate::plugins::validate_source_syntax(text).map_err(crate::source_catalog::Validation::Invalid)?;
         Ok(text.to_owned())
-    }).await?;
+    }).await;
+    let (committed, file, bytes, meta, used_url) = {
+        let _guard = crate::source_catalog::write_lock()?;
+        state.check_js_epoch_locked(epoch)?;
+        let (source, used_url, endpoint) = fetched?;
 
-    // 先解析元信息校验 —— 不合法的内容不写盘（免得留下一个坏文件）
-    let meta = crate::plugins::parse_meta(&source);
-    if meta.id.is_empty() {
-        return Err("下载到的内容不是合法插件（缺少 @id 头部注释）".into());
-    }
-    if meta.name.is_empty() {
-        return Err(format!("插件 {} 缺少 @name", meta.id));
-    }
+        // 先解析元信息校验 —— 不合法的内容不写盘（免得留下一个坏文件）
+        let meta = crate::plugins::parse_meta(&source);
+        if meta.id.is_empty() {
+            return Err("下载到的内容不是合法插件（缺少 @id 头部注释）".into());
+        }
+        if meta.name.is_empty() {
+            return Err(format!("插件 {} 缺少 @name", meta.id));
+        }
 
-    let dir = plugins_dir(&state.data_dir);
-    let (file, bytes) = crate::plugins::save_plugin(&dir, &meta.id, &source)?;
+        let dir = plugins_dir(&state.data_dir);
+        let committed = state.advance_js_epoch_locked()?;
+        let (file, bytes) = crate::plugins::save_plugin(&dir, &meta.id, &source)?;
 
-    /*
-     * ★★ 记住安装来源（task-23）—— 这是「通过链接检测更新」的**唯一前提**
-     *
-     * 实测缺口：本函数一直**返回** `resolvedUrl`（见下面 json），
-     * 但**从不落盘** → 装完之后就再也找不到"去哪查新版"，
-     * 于是「检测更新」根本无从下手（没有源可查）。
-     *
-     * 存在 sidecar（`plugins/.meta/<id>.json`）而**不改插件本体** ——
-     * 理由见 `PluginSourceMeta` 的文档（.js 是用户/作者的地盘）。
-     *
-     * ⚠️ 存 `used_url`（最终解析地址）而不是用户输入的 `url`：
-     *    原始链接可能是"插件市场页"，真正能 GET 到 JS 的是解析后的地址；
-     *    检测更新时直接 GET 它，不用再解析一次（也避免解析规则变化）。
-     *
-     * ⚠️ 写失败**不影响安装本身**（插件已经装好了）→ 只记日志。
-     *    代价是那个插件以后"查不了更新"，但绝不因此让安装报错。
-     */
-    let src_meta = crate::plugins::PluginSourceMeta {
-        source_url: Some(used_url.clone()),
-        installed_version: meta.version.clone(),
-        installed_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0),
-        file: file.clone(),
-    };
-    if let Err(e) = crate::plugins::write_plugin_meta(&dir, &meta.id, &src_meta) {
-        log::warn!("记录插件安装来源失败（不影响安装）: {e}");
-    }
+        // File, configured primary/meta and catalog ownership commit under the same gate.
+        let src_meta = crate::plugins::PluginSourceMeta {
+            source_url: Some(resolved.clone()),
+            installed_version: meta.version.clone(),
+            installed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+            file: file.clone(),
+        };
+        crate::plugins::write_plugin_meta(&dir, &meta.id, &src_meta)?;
 
-    // 立即重载，让新插件马上可用
-    let n = crate::commands_provider::reload_plugins(state).await?;
-    crate::source_catalog::record_plugin(state, &meta.id, &meta.name, &resolved, &resolved_backups, &used_url, &endpoint)?;
+        // 立即重载，让新插件马上可用
+        crate::source_catalog::record_plugin_locked(state, &meta.id, &meta.name, &resolved, &resolved_backups, &used_url, &endpoint)?;
+        (committed, file, bytes, meta, used_url)
+        };
+    let n = crate::commands_provider::reload_plugins_at_epoch(state, committed).await?;
 
     log::info!("已安装插件 {}（{file}, {bytes} 字节），当前共 {n} 个", meta.id);
 
@@ -696,9 +690,14 @@ pub async fn install_plugin_source(
         return Err(format!("插件 {} 缺少 @name", meta.id));
     }
 
-    let dir = plugins_dir(&state.data_dir);
-    let (file, bytes) = crate::plugins::save_plugin(&dir, &meta.id, source)?;
-    let n = crate::commands_provider::reload_plugins(state).await?;
+    let (committed, file, bytes) = {
+        let _guard = crate::source_catalog::write_lock()?;
+        let committed = state.advance_js_epoch_locked()?;
+        let dir = plugins_dir(&state.data_dir);
+        let (file, bytes) = crate::plugins::save_plugin(&dir, &meta.id, source)?;
+        (committed, file, bytes)
+        };
+    let n = crate::commands_provider::reload_plugins_at_epoch(state, committed).await?;
 
     log::info!(
         "已安装插件 {}（{file}, {bytes} 字节，来源: {}），当前共 {n} 个",

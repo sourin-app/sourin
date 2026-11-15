@@ -87,6 +87,8 @@ fn state() -> AppState {
         cover_repair: tokio::sync::Mutex::new(Default::default()),
         providers_updated_at: AtomicI64::new(0),
         auto_loop_started: AtomicBool::new(false),
+        js_mutation_epoch: std::sync::atomic::AtomicU64::new(0),
+        js_reload_sequence: std::sync::atomic::AtomicU64::new(0),
     }
 }
 

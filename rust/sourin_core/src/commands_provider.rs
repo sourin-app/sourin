@@ -42,6 +42,7 @@ pub fn set_enabled_persisted(
     id: &str,
     enabled: bool,
 ) -> Result<bool, String> {
+    let _guard = crate::source_catalog::write_lock()?;
     if state.registry.get(id).is_none() {
         // 源不存在 —— 返回 false 而不是报错（前端据此提示"源已不存在"）
         return Ok(false);
@@ -86,6 +87,7 @@ pub fn set_provider_order(
     state: &AppState,
     ids: &[String],
 ) -> Result<Vec<String>, String> {
+    let _guard = crate::source_catalog::write_lock()?;
     let actual = state.registry.reorder(ids);
     super::commands::save_order(&state.data_dir, &actual)?;
     Ok(actual)
@@ -121,14 +123,27 @@ pub fn get_provider_config(
 /// 同步时就会误判成「远端更新」，把用户刚改的配置打回云端那份
 ///（表现：改完同步一次又变回去）。
 pub fn remove_provider(state: &AppState, id: &str) -> Result<bool, String> {
+    let _guard = crate::source_catalog::write_lock()?;
+    let dir = plugins_dir(&state.data_dir);
+    let plugin = find_plugin_file(&dir, id);
+    let js = plugin.is_some()
+        || state.registry.get(id).is_some_and(|p| p.manifest().kind == "js")
+        || crate::source_catalog::plugin_origin_locked(state, id).is_some();
+    if js {
+        // Even a missing JS file must cancel an earlier install/update.
+        // Removing an unrelated provider does not own any JS mutation.
+        state.advance_js_epoch_locked()?;
+        if let Some((file, _)) = plugin {
+            std::fs::remove_file(dir.join(file)).map_err(|e| format!("删除失败: {e}"))?;
+        }
+        let removed = state.registry.unregister(id);
+        crate::source_catalog::remove_plugin_locked(state, id)?;
+        return Ok(removed || js);
+    }
     let removed = state.registry.unregister(id);
-
     if removed {
         {
-            let mut list = state
-                .third_party
-                .write()
-                .map_err(|_| "第三方源列表被污染".to_string())?;
+            let mut list = state.third_party.write().map_err(|_| "第三方源列表被污染".to_string())?;
             list.retain(|x| x.id() != id);
         }
         persist_from_registry(state)?;
@@ -190,20 +205,17 @@ pub fn read_plugin(state: &AppState, file: &str) -> Result<String, String> {
 /// 删除插件文件（同时从 registry 摘掉）
 pub fn remove_plugin(state: &AppState, file: &str) -> Result<(), String> {
     check_plugin_name(file)?;
+    let _guard = crate::source_catalog::write_lock()?;
+    state.advance_js_epoch_locked()?;
     let path = plugins_dir(&state.data_dir).join(file);
-    if !path.exists() {
-        return Err(format!("插件文件不存在: {file}"));
-    }
-
-    // 先读出 id，才能从 registry 摘掉
-    if let Ok(src) = std::fs::read_to_string(&path) {
-        let m = crate::plugins::parse_meta(&src);
-        if !m.id.is_empty() {
-            state.registry.unregister(&m.id);
-        }
-    }
-
+    let src = std::fs::read_to_string(&path).map_err(|e| format!("读取插件失败: {e}"))?;
+    let meta = crate::plugins::parse_meta(&src);
+    // Keep the registered instance if deletion fails, but never reuse its old ticket.
     std::fs::remove_file(&path).map_err(|e| format!("删除失败: {e}"))?;
+    if !meta.id.is_empty() {
+        state.registry.unregister(&meta.id);
+        crate::source_catalog::remove_plugin_locked(state, &meta.id)?;
+    }
     log::info!("已删除插件 {file}");
     Ok(())
 }
@@ -226,31 +238,31 @@ pub async fn save_plugin_source(
     source: &str,
 ) -> Result<usize, String> {
     check_plugin_name(file)?;
-    let dir = plugins_dir(&state.data_dir);
-    let path = dir.join(file);
-    if !path.exists() {
-        return Err(format!("插件文件不存在: {file}"));
-    }
-
-    // 1) 元信息校验（不执行脚本）
+    let path = plugins_dir(&state.data_dir).join(file);
     let meta = crate::plugins::parse_meta(source);
-    if meta.id.is_empty() {
-        return Err("保存失败：插件缺少 @id（头部注释里必须有）".into());
-    }
-    if meta.name.is_empty() {
-        return Err(format!("保存失败：插件 {} 缺少 @name", meta.id));
-    }
-
-    // 2) 语法校验（真的执行一次，能捕获括号不配对之类的问题）
-    if let Err(e) = crate::plugins::validate_source(source).await {
-        return Err(format!("保存失败：{e}"));
-    }
-
-    std::fs::write(&path, source).map_err(|e| format!("写入失败: {e}"))?;
-    log::info!("已保存插件 {file}（{} 字节）", source.len());
-
-    // 3) 热重载，改完立即生效
-    reload_plugins(state).await
+    if meta.id.is_empty() { return Err("保存失败：插件缺少 @id".into()); }
+    if meta.name.is_empty() { return Err(format!("保存失败：插件 {} 缺少 @name", meta.id)); }
+    let (epoch, previous) = {
+        let _guard = crate::source_catalog::write_lock()?;
+        let previous = std::fs::read_to_string(&path).map_err(|e| format!("读取插件失败: {e}"))?;
+        if crate::plugins::parse_meta(&previous).id != meta.id {
+            return Err("保存失败：不允许编辑改变插件 @id，请使用显式安装".into());
+        }
+        (state.advance_js_epoch_locked()?, previous)
+    };
+    let validated = crate::plugins::validate_source(source).await;
+    let committed = {
+        let _guard = crate::source_catalog::write_lock()?;
+        state.check_js_epoch_locked(epoch)?;
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(previous.as_str()) {
+            return Err("JS 操作已过期：插件文件已变化".into());
+        }
+        validated.map_err(|e| format!("保存失败：{e}"))?;
+        let committed = state.advance_js_epoch_locked()?;
+        std::fs::write(&path, source).map_err(|e| format!("写入失败: {e}"))?;
+        committed
+    };
+    reload_plugins_at_epoch(state, committed).await
 }
 
 /// 重新加载全部 JS 插件
@@ -264,38 +276,45 @@ pub async fn save_plugin_source(
 /// 不先摘掉的话，重复注册同一个 id 会有两份实例，
 /// 表现是「搜索结果里同一个源出现两次」。
 pub async fn reload_plugins(state: &AppState) -> Result<usize, String> {
-    let dir = plugins_dir(&state.data_dir);
+    let epoch = {
+        let _guard = crate::source_catalog::write_lock()?;
+        state.js_epoch_locked()
+    };
+    reload_plugins_at_epoch(state, epoch).await
+}
 
-    // 1) 摘掉所有 kind == "js" 的源
-    let js_ids: Vec<String> = state
-        .registry
-        .manifests()
-        .into_iter()
-        .filter(|m| m.kind == "js")
-        .map(|m| m.id)
-        .collect();
-    for id in &js_ids {
-        state.registry.unregister(id);
+
+// A mutation must pass its committed epoch, never claim a new one after await.
+pub(crate) async fn reload_plugins_at_epoch(state: &AppState, epoch: u64) -> Result<usize, String> {
+    use std::sync::atomic::Ordering;
+    let sequence = {
+        let _guard = crate::source_catalog::write_lock()?;
+        state.check_js_epoch_locked(epoch)?;
+        state.js_reload_sequence.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
+            |value| value.checked_add(1)).map_err(|_| "JS 重载序列已耗尽")? + 1
+    };
+    // Stage hydration without removing the currently published providers.
+    let (plugins, failed) = crate::plugins::load_plugins_hydrated(
+        &plugins_dir(&state.data_dir), Some(state.proxy.clone()),
+    ).await;
+    let _guard = crate::source_catalog::write_lock()?;
+    state.check_js_epoch_locked(epoch)?;
+    if state.js_reload_sequence.load(Ordering::SeqCst) != sequence {
+        return Err("JS 重载已过期：已有更新的重载".into());
     }
-
-    // 2) 重新扫描并注册（含补齐能力位）
-    let (plugins, failed) =
-        crate::plugins::load_plugins_hydrated(&dir, Some(state.proxy.clone())).await;
+    let js_ids: Vec<_> = state.registry.manifests().into_iter()
+        .filter(|m| m.kind == "js").map(|m| m.id).collect();
     let n = plugins.len();
     let disabled = crate::commands::load_disabled(&state.data_dir);
     let aggregate = crate::tvbox_aggregate::load(&state.data_dir);
+    for id in &js_ids { state.registry.unregister(id); }
     for p in plugins {
         let enabled = crate::source_catalog::provider_enabled(p.manifest(), &disabled, &aggregate);
         state.registry.register_with_default_enabled(std::sync::Arc::new(p), enabled);
     }
     let order = crate::commands::load_order(&state.data_dir);
-    if !order.is_empty() {
-        state.registry.reorder(&order);
-    }
-
-    for (f, why) in failed {
-        log::warn!("插件 {f} 加载失败: {why}");
-    }
+    if !order.is_empty() { state.registry.reorder(&order); }
+    for (file, why) in failed { log::warn!("插件 {file} 加载失败: {why}"); }
     log::info!("已重新加载 {n} 个 JS 插件");
     Ok(n)
 }
@@ -633,6 +652,46 @@ fn plugin_state(
     Ok((file, src, version, meta))
 }
 
+
+struct PluginSnapshot {
+    epoch: u64,
+    file: String,
+    source: String,
+    version: String,
+    meta: Option<crate::plugins::PluginSourceMeta>,
+    origin: Option<crate::source_catalog::SourceOrigin>,
+    url: Option<String>,
+    urls: Vec<String>,
+}
+
+impl PluginSnapshot {
+    // Caller holds WRITE. Reads don't invalidate a concurrent mutation intent.
+    fn capture_locked(state: &AppState, id: &str, mutation: bool) -> Result<Self, String> {
+        let dir = plugins_dir(&state.data_dir);
+        let (file, source, version, meta) = plugin_state(&dir, id)?;
+        let origin = crate::source_catalog::plugin_origin_locked(state, id);
+        let url = origin.as_ref().map(|o| o.primary_url.clone()).filter(|u| !u.trim().is_empty())
+            .or_else(|| meta.as_ref().and_then(|m| m.source_url.clone()));
+        let urls = url.as_ref().map(|url| crate::source_catalog::urls_for(&state.data_dir, "js", Some(id), url))
+            .unwrap_or_default();
+        let epoch = if mutation { state.advance_js_epoch_locked()? } else { state.js_epoch_locked() };
+        Ok(Self { epoch, file, source, version, meta, origin, url, urls })
+    }
+
+    fn check_locked(&self, state: &AppState, id: &str) -> Result<(), String> {
+        state.check_js_epoch_locked(self.epoch)?;
+        crate::source_catalog::check_plugin_origin_locked(state, id, &self.origin)?;
+        let (file, source, _, meta) = plugin_state(&plugins_dir(&state.data_dir), id)
+            .map_err(|_| "JS 操作已过期：插件已不存在".to_string())?;
+        if file != self.file || source != self.source
+            || serde_json::to_value(&meta).map_err(|e| e.to_string())?
+                != serde_json::to_value(&self.meta).map_err(|e| e.to_string())? {
+            return Err("JS 操作已过期：插件文件或元信息已变化".into());
+        }
+        Ok(())
+    }
+}
+
 /// 检测**单个**插件是否有更新（只走安装链接）
 ///
 /// # 三种结局，都不许静默
@@ -646,11 +705,14 @@ pub async fn check_plugin_update(
     state: &AppState,
     id: &str,
 ) -> Result<PluginUpdateInfo, String> {
-    let dir = plugins_dir(&state.data_dir);
-    let (file, local_src, version, meta) = plugin_state(&dir, id)?;
-
-    let Some(url) = crate::source_catalog::primary_for(&state.data_dir, "js", id)
-        .or_else(|| meta.as_ref().and_then(|m| m.source_url.clone())) else {
+    let snapshot = {
+        let _guard = crate::source_catalog::write_lock()?;
+        PluginSnapshot::capture_locked(state, id, false)?
+    };
+    let file = snapshot.file.clone();
+    let local_src = &snapshot.source;
+    let version = snapshot.version.clone();
+    let Some(url) = snapshot.url.clone() else {
         // ★ 手动放入的插件 —— 如实报告"无法检测"，绝不假装"已是最新"
         return Ok(PluginUpdateInfo {
             id: id.to_string(),
@@ -666,7 +728,9 @@ pub async fn check_plugin_update(
     };
 
     // ★ 复用已有的下载路径（原版「导入/覆盖安装」那条）—— 别另写一套
-    let fetched = crate::source_catalog::fetch_plugin(state, id, &url).await;
+    let fetched = crate::source_catalog::fetch_plugin_urls(state, id, &snapshot.urls).await;
+    let _guard = crate::source_catalog::write_lock()?;
+    snapshot.check_locked(state, id)?;
 
     match fetched {
         Err(e) => Ok(PluginUpdateInfo {
@@ -681,7 +745,8 @@ pub async fn check_plugin_update(
             // ★ 如实报失败原因（网络错/链接失效/不是 JS）
             error: Some(e),
         }),
-        Ok((remote_src, _used)) => {
+        Ok((remote_src, actual, endpoint)) => {
+            crate::source_catalog::record_plugin_success_locked(state, id, &snapshot.origin, &actual, &endpoint)?;
             let rm = crate::plugins::parse_meta(&remote_src);
             if rm.version.is_empty() {
                 /*
@@ -800,86 +865,42 @@ pub async fn update_plugin_from_source(
     id: &str,
 ) -> Result<serde_json::Value, String> {
     let dir = plugins_dir(&state.data_dir);
-    let (file, local_src, version, meta) = plugin_state(&dir, id)?;
-
-    let url = crate::source_catalog::primary_for(&state.data_dir, "js", id)
-        .or_else(|| meta.as_ref().and_then(|m| m.source_url.clone()))
-        .ok_or_else(|| {
-            format!("插件 {id} 没有安装链接（可能是手动放入的），无法通过链接更新")
-        })?;
-
-    let (remote_src, _used) = crate::source_catalog::fetch_plugin(state, id, &url).await?;
-
-    // ③ 校验 @id 一致
-    let rm = crate::plugins::parse_meta(&remote_src);
-    if rm.id.is_empty() {
-        return Err("下载到的内容不是合法插件（缺少 @id）".into());
-    }
-    if rm.id != id {
-        return Err(format!(
-            "链接指向的插件 @id 是「{}」，与当前「{id}」不一致 —— 已拒绝更新（防止链接被换成别的插件）",
-            rm.id
-        ));
-    }
-    if rm.name.is_empty() {
-        return Err(format!("插件 {} 缺少 @name", rm.id));
-    }
-
-    // ★ 内容没变就别覆盖（用户要求 + 元数据里 sha256 那条需求的实质）
-    if crate::plugins::same_content(&remote_src, &local_src) {
-        return Ok(serde_json::json!({
-            "updated": false,
-            "reason": "内容与本地一致，无需更新",
-            "version": version,
-            "file": file,
-        }));
-    }
-
-    // ④ 归档当前版本（回滚的数据来源）
-    let archived = crate::plugins::archive_plugin_version(&dir, id, &version, &local_src)?;
-
-    // ⑤ 写盘
-    std::fs::write(dir.join(&file), &remote_src).map_err(|e| format!("写入失败: {e}"))?;
-
-    let new_version = if rm.version.is_empty() {
-        version.clone()
-    } else {
-        rm.version.clone()
+    let snapshot = {
+        let _guard = crate::source_catalog::write_lock()?;
+        let snapshot = PluginSnapshot::capture_locked(state, id, true)?;
+        if snapshot.url.is_none() { return Err(format!("插件 {id} 没有安装链接，无法通过链接更新")); }
+        snapshot
     };
-
-    // ⑥ 更新 meta
-    let new_meta = crate::plugins::PluginSourceMeta {
-        source_url: Some(url),
-        installed_version: new_version.clone(),
-        installed_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0),
-        file: file.clone(),
+    let fetched = crate::source_catalog::fetch_plugin_urls(state, id, &snapshot.urls).await;
+    let (committed, archived, pruned, new_version) = {
+        let _guard = crate::source_catalog::write_lock()?;
+        snapshot.check_locked(state, id)?;
+        let (remote_src, actual, endpoint) = fetched?;
+        let rm = crate::plugins::parse_meta(&remote_src);
+        if crate::plugins::same_content(&remote_src, &snapshot.source) {
+            crate::source_catalog::record_plugin_success_locked(state, id, &snapshot.origin, &actual, &endpoint)?;
+            return Ok(serde_json::json!({ "updated": false, "reason": "内容与本地一致，无需更新",
+                "version": snapshot.version, "file": snapshot.file }));
+        }
+        // Advance again at actual commit: a scan started during the download is stale too.
+        let committed = state.advance_js_epoch_locked()?;
+        let archived = crate::plugins::archive_plugin_version(&dir, id, &snapshot.version, &snapshot.source)?;
+        std::fs::write(dir.join(&snapshot.file), &remote_src).map_err(|e| format!("写入失败: {e}"))?;
+        let new_version = if rm.version.is_empty() { snapshot.version.clone() } else { rm.version };
+        let meta = crate::plugins::PluginSourceMeta {
+            source_url: snapshot.url.clone(), installed_version: new_version.clone(),
+            installed_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64).unwrap_or(0), file: snapshot.file.clone(),
+        };
+        crate::plugins::write_plugin_meta(&dir, id, &meta)?;
+        crate::source_catalog::record_plugin_success_locked(state, id, &snapshot.origin, &actual, &endpoint)?;
+        let pruned = crate::plugins::prune_plugin_versions(&dir, id);
+        (committed, archived, pruned, new_version)
     };
-    // meta 写失败不影响更新本身（只是下次查不到版本基准）→ 记日志
-    if let Err(e) = crate::plugins::write_plugin_meta(&dir, id, &new_meta) {
-        log::warn!("写入插件 meta 失败（不影响更新）: {e}");
-    }
-
-    // ⑦ 清理历史档（保持有界）
-    let pruned = crate::plugins::prune_plugin_versions(&dir, id);
-
-    // 热重载 —— 不重载的话界面上还是旧版行为
-    reload_plugins(state).await?;
-
-    log::info!(
-        "已更新插件 {id}: v{version} → v{new_version}（归档 {archived:?}，清理 {pruned} 档）"
-    );
-
-    Ok(serde_json::json!({
-        "updated": true,
-        "fromVersion": version,
-        "version": new_version,
-        "file": file,
-        "archived": archived.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-        "pruned": pruned,
-    }))
+    reload_plugins_at_epoch(state, committed).await?;
+    Ok(serde_json::json!({ "updated": true, "fromVersion": snapshot.version,
+        "version": new_version, "file": snapshot.file,
+        "archived": archived.file_name().and_then(|s| s.to_str()).unwrap_or(""), "pruned": pruned }))
 }
 
 /// 列出某个插件的**历史版本档**（新的在前）
@@ -932,50 +953,54 @@ pub async fn rollback_plugin(
     id: &str,
     version: &str,
 ) -> Result<serde_json::Value, String> {
-    let dir = plugins_dir(&state.data_dir);
-    let (file, local_src, current_version, meta) = plugin_state(&dir, id)?;
+    let (committed, file, current_version) = {
+        let _guard = crate::source_catalog::write_lock()?;
+        let dir = plugins_dir(&state.data_dir);
+        let (file, local_src, current_version, meta) = plugin_state(&dir, id)?;
 
-    let all = crate::plugins::list_plugin_versions(&dir, id);
-    let Some((_, src_path)) = all.iter().find(|(v, _)| v == version) else {
-        let avail: Vec<String> = all.iter().map(|(v, _)| v.clone()).collect();
-        return Err(format!(
-            "没有找到 {id} 的版本 {version}；可用版本：{}",
-            if avail.is_empty() {
-                "（无历史档）".to_string()
-            } else {
-                avail.join(", ")
-            }
-        ));
-    };
+        let all = crate::plugins::list_plugin_versions(&dir, id);
+        let Some((_, src_path)) = all.iter().find(|(v, _)| v == version) else {
+            let avail: Vec<String> = all.iter().map(|(v, _)| v.clone()).collect();
+            return Err(format!(
+                "没有找到 {id} 的版本 {version}；可用版本：{}",
+                if avail.is_empty() {
+                    "（无历史档）".to_string()
+                } else {
+                    avail.join(", ")
+                }
+            ));
+        };
 
-    let restore = std::fs::read_to_string(src_path)
-        .map_err(|e| format!("读取历史版本失败: {e}"))?;
+        let restore = std::fs::read_to_string(src_path)
+            .map_err(|e| format!("读取历史版本失败: {e}"))?;
 
-    // ② 对称归档：把当前版本存下来，让"回滚错了"也能再回来
-    let _ = crate::plugins::archive_plugin_version(&dir, id, &current_version, &local_src);
+        let committed = state.advance_js_epoch_locked()?;
 
-    // ③ 覆盖
-    std::fs::write(dir.join(&file), &restore).map_err(|e| format!("写入失败: {e}"))?;
+        // ② 对称归档：把当前版本存下来，让"回滚错了"也能再回来
+        let _ = crate::plugins::archive_plugin_version(&dir, id, &current_version, &local_src);
 
-    // ④ meta：版本改回旧的，但**来源链接保持**（回滚不该让插件失去来源，
-    //    否则回滚一次就再也检测不了更新了）
-    let new_meta = crate::plugins::PluginSourceMeta {
-        source_url: meta.as_ref().and_then(|m| m.source_url.clone()),
-        installed_version: version.to_string(),
-        installed_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0),
-        file: file.clone(),
-    };
-    if let Err(e) = crate::plugins::write_plugin_meta(&dir, id, &new_meta) {
-        log::warn!("写入插件 meta 失败（不影响回滚）: {e}");
-    }
+        // ③ 覆盖
+        std::fs::write(dir.join(&file), &restore).map_err(|e| format!("写入失败: {e}"))?;
 
-    crate::plugins::prune_plugin_versions(&dir, id);
+        // ④ meta：版本改回旧的，但**来源链接保持**（回滚不该让插件失去来源，
+        //    否则回滚一次就再也检测不了更新了）
+        let new_meta = crate::plugins::PluginSourceMeta {
+            source_url: meta.as_ref().and_then(|m| m.source_url.clone()),
+            installed_version: version.to_string(),
+            installed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+            file: file.clone(),
+        };
+        crate::plugins::write_plugin_meta(&dir, id, &new_meta)?;
 
-    // ⑤ 热重载
-    reload_plugins(state).await?;
+        crate::plugins::prune_plugin_versions(&dir, id);
+
+        // ⑤ 热重载
+        (committed, file, current_version)
+        };
+    reload_plugins_at_epoch(state, committed).await?;
 
     log::info!("已回滚插件 {id}: v{current_version} → v{version}");
 
@@ -1041,25 +1066,26 @@ pub fn set_plugin_source(
     id: &str,
     url: &str,
 ) -> Result<serde_json::Value, String> {
-    let dir = plugins_dir(&state.data_dir);
-    let (file, _src, version, _old) = plugin_state(&dir, id)?;
+    let _guard = crate::source_catalog::write_lock()?;
     let url = url.trim();
-    if url.is_empty() {
-        // 传空 = 清除来源（回到"手动放入"状态）
-        let p = crate::plugins::plugin_meta_dir(&dir).join(format!("{id}.json"));
-        let _ = std::fs::remove_file(p);
-        return Ok(serde_json::json!({ "id": id, "sourceUrl": null }));
-    }
-    let meta = crate::plugins::PluginSourceMeta {
-        source_url: Some(url.to_string()),
-        installed_version: version,
-        installed_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0),
-        file,
-    };
-    crate::plugins::write_plugin_meta(&dir, id, &meta)?;
-    Ok(serde_json::json!({ "id": id, "sourceUrl": url }))
+    if !url.is_empty() { crate::source_catalog::validated_urls(url, &[])?; }
+    // Validate identity before changing anything; the two source entry points share this gate.
+    plugin_state(&plugins_dir(&state.data_dir), id)?;
+    state.advance_js_epoch_locked()?;
+    write_plugin_source_meta_locked(state, id, url)?;
+    crate::source_catalog::set_plugin_source_locked(state, id, url)?;
+    Ok(serde_json::json!({ "id": id, "sourceUrl": if url.is_empty() { None } else { Some(url) } }))
 }
 
+
+// Shared by both source-edit commands. Caller holds WRITE.
+pub(crate) fn write_plugin_source_meta_locked(state: &AppState, id: &str, url: &str) -> Result<(), String> {
+    let dir = plugins_dir(&state.data_dir);
+    let (file, _, version, old) = plugin_state(&dir, id)?;
+    let meta = crate::plugins::PluginSourceMeta {
+        source_url: if url.is_empty() { None } else { Some(url.into()) },
+        installed_version: old.as_ref().map(|m| m.installed_version.clone()).unwrap_or(version),
+        installed_at: old.as_ref().map(|m| m.installed_at).unwrap_or(0), file,
+    };
+    crate::plugins::write_plugin_meta(&dir, id, &meta)
+}

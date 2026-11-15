@@ -18,6 +18,11 @@ mod tvbox_origin_refresh_tests;
 mod tvbox_clock_tests;
 
 static WRITE: Mutex<()> = Mutex::new(());
+
+// Shared short synchronous gate: WRITE -> registry / third_party, never across await.
+pub(crate) fn write_lock() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    WRITE.lock().map_err(|_| "源配置写入锁不可用".into())
+}
 pub const FETCH_BUDGET: Duration = Duration::from_secs(24);
 
 #[cfg(test)]
@@ -236,7 +241,7 @@ pub fn catalog(state: &AppState) -> Result<SourceCatalog, String> {
 
 // Callers already holding WRITE use this entry point, so reconciliation and
 // user edits are serialized without recursively locking the same mutex.
-fn catalog_locked(state: &AppState) -> Result<SourceCatalog, String> {
+pub(crate) fn catalog_locked(state: &AppState) -> Result<SourceCatalog, String> {
     let mut out = load(&state.data_dir);
     let previous = out.origins.clone();
     let mut sources = Vec::new();
@@ -392,7 +397,10 @@ pub fn command_set_origin(
         }
         None => origin.backup_urls.clone(),
     };
-    let urls = validated_urls(&primary, &backups)?;
+    let urls = if origin.kind == "js" && primary.trim().is_empty() && backups.iter().all(|u| u.trim().is_empty()) {
+        vec![String::new()]
+    } else { validated_urls(&primary, &backups)? };
+    if origin.kind == "js" { state.advance_js_epoch_locked()?; }
     if origin.primary_url != urls[0] || origin.backup_urls != urls[1..] {
         origin.last_successful_endpoint = None;
         origin.last_successful_url = None;
@@ -410,6 +418,11 @@ pub fn command_set_origin(
             let mut meta = crate::tvbox::read_tvbox_meta(&state.data_dir, id).unwrap_or_default();
             meta.source_url = Some(binding.primary_url.clone());
             crate::tvbox::write_tvbox_meta(&state.data_dir, id, &meta)?;
+        }
+    }
+    if binding.kind == "js" {
+        for id in &binding.provider_ids {
+            crate::commands_provider::write_plugin_source_meta_locked(state, id, &binding.primary_url)?;
         }
     }
     drop(_guard);
@@ -937,27 +950,77 @@ pub fn validate_tvbox(text: &str) -> Result<String, Validation> {
     Ok(text)
 }
 
-pub async fn fetch_plugin(
-    state: &AppState,
-    id: &str,
-    url: &str,
-) -> Result<(String, String), String> {
-    let urls = urls_for(&state.data_dir, "js", Some(id), url);
-    let result = fetch_validated(&state.proxy, id, &urls, None, |text| {
+// Capture endpoints while holding WRITE; downloading never writes the catalog.
+pub(crate) fn plugin_origin_locked(state: &AppState, id: &str) -> Option<SourceOrigin> {
+    load(&state.data_dir).origins.into_iter()
+        .find(|o| o.kind == "js" && o.provider_ids.iter().any(|p| p == id))
+}
+
+pub(crate) fn check_plugin_origin_locked(
+    state: &AppState, id: &str, expected: &Option<SourceOrigin>,
+) -> Result<(), String> {
+    let current = plugin_origin_locked(state, id);
+    let binding = |o: &SourceOrigin| (o.id.clone(), o.kind.clone(), o.provider_ids.clone(),
+        o.primary_url.clone(), o.backup_urls.clone());
+    if current.as_ref().map(binding) != expected.as_ref().map(binding) {
+        return Err("JS 操作已过期：插件来源已变化，请重试".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn record_plugin_success_locked(
+    state: &AppState, id: &str, expected: &Option<SourceOrigin>, actual: &str, endpoint: &str,
+) -> Result<(), String> {
+    check_plugin_origin_locked(state, id, expected)?;
+    let Some(expected) = expected else { return Ok(()); };
+    if !validated_urls(&expected.primary_url, &expected.backup_urls)?.iter().any(|u| u == endpoint) {
+        return Err("JS 成功地址不属于本次来源".into());
+    }
+    let mut out = load(&state.data_dir);
+    let origin = out.origins.iter_mut().find(|o| o.id == expected.id && o.kind == "js")
+        .ok_or("JS 操作已过期：来源已不存在")?;
+    origin.last_successful_url = Some(actual.into());
+    origin.last_successful_endpoint = Some(endpoint.into());
+    if origin.last_success_at == 0 || now_secs() - origin.last_success_at >= 300 {
+        origin.last_success_at = now_secs();
+    }
+    save(&state.data_dir, &out)
+}
+
+pub(crate) async fn fetch_plugin_urls(
+    state: &AppState, id: &str, urls: &[String],
+) -> Result<(String, String, String), String> {
+    fetch_validated(&state.proxy, id, urls, None, |text| {
         let meta = crate::plugins::parse_meta(text);
         if meta.id.is_empty() || meta.name.is_empty() {
             return Err(Validation::Invalid("不是有效的 JS 插件".into()));
         }
         if meta.id != id {
-            return Err(Validation::Terminal(
-                "备用地址的插件身份不匹配，已停止更新".into(),
-            ));
+            return Err(Validation::Terminal("备用地址的插件身份不匹配，已停止更新".into()));
         }
         crate::plugins::validate_source_syntax(text).map_err(Validation::Invalid)?;
         Ok(text.into())
-    })
-    .await?;
-    record_success(&state.data_dir, "js", Some(id), url, &result.1, &result.2);
+    }).await
+}
+
+pub async fn fetch_plugin(
+    state: &AppState, id: &str, url: &str,
+) -> Result<(String, String), String> {
+    let (epoch, origin, urls) = {
+        let _guard = write_lock()?;
+        let origin = plugin_origin_locked(state, id);
+        let urls = match &origin {
+            Some(o) => ordered_urls(o, now_secs())?,
+            None => vec![url.to_owned()],
+        };
+        (state.js_epoch_locked(), origin, urls)
+    };
+    let result = fetch_plugin_urls(state, id, &urls).await;
+    let _guard = write_lock()?;
+    state.check_js_epoch_locked(epoch)?;
+    check_plugin_origin_locked(state, id, &origin)?;
+    let result = result?;
+    record_plugin_success_locked(state, id, &origin, &result.1, &result.2)?;
     Ok((result.0, result.1))
 }
 
@@ -974,7 +1037,15 @@ pub fn record_plugin(
     actual: &str,
     endpoint: &str,
 ) -> Result<(), String> {
-    let _guard = WRITE.lock().map_err(|_| "源配置写入锁不可用")?;
+    let _guard = write_lock()?;
+    state.advance_js_epoch_locked()?;
+    record_plugin_locked(state, id, name, primary, backups, actual, endpoint)
+}
+
+pub(crate) fn record_plugin_locked(
+    state: &AppState, id: &str, name: &str, primary: &str, backups: &[String],
+    actual: &str, endpoint: &str,
+) -> Result<(), String> {
     let mut out = catalog_locked(state)?;
     let urls = validated_urls(primary, backups)?;
     let index = out
@@ -1716,4 +1787,29 @@ mod tests {
         server.abort();
         let _ = std::fs::remove_dir_all(dir);
     }
+}
+
+// Caller holds WRITE and has invalidated old JS tickets.
+pub(crate) fn remove_plugin_locked(state: &AppState, id: &str) -> Result<(), String> {
+    let mut out = load(&state.data_dir);
+    out.origins.retain(|o| !(o.kind == "js" && o.provider_ids.iter().any(|p| p == id)));
+    save(&state.data_dir, &out)
+}
+
+pub(crate) fn set_plugin_source_locked(state: &AppState, id: &str, url: &str) -> Result<(), String> {
+    let mut out = catalog_locked(state)?;
+    let index = out.origins.iter().position(|o| o.kind == "js" && o.provider_ids.iter().any(|p| p == id));
+    let index = index.unwrap_or_else(|| {
+        out.origins.push(SourceOrigin { id: format!("js-{id}"), kind: "js".into(),
+            provider_ids: vec![id.into()], ..Default::default() });
+        out.origins.len() - 1
+    });
+    let origin = &mut out.origins[index];
+    // A single-URL source replacement cannot inherit mirrors of the previous source.
+    if origin.primary_url != url || url.is_empty() { origin.backup_urls.clear(); }
+    origin.primary_url = url.into();
+    origin.last_successful_url = None;
+    origin.last_successful_endpoint = None;
+    origin.last_success_at = 0;
+    save(&state.data_dir, &out)
 }

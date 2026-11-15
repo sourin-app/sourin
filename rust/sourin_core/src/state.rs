@@ -40,7 +40,7 @@
 // 我要能看到代码怎么写的」。所以核心**不注册任何内置源**，
 // 全部由 `plugins/*.js` 提供。
 
-use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use std::sync::{Arc, RwLock};
 
 use crate::model::PersistedProvider;
@@ -58,6 +58,9 @@ use crate::sync::SyncEngine;
 /// 原版是 `pub struct AppState`（在 Tauri 的 lib.rs 里）。
 /// 这里原样搬过来，字段一个不少 —— 因为 90 个命令都依赖它们。
 pub struct AppState {
+    // Access only under source_catalog::write_lock; no guard crosses an await.
+    pub(crate) js_mutation_epoch: AtomicU64,
+    pub(crate) js_reload_sequence: AtomicU64,
     pub registry: Arc<Registry>,
     pub db: Arc<Db>,
     /// ★ 站点级代理（按 Provider 配置）
@@ -100,6 +103,25 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn js_epoch_locked(&self) -> u64 {
+        self.js_mutation_epoch.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn advance_js_epoch_locked(&self) -> Result<u64, String> {
+        self.js_mutation_epoch.fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |value| value.checked_add(1),
+        ).map(|old| old + 1).map_err(|_| "JS 修改代际已耗尽".into())
+    }
+
+    pub(crate) fn check_js_epoch_locked(&self, expected: u64) -> Result<(), String> {
+        if self.js_epoch_locked() != expected {
+            return Err("JS 操作已过期：插件或来源已变化，请重试".into());
+        }
+        Ok(())
+    }
+
     /// 启动核心
     ///
     /// # 参数
@@ -557,6 +579,8 @@ impl AppState {
         let http_pending = http_to_restore.len();
 
         let state = Arc::new(Self {
+            js_mutation_epoch: AtomicU64::new(0),
+            js_reload_sequence: AtomicU64::new(0),
             registry,
             db: Arc::new(db),
             proxy: proxy.clone(),

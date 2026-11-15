@@ -111,7 +111,11 @@ Future<void> _pumpHomeFrames(WidgetTester tester) async {
   }
 }
 
-Future<void> _mountHome(WidgetTester tester, _HomeFixture fixture) async {
+Future<void> _mountHome(
+  WidgetTester tester,
+  _HomeFixture fixture, {
+  bool seedCache = true,
+}) async {
   UiPrefs.debugResetForTest({UiPrefs.homeSourceKey: 'a'});
   DiskCache.debugResetForTest();
   homeListCache.clear();
@@ -170,8 +174,10 @@ Future<void> _mountHome(WidgetTester tester, _HomeFixture fixture) async {
       );
     },
   );
-  _seedCache('a', _cachedTitle);
-  _seedCache('b', _otherTitle);
+  if (seedCache) {
+    _seedCache('a', _cachedTitle);
+    _seedCache('b', _otherTitle);
+  }
   final theme = AppTheme.themeFor(Brightness.light);
   await tester.pumpWidget(
     MaterialApp(
@@ -216,6 +222,27 @@ void _expectNoNativeFailures(WidgetTester tester, _HomeFixture fixture) {
 }
 
 void main() {
+  testWidgets('冷缓存首个目录返回后加载真实分区且不读取缺失快照', (tester) async {
+    final fixture = _HomeFixture();
+    await _mountHome(tester, fixture, seedCache: false);
+
+    expect(
+      homeListCache.take('a', fingerprint: '', now: DateTime.now()),
+      isNull,
+    );
+    expect(fixture.homeRequests, 1);
+    expect(fixture.listRequests, isEmpty);
+    expect(find.byType(PosterCard), findsNothing);
+
+    fixture.home.complete([_group('a', 'fresh', '冷启动分区')]);
+    await _pumpHomeFrames(tester);
+
+    expect(fixture.listRequests, ['a::fresh']);
+    expect(find.text('冷启动分区'), findsOneWidget);
+    _expectVisiblePoster(tester, _freshTitle);
+    _expectNoNativeFailures(tester, fixture);
+  });
+
   testWidgets('当前启用源的缓存海报在 getHome 返回之前已真实可见', (tester) async {
     final fixture = _HomeFixture();
     await _mountHome(tester, fixture);

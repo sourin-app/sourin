@@ -83,6 +83,13 @@ request succeeds or fails. The section uses the shared Miuix spinner; a real
 failure retains the existing retry card instead of an empty rail. Failed
 sections prevent writing a newly fresh source snapshot.
 
+For the 2026-11-15 cold-start correction, the section lookup normalizes an
+absent snapshot to an empty map before the section loop. The AOT cold-start path must never dereference a nullable snapshot
+through a separately computed freshness boolean. A matching-code diagnostic
+identified an access violation in the inlined map lookup on this path; widget
+regressions cover cold, sparse and explicitly empty snapshots, while the native
+AOT startup remains a separate required verification.
+
 The sparse-snapshot behavior fails on the previous implementation because no
 request is sent. Separate reversals of the loading view and failure-cache guard
 fail on the false empty view and the changed snapshot timestamp, respectively.

@@ -1816,6 +1816,7 @@ class HomePageState extends State<HomePage> {
         fingerprint: _fingerprint,
         now: DateTime.now(),
       );
+      final recentItems = recent?.items ?? const <String, List<MediaItem>>{};
       final recentlyFresh =
           recent != null &&
           DateTime.now().difference(recent.at) <= kHomeCacheFreshFor;
@@ -1840,7 +1841,7 @@ class HomePageState extends State<HomePage> {
            * ⚠️ tried 参与判据是**必须**的：没有它，一个「拉过但确实是空」的区块
            *    会在**每一帧**都被算成「没拉过」⇒ 无限重拉（见 _loadedBy 的说明）。
            */
-          final cachedSection = recentlyFresh && recent.items.containsKey(key);
+          final cachedSection = recentlyFresh && recentItems.containsKey(key);
           if (force || (!has && !tried && !cachedSection)) {
             pending.add(_loadSection(g.provider, s.id, s.source));
           }

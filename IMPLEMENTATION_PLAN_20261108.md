@@ -1322,3 +1322,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 24 current Dart performance provenance：已确认 `dc6cc72` Profile运行涉及的Dart/lib/pubspec输入在当前HEAD仍未改变，预冻结输入计数3487；该静态绑定结果见 `CURRENT_DART_PERFORMANCE_BINDING_V1.json`。但运行时Profile/AOT收据仍非当前Release native包，且既有性能超预算，因此 `performanceAccepted=false`，不把静态未变更误报为当前性能通过。
 
 - 2026-11-16 Round 32 final active status freeze：`FINAL_ACTIVE_STATUS_V1.json` 汇总权威收据：Release owner lifecycle通过（Home/exit0/Job0 8.0312s/no force）、59文件包全部字节匹配且sourceCommit=af2afab、JS九项生命周期通过、公开视频位置推进且native volume>0，但nonzero PCM仍false；performanceAccepted=false、ordinaryDefaultUser=false、independentRestart=false、wholeGoal=false。目标继续active。
+
+- 2026-11-16 Round 37 independent restart proof：同一隔离profile与同一59文件Release包，连续启动两个独立owned process owners；两次均实际Home render、foreground=false、tray日志显示`closeAction=quit`、SC_CLOSE exit0、各自exact Job0≥8秒、无force/cleanup error；最后读回同一profile `dsh.closeAction=quit`。收据：`.probe/goal-resume-20261115-evening/current-release-independent-restart-v2/result.json`。这闭环任务隔离的跨owner重启/偏好读回，但不升级默认用户启动或whole goal。

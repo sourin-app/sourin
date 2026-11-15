@@ -1336,3 +1336,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 52 status correction：生成 `FINAL_ACTIVE_STATUS_V6.json`，将最终状态快照重新绑定当前HEAD `e44800b71fbd0ca0d9e4e310be7ff3e7630068d3` 与ahead283；Acceptance边界不变，目标仍active。
 
 - 2026-11-16 Round 78 实际推进当前Profile性能：将当前根lib同步到隔离profile worktree，完成新的 Profile AOT 组装并运行同一 source-posters workload；receipt含20个窗口/1108帧，预算16,667us，最大build 41,760us、raster 653,442us、totalSpan 952,378us，三项均超预算。该Profile receipt的compiledSourceCommit仍为旧构建命名空间dc6cc72，且未绑定当前Release native core，因此保存为明确失败/非接受证据，不称当前Release性能通过。证据：`CURRENT_HEAD_PROFILE_BUDGET_RECEIPT_V1.json`。
+
+- 2026-11-16 Round 79 真实推进性能：修正Profile launcher的完整40-char source commit与current namespace契约后，当前源码Profile实际运行通过20个窗口/1118帧；receipt `CURRENT_SOURCE_PROFILE_BUDGET_RECEIPT_V2.json`：16,667us预算下max build 22,899us、raster 585,821us、totalSpan 862,268us，均超预算；exit0、Job0 8.0387s、无force。该运行已绑定sourceCommit=af2afab与namespace=goal-profile-current-head-v2，但native core不是同包，因此性能仍明确不接受。

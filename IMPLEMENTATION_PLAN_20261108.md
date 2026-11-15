@@ -1316,3 +1316,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 16 provenance correction：当前Release产品字节实际来自 `af2afab`（task-only runner patch）之后的构建；此前索引以文档提交 `5b57562` 标记仅属说明偏差。已生成 `package-release-noactivate-runner-source-v5-manifest.json` 与 `CURRENT_RELEASE_LIFECYCLE_INDEX_V7.json`，明确 `sourceCommit=af2afab`，并注明后续5b57562/6ef9abc/7c8479b/dbb9516均为文档提交、不改变包输入。行为边界不变：任务隔离运行通过，默认用户/性能/PCM/重启/全目标仍未接受。
 
 - 2026-11-16 Round 19 independent package check：逐项重新读取59文件Release包并重新计算SHA/size，全部匹配manifest；另从`af2afab:windows/runner/win32_window.cpp`直接确认`SOURIN_TASK_NO_ACTIVATE`/`SW_SHOWNOACTIVATE`字节存在。结果见 `CURRENT_RELEASE_PACKAGE_BYTE_CHECK_V2.json`。这仅加强包字节与源提交绑定，不改变ordinaryDefaultAccepted=false或wholeGoalAccepted=false。
+
+- 2026-11-16 Round 20 final gate snapshot：当前工作区 clean，Agent Notes tree/format/archived gates 全通过；当前Release owner lifecycle receipt仍为 passed、Home rendered、exit0、exact Job0 8.0312012s、forcedCleanup=false。已发布树中历史文档仍含本机路径/公开账号标识（既有隐私债务，未扩大本轮范围）；本轮未新增敏感字段。默认用户普通启动、性能、PCM、独立重启及whole goal仍明确未接受。

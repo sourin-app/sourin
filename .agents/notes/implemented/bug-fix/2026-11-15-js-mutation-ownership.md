@@ -91,9 +91,11 @@ for at least eight seconds and no forced cleanup. The normal non-test core also
 builds and starts through FFI in the isolated diagnostic Flutter window, renders
 Home and exits via the production quit callback. This is not the ordinary
 unmodified release startup, a fresh-process source-settings persistence proof,
-or the final current-source full-package acceptance. Remote-install/delete,
-validation/delete and two-reload completion-order combinations remain additional
-coverage boundaries, not implied by these named cases.
+or the final current-source full-package acceptance. The same held HTTP fixture also exercises a remote reinstall begun before its
+downloaded identity is known: deletion wins over the stale response, while the
+no-delete control commits version two. All nine JS cases pass in the same final
+test executable. Validation/delete and two-reload completion-order combinations
+remain additional coverage boundaries, not implied by these named cases.
 
 ## Consequences
 

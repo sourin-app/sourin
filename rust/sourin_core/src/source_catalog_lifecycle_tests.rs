@@ -484,6 +484,14 @@ async fn observe_held_plugin_update(
     delete_while_held: bool,
     change_source_while_held: bool,
 ) -> Result<PluginUpdateDeleteObservation, String> {
+    observe_held_plugin_mutation(delete_while_held, change_source_while_held, false).await
+}
+
+async fn observe_held_plugin_mutation(
+    delete_while_held: bool,
+    change_source_while_held: bool,
+    install_while_held: bool,
+) -> Result<PluginUpdateDeleteObservation, String> {
     use std::sync::atomic::AtomicBool;
     use tokio::sync::{oneshot, Semaphore};
     use tokio::time::{timeout, Duration};
@@ -583,7 +591,13 @@ async fn observe_held_plugin_update(
         }
         hold.store(true, Ordering::SeqCst);
         let update_started = std::time::Instant::now();
-        let update = crate::commands_provider::update_plugin_from_source(&state, "lifecycle-js");
+        let update = async {
+            if install_while_held {
+                crate::commands_remote::install_plugin_with_backups(&state, &source, &[]).await
+            } else {
+                crate::commands_provider::update_plugin_from_source(&state, "lifecycle-js").await
+            }
+        };
         let while_held = async {
             let entered_result = timeout(Duration::from_secs(4), entered.acquire()).await;
             let entered_ok = match entered_result {
@@ -1015,4 +1029,35 @@ async fn js_local_edit_rollback_and_source_clear_retain_ownership_and_user_data(
     assert!(state.js_epoch_locked() > epoch);
     assert!(state.registry.get("lifecycle-js").is_none());
     assert_eq!(std::fs::read(&config).unwrap(), original_config);
+}
+
+#[tokio::test]
+async fn js_held_remote_reinstall_delete_does_not_resurrect_plugin() {
+    let observed = observe_held_plugin_mutation(true, false, true).await
+        .expect("reinstall fixture must qualify and gracefully join before assertions");
+    assert!(observed.deleted_before_release);
+    assert_eq!(observed.source_requests, 2);
+    let error = observed.update.expect_err("obsolete remote install must lose commit ownership");
+    assert!(error.contains("过期"), "unexpected install error: {error}");
+    assert!(!observed.file_exists_after_update, "obsolete install recreated the removed file");
+    assert!(observed.registry_version_after_update.is_none());
+    assert!(!observed.file_exists_after_restart);
+    assert!(observed.registry_version_after_restart.is_none());
+    assert_eq!(observed.meta_after_update, observed.meta_before_release);
+    assert_eq!(observed.catalog_after_update, observed.catalog_before_release);
+}
+
+#[tokio::test]
+async fn js_held_remote_reinstall_without_delete_commits_new_version() {
+    let observed = observe_held_plugin_mutation(false, false, true).await
+        .expect("reinstall control must qualify and gracefully join before assertions");
+    assert!(!observed.deleted_before_release);
+    assert_eq!(observed.source_requests, 2);
+    let installed = observed.update.expect("current remote install must commit");
+    assert_eq!(installed["id"], "lifecycle-js");
+    assert_eq!(installed["version"], "2.0.0");
+    assert_eq!(observed.file_after_update.as_deref(), Some(plugin_script(2).as_str()));
+    assert_eq!(observed.registry_version_after_update.as_deref(), Some("2.0.0"));
+    assert_eq!(observed.file_after_restart.as_deref(), Some(plugin_script(2).as_str()));
+    assert_eq!(observed.registry_version_after_restart.as_deref(), Some("2.0.0"));
 }

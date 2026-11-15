@@ -1276,3 +1276,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 正常非test核心实际构建exit0、输入不变、自然Job0 8.0403638秒。该DLL经任务自有不激活诊断runner实际FFI加载，首页154条数据、20张视口内卡片稳定绘制；已获取并亲眼查看窗口图。原quitNow退出0、窗口消失、Job0 8.0424773秒、无force。该组合仍是诊断包，不是最终Release/普通未改启动验收。
 - 最新首页提交身份dc6cc72的Profile另实编并实际运行：3487项前端预冻结映射覆盖3483个实际kernel依赖且后验全匹配，59个诊断runtime文件匹配；20窗796帧中4帧raster超预算，启动175帧中build/raster任一超9帧。超预算和所有旧失败保留。
 - 以上没有验完remote-install下载中删除、save校验失败/删除组合和双reload乱序；完整18项、真实外部播放/非零PCM、同profile独立UI重启读回、性能优化、普通启动及最新提交完整包验证仍active。仅本地提交，未推送、未发布。
+
+- 2026-11-15 后续实测：同一已资格化 HTTP 门闩新增远程重新安装/删除与无删除阳性两例，实际调用安装命令（不是更新替身）；两例均 exit0，最终同一EXE九项JS回归0失败0忽略，输入未变、自然Job0≥8秒、无force。已覆盖remote-install响应在删除后返回不得复活的命令窗口；这不代替独立产品重启、UI保存或最终包验收。

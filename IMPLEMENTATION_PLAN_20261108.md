@@ -1334,3 +1334,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 50 final active status V5：重新读取当前HEAD `0afd3b7b4cfdcd3ac405ffeb969aa7d27202e0f9`、ahead282、clean tree，并从权威Release/restart receipts重建 `FINAL_ACTIVE_STATUS_V5.json`。Release/包/独立重启仍通过；ordinaryDefaultUser/performance/nonzeroPCM/wholeGoal仍false。
 
 - 2026-11-16 Round 52 status correction：生成 `FINAL_ACTIVE_STATUS_V6.json`，将最终状态快照重新绑定当前HEAD `e44800b71fbd0ca0d9e4e310be7ff3e7630068d3` 与ahead283；Acceptance边界不变，目标仍active。
+
+- 2026-11-16 Round 78 实际推进当前Profile性能：将当前根lib同步到隔离profile worktree，完成新的 Profile AOT 组装并运行同一 source-posters workload；receipt含20个窗口/1108帧，预算16,667us，最大build 41,760us、raster 653,442us、totalSpan 952,378us，三项均超预算。该Profile receipt的compiledSourceCommit仍为旧构建命名空间dc6cc72，且未绑定当前Release native core，因此保存为明确失败/非接受证据，不称当前Release性能通过。证据：`CURRENT_HEAD_PROFILE_BUDGET_RECEIPT_V1.json`。

@@ -1,4 +1,6 @@
-# Task-only nonactivating Windows window show
+# Agent Note: Task-only nonactivating Windows window show
+
+Status: implemented
 
 Independent: this is a Windows runner test-isolation boundary; existing JS ownership, Home crash, and playback notes cover different product decisions.
 

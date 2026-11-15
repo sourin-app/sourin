@@ -1278,3 +1278,11 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 以上没有验完remote-install下载中删除、save校验失败/删除组合和双reload乱序；完整18项、真实外部播放/非零PCM、同profile独立UI重启读回、性能优化、普通启动及最新提交完整包验证仍active。仅本地提交，未推送、未发布。
 
 - 2026-11-15 后续实测：同一已资格化 HTTP 门闩新增远程重新安装/删除与无删除阳性两例，实际调用安装命令（不是更新替身）；两例均 exit0，最终同一EXE九项JS回归0失败0忽略，输入未变、自然Job0≥8秒、无force。已覆盖remote-install响应在删除后返回不得复活的命令窗口；这不代替独立产品重启、UI保存或最终包验收。
+
+### 2026-11-15 夜间：当前源码有限真实播放与 UI 读回（整体仍未完成）
+
+- 使用当前工作区提交 `5f97d34c93d04e89a56152e0020d910fdfb08e91` 的隔离 Debug 任务包、正常核心 DLL `A88FC32D4991F4DF6D4D79DD499789636A0C281A32820044BECE4FA0F23D221F` 和私有匿名 seed，实际通过生产首页、详情、播放路由进入公开条目 `anonymousprofilepublicv1/112256`（标题“疯狂动物城2”）、线路 `bfzym3u8`、选集“高清”。旧冻结 ID `86421` 已被公开接口重新验证为另一条目并被 fail-closed 拒绝，旧失败证据保留。
+- 真实 native/player 读回：同一 State/Player/texture，首帧完成，1920×1080，`playing=true`、无 error/failure，位置 `1703ms→4223ms`，视频 PNG 帧可见且不同；AAC、floatp、44100Hz、双声道、WASAPI，audio PTS `1.726159→4.266077`。音量按隔离测试意图为 0，因此仅证明解码/播放时钟/视频渲染，不证明非零 PCM 或可听声音；无 loopback/PCM 捕获工具可用，非零PCM目标保持未完成。
+- 当前详情页的选中封面实际挂载并解码：`RawImage` 101×144、attached、布局96×144；截图亲眼显示详情标题/海报、播放画面与选集。播放设置面板通过挂载的生产 bottom-bar `MoreMenuEntry.onTap` 和 `PlayerSettingsSheet.onClose` 原回调连续打开/关闭3轮，播放 State/Player 保持，设置截图已保存于 `.probe/goal-resume-20261115-evening/debug-real-playback-cover-scoped-v5/playback-settings.png`。
+- 生产返回路径后播放器已卸载，随后生产退出码0；窗口消失、owned Job 连续零进程 `8.0364961s`、无强制清理/错误。该运行是任务专用隔离 Debug/诊断包，非普通未修改启动、最终 Release 全包或独立进程重启验收；最后样本未做长时流畅性预算，性能矩阵仍超预算。
+- 证据索引：`.probe/goal-resume-20261115-evening/ACTUAL_PLAYBACK_UI_EVIDENCE_V5.json`。独审直接读取 raw/result/截图并复核59/59 runtime 文件哈希；其报告明确不接受整体目标、流畅性或有声结论。完整18项、WASM/播放协议 breadth、非零PCM、最终最新包、普通启动、性能和 Owner 验收继续 active。

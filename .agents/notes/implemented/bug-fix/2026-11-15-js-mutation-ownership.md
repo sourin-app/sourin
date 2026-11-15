@@ -97,6 +97,20 @@ no-delete control commits version two. All nine JS cases pass in the same final
 test executable. Validation/delete and two-reload completion-order combinations
 remain additional coverage boundaries, not implied by these named cases.
 
+
+## Bounded current-product playback evidence
+
+A current-source isolated Debug diagnostic package also exercised the real anonymous
+Home → detail → production media route. The selected public item was revalidated
+against the live catalog after an older ID drifted; the run observed the same
+player identity, a completed native first frame, 1920x1080 video, advancing
+position/audio PTS, AAC float stereo at 44.1kHz through WASAPI, a decoded attached
+detail cover, and three real settings-panel open/close cycles. The test intentionally
+set volume to zero, so this is not nonzero-PCM or audible-playback acceptance. It
+returned through the production back/quit path with exit 0 and no forced cleanup.
+This remains a bounded diagnostic package, not ordinary startup, release-package,
+long-duration smoothness, independent restart, or whole-goal acceptance.
+
 ## Consequences
 
 Unrelated JS operations may receive an expired error and require retry. Writes

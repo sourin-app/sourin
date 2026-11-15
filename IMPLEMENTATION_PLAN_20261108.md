@@ -1286,3 +1286,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 当前详情页的选中封面实际挂载并解码：`RawImage` 101×144、attached、布局96×144；截图亲眼显示详情标题/海报、播放画面与选集。播放设置面板通过挂载的生产 bottom-bar `MoreMenuEntry.onTap` 和 `PlayerSettingsSheet.onClose` 原回调连续打开/关闭3轮，播放 State/Player 保持，设置截图已保存于 `.probe/goal-resume-20261115-evening/debug-real-playback-cover-scoped-v5/playback-settings.png`。
 - 生产返回路径后播放器已卸载，随后生产退出码0；窗口消失、owned Job 连续零进程 `8.0364961s`、无强制清理/错误。该运行是任务专用隔离 Debug/诊断包，非普通未修改启动、最终 Release 全包或独立进程重启验收；最后样本未做长时流畅性预算，性能矩阵仍超预算。
 - 证据索引：`.probe/goal-resume-20261115-evening/ACTUAL_PLAYBACK_UI_EVIDENCE_V5.json`。独审直接读取 raw/result/截图并复核59/59 runtime 文件哈希；其报告明确不接受整体目标、流畅性或有声结论。完整18项、WASM/播放协议 breadth、非零PCM、最终最新包、普通启动、性能和 Owner 验收继续 active。
+
+- 2026-11-15 后续真实播放补充：把同一隔离公开条目以持久偏好 `lastVolume=0.25` 起播，实际 native volume=25、AAC floatp/44100Hz/双声道/WASAPI，首帧完成且无错误，位置 `1543ms→17703ms`、audio PTS `1.588947→17.724297`，同一播放器连续观测38帧并正常返回/退出。仍无WASAPI loopback工具，不能把 native volume/audio PTS当非零PCM；非零PCM保持open。

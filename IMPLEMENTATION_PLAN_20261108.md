@@ -1304,3 +1304,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 8：为 Windows runner 增加环境门控的 `SOURIN_TASK_NO_ACTIVATE=1` → `SW_SHOWNOACTIVATE` 任务专用路径，正常环境保持 `SW_SHOWNORMAL`；这是为隔离 owner runner 修复窗口样式契约，不改变普通产品默认行为。当前工作区 clean build 因 InAppWebView NuGet 下载命令缺失（exit9009）未能编出包含该字节的包，因此该改动尚未获得运行时验收，不得宣称普通启动通过。
 
 - 2026-11-16 Round 9：当前 `af2afab` 的 task-only `SW_SHOWNOACTIVATE` runner patch 已提交，但 clean Release 重建仍在 InAppWebView NuGet dependency target 处 exit9009；标准本地 NuGet caches 不含所需包，未联网补依赖。因未得到包含该patch的完整Release包，普通启动/自然退出仍不接受。
+
+- 2026-11-16 Round 10：复制既有完整包的本地NuGet目录后，使用正确quoted Flutter命令重试当前 `af2afab` no-activate runner Release构建；InAppWebView dependency target 仍 exit9009，说明缓存目录不满足生成工程所需的 `nuget` executable/依赖命令，不得假绿。当前未产生新包、未运行新patched Release；目标继续active。

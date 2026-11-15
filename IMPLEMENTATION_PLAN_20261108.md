@@ -1300,3 +1300,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 该结果暴露的是当前Release runner/窗口关闭与既有不激活窗口契约的绑定缺口，不把放宽observer或强制清理改写成绿色。完整目标继续active；性能、非零PCM、独立重启、全量封面、完整Release自然启动退出及Owner验收仍未完成。
 
 - 2026-11-16 Round 7 no-activate Release follow-up：尝试在隔离编译副本为 runner 增加仅 `SOURIN_TASK_NO_ACTIVATE=1` 时使用 `SW_SHOWNOACTIVATE` 的任务专用分支，未触碰生产源码。该副本因 InAppWebView NuGet 依赖命令不可用（NUGET-NOTFOUND，exit9009）未完成构建，不能产生新包/行为结论。此前已验证的当前Release包仍保持窗口样式 `noActivate=false` 与自然关闭 forced cleanup 的失败收据；不把失败实验或旧包升级为通过。
+
+- 2026-11-16 Round 8：为 Windows runner 增加环境门控的 `SOURIN_TASK_NO_ACTIVATE=1` → `SW_SHOWNOACTIVATE` 任务专用路径，正常环境保持 `SW_SHOWNORMAL`；这是为隔离 owner runner 修复窗口样式契约，不改变普通产品默认行为。当前工作区 clean build 因 InAppWebView NuGet 下载命令缺失（exit9009）未能编出包含该字节的包，因此该改动尚未获得运行时验收，不得宣称普通启动通过。

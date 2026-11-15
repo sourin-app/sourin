@@ -2634,6 +2634,11 @@ bool Win32Window::Create(const std::wstring& title,
 
 
 bool Win32Window::Show() {
+  wchar_t value[8] = {};
+  if (::GetEnvironmentVariableW(L"SOURIN_TASK_NO_ACTIVATE", value, ARRAYSIZE(value)) > 0 &&
+      value[0] == L'1') {
+    return ShowWindow(window_handle_, SW_SHOWNOACTIVATE);
+  }
   return ShowWindow(window_handle_, SW_SHOWNORMAL);
 }
 

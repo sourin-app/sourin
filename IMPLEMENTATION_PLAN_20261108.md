@@ -1328,3 +1328,5 @@ Previous goal turn is progress: six local commits and terminal affected test res
 - 2026-11-16 Round 35 status correction：独立重启实测已成立（同一隔离profile连续两次独立owner，Home render、foreground=false、quit持久化读回、两次exit0/exact Job0/no-force），`FINAL_ACTIVE_STATUS_V2.json` 将 `independentRestart=true`。其余ordinaryDefaultUser、performance、nonzeroPCM、wholeGoal仍false。
 
 - 2026-11-16 Round 40 status refresh：当前HEAD为 `9362ecd8f8df76b1ba57688da4166654a06c1a73`，分支相对origin `ahead 280`，工作区clean；`FINAL_ACTIVE_STATUS_V3.json` 重新绑定当前HEAD。当前Release包/owner生命周期、JS、独立重启证据保持有效；ordinaryDefaultUser=false、performance=false、nonzeroPCM=false、wholeGoal=false。
+
+- 2026-11-16 Round 42 status correction：`FINAL_ACTIVE_STATUS_V4.json` 已重新绑定当前HEAD `14b6baeb7cbdae0c196cc5f0dff2f7c03ba1197a` 与ahead281；上一V3只反映前一文档提交，不能作为当前HEAD快照。接受边界不变：Release/JS/独立重启局部通过，ordinaryDefaultUser、performance、nonzeroPCM、wholeGoal仍false。

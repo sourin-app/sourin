@@ -55,3 +55,5 @@ Probes/logs/manifests/screenshots/scripts stay under .probe/goal-resume-20261115
 - C3结论：shadow disabled可显著降低诊断包首帧峰值，但候选max raster仍408598us、total558899us，且是隔离变体；在没有明确可交付视觉/性能契约与同包全量验证前不合入生产。隔离worktree诊断行已清除，生产源无改动。下一性能动作需重新设计首帧渲染资源/driver链路，而不是继续重复shadow A/B。
 
 - C5 early-window show A/B attempt: isolated source gated `_showDesktopWindow()` behind `SOURIN_PROFILE_SKIP_EARLY_SHOW=1`; Profile build succeeded, but runtime failed the task-local launcher namespace contract before Home readiness (`Use the task-local profile launcher`). No performance data was accepted, no production source was committed, and the diagnostic line remains isolated. Receipt: `.probe/goal-resume-20261115-evening/profile-performance-skipshow-v1/result.json`.
+
+- C1/C3/C5收敛：surface prewarm与shadow A/B都明显降低诊断首帧峰值但仍远超预算，且未证明可直接合入的视觉/交付契约；skip early show在任务launcher契约阶段失败。未对生产源做未经证实的优化，下一轮需若继续性能应先获取 renderer timeline/资源级证据；否则转默认启动/PCM/UI缺口。

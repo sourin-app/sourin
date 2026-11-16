@@ -4,6 +4,8 @@ Status: implemented
 
 Related: [Bound local decoder PCM verification](2026-11-16-local-decoder-pcm-verification.md).
 
+Continued by: [Source settings cold-restart verification](2026-11-16-source-settings-cold-restart.md).
+
 ## Problem
 
 A persisted quit preference skips the default close dialog. Earlier isolated lifecycle success therefore does not prove default ask, cancel or the original quit action. An image captured while the Home page is loading also cannot qualify all covers.

@@ -8,7 +8,7 @@ Complete only with receipts bound to the same current source/package. Use isolat
 
 ## Current checkpoint
 
-Product inputs remain unchanged since af2afab; subsequent commits record evidence. Existing accepted fixes: Home cold-cache normalization; JS mutation/reload ownership; remote reinstall/delete; Release inventory/owner lifecycle; independent task-profile restart; bounded anonymous playback/UI; bounded independent local decoder PCM control pair. Do not rerun qualified JS nine-case, 12 progress, 13 cover, 59-file byte check, two restart owners, or PCM pair unless their source/package/input changes. Known open: Profile budget, default-user startup/closeAction, complete protocol/UI/cover breadth and final integrated acceptance.
+Product inputs remain unchanged since af2afab; subsequent commits record evidence. Existing accepted fixes: Home cold-cache normalization; JS mutation/reload ownership; remote reinstall/delete; Release inventory/owner lifecycle; independent task-profile restart; bounded anonymous playback/UI; bounded independent local decoder PCM control pair; current default ask/cancel/quit callbacks; source order and danmaku instance cold-restart persistence/restoration. Reuse qualified subsets until their source/package/input changes. Known open: Profile budget, ordinary default-user Release startup, complete protocol/UI/cover breadth and final integrated acceptance.
 
 ## Acceptance matrix
 
@@ -18,6 +18,7 @@ Product inputs remain unchanged since af2afab; subsequent commits record evidenc
 | Default startup/close | Default ask/cancel/quit callbacks green in current-source diagnostic runtime; ordinary Release startup remains open | Default semantics, Home ready, nonforeground, production close exit0, Job0>=8s, no force |
 | Independent restart | Green in task profile | Reuse until package/source changes |
 | Playback/UI/covers | Bounded local/public evidence | Named current-package scenarios, screenshots/JSON, truthful cover failures |
+| Source settings persistence | Current diagnostic UI callbacks plus two independent cold restarts passed for order and danmaku selection/restoration | Reuse until relevant source/package changes; populated disabled/live, address/provider and network breadth remain open |
 | Audio | Independent local decoder PCM passed; device/audible claims remain false | Reuse exact packaged libmpv/local TS, negative/positive samples and RMS/peak; keep PlayerPage/device scope separate |
 | Whole goal | False | All gates green without scope inflation |
 
@@ -45,6 +46,8 @@ Build/NuGet/toolchain failure, forced cleanup, crash, missing VM, identity drift
 ## Evidence
 
 Probes/logs/manifests/screenshots/scripts stay under .probe/goal-resume-20261115-evening/.
+
+- 2026-11-16 source/danmaku persistence accepted: original rendered callbacks select public instance B and swap the first two of 49 providers, then save; another fresh process reads both values, clears the endpoint/token through the original Clear action and restores provider order through original Save; a third fresh process confirms defaults and the exact restored 49-id order. Every owner exits zero, removes its window and drains naturally for at least eight seconds without force; logs have zero unhandled/Flutter/AXTree/overflow errors. Search returns one actual provider and the negative query returns no rows. Populated JS/aggregate filters were observed; live/disabled filters only have empty fixtures and are not positive coverage. Audit rehashes 59 files, 3587 inputs and 22 screenshots and rejects four altered controls. Receipt `SOURCE_DANMAKU_PERSISTENCE_ACCEPTED_V1.json`. Retained harness failures: v1 incorrectly required an empty built-in token; v2 owner-2 requested an unnecessary ambiguous scroll after cold-restart checks passed. Corrected successor reuses the successful first owner without reseeding later owners. No product change or whole-goal acceptance.
 
 - 2026-11-16 current-source diagnostic UI/default-close accepted: initial preference absent/default ask; owned SC_CLOSE renders the original dialog; original mounted Cancel preserves ask/unset; second owned SC_CLOSE plus original Quit callback exits zero, saves quit, removes owned window and naturally drains Job for 8.0286492s. Original settings callbacks render source and danmaku pages; LAN disclosure expands/restores without starting remote service; live/follow/cache empty states and Home return render. Final Home return shows 20/20 visible poster widgets decoded, while initial screenshot was still loading (4/20). This does not accept all providers or populated library covers. Independent audit rehashed 59 runtime files, 3586 frozen build inputs and 11 screenshots; four corrupted receipt controls were rejected. Receipt `CURRENT_UI_DEFAULT_CLOSE_ACCEPTED_V2.json`; raw `ui-audit-current-v2/result.json`. Test-only entry/native nonactivation remains separate from ordinary Release startup; no product source change or whole-goal acceptance.
 

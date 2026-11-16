@@ -15,7 +15,7 @@ Product inputs remain unchanged since af2afab; subsequent commits record evidenc
 | Gate | Current state | Required evidence |
 |---|---|---|
 | Performance | RED: same-core Profile max build 34291us, raster 606279us, total 906398us | Current source + same core, same workload, raw frames, within 16667us or truthful RED with identified cause |
-| Default startup/close | Task-isolated green only | Default semantics, Home ready, nonforeground, production close exit0, Job0>=8s, no force |
+| Default startup/close | Default ask/cancel/quit callbacks green in current-source diagnostic runtime; ordinary Release startup remains open | Default semantics, Home ready, nonforeground, production close exit0, Job0>=8s, no force |
 | Independent restart | Green in task profile | Reuse until package/source changes |
 | Playback/UI/covers | Bounded local/public evidence | Named current-package scenarios, screenshots/JSON, truthful cover failures |
 | Audio | Independent local decoder PCM passed; device/audible claims remain false | Reuse exact packaged libmpv/local TS, negative/positive samples and RMS/peak; keep PlayerPage/device scope separate |
@@ -27,7 +27,7 @@ Product inputs remain unchanged since af2afab; subsequent commits record evidenc
 Freeze source and namespace; build Profile/AOT serially; bind app/assets/core; run source-posters unchanged; extract raw max/p95 and exact frames; if RED inspect worst frame and make one smallest production optimization, rebuild and rerun. Never lower budget, discard frames, or substitute component tests.
 
 ### 2. Default startup/close
-Use current Release only after source binding; isolated roots with default closeAction, no injected choice. Keep window/style/foreground/Home/exit/Job assertions separate. If ask cannot be resolved without input, report blocker, do not select it artificially.
+Use current Release only after source binding; isolated roots with default closeAction and no preset preference. Keep window/style/foreground/Home/exit/Job assertions separate. A task-only authenticated interface may invoke an actual mounted original dialog callback to qualify ask/cancel/quit semantics; label this diagnostic callback evidence separately from ordinary Release startup. Do not substitute direct preference writes or cleanup quit for the dialog callback.
 
 ### 3. Playback/UI breadth
 Use named current public item for one additional line/episode/return scenario if available; bind provider/id/flag/episode/package; inspect settings/danmaku/follow/favorite/history and cover decode; inventory 403/404/444/HTML/transparent/timeout failures.
@@ -45,6 +45,8 @@ Build/NuGet/toolchain failure, forced cleanup, crash, missing VM, identity drift
 ## Evidence
 
 Probes/logs/manifests/screenshots/scripts stay under .probe/goal-resume-20261115-evening/.
+
+- 2026-11-16 current-source diagnostic UI/default-close accepted: initial preference absent/default ask; owned SC_CLOSE renders the original dialog; original mounted Cancel preserves ask/unset; second owned SC_CLOSE plus original Quit callback exits zero, saves quit, removes owned window and naturally drains Job for 8.0286492s. Original settings callbacks render source and danmaku pages; LAN disclosure expands/restores without starting remote service; live/follow/cache empty states and Home return render. Final Home return shows 20/20 visible poster widgets decoded, while initial screenshot was still loading (4/20). This does not accept all providers or populated library covers. Independent audit rehashed 59 runtime files, 3586 frozen build inputs and 11 screenshots; four corrupted receipt controls were rejected. Receipt `CURRENT_UI_DEFAULT_CLOSE_ACCEPTED_V2.json`; raw `ui-audit-current-v2/result.json`. Test-only entry/native nonactivation remains separate from ordinary Release startup; no product source change or whole-goal acceptance.
 
 - 2026-11-16 owned local decoder PCM completed: exact packaged libmpv decodes the retained anonymous MPEG-TS into a fresh three-second s16le stereo/44100Hz WAV. Muted control has zero nonzero samples; positive has 264483/264598 nonzero samples, channel RMS 0.0506358/0.0495964 and peak 0.2774353/0.2875061. Both exit0, natural Job0 8.0369/8.0381s, no force; second parser uses standard-library wave. Receipt `DECODER_PCM_LOCAL_ACCEPTED_V1.json` and raw pair `decoder-pcm-local-v1/result.json`. This accepts independent decoder PCM only; device/audible and the prior PlayerPage PCM tap remain separate. Product bytes unchanged.
 

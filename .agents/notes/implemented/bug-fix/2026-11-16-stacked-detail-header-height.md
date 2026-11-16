@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Applies: 2026-11-16 header sizing and 2026-11-17 pending-source layout.
+
 This supplements the [CSP source and selected episode decision](2026-11-16-csp-source-lines-and-selected-episodes.md), including its retained public UI failure. The [right detail line filter](2026-10-30-right-detail-line-filter-and-badge.md) continues to own episode filtering and badges. The [actual Miuix detail contracts](../testing/2026-11-08-miuix-detail-action-contracts.md) retain their theme, action and semantic boundaries.
 
 ## Problem
@@ -12,6 +14,13 @@ The owned public 860x904 window stacks MediaPage's player above its DetailPage. 
 
 DetailPage accepts an optional compactHeader flag, default false. MediaPage passes the inverse of its existing wide layout decision. In the header's wide row, that flag reuses the existing138px poster width; the default remains212px. The row, information, source choices, fixed outer header and episode-only scroll area retain their behavior. No second viewport breakpoint or estimated vertical budget is introduced.
 
+During a source refresh, the placeholder list also receives the Column's
+remaining height through Flexible. A noninteractive scroll viewport clips its
+placeholder rows to that space. The fixed header stays outside this viewport;
+the loaded episode list keeps its independent scroll behavior. An immediate
+mock response cannot validate this path, so the layout fixture holds the
+original get_episodes request pending across multiple rendered frames.
+
 ## Alternatives considered
 
 - Scroll the entire panel: this would hide the fixed title and source choices and contradict the existing episode-only scrolling contract.
@@ -20,7 +29,15 @@ DetailPage accepts an optional compactHeader flag, default false. MediaPage pass
 
 ## Consequences
 
-Stacked media uses a smaller poster while the standalone/default wide detail retains212x318px geometry and24px gap to information. The narrow width recipes are unchanged. This component fix does not qualify ordinary startup, native playback, full artwork, performance, a latest integrated package or whole UI acceptance. Slow selected-source loading remains a separate unqualified layout path.
+Stacked media uses a smaller poster while the standalone/default wide detail retains212x318px geometry and24px gap to information. The narrow width recipes are unchanged. This component fix does not qualify ordinary startup, native playback, full artwork, performance, a latest integrated package or whole UI acceptance. Placeholder rows can be clipped while loading; they carry no actions or source data.
+
+This also supports [player source synchronization](2026-11-17-detail-follows-player-source.md),
+whose real refresh exposed the previously unbounded loading placeholder. The
+2026-11-17 public UI retained a transient 40px overflow while episodesLoading
+was true. The pending synthetic receiver reproduces 50px in the stacked window
+and passes the wide control before the fix; those measurements describe their
+respective content. The fixed four-file layout and synchronization suite passes
+63 cases. A fresh native UI run remains required for integrated acceptance.
 
 ## Verification
 

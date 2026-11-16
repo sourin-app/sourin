@@ -3952,11 +3952,17 @@ class _DetailPageState extends State<DetailPage> {
       if (_episodes.isNotEmpty || _epsLoading) ...[
         const _BlockTitle(text: '选集'),
         if (_epsLoading)
-          const Padding(
-            padding: EdgeInsets.symmetric(
-              horizontal: AppMetrics.contentPadding,
+          const Flexible(
+            // A source refresh can outlive a frame. Give placeholders the same
+            // remaining-height limit as the loaded episode list.
+            child: SingleChildScrollView(
+              primary: false,
+              physics: NeverScrollableScrollPhysics(),
+              padding: EdgeInsets.symmetric(
+                horizontal: AppMetrics.contentPadding,
+              ),
+              child: _EpsSkeleton(),
             ),
-            child: _EpsSkeleton(),
           )
         else
           /*

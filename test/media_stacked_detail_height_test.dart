@@ -1,6 +1,7 @@
 @Tags(['native-media'])
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -19,6 +20,7 @@ import 'package:sourin_spike/ui/media_page.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/remote_bridge.dart';
 import 'package:sourin_spike/ui/tokens.dart';
+import 'package:sourin_spike/ui/widgets/detail_raw_meta.dart';
 
 // Actual MediaPage -> DetailPage layout and original episode callbacks. The
 // source receiver is synthetic; native media opening, accounts and network are
@@ -70,6 +72,8 @@ void main() {
   final forwarded = <PlayRequestData>[];
   final requests = <Map<String, dynamic>>[];
   final previousTransport = SourinCore.debugCallAsyncTransport;
+  Completer<Object?>? delayedEpisodes;
+  String? delayedSource;
 
   setUpAll(() {
     final native = File('build/windows/x64/libmpv/libmpv-2.dll');
@@ -95,6 +99,8 @@ void main() {
     debugSetOnDetailPlayForward(forwarded.add);
     forwarded.clear();
     requests.clear();
+    delayedEpisodes = null;
+    delayedSource = null;
     SourinApi.debugResolveStreamFetcher = null;
     SourinApi.debugSkipMarkerFetcher = (_, __) async => null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -118,6 +124,9 @@ void main() {
           return _sources;
         case 'get_episodes':
           final source = args?['sourceCode'] ?? args?['source_code'] ?? 'PAN1';
+          if (source == delayedSource && delayedEpisodes != null) {
+            return await delayedEpisodes!.future;
+          }
           return _episodeRows
               .where((episode) => episode['flag'] == source)
               .toList();
@@ -272,7 +281,33 @@ void main() {
             reason: 'Changing an episode must not scroll the fixed header.',
           );
           expect(tester.takeException(), isNull);
+
+          // Real requests leave the loading skeleton visible for multiple
+          // frames; an immediate fixture response hides its overflow.
+          delayedSource = 'qsvip';
+          delayedEpisodes = Completer<Object?>();
+          final picker = tester.widget<DetailSourcePicker>(
+            _insideDetail(find.byType(DetailSourcePicker)),
+          );
+          picker.onPick(picker.sources.firstWhere((s) => s.code == delayedSource));
+          await _advance(tester);
+          expect(tester.takeException(), isNull,
+              reason: 'Pending source episodes must fit the same fixed pane.');
+          final skeleton = _insideDetail(find.byWidgetPredicate(
+            (widget) => widget.runtimeType.toString() == '_EpsSkeleton',
+          ));
+          expect(skeleton, findsOneWidget);
+          expect(tester.getTopLeft(title), titleBefore);
+          delayedEpisodes!.complete(_episodeRows
+              .where((episode) => episode['flag'] == delayedSource).toList());
+          await _advance(tester);
+          expect(skeleton, findsNothing);
+          expect(_insideDetail(find.text('qsvip HD中字')).hitTestable(), findsOneWidget);
+          expect(tester.takeException(), isNull);
         } finally {
+          if (delayedEpisodes != null && !delayedEpisodes!.isCompleted) {
+            delayedEpisodes!.complete(<Object>[]);
+          }
           await _unmount(tester);
         }
       },

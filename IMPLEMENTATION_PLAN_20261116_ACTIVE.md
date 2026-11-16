@@ -8,7 +8,7 @@ Complete only with receipts bound to the same current source/package. Use isolat
 
 ## Current checkpoint
 
-HEAD at ff3a0c72b5738baa13b28780acb7e3d29e7f571b. Existing accepted fixes: Home cold-cache normalization; JS mutation/reload ownership; remote reinstall/delete; Release inventory/owner lifecycle; independent task-profile restart; bounded anonymous playback/UI. Do not rerun qualified JS nine-case, 12 progress, 13 cover, 59-file byte check, or two restart owners unless source/package changes. Known RED: Profile budget, nonzero PCM, default-user startup/closeAction, complete protocol/UI/cover breadth.
+Product inputs remain unchanged since af2afab; subsequent commits record evidence. Existing accepted fixes: Home cold-cache normalization; JS mutation/reload ownership; remote reinstall/delete; Release inventory/owner lifecycle; independent task-profile restart; bounded anonymous playback/UI; bounded independent local decoder PCM control pair. Do not rerun qualified JS nine-case, 12 progress, 13 cover, 59-file byte check, two restart owners, or PCM pair unless their source/package/input changes. Known open: Profile budget, default-user startup/closeAction, complete protocol/UI/cover breadth and final integrated acceptance.
 
 ## Acceptance matrix
 
@@ -18,7 +18,7 @@ HEAD at ff3a0c72b5738baa13b28780acb7e3d29e7f571b. Existing accepted fixes: Home 
 | Default startup/close | Task-isolated green only | Default semantics, Home ready, nonforeground, production close exit0, Job0>=8s, no force |
 | Independent restart | Green in task profile | Reuse until package/source changes |
 | Playback/UI/covers | Bounded local/public evidence | Named current-package scenarios, screenshots/JSON, truthful cover failures |
-| Audio | PCM false | Owned local decoder PCM with sample/RMS/peak or explicit blocker |
+| Audio | Independent local decoder PCM passed; device/audible claims remain false | Reuse exact packaged libmpv/local TS, negative/positive samples and RMS/peak; keep PlayerPage/device scope separate |
 | Whole goal | False | All gates green without scope inflation |
 
 ## Execution phases
@@ -45,6 +45,8 @@ Build/NuGet/toolchain failure, forced cleanup, crash, missing VM, identity drift
 ## Evidence
 
 Probes/logs/manifests/screenshots/scripts stay under .probe/goal-resume-20261115-evening/.
+
+- 2026-11-16 owned local decoder PCM completed: exact packaged libmpv decodes the retained anonymous MPEG-TS into a fresh three-second s16le stereo/44100Hz WAV. Muted control has zero nonzero samples; positive has 264483/264598 nonzero samples, channel RMS 0.0506358/0.0495964 and peak 0.2774353/0.2875061. Both exit0, natural Job0 8.0369/8.0381s, no force; second parser uses standard-library wave. Receipt `DECODER_PCM_LOCAL_ACCEPTED_V1.json` and raw pair `decoder-pcm-local-v1/result.json`. This accepts independent decoder PCM only; device/audible and the prior PlayerPage PCM tap remain separate. Product bytes unchanged.
 
 - C2 plain-navigation A/B attempt: the isolated plain bottom-bar variant compiled after fixing a Miuix color API, but the real Profile harness failed before workload at `Actual shell navigation is not unique` and later `Home content did not stabilize within 90 seconds`; the log still shows actual Home rendered 154 cards. This is a harness/variant qualification failure, not performance evidence or product GREEN. Receipt: `.probe/goal-resume-20261115-evening/profile-performance-plain-nav-v4/result.json`. The isolated variant was not committed or copied to product source.
 

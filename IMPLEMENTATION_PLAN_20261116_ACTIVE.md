@@ -45,3 +45,5 @@ Build/NuGet/toolchain failure, forced cleanup, crash, missing VM, identity drift
 ## Evidence
 
 Probes/logs/manifests/screenshots/scripts stay under .probe/goal-resume-20261115-evening/.
+
+- C2 plain-navigation A/B attempt: the isolated plain bottom-bar variant compiled after fixing a Miuix color API, but the real Profile harness failed before workload at `Actual shell navigation is not unique` and later `Home content did not stabilize within 90 seconds`; the log still shows actual Home rendered 154 cards. This is a harness/variant qualification failure, not performance evidence or product GREEN. Receipt: `.probe/goal-resume-20261115-evening/profile-performance-plain-nav-v4/result.json`. The isolated variant was not committed or copied to product source.

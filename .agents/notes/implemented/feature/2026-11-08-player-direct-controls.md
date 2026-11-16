@@ -17,6 +17,11 @@ Windowed playback hides route choices behind other controls. Danmaku search requ
 
 DetailPage lays out all episode flags in the shared wrapping source picker. Selecting a flag updates the browsed episode list and invokes the optional MediaLineSession capability through MediaPage. PlayerPage delegates to its existing matching/position-preserving line-switch path. A new reported current episode clears the browsing override. Single-line filtering and the full episode array retain their previous semantics.
 
+For source-filtered catalogues, [player source synchronization](../bug-fix/2026-11-17-detail-follows-player-source.md)
+also follows reported episodes through the complete detail catalogue, refreshes
+the selected source and rejects obsolete request completions. This does not
+invoke another playback action or change saved source preferences.
+
 The first danmaku floating panel exposes the current keyword, a search button, Enter submission and a search-page entry. Empty input does not submit; submitted input is trimmed. The host opens its existing DanmakuSearchPage with the same draft and requests. Back returns to the floating panel. The advanced production settings no longer expose this entry.
 
 ## Alternatives considered

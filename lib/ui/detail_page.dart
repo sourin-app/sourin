@@ -1122,6 +1122,42 @@ class _DetailPageState extends State<DetailPage> {
   /// 当前源下的剧集
   List<Episode> _episodes = [];
   bool _epsLoading = false;
+  int _episodeLoadGeneration = 0;
+
+  // The displayed list is filtered by source. Use the full detail catalogue
+  // to follow a player selection that belongs to another declared source.
+  String? _sourceForPlayerEpisode(String? episodeId) {
+    if (widget.isLocalFile || episodeId == null) return null;
+    final flags = <String?>{
+      for (final episode in _detail?.episodes ?? const <Episode>[])
+        if (episode.id == episodeId) episode.flag,
+    };
+    if (flags.length != 1) return null;
+    final flag = flags.single;
+    if (flag == null || flag.isEmpty) return null;
+    for (final source in _sourceNodes) {
+      if (source.flattened.any((entry) => entry.code == flag)) return flag;
+    }
+    return null;
+  }
+
+  Future<void> _followPlayerEpisodeSource() async {
+    final source = _sourceForPlayerEpisode(widget.currentEpisodeId);
+    if (source == null || source == _activeSource) {
+      _scheduleEpisodeScroll();
+      return;
+    }
+    setState(() {
+      _activeSource = source;
+      // Keep this line's known catalogue if its refresh fails. The old line's
+      // buttons must never be paired with the newly selected source code.
+      _episodes = _detail!.episodes
+          .where((episode) => episode.flag == source)
+          .toList();
+      _pruneEpisodeKeys();
+    });
+    await _loadEpisodes(source);
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   //  ★★★ 2026-10-30（现场反馈批次 1.1/1.2）：右侧选集按**线路**过滤
@@ -1487,7 +1523,7 @@ class _DetailPageState extends State<DetailPage> {
     _browsedLineFlag = null;
     if (widget.currentEpisodeId == null) return;
     debugPrint('[DETAIL] 播放器切集 → ${widget.currentEpisodeId}（自动滚动）');
-    _scheduleEpisodeScroll();
+    unawaited(_followPlayerEpisodeSource());
   }
 
   @override
@@ -2077,10 +2113,12 @@ class _DetailPageState extends State<DetailPage> {
        *    **一集都看不到**，只能播第一集。
        *    正确判据是「是否声明了源」—— 有源就按该源拉一次。
        *
-       * 源的选择顺序：**上次记住的偏好** > 第一个源。
+       * 源的选择顺序：播放器当前集所属的源 > 上次记住的偏好 > 第一个源。
        */
       final srcs = _sourceNodes;
       final remembered = UiPrefs.sourcePref(widget.provider, widget.id);
+      final requestedSource =
+          _sourceForPlayerEpisode(widget.currentEpisodeId) ?? remembered;
       /*
        * ★ 偏好要能在**嵌套层**里命中
        *
@@ -2094,7 +2132,8 @@ class _DetailPageState extends State<DetailPage> {
        */
       PlaySource? preferred;
       for (final s in srcs) {
-        final hit = s.flattened.where((x) => x.code == remembered).firstOrNull;
+        final hit =
+            s.flattened.where((x) => x.code == requestedSource).firstOrNull;
         if (hit != null) {
           preferred = hit;
           break;
@@ -2155,6 +2194,15 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   Future<void> _loadEpisodes(String code) async {
+    final generation = ++_episodeLoadGeneration;
+    final provider = widget.provider;
+    final id = widget.id;
+    bool isCurrent() =>
+        mounted &&
+        generation == _episodeLoadGeneration &&
+        widget.provider == provider &&
+        widget.id == id &&
+        _activeSource == code;
     setState(() => _epsLoading = true);
     try {
       /*
@@ -2163,8 +2211,8 @@ class _DetailPageState extends State<DetailPage> {
        * 原版这里写的是重新调一次 `detail()` —— 那是**取不到指定源的剧集**的
        * （detail 返回的是默认源的剧集）。正确的命令是 get_episodes。
        */
-      final eps = await SourinApi.getEpisodes(widget.provider, widget.id, code);
-      if (mounted) {
+      final eps = await SourinApi.getEpisodes(provider, id, code);
+      if (isCurrent()) {
         setState(() {
           _episodes = eps;
           _pruneEpisodeKeys();
@@ -2173,9 +2221,11 @@ class _DetailPageState extends State<DetailPage> {
         _scheduleEpisodeScroll();
       }
     } catch (e) {
-      debugPrint('[DETAIL] 加载剧集失败: $e');
+      if (isCurrent()) {
+        debugPrint('[DETAIL] 加载剧集失败: $e');
+      }
     } finally {
-      if (mounted) setState(() => _epsLoading = false);
+      if (isCurrent()) setState(() => _epsLoading = false);
     }
   }
 

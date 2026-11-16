@@ -69,6 +69,9 @@ use tokio::sync::mpsc;
 #[path = "streamproxy_cover_diagnostics.rs"]
 mod cover_diagnostics;
 
+#[path = "streamproxy_playlist_sniff.rs"]
+mod playlist_sniff;
+
 /*
  * ═══════════════════════════════════════════════════════════════════
  * ★★★ 观测：走 **stderr** 的日志（issue #9 的「黑盒」修复）
@@ -2339,10 +2342,23 @@ async fn send_headers(
 /// be decoded before URI rewriting; identity is requested but some origins
 /// still send gzip or deflate.
 pub(crate) async fn read_playlist_text(response: reqwest::Response) -> Result<String, String> {
+    read_playlist_text_with_prefix(response, VecDeque::new()).await
+}
+
+async fn read_playlist_text_with_prefix(
+    response: reqwest::Response,
+    prefix: VecDeque<Bytes>,
+) -> Result<String, String> {
     use std::io::Read;
     let encoding = response.headers().get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok()).unwrap_or("").trim().to_ascii_lowercase();
-    let bytes = response.bytes().await.map_err(|_| "读取播放列表失败".to_string())?;
+    let remaining = response.bytes().await.map_err(|_| "读取播放列表失败".to_string())?;
+    let bytes = if prefix.is_empty() { remaining } else {
+        let mut joined = Vec::new();
+        for chunk in prefix { joined.extend_from_slice(&chunk); }
+        joined.extend_from_slice(&remaining);
+        Bytes::from(joined)
+    };
     let mut decoded = Vec::new();
     match encoding.as_str() {
         "" | "identity" => decoded.extend_from_slice(&bytes),
@@ -2359,7 +2375,7 @@ pub(crate) async fn read_playlist_text(response: reqwest::Response) -> Result<St
         }
         _ => return Err("播放列表使用不支持的压缩格式".to_string()),
     }
-    Ok(String::from_utf8_lossy(&decoded).into_owned())
+    Ok(String::from_utf8_lossy(&decoded).trim_start_matches('\u{feff}').to_owned())
 }
 
 async fn forward_request(
@@ -2442,7 +2458,7 @@ async fn forward_request(
      * ⚠️ 与「插件 API 可能要走代理」是两件事：那条链路是 `http_call`，
      *   本函数只影响**取流**。
      */
-    let upstream = match send_headers(rb).await {
+    let mut upstream = match send_headers(rb).await {
         Ok(r) => r,
         Err((e, is_conn)) => {
             if hls_query_policy.is_some() {
@@ -2635,7 +2651,9 @@ async fn forward_request(
         return (status, format!("上游返回 {code} {hint}")).into_response();
     }
 
-    // 是 m3u8 吗？（按 Content-Type 与扩展名双重判断）
+    // Known MIME/suffixes retain their decoding path. Unlabelled full media
+    // responses also get a bounded signature check, without consuming Range,
+    // cover or compressed binary bytes into a manifest reader.
     let ctype = up_headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -2646,15 +2664,28 @@ async fn forward_request(
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
-    let is_playlist = ctype.contains("mpegurl")
+    let mut is_playlist = ctype.contains("mpegurl")
         || ctype.contains("m3u")
         || path_only.ends_with(".m3u8")
         || path_only.ends_with(".m3u")
         || final_upstream_url.path().to_ascii_lowercase().ends_with(".m3u8")
         || final_upstream_url.path().to_ascii_lowercase().ends_with(".m3u");
 
+    let mut sniffed_prefix = VecDeque::new();
+    let encoding = up_headers.get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok()).unwrap_or("");
+    if !is_playlist && matches!(kind, ForwardKind::Media) && status == StatusCode::OK
+        && !up_headers.contains_key(header::CONTENT_RANGE)
+        && playlist_sniff::eligible(&ctype, encoding)
+    {
+        match playlist_sniff::sniff(&mut upstream).await {
+            Ok((detected, prefix)) => { is_playlist = detected; sniffed_prefix = prefix; }
+            Err(_) => return (StatusCode::BAD_GATEWAY, "读取媒体响应失败").into_response(),
+        }
+    }
+
     if is_playlist {
-        let text = match read_playlist_text(upstream).await {
+        let text = match read_playlist_text_with_prefix(upstream, sniffed_prefix).await {
             Ok(t) => t,
             Err(e) => {
                 // ★ issue #9：改前这条**没有日志**（502 只在播放器那边看到）
@@ -2873,7 +2904,10 @@ async fn forward_request(
     }
 
     // 非播放列表：流式转发（不能整个读进内存 —— 一部剧 1~2 GB）
-    let body = Body::from_stream(upstream.bytes_stream());
+    let body = Body::from_stream(playlist_sniff::Replay {
+        prefix: sniffed_prefix,
+        rest: Box::pin(upstream.bytes_stream()),
+    });
     out.body(body).unwrap_or_else(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3105,6 +3139,10 @@ mod scoped_prefetch_tests;
 #[cfg(test)]
 #[path = "streamproxy_cover_diagnostics_tests.rs"]
 mod cover_diagnostics_tests;
+
+#[cfg(test)]
+#[path = "streamproxy_opaque_playlist_tests.rs"]
+mod opaque_playlist_tests;
 
 #[cfg(test)]
 mod tests {

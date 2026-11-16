@@ -36,8 +36,15 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 
+import 'package:sourin_spike/core/ffi.dart';
+import 'package:sourin_spike/core/network_status.dart';
+import 'package:sourin_spike/core/ui_prefs.dart';
+import 'package:sourin_spike/ui/app_scaffold.dart';
+import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/detail_page.dart';
+import 'package:sourin_spike/ui/tokens.dart';
 
 /// 剥掉 `//` 与 `/* */` 注释（**保留字符串字面量**）
 ///
@@ -243,7 +250,7 @@ void main() {
        * ⚠️ 2026-09-27 第三轮：`height:` 的实参从 `kEpsViewportH` 变成 `epsH`
        *    ⇒ 这里的多行字面量匹配也要跟着改（否则它去守一个不存在的写法）。
        */
-      expect(src.contains('key: _epsViewportKey,\n                  height: epsH,'),
+      expect(RegExp(r'SizedBox\s*\(\s*key:\s*_epsViewportKey,\s*height:\s*epsH,').hasMatch(src),
           isTrue,
           reason: '★ 固定高度的盒子必须**同时**挂 `_epsViewportKey` —— '
               '那是自动滚动用来量视口尺寸的');
@@ -669,7 +676,7 @@ void main() {
   //  回归：不许破坏既有行为
   // ═══════════════════════════════════════════════════════════════════
   group('回归：既有行为不许被破坏', () {
-    test('★★★ 宽档（>=620）行为**一字未动**：封面 212 + 并排', () {
+    testWidgets('宽档（>=620）的真实详情：封面212与信息并排', (tester) async {
       /*
        * ⚠️ 2026-09-27 第三轮：断言从"单行三目"改成"宽档那一条 Row"。
        *
@@ -681,10 +688,70 @@ void main() {
        *   窄档/中档走「并排 head + 通栏 rest」。
        * ★ 契约本身**没变**：`>= 620` 仍是封面 212 + 并排 ⇒ 这条断言守的就是它。
        */
-      expect(src.contains('_Cover(detail: d, width: 212.0)'), isTrue,
-          reason: '★★★ 冻结契约：宽视口下封面必须仍是 212（改动前的值）');
-      expect(src.contains('const SizedBox(width: Sp.x6)'), isTrue,
-          reason: '★★ 宽档封面与信息之间的间距仍是 Sp.x6（改动前的值）');
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1100, 900);
+      addTearDown(tester.view.reset);
+      final previous = SourinCore.debugCallAsyncTransport;
+      UiPrefs.debugResetForTest({});
+      NetworkStatus.debugResetForTest();
+      NetworkStatus.debugProbe = () async => true;
+      SourinCore.debugCallAsyncTransport = (command, args) async {
+        switch (command) {
+          case 'get_detail':
+            return {
+              'id': 'wide-layout:work',
+              'title': 'Wide layout fixture',
+              'episodes': <dynamic>[],
+              'sources': <dynamic>[],
+            };
+          case 'get_progress':
+            return null;
+          case 'list_providers':
+          case 'list_favorites':
+            return <dynamic>[];
+          default:
+            throw StateError('Unexpected wide detail command: $command');
+        }
+      };
+      addTearDown(() {
+        SourinCore.debugCallAsyncTransport = previous;
+        UiPrefs.debugResetForTest({});
+        NetworkStatus.debugResetForTest();
+      });
+      final theme = AppTheme.themeFor(Brightness.light);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          builder: (_, child) => AppThemeHost(data: theme, child: child!),
+          home: const DetailPage(
+            provider: 'wide-layout',
+            id: 'work',
+            embedded: true,
+          ),
+        ),
+      );
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      final cover = find.descendant(
+        of: find.byType(DetailPage),
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is AspectRatio &&
+              widget.aspectRatio == AppMetrics.posterAspect,
+        ),
+      );
+      expect(cover, findsOneWidget);
+      final coverRect = tester.getRect(cover);
+      final titleRect = tester.getRect(find.text('Wide layout fixture'));
+      expect(coverRect.width, 212);
+      expect(coverRect.height, 318);
+      expect(titleRect.left - coverRect.right, closeTo(Sp.x6, .1));
+      expect(titleRect.top, greaterThanOrEqualTo(coverRect.top));
+      expect(titleRect.top, lessThan(coverRect.bottom));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
     });
 
     test('★★★ 紧凑档仍在（极窄屏上下堆叠），封面 112', () {

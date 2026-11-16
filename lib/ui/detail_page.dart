@@ -805,6 +805,7 @@ class DetailPage extends StatefulWidget {
     this.onLoaded,
     this.isTv = false,
     this.embedded = false,
+    this.compactHeader = false,
     this.currentEpisodeId,
     this.playbackProgress,
     /*
@@ -865,6 +866,10 @@ class DetailPage extends StatefulWidget {
   /// false ⇒ 旧行为完全不变（独立页面）
   /// ```
   final bool embedded;
+
+  /// The parent's stacked video/detail layout has less vertical space than
+  /// its side panel. Reuse the existing compact poster size in that layout.
+  final bool compactHeader;
 
   /// ★★★ 2026-09-26 第二轮：**播放器正在播的**那一集 id（`null` = 还没报告）
   ///
@@ -2884,12 +2889,12 @@ class _DetailPageState extends State<DetailPage> {
   /// # 分档（阈值都按**可用宽度**，不是窗口宽度）
   ///
   /// ```text
-  /// >= 620  宽档：封面 212 + 信息并排          ← ★ 与改动前**逐字相同**
+  /// >= 620  宽档：默认封面212 + 信息并排；compactHeader父布局使用138
   /// 420..620 中档：封面 138 + 信息并排（封面缩小，把宽度让给信息）
   /// < 420   紧凑档：封面 112 在上、信息在下（信息拿到**整行**宽度）
   /// ```
   ///
-  /// ★ **宽视口行为不变**的证明：窗口 1280 ⇒ 可用 1280−48 = 1232 ≥ 620 ⇒ 宽档；
+  /// ★ compactHeader=false 时宽视口行为不变：窗口1280 ⇒ 可用1232 ≥620 ⇒ 宽档；
   ///   窗口 760（原阈值边界）⇒ 可用 712 ≥ 620 ⇒ 仍是宽档
   ///   ⇒ 与改动前的 `isNarrow=false` **一致**（冻结契约）。
   ///
@@ -2930,13 +2935,13 @@ class _DetailPageState extends State<DetailPage> {
   /// # 分档（阈值按**可用宽度**，不是窗口宽度）
   ///
   /// ```text
-  /// >= 620    宽档：封面 212 + 信息并排          ← ★ 与改动前**逐字相同**
+  /// >= 620    宽档：默认封面212 + 信息并排；compactHeader父布局使用138
   /// 420..620  中档：封面 138 + 信息并排（封面缩小，把宽度让给信息）
   /// 300..420  ★ 窄档：封面 96 + 信息并排（第二轮新增，见下）
   /// < 300     紧凑档：封面 112 在上、信息在下（真手机竖屏）
   /// ```
   ///
-  /// ★ **宽视口行为不变**的证明：
+  /// ★ compactHeader=false 时宽视口行为不变的证明：
   /// ```text
   /// 窗口 1280 ⇒ 可用 1280−48 = 1232 ≥ 620 ⇒ 宽档（封面 212 + 并排）
   /// 窗口  760 ⇒ 可用  712      ≥ 620 ⇒ 宽档（★ 原阈值边界，行为一致）
@@ -3118,9 +3123,10 @@ class _DetailPageState extends State<DetailPage> {
          * C 按钮 46% → ~95%、简介 54% → ~95%
          * ```
          *
-         * ⚠️ **冻结契约**：`w >= 620`（独立详情页 / 宽视口）**一字未动** ——
-         *    仍走下面那条 `Row([封面, 间距, Expanded(_Info)])`，
-         *    且 `_Info` 的内部结构**没变**（见 `_Info` 的文档）。
+         * ⚠️ **冻结契约**：`w >= 620` 且 `compactHeader == false` 的独立详情页
+         *    或侧栏仍是 212px 封面与完整 `_Info` 并排。上下堆叠的 MediaPage
+         *    传入 compactHeader，仅复用 138px 封面，给固定头部下方的选集留高；
+         *    并排结构及 `_Info` 的内部结构保持（见 `_Info` 的文档）。
          */
         if (w < kHeaderCompactMax) {
           return Column(
@@ -3160,11 +3166,11 @@ class _DetailPageState extends State<DetailPage> {
           );
         }
 
-        // ── 宽档（>= 620）：**与改动前逐字相同** ──
+        // 宽档并排；默认封面212，上下堆叠父布局明确使用138。
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _Cover(detail: d, width: 212.0),
+            _Cover(detail: d, width: widget.compactHeader ? 138.0 : 212.0),
             const SizedBox(width: Sp.x6),
             Expanded(child: info()),
           ],

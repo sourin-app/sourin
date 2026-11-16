@@ -1694,6 +1694,7 @@ class _MediaPageState extends State<MediaPage> with WindowListener {
       onLoaded: _onDetailLoaded,
       // ★ 合并页里详情区**不画返回按钮**（顶层负责返回）
       embedded: true,
+      compactHeader: !wide,
       /*
        * ★★★ 2026-09-26 第二轮：把"播放器正在播哪一集"喂给详情区
        *

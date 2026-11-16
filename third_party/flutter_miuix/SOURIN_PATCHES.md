@@ -3,7 +3,7 @@
 This directory contains the actual upstream Miuix Dart implementation and all
 seven shaders, imported from the pub.dev 1.3.0 source release. The upstream
 LICENSE, copyright / SPDX headers, README acknowledgements and package name /
-version are retained. Two explicit patches change upstream code: the glass shader and its Dart loader.
+version are retained. Three explicit patches change upstream code: the glass shader, its Dart loader and the text-field focus gesture.
 
 `UPSTREAM_FILES.json` records every included and excluded release file, its raw
 byte size and SHA-256, and the verified release archive hash. The 136 retained
@@ -15,7 +15,7 @@ at build time for this package once the app resolves its local path dependency.
 The shader patch is `patches/0001-impeller-material-loop.patch`. It retains the
 original material block under SKIA_GRAPHICS_BACKEND and uses the validated
 single-call-site loop on the other backend. Uniform order (53 float slots), the
-sampler and wide-sampling loop are unchanged. All other shader bytes and all Dart bytes except the loader
+sampler and wide-sampling loop are unchanged. All other shader bytes and all Dart bytes except the loader and text field
 match the upstream inventory. `SOURIN_PATCH.json` binds the original, compare2
 candidate, downstream annotation, final shader, patch and manifest hashes.
 
@@ -34,13 +34,13 @@ python tools/verify_miuix_vendor.py --archive PATH/TO/flutter_miuix-1.3.0.tar.gz
 The optional archive must have SHA-256
 `79557980f191131888dd6b164d460d03a70e9cae1cbce9799046942ef4719513`.
 The verifier checks all retained bytes, detects missing/extra files, reverses
-and reapplies both patches exactly, reconstructs the original shader, and
+and reapplies all three patches exactly, reconstructs the original shader, and
 checks the frozen candidate after removing only the modification notice. The
 second pinned patch is independently reversed and replayed against the exact
 original loader from that same upstream manifest. With
 `--archive`, it also checks all 158 release entries against the source archive.
 It performs no downloads and writes no files. Reconstructing from that archive
-consists of copying only the included paths and applying both patches;
+consists of copying only the included paths and applying all three patches;
 `git apply --directory=PATH/TO/NEW/PACKAGE patches/0001-impeller-material-loop.patch`
 can be used from a directory containing the patch, with a fresh upstream copy. Apply `patches/0002-demand-glass-background-programs.patch`
 the same way after the shader patch.
@@ -51,9 +51,9 @@ does not establish production-package rendering, Skia runtime acceptance or a
 cold-start speedup. A fresh production build and runtime checks remain required.
 
 For upgrades, obtain and verify the new explicit upstream release, rebuild the
-inventory, rebase both patches, review loader/uniform changes and repeat
+inventory, rebase all three patches, review loader/uniform changes and repeat
 backend, pixel and startup validation. If upstream adopts the fix, remove this
-patch and update the dependency source. To revert this revision, reverse both
+patch and update the dependency source. To revert this revision, reverse all three
 pinned patches and update the patch metadata / dependency binding together.
 
 ## Background program demand loading
@@ -73,3 +73,17 @@ are absent initially, adds a real image to the same State, verifies sampled
 pixels and full loading, removes the background and verifies the original
 pixels. Startup and native surface rendering must also be measured; the byte
 verifier is not a performance or visual acceptance test.
+
+## Text-field focus semantics
+
+`patches/0003-text-field-focus-semantics.patch` excludes only the outer padded
+focus gesture from semantics. The inner TextField retains its editable role,
+value, focus and editing actions. Pointer taps on the surrounding padding still
+request focus. Disabling the field no longer removes a redundant semantic tap
+parent from around the surviving editable node. Colors, layout, controllers and
+all seven shaders are unchanged by this patch.
+
+The verifier reverses and replays this patch against the exact original text
+field recorded in UPSTREAM_FILES.json. Apply it after the other two patches when
+reconstructing the package. Input enable/disable identity and accessible focus
+regressions are separate from native address-dialog and shutdown validation.

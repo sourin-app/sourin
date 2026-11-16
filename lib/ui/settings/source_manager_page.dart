@@ -1066,13 +1066,17 @@ class _SourceAddressDialogState extends State<SourceAddressDialog> {
   }
 
   Future<void> _save() async {
+    if (_saving) return;
+    final backups = sourceBackupUrls(_backups.text);
+    if (backups.length > 8) {
+      setState(() => _error = '备用地址最多 8 个');
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
-      final backups = sourceBackupUrls(_backups.text);
-      if (backups.length > 8) throw const FormatException('备用地址最多 8 个');
       if (widget.onSave != null) {
         await widget.onSave!(_name.text.trim(), _primary.text.trim(), backups);
       } else {
@@ -1097,7 +1101,8 @@ class _SourceAddressDialogState extends State<SourceAddressDialog> {
   Widget build(BuildContext context) => AppDialogShell(
     title: widget.title,
     subtitle: '主地址不可用时，按顺序尝试备用地址',
-    onClose: _saving ? null : () => Navigator.of(context).pop(),
+    onClose: () => Navigator.of(context).pop(),
+    closeEnabled: !_saving,
     child: Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,

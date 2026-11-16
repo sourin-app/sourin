@@ -28,6 +28,11 @@ Pull-to-refresh uses the actual Miuix container with application-owned asynchron
 
 Cache cards use the shared Miuix menu and explicit action values. Cancelling returns no action; deletion still requires the existing confirmation and preserves neighbouring files. Real deletion and page refresh passed all 15 cache probe cases; the six visibility/cancellation cases passed after their hover target was bound to the actual PosterCard instead of an unrelated ancestor Column.
 
+[Address submission semantics](../bug-fix/2026-11-16-source-address-submission-semantics.md)
+pins the outer text-field focus gesture as pointer-only; the inner TextField
+keeps accessible editing and focus. This refines semantic ownership while
+preserving this adapter's actual Miuix input and framework bridge contract.
+
 ## Alternatives considered
 
 - Keep Material controls with Miuix colors: does not satisfy the requested component replacement.

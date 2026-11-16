@@ -38,6 +38,10 @@ active and is not superseded.
 - Immediate Future completion after requesting cancellation avoids waiting, but changes the existing native-terminal completion contract. The implementation keeps the original acknowledgement or timeout boundary.
 - Removing the handler immediately drops queued business events, but also drops done/error and leaves the Future waiting for timeout. Keeping terminal handling while suppressing business publication preserves both responsibilities.
 
+[Native listener detachment](2026-11-16-native-callback-detach-before-exit.md)
+governs terminal isolate teardown. Per-request cancellation while the isolate
+is alive retains the acknowledgement and timeout contract established here.
+
 ## Consequences
 
 取消后的业务结果停止回填，流仍能接收终态并释放 timer；互不相干的流保持独立。生产整合只有 FFI 最小修改和本注记，没有把完整 FFI 实现复制进永久测试，也没有增加生产 stream 测试注入 API。C12 是已绑定源码快照的本批证据，后续源码变化需要重新绑定和验证。

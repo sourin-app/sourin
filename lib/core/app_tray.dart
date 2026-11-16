@@ -48,6 +48,7 @@ import '../ui/widgets/overlay_motion.dart';
 import '../design/widgets/app_glass_dialog.dart';
 import '../design/widgets/app_text_button.dart';
 import 'ui_prefs.dart';
+import 'ffi.dart' show SourinCore;
 import 'app_logo.dart';
 import '../ui/widgets/plugin_speedtest.dart' show SpeedTestCancelToken;
 
@@ -550,6 +551,7 @@ class AppTray with TrayListener, WindowListener {
     // 退出前的最后一班岗：`_quitting` 重入分支（onWindowClose）直接跳到这里，
     // 不经过 quitNow()，所以这里再兜一次。flush() 幂等：没有脏数据立即返回。
     await _flushPrefsBeforeExit();
+    SourinCore.detachCallbacksBeforeExit();
     try {
       await windowManager.setPreventClose(false);
       /*

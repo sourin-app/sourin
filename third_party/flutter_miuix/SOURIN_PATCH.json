@@ -1,9 +1,10 @@
 {
   "schemaVersion": 1,
-  "revision": "sourin-glass-demand-v21",
+  "revision": "sourin-text-field-semantics-v1",
   "modifiedFiles": [
     "shaders/miuix_os4_glass.frag",
-    "lib/src/theme/miuix/components/miuix_glass.dart"
+    "lib/src/theme/miuix/components/miuix_glass.dart",
+    "lib/src/theme/miuix/components/miuix_textfield.dart"
   ],
   "upstreamSha256": "5f673ae1719985353553ae3f87adf9ba4cab038727b46604bb8d2a599659f614",
   "compare2CandidateSha256": "f4b24691e8ada44e9eb6c5fc80a5793872648de9fc2aae3c3880fcd0f3c117fa",
@@ -26,5 +27,13 @@
     "patchFile": "patches/0002-demand-glass-background-programs.patch",
     "patchSha256": "67da828cdfe8bb2771111133af3014cc6a85647fae121e7f5774f8ab556c2d38",
     "contract": "Public load() still preloads all programs. Surfaces without a backdrop load mask/stroke/shadow/rim. Adding a backdrop loads remaining programs and repaints the same State."
+  },
+  "textFieldSemanticsPatch": {
+    "file": "lib/src/theme/miuix/components/miuix_textfield.dart",
+    "upstreamSha256": "fdff76549dbb0120fa150080f1a7dee46121613a5e728c8c5cd831c95d02491a",
+    "patchedSha256": "f81b2a374555537e667b680b976e4bd9ec640025720c6009608cacb942baa008",
+    "patchFile": "patches/0003-text-field-focus-semantics.patch",
+    "patchSha256": "ac4bdf3f1a1702df6d52ab9d3dc06f18535e3668d19e4f3a03afc25a563ee9f3",
+    "contract": "Only the inner TextField exposes editing/focus semantics; the outer padded pointer gesture stays enabled/disabled with the input."
   }
 }

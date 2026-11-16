@@ -26,6 +26,7 @@
 
 // ── 数据模型 ──
 pub mod model;
+mod ffi_callback_gate;
 
 /// 重新导出 —— sync/mod.rs 里写的是 crate::PersistedProvider，
 /// 抽核心时它从 lib.rs 搬到了 model.rs，这里保持旧路径可用。

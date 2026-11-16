@@ -249,6 +249,11 @@ class _MiuixTextFieldState extends State<MiuixTextField>
                 colors.backgroundColor, colors.borderColor, borderProgress)!;
 
         return GestureDetector(
+          // Sourin downstream change (2026-11-16): retain inner input semantics.
+          // The inner TextField owns accessible editing and focus actions.
+          // A second tap node would disappear when disabled and reparent the
+          // surviving editable node during submission.
+          excludeFromSemantics: true,
           // 整块区域可点击聚焦（对应 Compose 版整个输入框可点）：背景、内边距、
           // 非交互图标区域点击均唤起键盘。内部 TextField / trailing 按钮等更深层
           // 的手势在竞技场中优先，不受影响。

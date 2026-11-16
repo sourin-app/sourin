@@ -6,6 +6,10 @@ Applies: 2026-11-09, AppDialogShell and SourceManagerPage.
 
 This refines the [Miuix feedback and popup contract](../feature/2026-11-08-miuix-feedback-controls.md): the same popup instance must survive pending submission. It preserves the existing component choice and dismissal policy; only lifecycle continuity and covered-page ticker activity change.
 
+[Address submission semantics](2026-11-16-source-address-submission-semantics.md)
+also keeps the address close control mounted and removes the redundant input
+gesture semantic parent. Popup and draft lifetime remain governed here.
+
 ## Problem
 
 Some forms set `onClose` to null while submitting. AppDialogShell previously

@@ -319,12 +319,12 @@ pub unsafe extern "C" fn sourin_call_async(
     runtime().spawn_blocking(move || {
         let result = dispatch_blocking(&req);
 
-        if callback_addr != 0 {
+        crate::ffi_callback_gate::gate().invoke(callback_addr, || {
             // SAFETY: 调用方保证这是有效的函数地址（见 Safety 节）。
             let cb: extern "C" fn(*mut c_char, *mut std::ffi::c_void) =
                 std::mem::transmute(callback_addr);
             cb(into_c(result), user_data_addr as *mut std::ffi::c_void);
-        }
+        });
         // callback_addr 为 0 时结果直接丢弃（设置类命令不需要回执）
     });
 }
@@ -456,7 +456,9 @@ pub unsafe extern "C" fn sourin_call_stream(
     let Some((keyword, page)) = parsed else {
         if let Some(cb) = cb {
             let msg = r#"{"kind":"error","error":"sourin_call_stream 只支□search_all_stream"}"#;
-            cb(into_c(msg.to_string()), token);
+            crate::ffi_callback_gate::gate().invoke(callback_addr, || {
+                cb(into_c(msg.to_string()), token);
+            });
         }
         return;
     };
@@ -464,7 +466,9 @@ pub unsafe extern "C" fn sourin_call_stream(
     let Some(st) = state() else {
         if let Some(cb) = cb {
             let msg = r#"{"kind":"error","error":"核心尚未启动 —— 请先调用 sourin_start"}"#;
-            cb(into_c(msg.to_string()), token);
+            crate::ffi_callback_gate::gate().invoke(callback_addr, || {
+                cb(into_c(msg.to_string()), token);
+            });
         }
         return;
     };
@@ -498,8 +502,9 @@ pub unsafe extern "C" fn sourin_call_stream(
             };
             let json = serde_json::to_string(&ev)
                 .unwrap_or_else(|e| format!(r#"{{"kind":"error","error":"序列化失败? {e}"}}"#));
-            cb(into_c(json), token);
-            true
+            crate::ffi_callback_gate::gate().invoke(callback_addr, || {
+                cb(into_c(json), token);
+            })
         });
 
         let r = runtime().block_on(fut);
@@ -521,7 +526,9 @@ pub unsafe extern "C" fn sourin_call_stream(
                     serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_string())
                 ),
             };
-            cb(into_c(done), token);
+            crate::ffi_callback_gate::gate().invoke(callback_addr, || {
+                cb(into_c(done), token);
+            });
         }
 
         // 流结束，清掉标志（避免集合无限增长）
@@ -553,6 +560,14 @@ pub unsafe extern "C" fn sourin_call_stream(
 pub extern "C" fn sourin_cancel_stream(token: usize) {
     mark_cancelled(token);
     log::info!("宸茶姹傚彇娑堟祦寮忓懡浠?token={token}");
+}
+
+/// Stop sending to listener addresses before their Dart isolate exits.
+/// Waits for native posting already in progress, not unfinished commands.
+/// Listeners must not synchronously reenter this function.
+#[no_mangle]
+pub extern "C" fn sourin_detach_callbacks(callback_addr: usize, stream_addr: usize) {
+    crate::ffi_callback_gate::gate().detach(&[callback_addr, stream_addr]);
 }
 
 /// 启动核心（建库、恢复源、起流代理）

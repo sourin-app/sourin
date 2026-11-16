@@ -170,6 +170,8 @@ typedef _CallStreamC = Void Function(Pointer<Utf8>, Size, Size);
 typedef _CallStreamDart = void Function(Pointer<Utf8>, int, int);
 typedef _CancelStreamC = Void Function(Size);
 typedef _CancelStreamDart = void Function(int);
+typedef _DetachCallbacksC = Void Function(Size, Size);
+typedef _DetachCallbacksDart = void Function(int, int);
 
 /// 核心抛出的错误（对应 Rust 的 `{"error":..,"kind":..}`）
 class SourinCoreException implements Exception {
@@ -558,6 +560,22 @@ class SourinCore {
     _callable = NativeCallable<_CallbackC>.listener(_onNativeResult);
   }
 
+  static bool _callbacksDetached = false;
+
+  /// Terminal fence for this isolate's asynchronous native listeners.
+  /// Keep listeners alive for already-posted messages until the isolate exits.
+  static void detachCallbacksBeforeExit() {
+    if (_callbacksDetached) return;
+    if (_callable != null || _streamCallable != null) {
+      _openLibrary().lookupFunction<_DetachCallbacksC, _DetachCallbacksDart>(
+        'sourin_detach_callbacks',
+      )(_callable?.nativeFunction.address ?? 0,
+        _streamCallable?.nativeFunction.address ?? 0);
+    }
+    _callbacksDetached = true;
+    debugPrint('[FFI] async and stream callbacks detached before exit');
+  }
+
   /// 原生回调入口 —— 运行在创建 [_callable] 的那个 isolate 上
   static void _onNativeResult(Pointer<Utf8> resultPtr, Pointer<Void> userData) {
     /*
@@ -723,6 +741,9 @@ class SourinCore {
   /// });
   /// ```
   static Future<dynamic> callAsync(String cmd, [Map<String, dynamic>? args]) {
+    if (_callbacksDetached) {
+      return Future.error(StateError('Native callbacks detached for exit'));
+    }
     final transport = debugCallAsyncTransport;
     if (transport != null) {
       return transport(cmd, args);
@@ -912,6 +933,9 @@ class SourinCore {
   ) {
     _ensureBound();
     // ★ 用流式专用回调（不是 _ensureCallbackReady —— 那是 callAsync 的）
+    if (_callbacksDetached) {
+      return Future.error(StateError('Native callbacks detached for exit'));
+    }
     _ensureStreamCallbackReady();
 
     final token = _nextToken++;

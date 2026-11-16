@@ -27,7 +27,12 @@ LOADER_PATCH = 'patches/0002-demand-glass-background-programs.patch'
 LOADER_ORIGINAL_SHA256 = 'df4165dcfb55504c3c051ae285e5fa73473187af9434274c4c8e79cdeefe681a'
 LOADER_PATCHED_SHA256 = '510d20904691f3bb1530af0f3320f9bf35471e9b4a948657fdf696d00129c438'
 LOADER_PATCH_SHA256 = '67da828cdfe8bb2771111133af3014cc6a85647fae121e7f5774f8ab556c2d38'
-ADDITIONS = {'UPSTREAM_FILES.json', 'SOURIN_PATCH.json', 'SOURIN_PATCHES.md', PATCH, LOADER_PATCH}
+TEXT_FIELD = 'lib/src/theme/miuix/components/miuix_textfield.dart'
+TEXT_FIELD_PATCH = 'patches/0003-text-field-focus-semantics.patch'
+TEXT_FIELD_ORIGINAL_SHA256 = 'fdff76549dbb0120fa150080f1a7dee46121613a5e728c8c5cd831c95d02491a'
+TEXT_FIELD_PATCHED_SHA256 = 'f81b2a374555537e667b680b976e4bd9ec640025720c6009608cacb942baa008'
+TEXT_FIELD_PATCH_SHA256 = 'ac4bdf3f1a1702df6d52ab9d3dc06f18535e3668d19e4f3a03afc25a563ee9f3'
+ADDITIONS = {'UPSTREAM_FILES.json', 'SOURIN_PATCH.json', 'SOURIN_PATCHES.md', PATCH, LOADER_PATCH, TEXT_FIELD_PATCH}
 SHADERS = {
     'miuix_bloom_stroke.frag', 'miuix_os4_glass.frag', 'miuix_os4_mask.frag',
     'miuix_os4_stroke.frag', 'miuix_os4_shadow.frag', 'miuix_os4_rim.frag',
@@ -152,7 +157,7 @@ def verify(vendor_root, archive_path=None):
             f'extra={sorted(actual_paths - expected_paths)}')
     for path, entry in included.items():
         safe_path(path)
-        if path in (GLASS, LOADER):
+        if path in (GLASS, LOADER, TEXT_FIELD):
             continue
         data = (vendor_root / path).read_bytes()
         require(len(data) == entry['size'] and sha256(data) == entry['sha256'],
@@ -162,8 +167,8 @@ def verify(vendor_root, archive_path=None):
     pubspec = (vendor_root / 'pubspec.yaml').read_text(encoding='utf-8')
     declared = set(re.findall(r'^\s+- shaders/([^\s]+)\s*$', pubspec, re.MULTILINE))
     require(declared == SHADERS, 'Package shader declarations differ from the complete set.')
-    require(metadata['schemaVersion'] == 1 and metadata['modifiedFiles'] == [GLASS, LOADER],
-            'Only the pinned glass shader and demand loader may differ upstream.')
+    require(metadata['schemaVersion'] == 1 and metadata['modifiedFiles'] == [GLASS, LOADER, TEXT_FIELD],
+            'Only the three pinned shader, loader and input patches may differ upstream.')
     require(metadata['upstreamManifestSha256'] == MANIFEST_SHA256,
             'Patch metadata does not bind the upstream manifest.')
     require(metadata['patchFile'] == PATCH and metadata['patchSha256'] == PATCH_SHA256,
@@ -205,6 +210,21 @@ def verify(vendor_root, archive_path=None):
             'Demand-loader reverse patch does not reconstruct the exact upstream file.')
     require(apply_patch_bytes(loader_original, loader_patch, target=LOADER) == loader_patched,
             'Demand-loader replay does not reconstruct the exact downstream file.')
+    text_field = metadata['textFieldSemanticsPatch']
+    require((text_field['file'], text_field['upstreamSha256'], text_field['patchedSha256'],
+             text_field['patchFile'], text_field['patchSha256']) ==
+            (TEXT_FIELD, TEXT_FIELD_ORIGINAL_SHA256, TEXT_FIELD_PATCHED_SHA256,
+             TEXT_FIELD_PATCH, TEXT_FIELD_PATCH_SHA256), 'Text-field metadata differs.')
+    text_field_patch = (vendor_root / TEXT_FIELD_PATCH).read_bytes()
+    text_field_patched = (vendor_root / TEXT_FIELD).read_bytes()
+    require(sha256(text_field_patch) == TEXT_FIELD_PATCH_SHA256, 'Text-field patch hash differs.')
+    require(sha256(text_field_patched) == TEXT_FIELD_PATCHED_SHA256, 'Text-field source hash differs.')
+    text_field_original = apply_patch_bytes(text_field_patched, text_field_patch, reverse=True, target=TEXT_FIELD)
+    require(sha256(text_field_original) == TEXT_FIELD_ORIGINAL_SHA256 == included[TEXT_FIELD]['sha256']
+            and len(text_field_original) == included[TEXT_FIELD]['size'],
+            'Text-field reverse patch does not reconstruct the exact upstream file.')
+    require(apply_patch_bytes(text_field_original, text_field_patch, target=TEXT_FIELD) == text_field_patched,
+            'Text-field replay does not reconstruct the exact downstream file.')
     if archive_path is not None:
         verify_archive(archive_path, manifest)
     return {
@@ -213,7 +233,7 @@ def verify(vendor_root, archive_path=None):
         'version': '1.3.0',
         'vendorFiles': len(actual_paths),
         'upstreamFiles': len(included),
-        'unchangedUpstreamFiles': len(included) - 2,
+        'unchangedUpstreamFiles': len(included) - 3,
         'shaderFiles': len(SHADERS),
         'archiveVerified': archive_path is not None,
         'archiveSha256': ARCHIVE_SHA256,
@@ -226,6 +246,9 @@ def verify(vendor_root, archive_path=None):
         'loaderPatchedSha256': LOADER_PATCHED_SHA256,
         'loaderPatchSha256': LOADER_PATCH_SHA256,
         'exactLoaderPatchRoundTrip': True,
+        'textFieldPatchedSha256': TEXT_FIELD_PATCHED_SHA256,
+        'textFieldPatchSha256': TEXT_FIELD_PATCH_SHA256,
+        'exactTextFieldPatchRoundTrip': True,
         'runtimeValidation': 'Not performed by this read-only source verifier.',
     }
 

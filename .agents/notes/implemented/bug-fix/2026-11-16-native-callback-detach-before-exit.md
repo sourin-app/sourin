@@ -70,3 +70,12 @@ This qualifies the diagnostic cohort's terminal callback lifetime. Ordinary
 Release, affected playback/protocol evidence and the final package must be
 rebuilt and rebound to this core; performance and whole-goal acceptance remain
 false. Compiled tests alone would not establish those broader claims.
+
+The production Release Dart bundle and core have now been rebuilt together,
+and all 59 packaged file bytes are independently qualified. A normal-entry
+private-desktop attempt fails before Flutter with Windows DLL initialization
+error; it does not accept ordinary startup. A same-core Profile baseline and
+actual GPU warm-up diagnostic both complete the real 20-window workload, observe
+the terminal fence and exit zero with natural Job drain and zero UI errors.
+They extend the new-core quit evidence to AOT/Profile, while their performance
+budgets remain RED and ordinary Release/default-close remains open.

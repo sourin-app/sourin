@@ -38,6 +38,14 @@ use super::{
 /// 首页最多给几个分类区块（与 `tvbox.rs` 的 HOME_SECTIONS 对齐）
 const HOME_SECTIONS: usize = 8;
 
+#[cfg(test)]
+#[path = "provider_lines_tests.rs"]
+mod lines_tests;
+
+fn line_code(flag: &str) -> &str {
+    if flag.is_empty() { "default" } else { flag }
+}
+
 /// 一个 `csp_Xxx` 源
 pub struct CspProvider {
     manifest: ProviderManifest,
@@ -113,6 +121,7 @@ impl CspProvider {
         let capabilities = crate::model::Capabilities {
             vod: unavailable_reason.is_none(),
             search: site.supports_search(),
+            multi_source: unavailable_reason.is_none(),
             ..Default::default()
         };
         /*
@@ -174,6 +183,7 @@ impl CspProvider {
         let capabilities = crate::model::Capabilities {
             vod: true,
             search: site.supports_search(),
+            multi_source: true,
             ..Default::default()
         };
         Self {
@@ -481,15 +491,15 @@ impl MediaProvider for CspProvider {
         let episodes: Vec<Episode> = d
             .episodes
             .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let order = line_orders.entry(e.flag.clone()).or_default();
+            .map(|e| {
+                let line = line_code(&e.flag);
+                let order = line_orders.entry(line.to_string()).or_default();
                 *order += 1;
                 Episode {
                 // ★ 剧集 id 就是 `bvid|cid`，resolve() 直接用它取流
                 id: e.id.clone(),
                 title: if e.title.is_empty() {
-                    format!("第{}集", i + 1)
+                    format!("第{}集", *order)
                 } else {
                     e.title.clone()
                 },
@@ -499,6 +509,22 @@ impl MediaProvider for CspProvider {
                 flag: e.flag.clone(),
             }})
             .collect();
+        let mut sources: Vec<PlaySource> = Vec::new();
+        let mut source_indices = std::collections::HashMap::<String, usize>::new();
+        for episode in &episodes {
+            let code = line_code(&episode.flag);
+            if let Some(index) = source_indices.get(code).copied() {
+                sources[index].count += 1;
+            } else {
+                source_indices.insert(code.to_string(), sources.len());
+                sources.push(PlaySource {
+                    code: code.to_string(),
+                    title: if code == "default" { self.manifest.name.clone() } else { code.to_string() },
+                    count: 1,
+                    nested: Vec::new(),
+                });
+            }
+        }
         Ok(MediaDetail {
             id: MediaId::new(&self.manifest.id, d.id),
             title: d.title,
@@ -507,17 +533,32 @@ impl MediaProvider for CspProvider {
             badges: Vec::new(),
             kind: MediaKind::Movie,
             meta: serde_json::Map::new(),
-            sources: vec![PlaySource {
-                code: "default".to_string(),
-                title: self.manifest.name.clone(),
-                count: episodes.len() as u32,
-                nested: Vec::new(),
-            }],
+            sources,
             episodes,
         })
     }
 
+    async fn episodes(&self, id: &MediaId, source_code: &str) -> Result<Vec<Episode>> {
+        let detail = self.detail(id).await?;
+        // Persisted pre-grouping "default" sessions still expose their old list.
+        if source_code.is_empty() || (source_code == "default" && !detail.sources.iter().any(|s| s.code == "default")) {
+            return Ok(detail.episodes);
+        }
+        if !detail.sources.iter().any(|source| source.code == source_code) {
+            return Err(ProviderError::new(ErrorKind::NotFound, "所选线路不存在，请重新选择"));
+        }
+        Ok(detail.episodes.into_iter().filter(|episode| line_code(&episode.flag) == source_code).collect())
+    }
+
     async fn resolve(&self, id: &MediaId, req: &PlayRequest) -> Result<Vec<StreamCandidate>> {
+        let source = req.source_code.as_deref().filter(|source| !source.is_empty());
+        let explicit_flag = req.flag.as_deref().filter(|flag| !flag.is_empty());
+        if let (Some(source), Some(flag)) = (source, explicit_flag) {
+            if source != "default" && source != flag {
+                return Err(ProviderError::new(ErrorKind::Other, "剧集与所选线路不一致，请重新选择"));
+            }
+        }
+        let mut flag = explicit_flag.or(source.filter(|source| *source != "default")).unwrap_or("").to_string();
         let owner = super::pan_playback_guard::owner_from_payload(
             req.extra.as_ref().unwrap_or(&serde_json::Value::Null)
         ).and_then(super::pan_playback_guard::register)
@@ -551,14 +592,22 @@ impl MediaProvider for CspProvider {
             super::pan_playback_guard::check_current()
                 .map_err(|e| classify_err(self.site.class(), e))?;
             let d = super::pan_episode_select::expand_detail_with_routing(d, self.pan_routing.as_ref()).await;
-            let line = req.flag.as_deref().filter(|flag| !flag.is_empty());
+            let default_group = source == Some("default") && explicit_flag.is_none()
+                && d.episodes.iter().any(|e| e.flag.is_empty() || e.flag == "default");
             let episodes: Vec<_> = d.episodes.iter().enumerate()
-                .filter(|(_, episode)| line.map_or(true, |flag| episode.flag == flag))
+                .filter(|(_, episode)| {
+                    if !flag.is_empty() { episode.flag == flag }
+                    else if default_group { episode.flag.is_empty() || episode.flag == "default" }
+                    else { true }
+                })
                 .collect();
             let first = episodes.first()
                 .ok_or_else(|| ProviderError::new(ErrorKind::NotFound, "这个条目没有可播放的剧集"))?;
-            let names: Vec<_> = episodes.iter().map(|(index, episode)| {
-                if episode.title.is_empty() { format!("第{}集", index + 1) }
+            let mut fallback_orders = std::collections::HashMap::<&str, u32>::new();
+            let names: Vec<_> = episodes.iter().map(|(_, episode)| {
+                let order = fallback_orders.entry(line_code(&episode.flag)).or_default();
+                *order += 1;
+                if episode.title.is_empty() { format!("第{}集", *order) }
                 else { episode.title.clone() }
             }).collect();
             let sole_share = episodes.len() == 1 && {
@@ -576,6 +625,7 @@ impl MediaProvider for CspProvider {
                     .map_err(|e| classify_err(self.site.class(), e))?
             };
             let selected = episodes[selected_index].1;
+            if flag.is_empty() { flag = selected.flag.clone(); }
             if spec.title.is_empty() { spec.title = names[selected_index].clone(); }
             if spec.order.is_none() { spec.order = Some(selected_index as u32 + 1); }
             selected.id.clone()
@@ -589,8 +639,7 @@ impl MediaProvider for CspProvider {
             if let Some(label) = play.label { candidate = candidate.with_label(label); }
             return Ok(vec![candidate]);
         }
-        // ★ 真 flag：来自 PlayRequest.flag（UI 选了哪条线路就传哪条），缺省空串
-        let flag = req.flag.clone().unwrap_or_default();
+        // Explicit flag wins; otherwise use the selected source/episode's actual flag.
         let plays = self
             .site
             .play(&flag, &episode, &self.ext)

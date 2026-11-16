@@ -47,3 +47,5 @@ Build/NuGet/toolchain failure, forced cleanup, crash, missing VM, identity drift
 Probes/logs/manifests/screenshots/scripts stay under .probe/goal-resume-20261115-evening/.
 
 - C2 plain-navigation A/B attempt: the isolated plain bottom-bar variant compiled after fixing a Miuix color API, but the real Profile harness failed before workload at `Actual shell navigation is not unique` and later `Home content did not stabilize within 90 seconds`; the log still shows actual Home rendered 154 cards. This is a harness/variant qualification failure, not performance evidence or product GREEN. Receipt: `.probe/goal-resume-20261115-evening/profile-performance-plain-nav-v4/result.json`. The isolated variant was not committed or copied to product source.
+
+- C1 surface-only shader prewarm A/B 实测：隔离变体编译并运行同一20-window workload，baseline max build/raster/total `34291/606279/906398us`，prewarm candidate `31829/326657/549032us`，delta `-2462/-279622/-357366us`。候选仍超16667us预算，故性能不接受；这是任务隔离诊断结果，未改生产源，不能直接作为交付优化。receipt：`SURFACE_PREWARM_PERFORMANCE_AB_V1.json`。

@@ -3546,7 +3546,7 @@ class _DetailPageState extends State<DetailPage> {
         child: _buildHeader(context, d, sourceCount),
       ),
 
-      const SizedBox(height: Sp.x8),
+      SizedBox(height: widget.compactHeader ? Sp.x4 : Sp.x8),
 
       // ── 一级：播放源（单选项时隐藏）──
       //
@@ -3568,16 +3568,16 @@ class _DetailPageState extends State<DetailPage> {
       //   本地文件不属于任何站点，"站内换线路"这件事在它身上没有意义
       //   （Owner 把"换源"归在"那些操作按钮不显示"里）。
       if (!widget.isLocalFile && _hasMultiSource) ...[
-        const _BlockTitle(text: '播放源'),
+        _BlockTitle(text: '播放源', compact: widget.compactHeader),
         DetailSourcePicker(
           sources: _sourceNodes,
           active: _activeSource,
           onPick: _pickSource,
         ),
-        const SizedBox(height: Sp.x6),
+        SizedBox(height: widget.compactHeader ? Sp.x2 : Sp.x6),
       ],
       if (!widget.isLocalFile && _lineCount > 1) ...[
-        const _BlockTitle(text: '播放线路'),
+        _BlockTitle(text: '播放线路', compact: widget.compactHeader),
         DetailSourcePicker(
           sources: [
             for (final flag
@@ -3598,7 +3598,7 @@ class _DetailPageState extends State<DetailPage> {
             widget.onPickLine?.call(line.code);
           },
         ),
-        const SizedBox(height: Sp.x6),
+        SizedBox(height: widget.compactHeader ? Sp.x2 : Sp.x6),
       ],
     ];
   }
@@ -3950,7 +3950,7 @@ class _DetailPageState extends State<DetailPage> {
     return [
       // ── 二级：剧集 ──
       if (_episodes.isNotEmpty || _epsLoading) ...[
-        const _BlockTitle(text: '选集'),
+        _BlockTitle(text: '选集', compact: widget.compactHeader),
         if (_epsLoading)
           const Flexible(
             // A source refresh can outlive a frame. Give placeholders the same
@@ -4089,7 +4089,7 @@ class _DetailPageState extends State<DetailPage> {
               ),
             ),
           ),
-        const SizedBox(height: Sp.x6),
+        SizedBox(height: widget.compactHeader ? Sp.x2 : Sp.x6),
       ] else ...[
         /*
              * ══════════════════════════════════════════════════════════════
@@ -5566,19 +5566,20 @@ class _EpisodeButton extends StatelessWidget {
 }
 
 class _BlockTitle extends StatelessWidget {
-  const _BlockTitle({required this.text});
+  const _BlockTitle({required this.text, this.compact = false});
 
   final String text;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
+      padding: EdgeInsets.fromLTRB(
         AppMetrics.contentPadding,
         0,
         AppMetrics.contentPadding,
-        Sp.x4,
+        compact ? Sp.x2 : Sp.x4,
       ),
       child: Text(
         text,

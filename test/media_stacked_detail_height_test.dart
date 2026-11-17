@@ -304,6 +304,31 @@ void main() {
           expect(skeleton, findsNothing);
           expect(_insideDetail(find.text('qsvip HD中字')).hitTestable(), findsOneWidget);
           expect(tester.takeException(), isNull);
+
+          // Live playback reveals this chip after five seconds. Verify the
+          // entire button remains in its viewport, not merely in the tree.
+          final detailState = tester.state(find.byType(DetailPage)) as dynamic;
+          detailState.debugSetResume(const Progress(
+            key: 'owned-resume', provider: _provider, nativeId: _item,
+            title: _title, episodeId: 'qsvip:2', episodeTitle: 'qsvip HD中字',
+            position: 8, duration: 6238,
+          ));
+          await _advance(tester);
+          expect(_insideDetail(find.text('上次看到 ')), findsOneWidget);
+          final resumedEpisode = _insideDetail(find.text('qsvip HD中字')).last;
+          final episodeButton = find.ancestor(of: resumedEpisode,
+              matching: find.byWidgetPredicate(
+                (widget) => widget.runtimeType.toString() == '_EpisodeButton'));
+          final episodeScroller = find.ancestor(of: episodeButton,
+              matching: find.byType(SingleChildScrollView));
+          expect(episodeScroller, findsOneWidget);
+          final buttonBounds = tester.getRect(episodeButton);
+          final viewportBounds = tester.getRect(episodeScroller);
+          expect(buttonBounds.top, greaterThanOrEqualTo(viewportBounds.top));
+          expect(buttonBounds.bottom, lessThanOrEqualTo(viewportBounds.bottom),
+              reason: 'The resume chip must leave one complete episode row.');
+          expect(resumedEpisode.hitTestable(), findsOneWidget);
+          expect(tester.takeException(), isNull);
         } finally {
           if (delayedEpisodes != null && !delayedEpisodes!.isCompleted) {
             delayedEpisodes!.complete(<Object>[]);

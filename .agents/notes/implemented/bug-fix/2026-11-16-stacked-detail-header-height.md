@@ -21,6 +21,12 @@ the loaded episode list keeps its independent scroll behavior. An immediate
 mock response cannot validate this path, so the layout fixture holds the
 original get_episodes request pending across multiple rendered frames.
 
+The stacked layout also uses compact section spacing: the poster-to-source gap
+is Sp.x4, and section-title, source-trailing and episode-trailing gaps are Sp.x2.
+The regular layout retains its original spacing. This leaves a complete episode
+button visible when live progress reveals the resume chip after five seconds;
+the chip, poster, title, actions and source controls all remain visible.
+
 ## Alternatives considered
 
 - Scroll the entire panel: this would hide the fixed title and source choices and contradict the existing episode-only scrolling contract.
@@ -38,6 +44,13 @@ was true. The pending synthetic receiver reproduces 50px in the stacked window
 and passes the wide control before the fix; those measurements describe their
 respective content. The fixed four-file layout and synchronization suite passes
 63 cases. A fresh native UI run remains required for integrated acceptance.
+
+The extended real window then showed a 16.2px episode viewport after the resume
+chip appeared. A held-request plus eight-second resume fixture reproduces the
+clipped button and preserves the wide-pane control. The compact spacing change
+passes all 65 layout, source-sync and live-progress cases, including full button
+bounds inside its actual viewport. This does not promise arbitrary multirow
+source trees or enlarged text will fit the same fixed-height pane.
 
 ## Verification
 

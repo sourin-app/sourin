@@ -63,8 +63,12 @@ Protocol and Release evidence are in `.probe/protocol-final-20261117/` and
    untraced measurements, and links cannot yet be attributed to individual
    assets. The rejected prewarm/shadow/repaint experiments stay rejected.
    The shared stroke/rim-program candidate passes actual shader and component
-   pixels. A same-source untraced circle/shared comparison is being built under
-   the existing budget; no candidate is accepted into the product yet.
+   pixels but is rejected after the full same-source untraced comparison.
+   Startup raster peaks are 324199/329501us; navigation raster peaks are
+   46345/72113us. Both complete 20 windows and natural exit. The independent
+   audit checks all 1186/1194 frames and rejects four altered controls.
+   Physical program count decreases from four to three; actual driver link
+   count is not inferred. Product rendering is unchanged.
 2. Complete current production-AOT original ask/quit when the task window can
    remain renderable without violating the no-focus contract. Keep the newly
    staged production bytes and all failed lifecycle receipts separate.

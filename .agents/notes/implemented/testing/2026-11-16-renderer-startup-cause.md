@@ -46,11 +46,41 @@ raw four-byte observation without using its high bytes for classification.
 The independent receipt is
 `.probe/performance-parallel-20261117/next-driver-keys-v1/FULL_DRIVER_RETRY_AUDIT_V1.json`.
 
-Next bind real compile/link entry-return boundaries and generated HLSL to
-actual descriptors using the matching private layout and installed compiler
-ABI. Qualify owned hardware fixtures before any diagnostic GUI. Debug pauses
-and raw wall spans remain diagnostic; untraced full-frame validation is still
-required for admission. Rejected warm-up, shadow and repaint experiments stay
-rejected. Revisit this decision if renderer, driver, shader assets, source,
-core or workload changes. No product optimization is accepted; raw sources,
-traces and receipts stay in the task probe directory.
+The first link-boundary preparation fails before creating an application.
+Its qualified successor completes twenty windows and 1149 frames, but all
+78 compile entries reject the function-table target guard. No GL link is
+armed; this does not establish zero link calls. Its 156 public compiler
+boundaries are 78 nested outer/inner pairs. Raw HLSL is retained, but missing
+independent raw strings and ordered macros leave replay ineligible. These
+failed captures and their original receipts remain unchanged.
+
+A new embedded-engine diagnostic now retains twenty windows and 1181 frames,
+including all 229 startup records. Actual function-table memory uniquely binds
+the typed engine target at all 78 compile entries. Each complete 40-byte
+wrapper and 32-byte buffer is persisted before validation. All 78 loaded
+294-byte target bodies exactly match disk without relocation normalization.
+Thirty-nine actual program keys bind 78 compile returns and 39 observed
+engine link returns. The root audit rehashes 509 inputs and rejects eight
+table mutations; an independent audit passes 46 checks. Exit is zero, the
+owned window disappears and natural Job-zero lasts 8.037637 seconds without
+force. Execution-slot coverage is bounded; observed returns do not establish
+a universal link count.
+
+All 156 observed public compiler boundaries retain exact raw strings with
+their actual NUL bytes and complete ordered macros. They remain 78 actual
+nested pairs. Fifty-nine unique public input closures are selected for a
+separate API-only parameter review. Root verifies 245 inputs and every actual
+argument, including nullable values, output slots and compiler identity.
+Worker calls have no strong key/program/link attribution. Input completeness
+does not authorize execution, identify a widget or measure compiler cost.
+The root receipts are `ACTUAL_EMBEDDED_ENGINE_LINK_ROOT_AUDIT_V1.json` and
+`ACTUAL_V3_PUBLIC_PARAMETERS_ROOT_REVIEW_V1.json` under
+`.probe/goal-root-acceptance-next-20261117/`.
+
+Next qualify a bounded public compiler replay and use causal evidence to
+review a new renderer hypothesis. Debug pauses and raw wall spans remain
+diagnostic; untraced full-frame validation is still required for admission.
+Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this
+decision if renderer, driver, shader assets, source, core or workload changes.
+No product optimization is accepted; raw sources, traces and receipts stay
+in the task probe directory.

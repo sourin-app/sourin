@@ -144,9 +144,18 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    captures. Eight runtime-effect captures uniquely match four packaged
    assets. The first failed stability run remains retained. Capturing can
    affect timing; descriptor counts do not establish actual GL-link counts.
-   Next work captures real CompileAndAttach/link entry-return boundaries and
-   generated HLSL with actual public compiler ABI. An isolated one-line
-   shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
+   Actual embedded-engine V3 now completes twenty windows and 1181 frames,
+   retaining all 229 startup records. Thirty-nine keys bind 78 compile returns
+   and 39 observed GL link returns. All 78 full function tables and loaded
+   294-byte target bodies qualify; root rehashes 509 inputs and rejects eight
+   table mutations, while independent review passes 46 checks. Original V1
+   prelaunch and V2 table-guard failures remain rejected. The 156 public
+   compiler boundaries form 78 nested pairs; all raw strings and ordered
+   macros qualify. Root separately reviews 59 exact API-only parameter sets
+   against 245 inputs. Compiler workers remain unbound to key/program/link;
+   these inputs do not authorize replay or establish cost. Next qualify a
+   bounded public compiler replay and review causal renderer hypotheses.
+   An isolated one-line shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
    1025 changed bytes/432 pixels with maximum channel difference eight. Its
    original shader/clip/layer/shape inputs and both sixteen-control cohorts
    pass; no Profile or additional demand test runs after visual rejection.
@@ -166,13 +175,16 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V6 matrix has thirty rows and 49 rehashed evidence reports;
-   earlier matrix controls and the pending run's eight negative controls are
-   retained.
+   The current V8 matrix has thirty rows and 59 rehashed evidence reports;
+   eight altered matrix/scope controls fail. Earlier controls and the pending
+   run's eight negative controls remain retained.
    Its independent source binding rechecks 97 explicit files and rejects
    eleven scope/identity/progress/ownership/hash mutations. Current source
-   PlayerPage, exact-card and Release playing/switch scopes are closed; final
-   performance, old minimize caller and same-product integration remain open.
+   PlayerPage, exact-card and Release playing/switch/pending scopes are closed.
+   Current owning-input integration is accepted, including the two native
+   logging components and separate Debug/Release library ownership. Reopen
+   affected bindings after an admitted product renderer change. Performance
+   under the original budget and the old minimize caller remain open.
 
 ## Boundaries
 

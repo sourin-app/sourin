@@ -66,9 +66,38 @@ registry unchanged. Removing the plugin while another reload is held prevents
 resurrection after release and after a subsequent reload. All HTTP handlers and
 call threads join; final native exit is zero and natural empty Job is 8.0388036s.
 The production ABI uses a unique task credential namespace, not a test-only
-EntryOnly backend. No real account login is attempted. Serial invalid-save then
-delete is covered; concurrent save/delete remains unverified. The independent
-audit rejects four altered-result controls and leaves whole-JS acceptance false.
+EntryOnly backend. No real account login is attempted. The reload audit rejects
+four altered-result controls and leaves whole-JS acceptance false.
+
+The continuation also validates four production-ABI save/delete races: valid or
+validation-failing source, each with a control and deletion during held
+validation. A synthetic plugin uses the real private-store API to signal entry;
+the fixture observes that signal before deleting, then releases validation.
+Both deleted cases return obsolete-operation errors and remain absent after
+another reload. Valid control saves version 2; invalid control preserves version
+1 and its exact bytes. Unrelated private data is unchanged in all four cases.
+All save threads join, exit is zero, and natural Job0 lasts 8.0009479s. Ten
+altered-result controls are rejected. The first gate-release file-sharing error
+is preserved as a failed fixture run; it is not a product defect or acceptance.
+
+Current library validation now covers six original favorite/follow callbacks
+and three populated library tabs. A second independent owner starts from an
+exact task-profile copy, with only the task proxy listener address rebound;
+there is no preparatory core/content reseed. Identity, flags, selected episode,
+eight-second position and 6238-second duration remain stable. All three tabs
+decode the target cover in both owners. Natural Job0 is 8.037807s / 8.0053375s,
+without force. The audit checks 59 runtime files, 3598 frontend inputs, 415
+product parity entries, 20 copied files and 18 PNGs, with eight rejected altered
+controls. This is one target and a cold process, not multi-item sort validation
+or an empty disk-cache test. Routine check timestamps and local cover URLs may
+change; no claim of zero data writes is made.
+
+A fresh second-line UI run also succeeds through original callbacks and native
+decoding. The new line renders 1920x1080 but lasts only 30.058 seconds. Same
+State/Player, changed session generation, selected episode, detail highlight,
+actual playlist/segment forwarding and normal exit are verified. Two unrelated
+denied endpoint requests are retained. This closes the observed short-clip
+switching path, not two complete target-film lines.
 
 Current Debug v3 and Release v2 each contain 59 files. Independent audits rehash
 3,597 / 3,604 frontend inputs respectively, plus 269 unchanged core inputs.
@@ -101,15 +130,30 @@ is a settled historical picture: paint/resource payloads are not decoded,
 individual operations are not timed, and it is not the specific cold frame.
 Do not infer a proven shader culprit or merge a visual change from that count.
 
+A separate equal-configuration glass repaint guard was tested in isolated
+copies. Component paint counts improve and twenty pixel pairs are identical,
+but the actual Profile pair does not show navigation benefit: after-startup
+raster max 23.644/49.080ms, p95 3.244/3.620ms and over-budget frames 1/6 for
+baseline/candidate. Both retain all frames and the original twenty windows.
+The candidate is rejected for product adoption; its lower cold maximum is not
+attributed to the guard. See the [decision](.agents/notes/rejected/bug-fix/2026-11-17-equal-glass-update-repaint-guard.md).
+
 Continue with distinct open work:
 
-1. Resolve ordinary Release's no-focus startup contract before another launch.
+1. Resolve Release startup scope before another launch. Default product startup
+   intentionally focuses its window, conflicting with the current no-focus task
+   constraint. Native-only Show suppression misses independent plugin Show,
+   Focus and geometry paths. Rebuilding task-safe Release native components may
+   qualify isolated Release lifecycle, but cannot establish unchanged default
+   activation. Do not rerun the old failed package or alter default behavior just
+   to claim acceptance.
 2. Validate remaining provider/second-line movie identity; retain upstream
    placeholders and failures. Account-required cloud playback still needs its
    separate external authorization and test conditions.
-3. Bind all specified UI, library/cold-cover, source persistence and concurrent
-   JS save/delete scenarios to current product inputs. Dual reload ordering and
-   serial invalid-save/delete now have current-core evidence. Prior scoped evidence
+3. Bind the remaining UI, multi-item library/sort, cache-page cover and source
+   persistence scenarios to current product inputs. Dual reload, concurrent
+   save/delete and one-target library cold-process restoration now have current
+   evidence. Prior scoped evidence
    may be reused only after verifying affected inputs and exact scope.
 4. Obtain cold-frame resource/timeline evidence for a production performance
    candidate, then use the unchanged startup/navigation/scroll budget.
@@ -129,11 +173,25 @@ All run directories below are under `.probe/goal-resume-20261115-evening/`:
 - `detail-sync-resume-release-bytes-audited-20261117-v3.json`
 - `CURRENT_RELEASE_CORE_JS_RELOAD_INVALID_SAVE_DELETE_AUDITED_20261117_V1.json`
 - `js-current-abi-20261117-v2/result.json`
+- `JS_SAVE_DELETE_20261117_READONLY_AUDIT_V1.json`
+- `js-save-delete-20261117-v2/result.json`
+- `CURRENT_LIBRARY_CURRENT_COLD_20261117_AUDIT_V1.json`
+- `current-player-yunduo-public-opaque-v13-library-20261117/result.json`
+- `current-player-yunduo-public-opaque-v14-cold-20261117/result.json`
+- `SECOND_LINE_SHORT_CLIP_20261117_READONLY_AUDIT_V1.json`
+- `current-player-yunduo-public-opaque-v12-second-line-20261117/result.json`
 - `line-sync-release-runtime-20261117-v2-manifest.json`
 - `line-sync-release-independent-restart-20261117-v1/failure-record.json`
 - `RELEASE_FOREGROUND_SCOPE_CLARIFICATION_20261117_V1.json`
 - `owned-skp-d291834-frozen-20261117-v1/result.json`
 - `SKP_OPERATION_INVENTORY_20261117_V2.json`
+- `glass-guard-baseline-profile-v1/result.json`
+- `glass-guard-candidate-profile-v1/result.json`
+
+Additional local artifacts: `.probe/performance-continuation-20261117/` contains
+the pixel comparison, Profile build audit and experiment disposition;
+`.probe/startup-continuation-20261117/analysis.md` records the static activation
+path review. Neither artifact family establishes whole-goal acceptance.
 
 Local commits are authorized. No remote push or release is performed. Whole-goal
 acceptance remains false; this continuation is not a completed delivery claim.

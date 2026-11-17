@@ -1151,6 +1151,42 @@ class _SourceProvidersDialogState extends State<SourceProvidersDialog> {
   bool _saving = false;
   String? _error;
 
+  void _setProviderSelected(String id, bool value) {
+    if (_saving) return;
+    setState(() => value ? _selected.add(id) : _selected.remove(id));
+  }
+
+  Widget _providerChoice(String id) {
+    final title = widget.origins
+        .where((origin) => origin.providerIds.contains(id))
+        .firstOrNull
+        ?.name ?? id;
+    final summary = widget.providers
+        .where((provider) => provider.id == id)
+        .firstOrNull
+        ?.name;
+    final selected = _selected.contains(id);
+    // One stable labelled switch owns accessibility across pending saves.
+    // The package row/pressable/switch otherwise merge differently when disabled.
+    return Semantics(
+      container: true,
+      label: summary == null || summary.isEmpty ? title : '$title\n$summary',
+      toggled: selected,
+      enabled: !_saving,
+      onTap: _saving ? null : () => _setProviderSelected(id, !selected),
+      child: ExcludeSemantics(
+        child: miuix.MiuixSwitchPreference(
+          key: ValueKey('source-provider-choice-$id'),
+          title: title,
+          summary: summary,
+          value: selected,
+          enabled: !_saving,
+          onChanged: (value) => _setProviderSelected(id, value),
+        ),
+      ),
+    );
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     setState(() {
@@ -1200,25 +1236,7 @@ class _SourceProvidersDialogState extends State<SourceProvidersDialog> {
             ],
           ),
           for (final id in widget.group.providerIds)
-            miuix.MiuixSwitchPreference(
-              key: ValueKey('source-provider-choice-$id'),
-              title:
-                  widget.origins
-                      .where((o) => o.providerIds.contains(id))
-                      .firstOrNull
-                      ?.name ??
-                  id,
-              summary: widget.providers
-                  .where((p) => p.id == id)
-                  .firstOrNull
-                  ?.name,
-              value: _selected.contains(id),
-              enabled: !_saving,
-              onChanged: (value) => setState(() {
-                if (_saving) return;
-                value ? _selected.add(id) : _selected.remove(id);
-              }),
-            ),
+            _providerChoice(id),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: Sp.x3),

@@ -290,8 +290,8 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V15 matrix has thirty rows and 128 rehashed evidence reports;
-   twenty-one altered matrix/scope controls fail. Selected-only software pixels,
+   The current V16 matrix has thirty rows and 139 rehashed evidence reports;
+   twenty-two altered matrix/scope controls fail. Selected-only software pixels,
    compiled Profile AOT and actual runtime qualify; its empty native-key census
    and original-budget performance are rejected. Combined V1 pixels and static
    AOT qualify, but changed hit semantics reject V1 behavior. The hitfix successor
@@ -306,6 +306,22 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    logging components and separate Debug/Release library ownership. Reopen
    affected bindings after an admitted product renderer change. Performance
    under the original budget and the old minimize caller remain open.
+   The track path passes 468 full-component pairs, 936 raw pixel comparisons
+   and 468 encoded/decoded PNG comparisons with zero differences. Root rehashes
+   4953 inputs with 29328 checks; only the row-local shape differs. Native
+   outer/inner contains comparisons total 95040 per cohort at three scales.
+   Old geometry/style does not prove a unique widget, current key effect or cost.
+   Mapping coreV3 passes85 pure controls. AdapterV4 fixes shared-return readback
+   drift in12 actual inherited-method fake cases; V3 failure remains preserved.
+   Real suspended-thread Dr7 requests0/1/5/1024/1025/1029 read0/1/5/0/1/5.
+   Dr7 zero clears all addresses; nonzero Dr7 keeps requested addresses, including
+   a disabled slot. Root's incorrect individual-slot clearing assumption remains
+   a failed review before the corrected548-check/313-input audit. Original and
+   duplicate owned native handles pass exact PID/birth/Job controls. Finish the
+   separately admitted single diagnostic on existing hitfix AOT for physical
+   RIP/allocation-base/full568-byte Create code and nonempty saved-return inputs.
+   Captured boundaries and complete mapping absence have separate gates.
+   No track AOT, new formal budget or product renderer is admitted by preparation.
 
 ## Boundaries
 

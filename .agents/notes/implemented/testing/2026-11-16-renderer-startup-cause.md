@@ -298,6 +298,32 @@ overwrite remains unproven as root cause. A track source suggested by retained
 does not uniquely identify a widget or measured cost. Product rendering remains
 unchanged and the goal stays active.
 
+The track-only successor passes468 full-component pairs with936 raw pixels,
+468 encoded PNG and468 decoded PNG comparisons, all byte-identical. Root
+rehashes4953 inputs with29328 checks and the exact single row-local delta.
+Native outer/inner contains comparisons total95040 per cohort at three scales;
+actual event dispatch and complete semantics are not claimed. Old operation7
+retains six full raw receipts, white alpha.10, Canvas stroke.8, radius20 and
+shadow24; the AA-expanded radius band is not Canvas stroke width. Historical
+geometry/style does not establish unique widget identity, current key effect
+or measured cost. No track AOT or formal budget is admitted.
+
+Mapping coreV3 executes85 pure controls. AdapterV4 uses one immutable prior
+readback per stopped event to fix shared-return drift in12 actual inherited
+fake cases. Root's83-check review confirms both returns use Dr7=5 before
+rotation5/1/0, preserving V3's second-return rejection. Real suspended-thread
+Dr7 requests0/1/5/1024/1025/1029 read0/1/5/0/1/5. Dr7 zero clears all addresses;
+nonzero Dr7 keeps requested addresses, including a disabled slot. Root's wrong
+individual-disabled-slot clearing expectation remains a failed V1 audit before
+corrected V2's548 checks/313 rehashed inputs, without a fixture rerun. Original
+and duplicate task-owned native handles pass PID/birth/Job controls. These
+preparations do not prove an engine debug event. A separately admitted single
+diagnostic must bind actual RIP/allocation-base/full568-byte Create code and
+nonempty current inputs to original saved returns. Captured boundaries and
+complete mapping absence remain distinct. V16 has thirty rows/139 rehashed
+reports and22 rejected scope mutations. Performance, historical minimize caller
+and product renderer acceptance remain false.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

@@ -208,7 +208,7 @@ scenarios. The hitfix successor passes actual dynamic hit/pixel parity,
 full24/72/20 pixels and its own source-to-Profile-AOT bridge. Its sole quiet
 plain runtime naturally completes all twenty windows and retains1174 frames/
 156 startup records, but original-budget build/raster/total-span failures1/8/14
-reject renderer admission. The V15 thirty-row matrix rehashes128 reports and
-rejects twenty-one scope mutations; performance and the old minimize caller
+reject renderer admission. The V16 thirty-row matrix rehashes139 reports and
+rejects twenty-two scope mutations; performance and the old minimize caller
 remain open. Rebind
 affected functional owning inputs only after a renderer is admitted to product.

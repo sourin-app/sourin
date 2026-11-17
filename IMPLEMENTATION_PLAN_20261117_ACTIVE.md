@@ -168,8 +168,17 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    diagnostic before choosing a renderer hypothesis. The V1 stack guard is
    rejected: entry RSP plus eight belongs to the adjacent actual caller, not
    the named onExecute frame. Twenty-eight frozen native observations support
-   the corrected predicate. V2 needs separate native qualification; failed
-   compiler Jobs and artificial byte controls remain separate evidence.
+   the corrected predicate. A materialized V3 native fixture now qualifies
+   39 raw receipts, ten actual op entry/return pairs, ten R9 flows and three
+   exact caller bindings. Seven actual data failures and eighteen stack
+   mutations reject; two strict return denials remain forced and unqualified.
+   The positive run exits zero with natural Job-zero for 8.034255 seconds;
+   independent review passes 518 checks plus 171 origin/ABI checks. Root
+   rehashes 77 inputs and all actual memory. Compiler Jobs still fail natural
+   drain, and their retained artifacts do not upgrade those Jobs. Fixture
+   program metadata is preinitialized; this does not establish actual engine
+   cold metadata, GL CreateProgram returns, op/widget origin or cost. Prepare
+   the minimal actual op/clip/CreateProgram adapter under a separate GUI scope.
    An isolated one-line shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
    1025 changed bytes/432 pixels with maximum channel difference eight. Its
    original shader/clip/layer/shape inputs and both sixteen-control cohorts
@@ -187,8 +196,18 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    behavior and ready-callback LastError preservation. Explicit startup
    bootstrap records cold FFI side effects; the old lazy clock's cold failure
    remains rejected. Root rehashes 3064 inputs and admits build preparation
-   only. The independent diagnostic AOT and GUI are not built or executed yet;
-   static source candidates do not establish the old caller. Preserve every
+   only. The independent diagnostic AOT is now built. Its actual kernel
+   compiler exits zero and naturally drains for 8.038322 seconds. The target
+   stamp and input list bind 3488 unique inputs and one deduplicated app.dill.
+   A separately admitted gen-only successor uses that kernel without repeating
+   it or the constructor: exit zero, natural Job-zero for 8.030939 seconds.
+   Root rehashes 15366 frozen inputs, validates the new ELF64 x64 snapshot
+   ranges and every runtime file. The exact 59-file package changes only app.so;
+   production AOT and 58 native/assets files remain preserved. The missing
+   graph kernel failure and empty external-output-list postprocessing failure
+   remain rejected. Actual diagnostic bootstrap and callbacks still require
+   the planned single GUI run; static source/code markers do not establish
+   the old caller. Preserve every
    failed run and original method body. Never restore or suppress minimizing
    to make a visibility gate pass. Coordinate all diagnostic GUI windows with
    the performance branch.
@@ -196,8 +215,8 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V9 matrix has thirty rows and 65 rehashed evidence reports;
-   ten altered matrix/scope controls fail. Earlier controls and the pending
+   The current V10 matrix has thirty rows and 74 rehashed evidence reports;
+   twelve altered matrix/scope controls fail. Earlier controls and the pending
    run's eight negative controls remain retained.
    Its independent source binding rechecks 97 explicit files and rejects
    eleven scope/identity/progress/ownership/hash mutations. Current source

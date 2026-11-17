@@ -98,9 +98,29 @@ CPU/GPU cost. Prepare a minimal typed op-entry/return diagnostic to inspect
 actual bounds and the original drawing relationship. The V1 stack guard is
 rejected before GUI: entry RSP plus eight identifies the adjacent actual
 caller, while the named frame has its own prologue-adjusted SP. Twenty-eight
-frozen native observations support the corrected predicate. V2 requires
-separate native execution qualification; artificial byte controls and failed
-compiler Jobs do not provide it. No actual op-origin capture is accepted yet.
+frozen native observations support the corrected predicate. A separate
+materialized V3 native fixture now qualifies 39 actual memory receipts, ten
+op entry/return pairs, ten R9 flows and three exact caller bindings. Seven
+physical data failures and eighteen actual-stack mutations reject. Its
+positive exits zero with Windows Job-zero for 8.0342546 seconds and monotonic
+Job-zero for 8.0342578 seconds. Two strict return denials remain exit 73,
+forced and unqualified; the outer host's natural drain does not upgrade them.
+Independent review passes 518 checks plus 171 import-origin/ABI checks.
+Root rehashes 77 inputs and all raw observations. Compiler Jobs remain failed
+despite retaining artifacts used by the independently qualified native run.
+The older zero-fOpArgs fixture and unfrozen cached-import failures remain
+rejected. The successor executes verified source bytes without ambient pyc.
+
+Current engine bytes show that its constructor clears program metadata,
+onCreateProgramInfo stores the returned metadata pointer, and onExecute
+returns immediately if that pointer is null. The helper is not GL CreateProgram.
+The fixture preinitializes metadata and its void Create entry does not qualify
+actual engine cold metadata or GL CreateProgram returns. Preserve entry-null
+snapshots as pending; an actual adapter must separately bind live typed memory
+to the exact owned caller and actual Create entry/return. No actual op-origin
+capture, widget attribution or performance acceptance is established yet.
+The new root receipt is `NATIVE_RRECT_V3_TYPED_DECODER_ROOT_AUDIT_V1.json`
+under `.probe/goal-root-acceptance-next-20261117/`.
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

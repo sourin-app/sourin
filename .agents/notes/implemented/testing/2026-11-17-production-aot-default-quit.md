@@ -150,8 +150,33 @@ compile flag. They retain 187 worker checks, 67 independent checks and 22
 durable real-QPC events. Root rehashes 3064 inputs, including the full staged
 source and four reversible AST additions, and admits build preparation only.
 One redundant non-null assertion warning remains in the staged recorder.
-The independently bound diagnostic AOT has not been built or launched; it
-cannot reuse unchanged-production-AOT acceptance. No actual minimize or old
+The independently bound diagnostic AOT cannot reuse unchanged-production-AOT
+acceptance. No actual minimize or old
 calling origin is attributed by headless qualification. Root evidence is
 `MINIMIZE_V3_SOURCE_HEADLESS_ROOT_AUDIT_V1.json` under
 `.probe/goal-root-acceptance-next-20261117/`.
+
+The independently staged diagnostic AOT is now generated. The first kernel
+attempt fails because the current SDK also requires package_graph.json.
+Its successor copies the exact paired graph: 117 package identities, all 116
+dependency versions from the frozen lockfile and the original root version.
+The kernel compiler exits zero with natural Job-zero for 8.038322 seconds.
+Its external output list is empty because app.dill is a target-internal output;
+that postprocessing failure remains failed. The actual target stamp and input
+list jointly bind 3488 unique inputs, including one newly generated source,
+and exactly one deduplicated 63044896-byte kernel output.
+
+A separately admitted gen-only successor consumes that exact kernel without
+repeating the kernel or constructor. It exits zero and retains 160 naturally
+empty Job samples spanning 8.0309392 seconds without force. The diagnostic AOT
+SHA256 is `11E01ABB77D1D12FB34E91E2382905FF16C3203C8DC5679EBB3BCE496BF98336`.
+Root rehashes 15366 frozen inputs and all 59 runtime files; only app.so changes
+from the qualified native package. ELF64 little-endian x64 headers and the
+three current snapshot symbols have exact section/PT_LOAD mappings. Diagnostic
+bootstrap and callback markers exist in the new AOT and are absent in the old
+production AOT. This establishes code presence, not runtime initialization.
+The root receipt is `MINIMIZE_V3_ACTUAL_AOT_AND_STATIC_PACKAGE_ROOT_AUDIT_V1.json`
+in the same root evidence directory. The planned single diagnostic GUI must
+still observe actual bootstrap-ready and original callback provenance. No
+actual minimize or old calling origin is attributed by compilation or static
+package qualification; original production lifecycle acceptance is preserved.

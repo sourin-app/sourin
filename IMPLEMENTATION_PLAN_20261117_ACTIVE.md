@@ -3,6 +3,8 @@
 This continues the original scope in IMPLEMENTATION_PLAN_20261108.md. Current
 product input is 6bb7e49. Local work continues without remote publication.
 Historical failures and successor receipts remain intact under `.probe/`.
+The user's latest instruction authorizes an active goal and parallel continuation.
+This supersedes the earlier no-goal preference in the historical plan.
 
 ## Implemented and verified
 
@@ -23,9 +25,9 @@ Historical failures and successor receipts remain intact under `.probe/`.
   Forty-five related lifecycle, preference, live, preview and transport tests
   pass. Existing analyzer diagnostics are separately tracked.
 - Current production C ABI reload and save/delete races preserve ownership.
-- Three anonymous protocol families return current catalogues/lists; one also
-  resolves the exact direct episode. Its media probe is blocked by the task's
-  API-only relay, so resolution is not claimed as decoded media.
+- Earlier API-only relay denials remain failed observations. Their successors
+  qualify exact media paths as described below; catalogues alone do not qualify
+  playback.
 - All three protocol families' exact fresh selections pass original core HLS
   forwarding and independent three-second file-PCM controls. Muted samples
   remain zero; positive nonzero counts are 256488, 120615 and 264499. All retain
@@ -84,7 +86,10 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
 
 ## Work in execution
 
-1. Continue rendering optimization from measured synchronous shader links.
+1. Attribute actual program descriptors and generated shaders to the measured
+   synchronous driver links using matching offline engine symbols and an owned
+   diagnostic process. Select a new rendering hypothesis only after causal
+   evidence; then retain exact visual parity and the original full-frame budget.
    The isolated circular candidate improves several untraced measurements but
    still exceeds the unchanged 16.667ms budget. A separate diagnostic frame is
    288.579ms with 236.322ms of driver links. Trace results do not replace the
@@ -105,13 +110,19 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    windows and natural exit. Four altered controls fail. The two initial
    pre-start stability failures and their196/304 frames remain retained.
    The candidate remains outside product; performance remains unaccepted.
-2. Keep the three anonymous protocol results scoped to their exact fresh
-   selected episodes and short independent decoder observations. The final
-   family retains its original `mp4` candidate kind while actual HLS is decoded.
-   Initial API-only denials and intermediate preparation failures remain.
-3. Incorporate the pending rendering comparison and remaining protocol results
-   into the affected-input/package record. The current matrix already binds
-   production AOT, task-native diagnostics and four current Debug scopes.
+2. Exercise actual PlayerPage presentation, progress, episode ownership and
+   return for the three exact anonymous selections, reusing qualified current
+   Debug inputs. Classify remaining cover failures from exact image responses
+   and visible decoding. The final family retains its original `mp4` candidate
+   kind while actual HLS is decoded. Preserve all failed observations.
+3. Extend current production Release AOT acceptance from idle ask/Quit to
+   active playback, original episode switching and pending-request Quit. Reuse
+   qualified task-native components and new isolated profiles under their
+   existing entry contract. Coordinate GUI windows with the protocol branch.
+4. Reconcile all original eighteen items and twelve additions with current
+   owning-input bridges and scoped evidence. Reuse completed library/live,
+   danmaku, source-selection and motion scenarios. Include new protocol,
+   Release and performance outcomes without converting scope limits into passes.
 
 ## Boundaries
 

@@ -176,7 +176,24 @@ three current snapshot symbols have exact section/PT_LOAD mappings. Diagnostic
 bootstrap and callback markers exist in the new AOT and are absent in the old
 production AOT. This establishes code presence, not runtime initialization.
 The root receipt is `MINIMIZE_V3_ACTUAL_AOT_AND_STATIC_PACKAGE_ROOT_AUDIT_V1.json`
-in the same root evidence directory. The planned single diagnostic GUI must
-still observe actual bootstrap-ready and original callback provenance. No
-actual minimize or old calling origin is attributed by compilation or static
-package qualification; original production lifecycle acceptance is preserved.
+in the same root evidence directory. The separately bound single diagnostic
+GUI now observes exactly one bootstrap-ready event and completes the original
+Home, first video, episode-two pending and Quit lifecycle. The process exits
+zero without force and retains 160 empty owned-Job samples spanning 8.0378271
+seconds. All 59 runtime files and 685 frozen plan inputs remain unchanged;
+18 loaded package modules bind to the package. Root CRC-decodes and views all
+five screenshots, including changing pixels inside the video-only interior.
+Independent release review passes 152 checks over the original nine natural
+Jobs and retained lifecycle evidence. A parser predecessor incorrectly uses
+Boolean identity for actual Win32 integer success fields; that failed parser
+and its corrected successor remain retained.
+
+Actual Dart minimize-callback and native method-entry counts are both zero.
+This qualifies the diagnostic bootstrap and one pending lifecycle, leaving
+the historical caller unattributed. The zero-event successor cannot explain
+the older retained native minimize events. Read-only helper audit finds no
+proven titlebar misrouting or system-input injection; callback keyboard/focus
+reachability is a source candidate without historical input or Dart evidence.
+The sole consumed GUI is not repeated. Root runtime evidence is
+`MINIMIZE_V3_SINGLE_GUI_RUNTIME_ROOT_AUDIT_V1.json` in the same directory.
+Original production lifecycle acceptance stays scoped to its own AOT.

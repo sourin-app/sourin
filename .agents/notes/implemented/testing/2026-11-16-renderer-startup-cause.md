@@ -117,10 +117,43 @@ returns immediately if that pointer is null. The helper is not GL CreateProgram.
 The fixture preinitializes metadata and its void Create entry does not qualify
 actual engine cold metadata or GL CreateProgram returns. Preserve entry-null
 snapshots as pending; an actual adapter must separately bind live typed memory
-to the exact owned caller and actual Create entry/return. No actual op-origin
-capture, widget attribution or performance acceptance is established yet.
+to the exact owned caller and actual Create entry/return. Actual op-origin
+capture is established by the separately qualified actual successor below;
+the fixture does not establish widget attribution or performance acceptance.
 The new root receipt is `NATIVE_RRECT_V3_TYPED_DECODER_ROOT_AUDIT_V1.json`
 under `.probe/goal-root-acceptance-next-20261117/`.
+
+The single actual engine diagnostic now retains four op entry/return pairs,
+eight actual Create saved-return pairs and four same-caller typed metadata/key
+flows. Root independently rehashes 420 inputs and raw receipts, passes 779
+checks and rejects ten scope mutations. Independent protocol review passes
+826 checks over 480 associated inputs. All 36 raw receipts are durable. The
+target key completes at actual op return before first-ready; entry coverage
+then retires explicitly while all 1924 startup frames and 2903 total frames
+across the original twenty windows remain recorded. The owned process exits
+zero without force and naturally empties for 8.0242102 seconds by the Windows
+clock and 8.0242131 seconds by the monotonic clock. The root audit's first
+schema interpretation incorrectly treats a per-thread map of empty pending
+lists as active calls; that failed checker is preserved with its successor.
+
+Actual target bounds are `[27,65,132,99]`; its one device item has bounds
+`[26.5,64.5,132.5,99.5]`, outer radius 17.5 and black alpha 0.06. OpArgs.fOp
+matches the saved object, and the applied clip has no coverage processor.
+Live object metadata at offset 192 matches saved actual R9 at both Create
+boundaries under the exact caller guard. These are observed byte and pointer
+relationships, not decoded returned sk_sp semantics, cold metadata creation,
+exclusion of concurrent writes or CPU/GPU cost. The sole consumed GUI is not
+rerun. Root evidence is `ACTUAL_RRECT_ORIGIN_RUNTIME_ROOT_AUDIT_V2.json` in the
+same evidence directory.
+
+The selected Home segmented-tab indicator is a bounded source candidate:
+its default light color is black alpha 0.06, and its 40-high track with inset
+three produces a 34-high stadium. Source layout also predicts the observed
+top-left bounds. This does not uniquely identify a widget. A replacement must
+pass exact component/current-composition pixels before original-budget
+untraced performance; changing a paint API alone does not prove a new engine
+op or shader key. In particular, a path containing an ordinary RRect may be
+recognized as the same primitive. No product renderer change is admitted.
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

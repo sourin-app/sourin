@@ -177,8 +177,20 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    rehashes 77 inputs and all actual memory. Compiler Jobs still fail natural
    drain, and their retained artifacts do not upgrade those Jobs. Fixture
    program metadata is preinitialized; this does not establish actual engine
-   cold metadata, GL CreateProgram returns, op/widget origin or cost. Prepare
-   the minimal actual op/clip/CreateProgram adapter under a separate GUI scope.
+   cold metadata, GL CreateProgram returns, op/widget origin or cost. The
+   separately qualified single actual engine diagnostic now retains four op
+   returns, eight Create saved returns, four same-caller typed metadata/key
+   flows and 36 raw receipts. Root passes 779 checks and ten scope mutations;
+   independent protocol review passes 826 checks. All 1924 startup and 2903
+   total frames across twenty windows are retained after explicit target-return
+   coverage retirement. Exit is zero without force; natural empty Job spans
+   8.024210 seconds. Returned sk_sp semantics and cold metadata remain unknown.
+   Bounds [27,65,132,99], a black-alpha-.06 capsule and zero coverage processor
+   support the selected Home segmented-tab indicator as a source candidate.
+   Validate a bounded rendering replacement with exact component/composition
+   pixels, then original untraced performance. Widget identity, cost and worker
+   attribution are not inferred from bounds. The sole diagnostic GUI stays
+   consumed; no product rendering change is admitted.
    An isolated one-line shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
    1025 changed bytes/432 pixels with maximum channel difference eight. Its
    original shader/clip/layer/shape inputs and both sixteen-control cohorts
@@ -205,9 +217,14 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    ranges and every runtime file. The exact 59-file package changes only app.so;
    production AOT and 58 native/assets files remain preserved. The missing
    graph kernel failure and empty external-output-list postprocessing failure
-   remain rejected. Actual diagnostic bootstrap and callbacks still require
-   the planned single GUI run; static source/code markers do not establish
-   the old caller. Preserve every
+   remain rejected. The single diagnostic GUI now observes bootstrap-ready
+   exactly once and completes original Home/video/episode-two pending/Quit.
+   Exit is zero without force, with 160 empty Job samples spanning 8.037827
+   seconds. Root views five CRC-decoded screenshots and verifies changing
+   native video pixels; independent release review passes 152 checks. Actual
+   Dart callback and native minimize-entry counts are both zero, leaving the
+   historical caller unresolved. The consumed GUI is not repeated merely to
+   reproduce this zero-event result. Preserve every
    failed run and original method body. Never restore or suppress minimizing
    to make a visibility gate pass. Coordinate all diagnostic GUI windows with
    the performance branch.
@@ -215,8 +232,9 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V10 matrix has thirty rows and 74 rehashed evidence reports;
-   twelve altered matrix/scope controls fail. Earlier controls and the pending
+   The current V11 matrix has thirty rows and 80 rehashed evidence reports;
+   thirteen altered matrix/scope controls fail. Actual diagnostic runtime and
+   engine metadata capture qualify only in their stated scopes. Earlier controls and the pending
    run's eight negative controls remain retained.
    Its independent source binding rechecks 97 explicit files and rejects
    eleven scope/identity/progress/ownership/hash mutations. Current source

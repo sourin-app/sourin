@@ -27,6 +27,8 @@ import 'package:sourin_spike/ui/widgets/detail_raw_meta.dart';
 import 'package:sourin_spike/ui/widgets/follow_update_notice.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 
+import 'support/detail_follow_behavior_fixture.dart';
+
 // ═══════════════════════════════════════════════════════════════════════ //  剥注释（状态机，见文件头说明为什么不能用正则  // ═══════════════════════════════════════════════════════════════════════ 
 /// 剥掉 `//` 行注释与 `/* */` 块注释，**保留字符串字面量**
 ///
@@ -403,15 +405,8 @@ expect(
       );
     });
 
-    test('★ 按源拉剧集必须走 getEpisodes(sourceCode)', () {
-      /*
-       * 原版 `DetailView.vue:234-245` 的 `loadEpisodes` 里重新调了一次
-* `content.detail()` —— 那是**取不到指定源的剧集 *的
-* （detail 返回默认源的剧集）
-* 我们这边用正确的 `get_episodes`，这条守住别退化回去　        */
-      expect(src, contains('SourinApi.getEpisodes('));
-      expect(src, contains('code,'), reason: '必须把 sourceCode 传给 get_episodes');
-    });
+    testWidgets('★ 按源拉剧集传递实际 sourceCode 并显示所选线路',
+        checkDetailSourceRequests);
 
     test('★ 源偏好要能命中嵌套层的 code', () {
       /*
@@ -471,12 +466,8 @@ expect(
       );
     });
 
-    test('★ 「N 个播放源」角标与线路区用**同一一 *数量', () {
-      /*
-       * 否则会出现 角标读 2 个源，但下面没有线路区 的自相矛盾　        */
-      expect(src, contains('sourceCount > 1'));
-      expect(src, contains('_sourceNodes.length > 1'));
-    });
+    testWidgets('★ 多源角标和线路区一致，单源隐藏选择器但保留剧集',
+        checkDetailSourceCount);
   });
 
   group('详情页 · 播放 / 选集 / 进度（DetailView.vue:129-178, 502-546）' , () {
@@ -650,11 +641,8 @@ expect(src, contains('_pickedEpisodeId ?? _selectedEpisodeId'));
       expect(src, contains("String _tab = 'following'"));
     });
 
-    test('★ 三个 tab 的标签与计数与原版一致' , () {
-      expect(src, contains("'追更中'"));
-      expect(src, contains("'全部收藏'"));
-      expect(src, contains("'继续观看'"));
-    });
+    testWidgets('★ 追更收藏历史显示各自计数，点击切换真实列表',
+        checkFollowTabsAndCounts);
 
     test('★ 两个列表必须**分别**查（followingOnly true/false）' , () {
       /*

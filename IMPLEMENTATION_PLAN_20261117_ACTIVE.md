@@ -26,11 +26,11 @@ Historical failures and successor receipts remain intact under `.probe/`.
 - Three anonymous protocol families return current catalogues/lists; one also
   resolves the exact direct episode. Its media probe is blocked by the task's
   API-only relay, so resolution is not claimed as decoded media.
-- Fresh direct and encrypted-episode selections now pass original core HLS
+- All three protocol families' exact fresh selections pass original core HLS
   forwarding and independent three-second file-PCM controls. Muted samples
-  remain zero; positive nonzero counts are 256488 and 120615. Both retain exact
-  selections, headers and core/decoder bytes. Their independent audits reject
-  four and five altered controls. This is bounded decoder evidence, separate
+  remain zero; positive nonzero counts are 256488, 120615 and 264499. All retain
+  exact selections, headers and core/decoder bytes. Independent audits reject
+  four, five and five altered controls. This is bounded decoder evidence, separate
   from PlayerPage presentation, device audio and full-film playback.
 - The direct selection additionally yields four physical 1920x1080 offscreen
   native frames, 1.8 seconds of progress and 566793 first/last changed color
@@ -97,9 +97,18 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    audit checks all 1186/1194 frames and rejects four altered controls.
    Physical program count decreases from four to three; actual driver link
    count is not inferred. Product rendering is unchanged.
-2. Continue the third anonymous protocol's exact current detail/resolve and
-   bounded media chain after independently checking returned cloud boundaries.
-   Keep initial API-only media denials and intermediate preparation failures.
+   A native circular clip fails all twenty component pairs and is rejected
+   before timing. A separate circle/rim candidate passes direct current-product
+   twenty-pair RGBA parity and demand loading, but its complete same-source
+   Profile pair retains 1268/1259 frames with startup raster375245/303557us,
+   navigation36974/65974us and all-frame over-budget9/14. Both complete twenty
+   windows and natural exit. Four altered controls fail. The two initial
+   pre-start stability failures and their196/304 frames remain retained.
+   The candidate remains outside product; performance remains unaccepted.
+2. Keep the three anonymous protocol results scoped to their exact fresh
+   selected episodes and short independent decoder observations. The final
+   family retains its original `mp4` candidate kind while actual HLS is decoded.
+   Initial API-only denials and intermediate preparation failures remain.
 3. Incorporate the pending rendering comparison and remaining protocol results
    into the affected-input/package record. The current matrix already binds
    production AOT, task-native diagnostics and four current Debug scopes.

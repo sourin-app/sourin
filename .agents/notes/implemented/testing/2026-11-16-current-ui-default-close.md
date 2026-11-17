@@ -6,6 +6,9 @@ Related: [Bound local decoder PCM verification](2026-11-16-local-decoder-pcm-ver
 
 Continued by: [Source settings cold-restart verification](2026-11-16-source-settings-cold-restart.md).
 
+The [production AOT default Quit verification](2026-11-17-production-aot-default-quit.md)
+separately qualifies the normal Dart entry with isolated native diagnostics.
+
 ## Problem
 
 A persisted quit preference skips the default close dialog. Earlier isolated lifecycle success therefore does not prove default ask, cancel or the original quit action. An image captured while the Home page is loading also cannot qualify all covers.

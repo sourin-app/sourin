@@ -26,6 +26,19 @@ Historical failures and successor receipts remain intact under `.probe/`.
 - Three anonymous protocol families return current catalogues/lists; one also
   resolves the exact direct episode. Its media probe is blocked by the task's
   API-only relay, so resolution is not claimed as decoded media.
+- Fresh direct and encrypted-episode selections now pass original core HLS
+  forwarding and independent three-second file-PCM controls. Muted samples
+  remain zero; positive nonzero counts are 256488 and 120615. Both retain exact
+  selections, headers and core/decoder bytes. Their independent audits reject
+  four and five altered controls. This is bounded decoder evidence, separate
+  from PlayerPage presentation, device audio and full-film playback.
+- The direct selection additionally yields four physical 1920x1080 offscreen
+  native frames, 1.8 seconds of progress and 566793 first/last changed color
+  pixels. Its relay orders a previously successful address first within the
+  unchanged fresh public DNS set. Seven altered controls fail. Two original
+  DNS-order requests retain the core three-second header timeout and HTTP502;
+  earlier PNG-encoder failures and zero-byte files remain failed. Original DNS
+  order and presented PlayerPage video are unqualified by this diagnostic.
 - Two library items retain identities, ordering, timestamps, each eight-second
   progress and decoded covers across the same-profile cold process. All three
   original library subtabs and two cache covers pass independent verification.
@@ -42,6 +55,18 @@ Historical failures and successor receipts remain intact under `.probe/`.
   fails before invoking Quit: the window is minimized to 160x28. A successor
   observes minimization, but its task-window restore triggers the foreground
   gate. Both failed runs and forced cleanup remain; that restore is not repeated.
+- The current production AOT now passes original ask/Quit with a qualified
+  diagnostic native pair. All 57 other runtime files remain byte-identical.
+  Home and ask are complete 1280x800 captures after 5.054454 seconds of stable
+  visibility. Original Quit exits zero and retains natural Job zero for
+  8.041078 seconds without force. All ten hide records are owned shadows;
+  the main window is never observed minimized. Earlier failure causes remain
+  unresolved. This scene has no active player and Home settles to a network
+  error; ordinary foreground startup and content remain separate.
+- The affected-input reuse audit rechecks 3605 live/frozen Release inputs,
+  35 compiled assets, 269 core inputs and 59 runtime files. Four current Debug
+  scenes revalidate with 3677 inputs and 416 exact product-parity rows. Twelve
+  altered controls fail. The package matrix keeps each mode and scope separate.
 
 Local evidence: `.probe/goal-resume-20261115-evening/` contains
 `U5_SOURCE_SEMANTICS_COLD_B40_20261117_AUDIT_V1.json`,
@@ -53,6 +78,9 @@ The new independent library/live audit is
 `TAKEOVER_LIBRARY_LIVE_20261117_AUDIT_V1.json` in the same directory.
 Protocol and Release evidence are in `.probe/protocol-final-20261117/` and
 `.probe/release-isolated-native-20261117-v1/` respectively.
+Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
+`.probe/release-parallel-20261117/`; the latter contains
+`CURRENT_AFFECTED_INPUT_PACKAGE_REUSE_AUDITED_V1.json`.
 
 ## Work in execution
 
@@ -69,12 +97,12 @@ Protocol and Release evidence are in `.probe/protocol-final-20261117/` and
    audit checks all 1186/1194 frames and rejects four altered controls.
    Physical program count decreases from four to three; actual driver link
    count is not inferred. Product rendering is unchanged.
-2. Complete current production-AOT original ask/quit when the task window can
-   remain renderable without violating the no-focus contract. Keep the newly
-   staged production bytes and all failed lifecycle receipts separate.
-3. Bind remaining accepted and explicitly limited results into the final
-   affected-input/package record. The exit-barrier negative control and the
-   original pending-TCP native successor already pass.
+2. Continue the third anonymous protocol's exact current detail/resolve and
+   bounded media chain after independently checking returned cloud boundaries.
+   Keep initial API-only media denials and intermediate preparation failures.
+3. Incorporate the pending rendering comparison and remaining protocol results
+   into the affected-input/package record. The current matrix already binds
+   production AOT, task-native diagnostics and four current Debug scopes.
 
 ## Boundaries
 
@@ -85,6 +113,7 @@ conditions; no real account or owner profile is used. Short upstream clips are
 reported as short clips. No full-film-duration, physical-input or system-audio
 requirement is invented. Blocked media probes remain explicit.
 
-Heavy builds, tests and native runs remain serialized under agreed resource
-limits. Successors use new run directories. Reusable evidence is bridged by
-its owning inputs rather than rerunning unrelated accepted scenarios.
+Independent preparations, source requests, builds and component tests run in
+parallel under agreed task-owned resource limits. Actual Profile measurements
+reserve a quiet exclusive window. Successors use new run directories. Reusable
+evidence is bridged by owning inputs rather than rerunning unrelated successes.

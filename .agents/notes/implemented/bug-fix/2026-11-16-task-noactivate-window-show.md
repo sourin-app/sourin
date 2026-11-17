@@ -4,6 +4,9 @@ Status: implemented
 
 Independent: this is a Windows runner test-isolation boundary; existing JS ownership, Home crash, and playback notes cover different product decisions.
 
+Related: [production AOT default Quit verification](../testing/2026-11-17-production-aot-default-quit.md)
+qualifies a separate task-private native pair and retains this failed build.
+
 ## Problem
 
 The isolated owner runner must show a task-owned window without activating it, but the normal Windows runner path uses the ordinary show command. Relaxing the observer would hide a real focus/interference failure.

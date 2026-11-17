@@ -4,6 +4,9 @@ Status: implemented
 
 Related: [JS ownership and bounded playback verification](../bug-fix/2026-11-15-js-mutation-ownership.md).
 
+The [fresh selected-source media verification](2026-11-17-current-source-media-decoder-verification.md)
+extends amplitude observation to original core-forwarded current media.
+
 ## Problem
 
 An advancing audio clock, a selected codec and nonzero player volume do not prove that decoded samples have nonzero amplitude. Capturing the default system output can include unrelated audio sessions and does not satisfy isolated verification.

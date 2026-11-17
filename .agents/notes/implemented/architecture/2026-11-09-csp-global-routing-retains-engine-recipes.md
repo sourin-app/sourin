@@ -7,6 +7,9 @@ The shared global settings panel follows
 
 Applies: 2026-11-09, the shared CSP HTTP context and engines explicitly migrated to it.
 
+Related: [fresh selected-source media verification](../testing/2026-11-17-current-source-media-decoder-verification.md)
+adds bounded actual core-forwarded media evidence while retaining these recipes.
+
 ## Problem
 
 Several installed CSP engines create their own clients with direct routing. A single global proxy setting cannot govern their requests unless that policy reaches the engine's actual request helper. Replacing every client with a generic one would also change engine-specific timeouts, redirects, cookies, headers and authentication state.

@@ -191,6 +191,21 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    pixels, then original untraced performance. Widget identity, cost and worker
    attribution are not inferred from bounds. The sole diagnostic GUI stays
    consumed; no product rendering change is admitted.
+   The fixed private four-conic path now passes 24 focused image pairs,
+   468 real segmented-row pairs with 936 RGBA-format comparisons, and the
+   original twenty composition image pairs, all with zero changed bytes.
+   Theme, direction, fractional position, motion, focus, pressed and background
+   cases retain their original pixels. A separate mask-SDF shader candidate is
+   rejected by sixty differing alpha pixels, maximum channel difference three.
+   The exact private source is also compiled into a separate Profile AOT:
+   425 copied sources, 6853 frozen bindings, natural exit zero/Job-zero
+   8.027848 seconds. The 59-file runtime changes only app.so; root verifies
+   current ELF64 snapshot mappings. This is not production Release or
+   performance acceptance. Qualify a bounded startup native-key census with
+   ready-request/safe-event retirement and actual pending-return drain, then
+   run plain original-budget Profile in a quiet interval. Enforce every frame's
+   build/raster/total span as rawUs*60<=1000000. New Python observers receive
+   separate execution admission without changing the frozen compiler receipt.
    An isolated one-line shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
    1025 changed bytes/432 pixels with maximum channel difference eight. Its
    original shader/clip/layer/shape inputs and both sixteen-control cohorts
@@ -232,8 +247,10 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V11 matrix has thirty rows and 80 rehashed evidence reports;
-   thirteen altered matrix/scope controls fail. Actual diagnostic runtime and
+   The current V12 matrix has thirty rows and 96 rehashed evidence reports;
+   seventeen altered matrix/scope controls fail. Exact candidate software
+   pixels and compiled Profile AOT qualify; its actual native-key effect and
+   original-budget performance remain pending. Actual diagnostic runtime and
    engine metadata capture qualify only in their stated scopes. Earlier controls and the pending
    run's eight negative controls remain retained.
    Its independent source binding rechecks 97 explicit files and rejects

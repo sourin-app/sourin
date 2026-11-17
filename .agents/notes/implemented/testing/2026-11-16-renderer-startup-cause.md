@@ -153,7 +153,50 @@ top-left bounds. This does not uniquely identify a widget. A replacement must
 pass exact component/current-composition pixels before original-budget
 untraced performance; changing a paint API alone does not prove a new engine
 op or shader key. In particular, a path containing an ordinary RRect may be
-recognized as the same primitive. No product renderer change is admitted.
+recognized as the same primitive. The fixed private candidate instead uses
+four rational conic arcs and splits its straight segments; the reviewed Skia
+source preserves it as a general path rather than assigning an RRect tag.
+This is a source hypothesis, pending actual engine observation.
+
+The candidate now passes 24 focused pixel pairs across light/dark, three
+pixel ratios and four fractional positions. Its real 337-by-40 segmented row
+passes 468 pairs across 36 theme/direction/background cases and thirteen
+motion, text, focus, pressed, alpha and resting-track phases. Both premultiplied
+and straight RGBA formats match exactly, totaling 936 format comparisons.
+The original four-case/five-phase composition matrix also passes all twenty
+pairs. Root CRC-decodes all associated PNGs and independently checks the
+source inventory: exactly one vendor drawing file changes, with its private
+implementation fixed to SHA256
+`B651F279E0A47F99BB02B29BF74CD8B17859D0523AC4ED7AA6780010B8C48D0A`.
+The missing-import fixture, interrupted asynchronous-I/O fixture and failed
+owned-drain predecessors stay failed. A separate mask-SDF/float-color shader
+candidate is rejected by sixty differing alpha pixels, maximum difference
+three; its failed hash-case parser does not invalidate the independent raw
+pixel rejection or upgrade the failed executor.
+
+The exact private path candidate is compiled into a separate Profile AOT.
+Root rehashes 6853 frozen bindings and 425 copied sources, verifies package
+URI remapping and all ELF64 x64 snapshot mappings, and checks all 59 runtime
+files. Only app.so changes from the baseline native/assets package. The
+17154952-byte AOT SHA256 is
+`A4C06692C8D10D7F42F52C319ABB1FA6A25B6AC211AABAA04088DA0C3C3314BB`.
+The compiler exits zero without force and naturally empties for 8.0278476
+seconds. This qualifies compiled source and static packaging, leaving runtime
+and performance unaccepted. Preserve the original build and manifest; a new
+Python observer needs its own execution admission and is not compiled into
+the AOT. Root receipts are `SEGMENTED_INDICATOR_COMPONENT_STRICT_PIXEL_ROOT_AUDIT_V1.json`,
+`SEGMENTED_INDICATOR_ORIGINAL20_PIXEL_ROOT_AUDIT_V1.json` and
+`SEGMENTED_INDICATOR_PROFILE_AOT_STATIC_ROOT_AUDIT_V1.json` in the same directory.
+
+A candidate native-key census must separate the ready-request time from the
+later safe-event retirement time. Retain an already observed pre-cutoff entry
+and drain its actual saved return; never retire pending calls before accepting
+that entry. Any absence claim covers only armed, observed and accepted
+nonrecursive startup samples, not every Create call or all twenty windows.
+The next plain Profile gate keeps all startup and frame records and computes
+each build/raster/total-span limit as `rawUs * 60 <= 1000000`; the rounded
+16667 display value cannot relax this budget. No product renderer change is
+admitted until that original performance gate passes.
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

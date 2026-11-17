@@ -56,6 +56,7 @@ import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 
 import '../../core/app_log.dart';
+import '../../core/app_player.dart';
 import '../../core/models.dart';
 import '../../core/native_media_transport.dart';
 import '../../core/ui_prefs.dart';
@@ -984,6 +985,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   }
 
   Future<void> _create() async {
+    if (AppPlayer.lifecycle.isClosing) return;
     // ★ task-74 ⑤：现在是被**延后**调用的 ⇒ 期间可能已经 dispose
     //   （回归风险 ③）。改前这里没有这个检查是因为它跟 `initState`
     //   在同一帧、不可能被抢先。
@@ -995,7 +997,16 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
      *
      * ⚠️ 直播**不开** libass：直播没有字幕轨，开了只是白占内存。
      */
-    final p = Player(
+    final p = AppPlayer(
+      beforeDispose: () {
+        if (!AppPlayer.lifecycle.isClosing) return;
+        _retireUserRequests();
+        _playbackCommandGeneration++;
+        _videoOutputToken++;
+        _createTimer?.cancel();
+        _hideTimer?.cancel();
+        _pendingStream = null;
+      },
       configuration: const PlayerConfiguration(bufferSize: 16 * 1024 * 1024),
     );
     final c = VideoController(p);
@@ -2165,7 +2176,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   ///    · resume：静音态下**不还原** —— 保持 0（用户的静音意图优先）。
   /// ```
   Future<void> pause() async {
-    if (_disposed) return;
+    if (_disposed || AppPlayer.lifecycle.isClosing) return;
     final generation = ++_playbackCommandGeneration;
     _resumeRequested = false;
     final p = _player;
@@ -2184,7 +2195,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
 
   /// 续播（只该在"确实是我们暂停的"情况下调用）
   Future<void> resume() async {
-    if (_disposed) return;
+    if (_disposed || AppPlayer.lifecycle.isClosing) return;
     final generation = ++_playbackCommandGeneration;
     _resumeRequested = true;
     final p = _player;
@@ -2239,7 +2250,10 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   bool _resumeRequested = false;
 
   bool _ownsNativePlayer(Player player) =>
-      mounted && !_disposed && identical(_player, player);
+      mounted &&
+      !AppPlayer.lifecycle.isClosing &&
+      !_disposed &&
+      identical(_player, player);
 
   bool _ownsPlaybackCommand(int generation, Player player) =>
       _ownsNativePlayer(player) && generation == _playbackCommandGeneration;
@@ -2279,7 +2293,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
     LivePlaybackSnapshot snapshot, {
     bool restorePlaying = true,
   }) async {
-    if (_disposed) return;
+    if (_disposed || AppPlayer.lifecycle.isClosing) return;
     final generation = restorePlaying
         ? ++_playbackCommandGeneration
         : _playbackCommandGeneration;
@@ -2322,7 +2336,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
   }
 
   Future<void> setVolume(double v) async {
-    if (_disposed || !v.isFinite) return;
+    if (_disposed || AppPlayer.lifecycle.isClosing || !v.isFinite) return;
     final next = v.clamp(0, 100).toDouble();
     _retireUserRequests(playback: false);
     if (next > 0) _volumeBeforeMute = next;
@@ -2366,7 +2380,7 @@ class LiveEmbeddedPlayerState extends State<LiveEmbeddedPlayer>
    */
   @override
   Future<void> toggleMute() async {
-    if (_disposed) return;
+    if (_disposed || AppPlayer.lifecycle.isClosing) return;
     final p = _player;
     final transport = _transportGeneration;
     final epoch = _muteRequestEpoch;

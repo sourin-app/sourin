@@ -107,6 +107,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../core/app_log.dart';
+import '../core/app_player.dart';
 import '../core/clip_download.dart';
 import '../core/batch_bind.dart';
 import '../core/danmaku.dart';
@@ -2151,10 +2152,37 @@ class _PlayerPageState extends State<PlayerPage>
   int _beginPlayResolve() => _playGeneration = ++_globalPlayGeneration;
 
   bool _isCurrentPlayResolve(int generation) =>
-      mounted && !_playClosed && generation == _playGeneration;
+      mounted &&
+      !AppPlayer.lifecycle.isClosing &&
+      !_playClosed &&
+      generation == _playGeneration;
 
   bool _ownsPlayer(Player player) =>
-      mounted && !_playClosed && identical(_player, player);
+      mounted &&
+      !AppPlayer.lifecycle.isClosing &&
+      !_playClosed &&
+      identical(_player, player);
+
+  Future<void> _retireNativePlayer() async {
+    if (!AppPlayer.lifecycle.isClosing || !mounted) return;
+    _playClosed = true;
+    _playGeneration = ++_globalPlayGeneration;
+    _playSessionGen++;
+    _hwdecToken++;
+    _videoOutputToken++;
+    _danmakuSearchRequest++;
+    _progressTimer?.cancel();
+    _countdownTimer?.cancel();
+    _rewatchTimer?.cancel();
+    _hideTimer?.cancel();
+    _cursorIdleTimer?.cancel();
+    _rewindTimer?.cancel();
+    _pcArrowHoldTimer?.cancel();
+    _bufferPoller?.stop();
+    RemoteBridge.instance.clearPlayer(_remotePlayerBridge);
+    _remotePlayerBridge = null;
+    await _saveProgress(immediate: true);
+  }
 
   /// 是否已触发过片头跳过（避免反复跳）
   bool _introSkipped = false;
@@ -4048,7 +4076,8 @@ class _PlayerPageState extends State<PlayerPage>
      * 不设置的话 Android 上默认**不开硬解** ——
      * 表现是 HEVC 软解，CPU 跑满、4K 卡顿。
      */
-    _player = Player(
+    _player = AppPlayer(
+      beforeDispose: _retireNativePlayer,
       configuration: const PlayerConfiguration(
         /*
          * ★ `libass: true` 是 ASS 字幕开关
@@ -5643,6 +5672,7 @@ class _PlayerPageState extends State<PlayerPage>
 
   void _bindPlayerStreams() {
     _player.stream.playing.listen((v) {
+      if (_playClosed || AppPlayer.lifecycle.isClosing) return;
       if (mounted) {
         setState(() => _playing = v);
         // ★ N11：`_cursorIdleHidden` 的判据含 `_playing` ⇒ 同步广播一次
@@ -6167,7 +6197,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// ⇒ seek / 续播 / 片头片尾判定 / 快退 读到的仍是**最新值**，
   ///   不存在"为了省重建而让状态变旧"的代价。
   void _onPositionTick(Duration p) {
-    if (!mounted) return;
+    if (!mounted || _playClosed || AppPlayer.lifecycle.isClosing) return;
     debugPlayerPositionTicks++; // ★ 仅探针计数（task-72 ④ 量化）
     final secChanged = p.inSeconds != _position.inSeconds;
     /*
@@ -11812,6 +11842,7 @@ class _PlayerPageState extends State<PlayerPage>
   /// 与浏览器里 `v.currentTime = 0; v.play()` 语义一一对应。
   /// media_kit 没有"重播"API，`seek(Duration.zero)` 就是它的等价物。
   void _onEnded() {
+    if (!mounted || _playClosed || AppPlayer.lifecycle.isClosing) return;
     debugPrint('[PLAYER] 播放结束（endAction=${_endAction.wire}）');
 
     // 直播没有"播完"这回事（原版 `onEnded` 第一行就是 `if (isLive.value) return;`）

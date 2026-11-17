@@ -7,6 +7,8 @@ Applies: 2026-11-16, Rust async/stream FFI and the desktop quit path.
 Related: [stream cancellation terminal handling](2026-11-12-stream-cancel-terminal-handlers.md)
 owns per-request completion while the isolate is alive. This decision governs
 terminal listener lifetime and preserves that active-session contract.
+[Media player shutdown](2026-11-17-media-players-before-engine-close.md) waits
+for the separate media wakeup and video callbacks before this core fence.
 [Address input semantics](2026-11-16-source-address-submission-semantics.md) concerns
 a separate UI tree fault exposed by the same native workload. Other keyword
 matches govern loading, playback or login requests and do not own core teardown.

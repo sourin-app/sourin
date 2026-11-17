@@ -50,6 +50,7 @@ import '../design/widgets/app_text_button.dart';
 import 'ui_prefs.dart';
 import 'ffi.dart' show SourinCore;
 import 'app_logo.dart';
+import 'app_player.dart';
 import '../ui/widgets/plugin_speedtest.dart' show SpeedTestCancelToken;
 
 /// 关闭行为（落盘在 `dsh.closeAction`）
@@ -551,6 +552,9 @@ class AppTray with TrayListener, WindowListener {
     // 退出前的最后一班岗：`_quitting` 重入分支（onWindowClose）直接跳到这里，
     // 不经过 quitNow()，所以这里再兜一次。flush() 幂等：没有脏数据立即返回。
     await _flushPrefsBeforeExit();
+    // Native wakeup callbacks must detach while the Dart isolate and video
+    // plugin are still alive. Reentrant close requests share this same fence.
+    await AppPlayer.lifecycle.shutdown();
     SourinCore.detachCallbacksBeforeExit();
     try {
       await windowManager.setPreventClose(false);

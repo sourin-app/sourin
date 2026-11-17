@@ -149,6 +149,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../core/sourin_api.dart';
+import '../../core/app_player.dart';
 import '../../core/native_media_transport.dart';
 import '../tokens.dart';
 import 'app_dialog_shell.dart';
@@ -894,6 +895,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   ///    Future）。两者取先到者 —— 单一信号在异常路径下可能不触发，
   ///    两个都挂能降低"永远转圈"的风险。
   Future<void> _initPreview() async {
+    if (AppPlayer.lifecycle.isClosing) return;
     Player? pendingPlayer;
     try {
       /*
@@ -905,7 +907,12 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
        * `libass` 不用开 —— 预览只在看画面位置，字幕不重要，
        * 而且多开一个 libass 会多占内存。
        */
-      final p = Player(
+      final p = AppPlayer(
+        beforeDispose: () {
+          _seekToken++;
+          _loopTimer?.cancel();
+          _followTimer?.cancel();
+        },
         configuration: const PlayerConfiguration(
           title: '片头片尾预览',
           logLevel: MPVLogLevel.error,
@@ -921,9 +928,11 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       final native = p.platform;
       if (native is NativePlayer) {
         await native.setProperty('hwdec', 'auto-safe');
+        if (!mounted || AppPlayer.lifecycle.isClosing) return;
       }
       // 预览**静音** —— 原版也是（避免和主播放器声音重叠）
       await p.setVolume(0);
+      if (!mounted || AppPlayer.lifecycle.isClosing) return;
       final c = VideoController(p);
 
       /*
@@ -933,7 +942,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
        * 就说明**画面真的有了**，此时才把 loading 换成 Video。
        */
       void onRect() {
-        if (!mounted) return;
+        if (!mounted || AppPlayer.lifecycle.isClosing) return;
         final r = c.rect.value;
         final ready = r != null && r.width > 1.0 && r.height > 1.0;
         if (!ready) return;
@@ -968,13 +977,13 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
        *   ⚠️ 不 await 它（那会阻塞 `open`），只挂一个回调。
        */
       unawaited(c.waitUntilFirstFrameRendered.then((_) {
-        if (!mounted || _firstFrame) return;
+        if (!mounted || AppPlayer.lifecycle.isClosing || _firstFrame) return;
         debugPrint('[SKIPDLG] ★ 首帧已渲染（waitUntilFirstFrameRendered）');
         setState(() => _firstFrame = true);
       }).catchError((_) {}));
 
       p.stream.position.listen((pos) {
-        if (!mounted) return;
+        if (!mounted || AppPlayer.lifecycle.isClosing) return;
         final sec = pos.inMilliseconds / 1000.0;
         /*
          * ⚠️ 真实位置**只**由这条流更新（不要在 `_previewSeek` 里同步设它）——
@@ -984,7 +993,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
         setState(() => _previewPos = sec);
       });
       p.stream.duration.listen((d) {
-        if (!mounted) return;
+        if (!mounted || AppPlayer.lifecycle.isClosing) return;
         final secs = d.inMilliseconds / 1000.0;
         if (secs > 0 && (secs - _mediaDuration).abs() > 1) {
           setState(() => _mediaDuration = secs);
@@ -1029,9 +1038,9 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
        * 才能验证"这段跳得对不对"）。这里只是把"没人要求就播"去掉。
        */
       await prepareNativeMediaTransport(p.platform);
-      if (!mounted) return;
+      if (!mounted || AppPlayer.lifecycle.isClosing) return;
       await p.open(Media(widget.streamUrl), play: false);
-      if (!mounted) {
+      if (!mounted || AppPlayer.lifecycle.isClosing) {
         return;
       }
       setState(() {
@@ -1041,7 +1050,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
       pendingPlayer = null;
       debugPrint('[SKIPDLG] 独立预览播放器已启动（与主播放器无关）');
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || AppPlayer.lifecycle.isClosing) return;
       setState(() => _previewError = userErrorText(e, fallback: '预览无法启动'));
       debugPrint('[SKIPDLG] 预览启动失败: $e');
     } finally {
@@ -1083,6 +1092,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   /// ⚠️ 用 `async` 而不是"轮询直到就绪"：`_previewSeek` 在
   ///    拖动/按键时会**高频调用**，同步轮询会把 UI 卡住。
   Future<void> _previewSeek(num seconds) async {
+    if (AppPlayer.lifecycle.isClosing) return;
     final s = seconds.clamp(0, _total).toDouble();
     final p = _preview;
 
@@ -1098,11 +1108,14 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
 
     // ── ① 等流就绪（最多 8 秒；8 秒后仍无时长就走兜底 seek）──
     var waited = 0;
-    while (_mediaDuration <= 0 && mounted && waited < 32) {
+    while (_mediaDuration <= 0 &&
+        mounted &&
+        !AppPlayer.lifecycle.isClosing &&
+        waited < 32) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
       waited++;
     }
-    if (!mounted || token != _seekToken) return; // 期间又点了别的 → 本次作废
+    if (!mounted || AppPlayer.lifecycle.isClosing || token != _seekToken) return;
 
     // ── ② 目标夹到真实时长内（新流可能更短）──
     final target = _mediaDuration > 0 && s > _mediaDuration ? _mediaDuration : s;
@@ -1171,7 +1184,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   ///    变成一个死循环，反而把播放器打爆。
   Future<void> _verifySeek(double target, int token) async {
     await Future<void>.delayed(const Duration(milliseconds: 1200));
-    if (!mounted || token != _seekToken) return;
+    if (!mounted || AppPlayer.lifecycle.isClosing || token != _seekToken) return;
 
     final drift = (_rawPos - target).abs();
     if (drift <= 3.0) {
@@ -1224,6 +1237,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   /// 用户点了某一帧之后，就不该再被 `_loopTimer` 拉回区间里 ——
   /// 那会变成"我点的是片尾，它却把我拽回片头"，比不响应更糟。
   Future<void> _previewFrame(num seconds) async {
+    if (AppPlayer.lifecycle.isClosing) return;
     _loopTimer?.cancel();
     _loopTimer = null;
     _loopFrom = null;
@@ -1352,6 +1366,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
   /// ★ 与 `_previewFrame` 同一个原则 —— Owner 反复要的是
   ///   "看清楚这一帧"，回开头等于把他刚看到的东西弄丢了。
   void _previewRange(int from, int to, {SkipEdge? which}) {
+    if (AppPlayer.lifecycle.isClosing) return;
     _loopTimer?.cancel();
     if (to <= from) return;
     _loopFrom = from;
@@ -1416,7 +1431,7 @@ class _SkipMarkerDialogState extends State<SkipMarkerDialog> {
     _loopFrom = null;
     _loopTo = null;
     _playingRange = null;
-    _preview?.pause();
+    if (!AppPlayer.lifecycle.isClosing) _preview?.pause();
     if (mounted) setState(() {});
   }
 

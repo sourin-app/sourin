@@ -133,3 +133,25 @@ is in
 The release branch independently validates native/helper QPC, lifecycle and
 screenshots. This accepts the one pending lifecycle; no minimize event occurs
 in this run, so the older calling origin and root cause remain unresolved.
+
+A separately staged V3 Dart calling-origin recorder now passes seven direct-VM
+owned headless Jobs, each exiting zero and naturally empty for at least eight
+seconds. Its explicit bootstrap runs immediately after binding initialization;
+cold FFI LastError effects are recorded there. Business callbacks use only a
+ready prebound clock. Diagnostic entry/exit work preserves LastError, while
+the original callback runs synchronously once and preserves its exact Future
+or thrown exception. Missing, failed, disabled or wrong-environment bootstrap
+retains original callback behavior. The original lazy clock's two cold failures
+remain rejected even though its warm samples passed.
+
+The seven Jobs cover static ownership, fake contracts, the real ready QPC,
+bootstrap failure, missing bootstrap, wrong environment and the disabled
+compile flag. They retain 187 worker checks, 67 independent checks and 22
+durable real-QPC events. Root rehashes 3064 inputs, including the full staged
+source and four reversible AST additions, and admits build preparation only.
+One redundant non-null assertion warning remains in the staged recorder.
+The independently bound diagnostic AOT has not been built or launched; it
+cannot reuse unchanged-production-AOT acceptance. No actual minimize or old
+calling origin is attributed by headless qualification. Root evidence is
+`MINIMIZE_V3_SOURCE_HEADLESS_ROOT_AUDIT_V1.json` under
+`.probe/goal-root-acceptance-next-20261117/`.

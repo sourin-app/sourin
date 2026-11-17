@@ -152,9 +152,24 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    prelaunch and V2 table-guard failures remain rejected. The 156 public
    compiler boundaries form 78 nested pairs; all raw strings and ordered
    macros qualify. Root separately reviews 59 exact API-only parameter sets
-   against 245 inputs. Compiler workers remain unbound to key/program/link;
-   these inputs do not authorize replay or establish cost. Next qualify a
-   bounded public compiler replay and review causal renderer hypotheses.
+   against 245 inputs. Compiler workers remain unbound to key/program/link.
+   A separately admitted API-only batch now invokes all 59 exact inputs once:
+   every HRESULT is zero, every output is structured DXBC and all 59 local
+   blob Releases return zero. The owned worker exits zero and naturally drains
+   for 8.028296 seconds. Root rehashes 199 inputs and rejects seven DXBC/scope
+   mutations; independent review passes 31 global and 649 case checks over
+   276 artifacts. This accepts public return/output behavior only, without
+   original-binary equality, strong render attribution or measured cost.
+   The old incomplete executor closure remains rejected; the actual batch is
+   consumed once and is not rerun.
+   Frozen actual stacks locate the largest observed compile within
+   `CircularRRectOp::onExecute`; its geometry-processor name does not identify
+   a spinner, widget or drawing command. Prepare a minimal op-entry/return
+   diagnostic before choosing a renderer hypothesis. The V1 stack guard is
+   rejected: entry RSP plus eight belongs to the adjacent actual caller, not
+   the named onExecute frame. Twenty-eight frozen native observations support
+   the corrected predicate. V2 needs separate native qualification; failed
+   compiler Jobs and artificial byte controls remain separate evidence.
    An isolated one-line shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
    1025 changed bytes/432 pixels with maximum channel difference eight. Its
    original shader/clip/layer/shape inputs and both sixteen-control cohorts
@@ -166,7 +181,13 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
 3. Preserve current production Release playing, original episode switching
    and pending-request Quit acceptance. Shared-QPC native tracing establishes
    this fresh pending lifecycle but contains no minimize event. Prepare a
-   minimal calling-origin diagnostic under a separately bound task-only AOT;
+   minimal calling-origin diagnostic under a separately bound task-only AOT.
+   Its V3 staged source now passes seven direct-VM owned headless Jobs:
+   187 worker and 67 independent checks qualify original once/Future/exception
+   behavior and ready-callback LastError preservation. Explicit startup
+   bootstrap records cold FFI side effects; the old lazy clock's cold failure
+   remains rejected. Root rehashes 3064 inputs and admits build preparation
+   only. The independent diagnostic AOT and GUI are not built or executed yet;
    static source candidates do not establish the old caller. Preserve every
    failed run and original method body. Never restore or suppress minimizing
    to make a visibility gate pass. Coordinate all diagnostic GUI windows with
@@ -175,8 +196,8 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V8 matrix has thirty rows and 59 rehashed evidence reports;
-   eight altered matrix/scope controls fail. Earlier controls and the pending
+   The current V9 matrix has thirty rows and 65 rehashed evidence reports;
+   ten altered matrix/scope controls fail. Earlier controls and the pending
    run's eight negative controls remain retained.
    Its independent source binding rechecks 97 explicit files and rejects
    eleven scope/identity/progress/ownership/hash mutations. Current source

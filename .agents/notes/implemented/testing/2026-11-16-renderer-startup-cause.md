@@ -77,8 +77,32 @@ The root receipts are `ACTUAL_EMBEDDED_ENGINE_LINK_ROOT_AUDIT_V1.json` and
 `ACTUAL_V3_PUBLIC_PARAMETERS_ROOT_REVIEW_V1.json` under
 `.probe/goal-root-acceptance-next-20261117/`.
 
-Next qualify a bounded public compiler replay and use causal evidence to
-review a new renderer hypothesis. Debug pauses and raw wall spans remain
+The separately admitted API-only batch executes all 59 exact captured inputs
+once. All 59 HRESULTs are zero, all outputs are structured DXBC and all 59
+local blob Releases return zero. Output totals 124304 bytes with a maximum
+of 11352 bytes. The owned worker exits zero and naturally drains for 8.028296
+seconds without force. Root independently checks 199 inputs and every DXBC
+structure, rejecting seven mutations. Independent release review passes 31
+global and 649 case checks over 276 artifacts. The earlier executor missing
+imported dependencies remains rejected; complete replacement source admission
+and separate batch authority do not alter the earlier static-only review.
+This qualifies public API return/output behavior. Original captured binary
+equality, compiler cost and strong render attribution are not established.
+The consumed batch is not rerun. Root evidence is
+`ACTUAL_COMPILER_API_ONLY_BATCH_ROOT_AUDIT_V1.json` in the same directory.
+
+Frozen actual native stacks place the largest observed compile inside
+`CircularRRectOp::onExecute`. A geometry-processor name alone does not prove
+a spinner, widget or drawing origin. Its observed-stop residual is not a
+CPU/GPU cost. Prepare a minimal typed op-entry/return diagnostic to inspect
+actual bounds and the original drawing relationship. The V1 stack guard is
+rejected before GUI: entry RSP plus eight identifies the adjacent actual
+caller, while the named frame has its own prologue-adjusted SP. Twenty-eight
+frozen native observations support the corrected predicate. V2 requires
+separate native execution qualification; artificial byte controls and failed
+compiler Jobs do not provide it. No actual op-origin capture is accepted yet.
+
+Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this
 decision if renderer, driver, shader assets, source, core or workload changes.

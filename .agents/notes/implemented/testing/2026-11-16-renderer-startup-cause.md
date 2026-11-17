@@ -198,6 +198,54 @@ each build/raster/total-span limit as `rawUs * 60 <= 1000000`; the rounded
 16667 display value cannot relax this budget. No product renderer change is
 admitted until that original performance gate passes.
 
+The sole selected-only census now completes twenty windows and naturally
+drains for 8.0325351 seconds, retaining all 1097 frames and 117 startup records.
+It accepts zero Create entries/returns and zero op calls. Operational runtime
+qualification is separate from native observation: boundary, target-key absence
+and effect gates all remain false. Its earlier positive empty-collection audit
+is preserved and explicitly superseded by the empty-census rejection. Two
+matching engine mappings load before ready; the later same-name registry entry
+replaces the first. Neither an executed PC nor debug-register history proves
+which mapping executes or whether that overwrite causes the empty capture.
+The consumed census is not repeated merely to fill an empty result.
+
+The exclusive plain original20 measurement retains 1143 frames, including all
+152 startup records, and naturally drains for 8.0341365 seconds. Under the exact
+budget, build/raster/total-span failures are 1/15/31 and their maxima are
+19491/346259/499690 microseconds. Startup contributes 1/3/7 failures; additional
+failures occur during navigation, settings and between windows. This rejects
+the selected-only renderer candidate under the original budget. Root rechecks
+6942 inputs, both natural lifecycles and every raw frame timestamp, rejecting
+eleven altered scope claims. Its receipt is
+`ACTUAL_SELECTED_PLAIN_EMPTY_CENSUS_ROOT_AUDIT_V1.json` in the root evidence
+directory. No renderer cost or backend elimination is attributed by timing.
+
+A new three-file general-path candidate combines the selected indicator,
+WindowFrame clipping and the actual Home breathing skeleton. Correct focused
+fixtures use the inherited material_ui Theme, assert actual black/white colors
+and alpha10/11/15/20, and pass 144 dual-format comparisons per candidate. The
+old focused fixture imported a different Theme provider: exact equality remains
+valid for its fallback color, while complete theme qualification is withdrawn.
+The real poster is 148-by-266, its title130-by-20 and row stride334. Combined
+actual24 and original20 pairs pass all 68 RGBA comparisons with zero changed
+bytes. The composed AppTheme dark onSurface is approximately0.908 RGB rather
+than pure white; independent pixel review checks its actual opaque-floor blend.
+
+The combined V1 Profile AOT compiles with 425 sources/7274 frozen bindings and
+natural Job-zero8.0401913 seconds; native59 changes only app.so. Root verifies
+all source and snapshot mappings in
+`COMBINED_V1_PROFILE_AOT_STATIC_ROOT_AUDIT_V1.json`. Its copied plan scope text
+incorrectly says one source; exact source parity establishes three changed
+product sources, and the original receipt remains unchanged. Pixel and static
+compile qualification do not admit behavior or plain execution: the original
+default ClipRRect has no custom clipper and keeps rectangular child hits,
+whereas the new ClipPath rejects corner hits. The original shimmer decoration
+tests RRect membership, whereas CustomPaint without a painter hitTest accepts
+the full rectangle. Prepare a separately frozen private render-object successor
+preserving both original hit semantics before and after paint, then requalify
+pixels/source/AOT before one original-budget quiet run. V1 remains held and
+all predecessors stay retained; no combined GUI or product change is admitted.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

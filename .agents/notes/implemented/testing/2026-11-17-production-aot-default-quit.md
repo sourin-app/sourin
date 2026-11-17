@@ -197,3 +197,13 @@ reachability is a source candidate without historical input or Dart evidence.
 The sole consumed GUI is not repeated. Root runtime evidence is
 `MINIMIZE_V3_SINGLE_GUI_RUNTIME_ROOT_AUDIT_V1.json` in the same directory.
 Original production lifecycle acceptance stays scoped to its own AOT.
+
+The parallel renderer branch now records the selected-only actual runtime as
+qualified but rejects its empty native census and original all-frame budget.
+A combined three-source Profile AOT is also compiled in isolation; changed
+window/shimmer hit semantics hold that V1 before plain execution while a private
+behavior-preserving successor is prepared. None of these diagnostic/Profile
+packages replaces the accepted production AOT or reopens unrelated lifecycle
+scenarios. The V13 thirty-row matrix rehashes 110 reports and rejects twenty-one
+scope mutations; performance and the old minimize caller remain open. Rebind
+affected functional owning inputs only after a renderer is admitted to product.

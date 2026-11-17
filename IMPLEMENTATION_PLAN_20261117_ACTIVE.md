@@ -201,11 +201,37 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    425 copied sources, 6853 frozen bindings, natural exit zero/Job-zero
    8.027848 seconds. The 59-file runtime changes only app.so; root verifies
    current ELF64 snapshot mappings. This is not production Release or
-   performance acceptance. Qualify a bounded startup native-key census with
-   ready-request/safe-event retirement and actual pending-return drain, then
-   run plain original-budget Profile in a quiet interval. Enforce every frame's
-   build/raster/total span as rawUs*60<=1000000. New Python observers receive
-   separate execution admission without changing the frozen compiler receipt.
+   performance acceptance. The sole selected-only native-key census now
+   naturally completes twenty windows and retains 1097 frames, including all
+   117 startup records, with Job-zero for 8.032535 seconds. It accepts zero
+   Create calls and zero op calls: native boundary/key effect remains false,
+   and the earlier positive empty-collection checker is explicitly rejected.
+   Two matching engine mappings and a later registry overwrite are observed;
+   no executed-PC or debug-register history proves the executing mapping or
+   explains the empty capture. Do not repeat the consumed census.
+   Its exclusive plain Profile also completes twenty windows naturally,
+   retaining all 1143 frames and 152 startup records, with Job-zero for
+   8.034137 seconds. Exact build/raster/total-span failures are 1/15/31;
+   maxima are 19491/346259/499690us, including startup failures 1/3/7.
+   Enforce rawUs*60<=1000000; 16667us fails. No product admission or shader-cost
+   inference follows from this rejected measurement, and it is not rerun.
+   A new three-source candidate combines the selected indicator, full-window
+   general-path clipping and the actual Home breathing skeleton fill.
+   Correct material_ui focused light/dark fixtures each pass 144 dual-format
+   comparisons, including the actual 148-by-266 poster. The earlier focused
+   fixture used a different Theme provider: equality remains fact, while its
+   full theme-qualification claim is withdrawn. Combined actual24 and original20
+   software pixel pairs pass all 68 RGBA comparisons. Its separate Profile AOT
+   compiles naturally with 425 sources/7274 frozen bindings and Job-zero
+   8.040191 seconds; native59 changes only app.so. This V1 is held before plain:
+   the new window ClipPath rejects corner hits that the original default
+   ClipRRect allowed, while the new shimmer CustomPaint accepts corner hits
+   that the original BoxDecoration rejected. Prepare a fresh private render-
+   object successor preserving both original hit semantics, including before
+   paint; requalify behavior, pixels and AOT before a new quiet measurement.
+   All V1 sources, pixels, AOT and failed behavior evidence stay retained.
+   New Python observers receive separate execution admission without changing
+   any frozen compiler receipt. No new combined GUI has started.
    An isolated one-line shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
    1025 changed bytes/432 pixels with maximum channel difference eight. Its
    original shader/clip/layer/shape inputs and both sixteen-control cohorts
@@ -247,10 +273,12 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V12 matrix has thirty rows and 96 rehashed evidence reports;
-   seventeen altered matrix/scope controls fail. Exact candidate software
-   pixels and compiled Profile AOT qualify; its actual native-key effect and
-   original-budget performance remain pending. Actual diagnostic runtime and
+   The current V13 matrix has thirty rows and 110 rehashed evidence reports;
+   twenty-one altered matrix/scope controls fail. Selected-only software pixels,
+   compiled Profile AOT and actual runtime qualify; its empty native-key census
+   and original-budget performance are rejected. Combined V1 pixels and static
+   AOT qualify, but changed hit semantics prevent plain admission. Its behavior-
+   preserving successor remains pending. Actual diagnostic runtime and
    engine metadata capture qualify only in their stated scopes. Earlier controls and the pending
    run's eight negative controls remain retained.
    Its independent source binding rechecks 97 explicit files and rejects

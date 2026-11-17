@@ -36,6 +36,13 @@ Use the actual accessibility parent/child tree: an episode's labelled text
 anchors its direct button parent. Source-level button flags do not establish
 the emitted accessibility role or action target.
 
+For a request that must remain waiting through Quit, qualify each helper's
+primary exit and ownership before proceeding, while independent owned threads
+observe its eight-second empty Job concurrently. Gather every observer receipt
+before accepting the run. Keep the native timeout and all five-second visible
+scenes. Require the loaded-module plan's complete actual path/hash set at its
+original sampling point; a failure before sampling retains executed=false.
+
 Independently rehash build inputs, loaded modules, runtime files, screenshots
 and raw receipts. Bind accepted Debug observations to their own package,
 without transferring UI or active-player acceptance to Release. Reject forged
@@ -86,8 +93,8 @@ Retained evidence is in
 and `CURRENT_RELEASE_EPISODE_SWITCH_INDEPENDENT_AUDIT_V1.json` there.
 Pending-request Quit requires the native request still to be pending when
 Quit is invoked. A held server body alone cannot establish that condition
-after the native player has timed out. That scope remains under separate
-qualification. Two subsequent pending runs fail the unchanged visible-window
+after the native player has timed out. The retained initial run fails that
+condition. Two subsequent pending runs fail the unchanged visible-window
 gate. Both retain a native `minimize` method entry, plugin call on the actual
 main window, `SC_MINIMIZE`, then `SIZE_MINIMIZED` with iconic state. Their hide
 records belong to the shadow. The first run has only a read-tree helper and
@@ -105,3 +112,24 @@ Evidence is in
 `.probe/goal-root-acceptance-next-20261117/visibility-review-v1/INDEPENDENT_VISIBILITY_ATTRIBUTION_AUDIT_V1.json`.
 Ordinary foreground startup and performance remain unqualified. Earlier
 minimized-window and foreground-guard failures remain failed.
+
+A fresh targeted production-AOT run qualifies original pending ask/Quit with
+the shared-QPC native pair. All 57 retained runtime files include production
+AOT; only the runner and window-manager logging components change. Home,
+original first-episode video and pending scenes stay visible for 5.068432,
+5.057103 and 5.061644 seconds. Two empty pending transfers have no native
+failure or second first frame before Quit; the oldest is 9.154535 seconds old
+at the pre-Quit observation, within the unchanged 10.33-second timeout.
+Original Quit exits zero, removes the exact window and retains 160 naturally
+empty Job samples spanning 8.040445 seconds without force.
+
+All seven helpers qualify naturally, including four concurrently observed
+eight-second drains. The complete fourteen-module plan executes with actual
+paths and hashes. Independent root verification rehashes 113 explicit inputs,
+CRC-decodes and views all five screenshots, verifies changing native video
+inside its video-only rectangle and rejects eight altered controls. Evidence
+is in
+`.probe/goal-root-acceptance-next-20261117/CURRENT_RELEASE_PENDING_ORIGINAL_QUIT_ROOT_AUDIT_V1.json`.
+The release branch independently validates native/helper QPC, lifecycle and
+screenshots. This accepts the one pending lifecycle; no minimize event occurs
+in this run, so the older calling origin and root cause remain unresolved.

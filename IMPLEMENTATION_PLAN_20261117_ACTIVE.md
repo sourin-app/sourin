@@ -89,6 +89,15 @@ This supersedes the earlier no-goal preference in the historical plan.
   a read-tree action before failure; the other invokes the original second
   episode parent button. The independent audit rechecks 39 original/frozen
   inputs and rejects ten controls. Calling origin remains unproved.
+- One fresh production-AOT pending ask/Quit now passes with the shared-QPC
+  native pair. The pending scene stays visible for 5.061644 seconds; two
+  transfers send no body and have no native failure or second first frame
+  before original Quit. Main exit is zero, exact window gone and natural
+  Job-zero is 8.040445 seconds/160 samples with no force. All seven helpers
+  qualify, four with concurrent eight-second observations. Fourteen required
+  modules bind actual paths/hashes; root rechecks 113 inputs and all five PNGs,
+  rejecting eight controls. No minimize occurs in this run, leaving the old
+  calling origin unexplained; historical failures remain rejected.
 
 Local evidence: `.probe/goal-resume-20261115-evening/` contains
 `U5_SOURCE_SEMANTICS_COLD_B40_20261117_AUDIT_V1.json`,
@@ -145,24 +154,25 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    boundaries. The final family retains its original `mp4` candidate kind
    while actual HLS is decoded. Earlier decoder, VM observer and request-guard
    failures remain recorded; the fourth card uses exact input-bound reuse.
-3. Finish current production Release AOT pending-request Quit qualification.
-   Playing and original episode switching are accepted independently. Reuse
-   qualified task-native components and new isolated profiles under their
-   existing entry contract. Prepare minimal shared-QPC native/helper tracing
-   for the unresolved minimize caller before another targeted diagnostic.
-   Preserve every failed run, original method body and production AOT. Never
-   restore or suppress minimizing to make the visibility gate pass. Coordinate
-   all diagnostic GUI windows with the performance branch.
+3. Preserve current production Release playing, original episode switching
+   and pending-request Quit acceptance. Shared-QPC native tracing establishes
+   this fresh pending lifecycle but contains no minimize event. Prepare a
+   minimal calling-origin diagnostic under a separately bound task-only AOT;
+   static source candidates do not establish the old caller. Preserve every
+   failed run and original method body. Never restore or suppress minimizing
+   to make a visibility gate pass. Coordinate all diagnostic GUI windows with
+   the performance branch.
 4. Reconcile all original eighteen items and twelve additions with current
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V5 matrix has thirty rows and 45 rehashed evidence reports;
-   seven altered matrix coverage/scope controls fail.
+   The current V6 matrix has thirty rows and 49 rehashed evidence reports;
+   earlier matrix controls and the pending run's eight negative controls are
+   retained.
    Its independent source binding rechecks 97 explicit files and rejects
    eleven scope/identity/progress/ownership/hash mutations. Current source
    PlayerPage, exact-card and Release playing/switch scopes are closed; final
-   performance, pending Quit and same-product integration remain open.
+   performance, old minimize caller and same-product integration remain open.
 
 ## Boundaries
 

@@ -26,11 +26,22 @@ Historical failures and successor receipts remain intact under `.probe/`.
 - Three anonymous protocol families return current catalogues/lists; one also
   resolves the exact direct episode. Its media probe is blocked by the task's
   API-only relay, so resolution is not claimed as decoded media.
-- One-item library cold-process restoration, decoded covers, two cache covers,
-  populated live playback and independent nonzero decoder PCM are qualified.
+- Two library items retain identities, ordering, timestamps, each eight-second
+  progress and decoded covers across the same-profile cold process. All three
+  original library subtabs and two cache covers pass independent verification.
+- Delayed danmaku cancellation, exact comment binding, unmount/reentry and
+  scrolling to channel 55 pass on the current package. Live tab return preserves
+  the same player, pauses while hidden and restores actual changing video.
+  The independent audit rehashes screenshots and rejects seven altered controls.
+  The two initially black return captures remain recorded before the successful
+  pair; the fixture repeats a short sample and is not full-film evidence.
+- Populated live playback and independent nonzero decoder PCM are qualified.
 - Task-safe Release native components retain production AOT/core bytes. The
-  original ask dialog and semantic Quit pass on the earlier AOT. The latest
-  AOT still needs final rebuilding and binding.
+  original ask dialog and semantic Quit pass on the earlier AOT. The current
+  normal-entry Release AOT rebuild and 59-file staging pass. Its new ask run
+  fails before invoking Quit: the window is minimized to 160x28. A successor
+  observes minimization, but its task-window restore triggers the foreground
+  gate. Both failed runs and forced cleanup remain; that restore is not repeated.
 
 Local evidence: `.probe/goal-resume-20261115-evening/` contains
 `U5_SOURCE_SEMANTICS_COLD_B40_20261117_AUDIT_V1.json`,
@@ -38,29 +49,28 @@ Local evidence: `.probe/goal-resume-20261115-evening/` contains
 `TCP_WAKEUP_EXACT_ATTRIBUTION_AUDIT_20261117_V1.json`,
 `current-player-error-close-tcp-shutdown-v1/result.json`, and
 `stacked-detail-player-shutdown-final-v3/result.json`.
+The new independent library/live audit is
+`TAKEOVER_LIBRARY_LIVE_20261117_AUDIT_V1.json` in the same directory.
 Protocol and Release evidence are in `.probe/protocol-final-20261117/` and
 `.probe/release-isolated-native-20261117-v1/` respectively.
 
 ## Work in execution
 
-1. Finish current-package delayed danmaku, exact binding, unmount/reentry,
-   late live-channel scrolling/selection, and return scenarios. Preserve the
-   missing-comment-ID fixture failure and incorrect one-shot-pin observation;
-   successors compare actual selected row, request identity and parsed comments.
-2. Verify two library items with actual ordering, identity, timestamps, progress
-   and covers, then a cold process on the same task profile. The repeated TS
-   fixture resets before eight seconds. Its successor uses a retained continuous
-   75-second MP4 and keeps the original eight-second assertion. This is library
-   evidence, not HLS protocol evidence.
-3. Finish the exit-barrier negative control and independent native audit.
-4. Continue rendering optimization from measured synchronous shader links.
+1. Continue rendering optimization from measured synchronous shader links.
    The isolated circular candidate improves several untraced measurements but
    still exceeds the unchanged 16.667ms budget. A separate diagnostic frame is
    288.579ms with 236.322ms of driver links. Trace results do not replace the
    untraced measurements, and links cannot yet be attributed to individual
    assets. The rejected prewarm/shadow/repaint experiments stay rejected.
-5. Rebuild final normal-entry Release AOT, combine qualified task-safe natives,
-   exercise original ask/quit and bind affected-input reuse and manifests.
+   The shared stroke/rim-program candidate passes actual shader and component
+   pixels. A same-source untraced circle/shared comparison is being built under
+   the existing budget; no candidate is accepted into the product yet.
+2. Complete current production-AOT original ask/quit when the task window can
+   remain renderable without violating the no-focus contract. Keep the newly
+   staged production bytes and all failed lifecycle receipts separate.
+3. Bind remaining accepted and explicitly limited results into the final
+   affected-input/package record. The exit-barrier negative control and the
+   original pending-TCP native successor already pass.
 
 ## Boundaries
 

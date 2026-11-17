@@ -46,8 +46,13 @@ The direct no-parser family forwards a 193-byte master HLS and outputs two
 264598-sample PCM controls: muted nonzero count zero, positive count 256488.
 Four altered controls fail. The encrypted episode family forwards 150415
 bytes with 394 rewritten children and outputs three seconds of PCM: muted
-count zero, positive count 120615. Five altered controls fail. Both retain the
-unchanged core/libmpv, exit zero and naturally drain for at least eight seconds.
+count zero, positive count 120615. Five altered controls fail. The guest-handshake
+family forwards a 200-byte master and 143476-byte variant with 863 rewritten
+children; its three-second PCM controls yield muted count zero and positive
+count 264499. Five altered controls fail. All three retain the unchanged
+core/libmpv, exit zero and naturally drain for at least eight seconds. The
+guest-handshake candidate's returned `mp4` kind remains recorded while its
+actual HLS bytes are decoded; no metadata correction is inferred.
 
 The direct family's separate video diagnostic preserves the fresh public DNS
 set but orders a previously observed successful endpoint first. It removes no
@@ -63,6 +68,8 @@ when actual values differ. Incomplete tunnel cancellation/reset stays recorded.
 Evidence is retained in
 `.probe/protocol-final-20261117/DIRECT_SOURCE_CURRENT_MEDIA_PCM_AUDIT_V2.json`,
 `DIRECT_SOURCE_NATIVE_RAW_VIDEO_ENDPOINT_DIAGNOSTIC_AUDIT_V1.json` there, and
-`.probe/protocol-parallel-20261117/HXQ_CURRENT_CORE_HLS_PCM_AUDIT_V1.json`.
+`.probe/protocol-parallel-20261117/HXQ_CURRENT_CORE_HLS_PCM_AUDIT_V1.json`
+and `APP99_CURRENT_CORE_HLS_PCM_AUDIT_V1.json` there. The full stage/receipt
+binding is `THREE_PROTOCOL_CURRENT_PARALLEL_SUMMARY_V1.json` in that directory.
 Real accounts, cloud transfers, device output and whole-delivery acceptance
 remain outside these observations.

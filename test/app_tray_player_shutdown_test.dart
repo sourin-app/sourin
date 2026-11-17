@@ -48,19 +48,31 @@ void main() {
         return release.future;
       });
       final quitting = AppTray.instance.quitNow();
-      await started.future;
-      AppTray.instance.onWindowClose();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      expect(calls, isNot(contains('setPreventClose')));
-      expect(calls, isNot(contains('close')));
-      expect(calls, isNot(contains('destroy')));
-      expect(releases, 1);
-      release.complete();
-      await quitting;
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-      expect(calls, contains('close'));
-      expect(releases, 1);
-      await UiPrefs.flush();
+      try {
+        // A missing barrier may finish quit without ever starting disposal.
+        // Observe either event so the negative control fails an assertion,
+        // rather than hanging forever on started.future.
+        await Future.any<void>([started.future, quitting])
+            .timeout(const Duration(seconds: 2));
+        AppTray.instance.onWindowClose();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(calls, isNot(contains('setPreventClose')));
+        expect(calls, isNot(contains('close')));
+        expect(calls, isNot(contains('destroy')));
+        expect(releases, 1);
+        release.complete();
+        await quitting;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        expect(calls, contains('close'));
+        expect(releases, 1);
+        await UiPrefs.flush();
+      } finally {
+        if (!release.isCompleted) release.complete();
+        await AppPlayer.lifecycle.shutdown();
+        await quitting;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        await UiPrefs.flush();
+      }
     });
     expect(tester.takeException(), isNull);
   });

@@ -51,3 +51,13 @@ successful Future alone does not establish success of every plugin release.
 The native pending-transport reproduction remains the acceptance criterion;
 unit tests alone do not qualify it. Reconsider this wrapper if the dependency
 provides an equivalent application-wide shutdown contract.
+
+The pending-HTTP successor now records video release and wakeup detachment
+before the core fence and engine teardown, exits zero in 5.658 seconds, and
+drains naturally for 8.029 seconds. The original fault and diagnostic remain
+failed receipts. Forty-five related behavior cases pass. An isolated copy
+removing only the awaited shutdown barrier fails the real AppTray close-order
+assertion; its reference passes. Both sides use the same cleanup-safe test,
+which waits for either disposal entry or premature quit and always releases
+its test gate in finally. This avoids a hung negative control without weakening
+the requirement that no close-prevention or close call precede media release.

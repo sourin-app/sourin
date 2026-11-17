@@ -290,8 +290,8 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V17 matrix has thirty rows and 155 rehashed evidence reports;
-   twenty-two altered matrix/scope controls fail. Selected-only software pixels,
+   The current V18 matrix has thirty rows and 181 rehashed evidence reports;
+   twenty-six altered matrix/scope controls fail. Selected-only software pixels,
    compiled Profile AOT and actual runtime qualify; its empty native-key census
    and original-budget performance are rejected. Combined V1 pixels and static
    AOT qualify, but changed hit semantics reject V1 behavior. The hitfix successor
@@ -332,9 +332,28 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    The transient second mapping loads37/unloads38. Neither product crash cause,
    current complete code witness, bounded absence nor key effect is established.
    A fresh stage-specific hardware-hit guard and saving evidence before validation
-   are being qualified with windowless native/fake controls. Every original
+   now qualify with actual windowless native evidence and inherited controls. Every original
    address/global/RW/LEN/Dr6 check remains, and the consumed approval cannot be
    reused. Current PlayerPage/card/production Quit bridges remain accepted.
+   The fresh successor preserves exact ARM readback, admits only the evidenced
+   hardware-stop bit10 difference for masks1/4/5, and persists current-stop packets
+   before guards. Native/core650/source362/inherited206 and exact7601-input
+   preparation qualify. Its sole actual diagnostic naturally exits0 with160 empty
+   Job samples across8.035059 seconds and completes all original20 windows.
+   All36 entry/input/original saved-return pairs independently qualify: current
+   entry568 bytes, current and originally saved return16 bytes, physical RIP,
+   thread identity and mapping generation. Target key8F7A44 occurs once at call28.
+   This run has one mapping; the prior transient second mapping remains specific
+   to the failed predecessor. Root checks20896 predicates/8040 inputs, performance
+   checks8806, and protocols checks4405/889 files. No unique widget, cost, key
+   effect, complete absence or formal budget acceptance follows from this positive.
+   A fresh one-source track AOT compile is separately approved, based on425 copied
+   sources/8609 frozen inputs. Only the row source and package-config local URI
+   remap differ; entry, shell, Home, Window and seven other metadata files retain
+   their bytes. Runtime59 must retain58 shared files with only app.so changed.
+   Compilation and a new untraced original20 budget run still require their own
+   receipts; reuse the qualified468 pixel/contains comparisons and unchanged
+   functional owning inputs. Product renderer and whole-goal acceptance remain false.
 
 ## Boundaries
 

@@ -217,4 +217,17 @@ Create hardware-stop Dr7 guard before Home readiness, with zero captured keys
 and forced cleanup. Current-entry code bytes were not persisted before rejection;
 mapping-load code is separate. It does not qualify key absence, a saved-return
 boundary, performance or a product crash cause. New windowless hardware-stop
-and source/fake qualifications are pending; production AOT remains unchanged.
+and source/fake qualifications subsequently pass; production AOT remains unchanged.
+
+The fresh exact7601-input mapping successor naturally exits0 with160 empty Job
+samples across8.035059 seconds and completes the original20 diagnostic windows.
+Its36 accepted Create/input/original saved-return pairs include one target8F7A44
+key at call28, with durable current entry568 bytes and return16 bytes. The current
+run has one engine mapping. Root20896/8040, independent8806 and protocol4405/889
+audits qualify this positive capture; the failed predecessor remains false.
+V18 reconciles30 rows/181 reports and rejects26 scope mutations. The fresh
+single-source track AOT experiment is separately approved for compile only.
+Neither diagnostic timing nor captured positive inputs qualify formal performance,
+target effect or product renderer admission. Current production playing/switch/
+pending Quit bridges remain accepted; reopen affected owning inputs only after
+an admitted product renderer change.

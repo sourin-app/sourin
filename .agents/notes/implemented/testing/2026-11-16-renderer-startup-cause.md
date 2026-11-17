@@ -343,8 +343,25 @@ with a new windowless native fixture. Current bytes/region/context/prior arm
 must persist before any strict guard, including rejected samples. The original
 GUI/approval and every source/failed predecessor remain frozen; a successor
 requires new source, controls, exact closure and one separate admission. Track
-AOT remains unbuilt. V17 retains30 rows/155 rehashed reports with22 rejected
+AOT remains unbuilt at that failed-run boundary. V17 retains30 rows/155 rehashed reports with22 rejected
 scope mutations. Performance and historical minimize caller remain open.
+
+The separately admitted successor now qualifies actual execution. Windowless
+hardware-stop evidence supports only DR7 bit10 variation for masks1/4/5; ordinary
+ARM Set/Get stays exact. Core650, source362, inherited206, Release7865 and Root15468
+checks close the fresh7601-input package. The sole successor diagnostic naturally
+exits0, retains160 empty Job samples over8.035059 seconds and completes original20.
+All36 accepted inputs and original saved returns qualify with current entry568
+bytes, return16 bytes, thread birth, actual RIP and one mapping generation. The
+target8F7A44 key is present once at call28. Root20896/8040, independent8806 and
+protocol4405/889 audits retain every old failed run and pre-guard packet; the
+packets remain strictGuardQualified=false before the qualified witness is formed.
+Current-run mapping count is one, unlike the failed predecessor's transient two.
+Positive capture does not qualify absence, unique widget, driver cost, GL link
+count or target effect. Diagnostic946-frame timings remain ineligible for formal
+performance acceptance. V18 reconciles30 rows/181 reports with26 scope mutations
+rejected. A fresh425-source/8609-input single-track AOT compile is separately
+approved after source/toolchain reviews; no product renderer is admitted.
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

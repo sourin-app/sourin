@@ -57,6 +57,19 @@ not product proxy behavior or the product's three-second header deadline.
 
 ## Builds and retained failures
 
+Current Release core's original C ABI also passes two independent isolated JS
+lifecycle runs. Two real held HTTP hydration responses are released in reverse
+order: the later reload publishes its capability, and the older reload returns
+an obsolete-operation error without overwriting that capability. Three invalid
+saves (syntax, changed identity, missing name) leave actual file hashes and
+registry unchanged. Removing the plugin while another reload is held prevents
+resurrection after release and after a subsequent reload. All HTTP handlers and
+call threads join; final native exit is zero and natural empty Job is 8.0388036s.
+The production ABI uses a unique task credential namespace, not a test-only
+EntryOnly backend. No real account login is attempted. Serial invalid-save then
+delete is covered; concurrent save/delete remains unverified. The independent
+audit rejects four altered-result controls and leaves whole-JS acceptance false.
+
 Current Debug v3 and Release v2 each contain 59 files. Independent audits rehash
 3,597 / 3,604 frontend inputs respectively, plus 269 unchanged core inputs.
 The production core is deliberately reused from d291834 because Rust input is
@@ -94,8 +107,9 @@ Continue with distinct open work:
 2. Validate remaining provider/second-line movie identity; retain upstream
    placeholders and failures. Account-required cloud playback still needs its
    separate external authorization and test conditions.
-3. Bind all specified UI, library/cold-cover, source persistence, JS save/delete
-   and reload-order scenarios to current product inputs. Prior scoped evidence
+3. Bind all specified UI, library/cold-cover, source persistence and concurrent
+   JS save/delete scenarios to current product inputs. Dual reload ordering and
+   serial invalid-save/delete now have current-core evidence. Prior scoped evidence
    may be reused only after verifying affected inputs and exact scope.
 4. Obtain cold-frame resource/timeline evidence for a production performance
    candidate, then use the unchanged startup/navigation/scroll budget.
@@ -113,8 +127,11 @@ All run directories below are under `.probe/goal-resume-20261115-evening/`:
 - `CURRENT_PLAYER_FINAL_VISIBLE_UI_AUDITED_20261117_V1.json`
 - `detail-sync-resume-debug-bytes-audited-20261117-v3.json`
 - `detail-sync-resume-release-bytes-audited-20261117-v3.json`
+- `CURRENT_RELEASE_CORE_JS_RELOAD_INVALID_SAVE_DELETE_AUDITED_20261117_V1.json`
+- `js-current-abi-20261117-v2/result.json`
 - `line-sync-release-runtime-20261117-v2-manifest.json`
 - `line-sync-release-independent-restart-20261117-v1/failure-record.json`
+- `RELEASE_FOREGROUND_SCOPE_CLARIFICATION_20261117_V1.json`
 - `owned-skp-d291834-frozen-20261117-v1/result.json`
 - `SKP_OPERATION_INVENTORY_20261117_V2.json`
 

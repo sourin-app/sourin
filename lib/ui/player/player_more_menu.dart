@@ -74,65 +74,73 @@ class PlayerMoreMenu extends StatelessWidget {
       child: MouseRegion(
         // ★ 从按钮挪进面板时取消「收起」计时，否则永远点不进去
         onEnter: (_) {},
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (var gi = 0; gi < groups.length; gi++) ...[
-              if (gi > 0) const SizedBox(height: Sp.x1),
-              PopoverGroupLabel(groups[gi].title),
-              for (final e in groups[gi].entries)
-                miuix.MiuixPressable(
-                  onPressed: e.enabled && e.trailing == null
-                      ? () {
-                          onDismiss();
-                          e.onTap();
-                        }
-                      : null,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: Sp.x3,
-                      vertical: Sp.x2,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          e.icon,
-                          size: 17,
-                          color: e.enabled
-                              ? const Color(0xFFD8D8D8)
-                              : const Color(0xFF6A6A6A),
+        // The combined page can leave less height than the grouped menu needs.
+        // Use the popover's local bounds while keeping every action reachable.
+        child: FocusTraversalGroup(
+          // Offscreen rows stay next in order instead of interleaving the bar.
+          policy: WidgetOrderTraversalPolicy(),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var gi = 0; gi < groups.length; gi++) ...[
+                  if (gi > 0) const SizedBox(height: Sp.x1),
+                  PopoverGroupLabel(groups[gi].title),
+                  for (final e in groups[gi].entries)
+                    miuix.MiuixPressable(
+                      onPressed: e.enabled && e.trailing == null
+                          ? () {
+                              onDismiss();
+                              e.onTap();
+                            }
+                          : null,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: Sp.x3,
+                          vertical: Sp.x2,
                         ),
-                        const SizedBox(width: Sp.x3),
-                        Expanded(
-                          child: Text(
-                            e.label,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
+                        child: Row(
+                          children: [
+                            Icon(
+                              e.icon,
+                              size: 17,
                               color: e.enabled
-                                  ? const Color(0xFFF2F2F2)
+                                  ? const Color(0xFFD8D8D8)
                                   : const Color(0xFF6A6A6A),
-                              fontSize: FontSizes.sm,
                             ),
-                          ),
+                            const SizedBox(width: Sp.x3),
+                            Expanded(
+                              child: Text(
+                                e.label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: e.enabled
+                                      ? const Color(0xFFF2F2F2)
+                                      : const Color(0xFF6A6A6A),
+                                  fontSize: FontSizes.sm,
+                                ),
+                              ),
+                            ),
+                            if (e.trailing != null)
+                              e.trailing!
+                            else if (e.hint != null && e.hint!.isNotEmpty)
+                              Text(
+                                e.hint!,
+                                style: const TextStyle(
+                                  color: Color(0xFF8C8C8C),
+                                  fontSize: FontSizes.cap,
+                                ),
+                              ),
+                          ],
                         ),
-                        if (e.trailing != null)
-                          e.trailing!
-                        else if (e.hint != null && e.hint!.isNotEmpty)
-                          Text(
-                            e.hint!,
-                            style: const TextStyle(
-                              color: Color(0xFF8C8C8C),
-                              fontSize: FontSizes.cap,
-                            ),
-                          ),
-                      ],
+                      ),
                     ),
-                  ),
-                ),
-            ],
-          ],
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );

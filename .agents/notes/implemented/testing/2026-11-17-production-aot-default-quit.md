@@ -204,6 +204,11 @@ A combined three-source Profile AOT is also compiled in isolation; changed
 window/shimmer hit semantics hold that V1 before plain execution while a private
 behavior-preserving successor is prepared. None of these diagnostic/Profile
 packages replaces the accepted production AOT or reopens unrelated lifecycle
-scenarios. The V13 thirty-row matrix rehashes 110 reports and rejects twenty-one
-scope mutations; performance and the old minimize caller remain open. Rebind
+scenarios. The hitfix successor passes actual dynamic hit/pixel parity,
+full24/72/20 pixels and its own source-to-Profile-AOT bridge. Its sole quiet
+plain runtime naturally completes all twenty windows and retains1174 frames/
+156 startup records, but original-budget build/raster/total-span failures1/8/14
+reject renderer admission. The V15 thirty-row matrix rehashes128 reports and
+rejects twenty-one scope mutations; performance and the old minimize caller
+remain open. Rebind
 affected functional owning inputs only after a renderer is admitted to product.

@@ -228,10 +228,27 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    ClipRRect allowed, while the new shimmer CustomPaint accepts corner hits
    that the original BoxDecoration rejected. Prepare a fresh private render-
    object successor preserving both original hit semantics, including before
-   paint; requalify behavior, pixels and AOT before a new quiet measurement.
+   paint. That fixed successor now passes 77220 actual queries per cohort
+   across 180 before/after-paint cases and ninety dynamic pixel pairs. The
+   full combined24/focused72/original20 cohort passes 212 RGBA comparisons;
+   exact 417-source bridges reuse old baselines without rerunning them. The
+   focused baseline retains the same B651 indicator in both cohorts and is
+   scoped to WindowFrame/Shimmer. The new AOT compiles naturally from 425
+   sources/7276 frozen bindings with Job-zero8.031431 seconds, native59 only
+   app.so changed. Failed layout-to-paint fixture schedules remain rejected.
+   Its sole newly admitted task-quiet plain run now completes twenty windows,
+   retaining all 1174 frames/156 startup records and natural Job-zero8.025883
+   seconds. Exact build/raster/total-span failures are 1/8/14, maxima
+   23510/344067/482420us; startup failures1/5/7. This rejects the hitfix
+   candidate under the original budget. No same-candidate measurement retry
+   or product change is admitted. Prepare a separately reviewed observer with
+   independent engine mapping identities and physical RIP/allocation-base/code
+   witnesses. A bounded track-source hypothesis may undergo isolated exact
+   pixels from retained op geometry/style, without unique widget or cost claims.
    All V1 sources, pixels, AOT and failed behavior evidence stay retained.
    New Python observers receive separate execution admission without changing
-   any frozen compiler receipt. No new combined GUI has started.
+   any frozen compiler receipt. The sole combined plain runtime is consumed;
+   all startup, navigation and between-window failures remain retained.
    An isolated one-line shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
    1025 changed bytes/432 pixels with maximum channel difference eight. Its
    original shader/clip/layer/shape inputs and both sixteen-control cohorts
@@ -273,12 +290,13 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V13 matrix has thirty rows and 110 rehashed evidence reports;
+   The current V15 matrix has thirty rows and 128 rehashed evidence reports;
    twenty-one altered matrix/scope controls fail. Selected-only software pixels,
    compiled Profile AOT and actual runtime qualify; its empty native-key census
    and original-budget performance are rejected. Combined V1 pixels and static
-   AOT qualify, but changed hit semantics prevent plain admission. Its behavior-
-   preserving successor remains pending. Actual diagnostic runtime and
+   AOT qualify, but changed hit semantics reject V1 behavior. The hitfix successor
+   passes actual behavior/pixels/AOT and naturally completes its sole plain
+   runtime, while the original budget is rejected. Actual diagnostic runtime and
    engine metadata capture qualify only in their stated scopes. Earlier controls and the pending
    run's eight negative controls remain retained.
    Its independent source binding rechecks 97 explicit files and rejects

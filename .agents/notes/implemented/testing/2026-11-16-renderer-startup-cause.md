@@ -246,6 +246,58 @@ preserving both original hit semantics before and after paint, then requalify
 pixels/source/AOT before one original-budget quiet run. V1 remains held and
 all predecessors stay retained; no combined GUI or product change is admitted.
 
+The separately frozen hitfix successor now restores both original behaviors.
+Its private WindowFrame RenderClipPath uses rectangular current-size child/self
+dispatch; the shimmer RenderCustomPaint uses current-size BorderRadius RRect
+membership and updates its radius through updateRenderObject. No paint-size
+cache or new repaint boundary is added. Exact reverse source comparison leaves
+the V1 painting, color, animation, layout and fullscreen branch unchanged.
+Actual dynamic tests pass 77220 queries per cohort across 180 before/after-paint
+cases, including resize and same-size radius updates, and ninety full image
+pairs in both RGBA formats. Two earlier fixture schedule failures stay failed;
+their successor explicitly schedules the test frame without advancing animation
+time. This fixture repair is separate from formal runtime measurement.
+
+Candidate-only combined24/focused72/original20 pixels pass 212 raw-format and
+116 PNG comparisons with zero changed bytes. The old baselines are not rerun:
+all 417 source files and exact private-widget test suffixes are rebound. The
+focused fixture retains B651 in both cohorts and is scoped to actual WindowFrame
+and Shimmer; combined24/original20 use the original indicator baseline. A new
+Profile AOT compiles naturally with 425 sources/7276 frozen bindings and
+Job-zero8.0314306 seconds; native59 changes only app.so. Root receipts are
+`COMBINED_HITFIX_PRIVATE_SOURCE_ROOT_AUDIT_V1.json`,
+`COMBINED_HITFIX_ACTUAL_DYNAMIC_HIT_PIXEL_ROOT_AUDIT_V1.json`,
+`COMBINED_HITFIX_24_72_ORIGINAL20_ROOT_PIXEL_AUDIT_V1.json` and
+`COMBINED_HITFIX_PROFILE_AOT_STATIC_ROOT_AUDIT_V1.json` in the root directory.
+Private inner render-object identity and an actual semantics tree are not
+directly observed. Independent review verifies normalized child/self/ancestor
+hit paths and the inherited approximate-clip/semantics contract in source.
+
+The fixed once-only plain observer loads seven exact Python modules under a
+separate 7348-input admission, without the census observer. Root verifies that
+startup, workload, timing and lifecycle code equals the earlier qualified plain
+runner after removing only the new source/once guards and admission names.
+All three task branches stop Jobs and scans during the measured interval.
+The sole hitfix runtime completes twenty windows naturally, retaining all1174
+frames and 156 startup records, with Job-zero8.0258834 seconds. Original-budget
+build/raster/total-span failures are1/8/14, maxima23510/344067/482420us and
+startup failures1/5/7. First heavy frames2/3 retain raster162275/344067us.
+Other failures occur in first search/settings, revisited Home and between
+windows. Root rechecks7353 inputs and all raw timestamps, rejecting nine scope
+mutations; independent release review checks8701 predicates. The root receipt
+is `COMBINED_HITFIX_ACTUAL_PLAIN1174_BUDGET_REJECTION_ROOT_AUDIT_V1.json`.
+
+This rejects the hitfix candidate for product admission. Do not repeat its
+measurement merely to improve the numbers, infer shader cost from frame spans,
+or claim task no-activate flags establish an actual foreground history. The
+V15 matrix retains thirty rows/128 reports and rejects twenty-one scope claims.
+Next prepare independent engine mapping identities, physical RIP/allocation-base
+and loaded-code witnesses with actual nonempty Create boundaries. Registry
+overwrite remains unproven as root cause. A track source suggested by retained
+337-by-40 op geometry/style may receive isolated pixel qualification; geometry
+does not uniquely identify a widget or measured cost. Product rendering remains
+unchanged and the goal stays active.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

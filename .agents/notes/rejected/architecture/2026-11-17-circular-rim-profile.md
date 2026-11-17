@@ -5,6 +5,8 @@ Status: rejected — complete same-source timings remain over budget and do not 
 Related: [Renderer startup cause verification](../../implemented/testing/2026-11-16-renderer-startup-cause.md)
 and [shared surface program rejection](2026-11-17-shared-surface-program.md).
 Those diagnostic and rejection decisions remain in force.
+The separate [shader quad AA rejection](2026-11-17-shader-quad-aa.md) applies
+the same appearance contract before timing a different isolated candidate.
 
 ## Problem
 

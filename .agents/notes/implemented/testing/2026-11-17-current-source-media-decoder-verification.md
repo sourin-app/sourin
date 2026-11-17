@@ -33,6 +33,16 @@ node. Retain four raw frames and PNGs with advancing native timestamps,
 contrast and independently recomputed changed color pixels. Keep PlayerPage
 presentation and device output acceptance separate.
 
+For actual PlayerPage qualification, seed only the exact selected anonymous
+item into a fresh task profile through the original core favorite command.
+Invoke the original FollowPage card, preserve the fresh line and episode
+recipe, and observe the original MediaPage/PlayerPage. A standalone Debug
+package can lack expression compilation. Read its actual State, Element,
+widget and global-key reference graph through VM getObject; bind the graph
+to the observed current state rather than counting class instances. Preserve
+failed expression requests. Observe native video pixels and position,
+same-player settings return, original Back and natural ask/Quit.
+
 ## Alternatives considered
 
 - Catalog, resolve, duration and codec fields do not measure pixels or amplitude.
@@ -61,7 +71,26 @@ addresses and changes no product timeout. Four 1920x1080 frames advance by
 fail, including an inflated original-DNS-order claim. Two original-order
 requests retain three-second response-header timeout and HTTP502. This accepts
 a short introductory sequence through the explicitly ordered diagnostic relay;
-original DNS order, PlayerPage rendering and sustained film playback are unqualified.
+original DNS order and PlayerPage rendering are unqualified by that offscreen
+diagnostic. Fresh original PlayerPage scenes separately qualify all three
+anonymous families: each has 1920x1080 native video, advancing position,
+changing pixels, the original session reference graph, returned card decoding
+and natural exit with eight seconds of empty Job membership. Their video
+changes are 166253, 43068 and 146226 pixels. Thirty altered controls fail.
+The fresh direct-family GUI scene retains its newly frozen original DNS
+order; earlier original-order failures are not rewritten as successes.
+
+Four exact source/native current image responses return HTTP200 and decode.
+Three have fresh original-card GUI evidence. The fourth uses the retained
+same-native painted card: exact source picture URI, six unchanged card
+consumer inputs, current image bytes and retained pixels are cross-bound.
+Its old and current packages share 58 of 59 files, including core and native
+libraries; only the task kernel differs. Twelve altered bridge controls fail.
+This is input-bound reuse, not a fourth fresh GUI observation. Initial
+undecoded-card observations and arbitrary all-cover claims remain excluded.
+The combined source/card audits reject 62 altered controls. The latest local
+binding is
+`.probe/protocol-parallel-20261117/next-playerpage-covers-v1/THREE_ORIGINAL_PLAYERPAGE_AND_CURRENT_COVERS_INDEX_V2.json`.
 
 Source-issued media query identifiers remain distinct from episode identifiers
 when actual values differ. Incomplete tunnel cancellation/reset stays recorded.

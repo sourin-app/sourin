@@ -69,6 +69,26 @@ This supersedes the earlier no-goal preference in the historical plan.
   35 compiled assets, 269 core inputs and 59 runtime files. Four current Debug
   scenes revalidate with 3677 inputs and 416 exact product-parity rows. Twelve
   altered controls fail. The package matrix keeps each mode and scope separate.
+- Three exact anonymous source selections now pass original FollowPage card
+  to MediaPage/PlayerPage, current session reference graphs, 1920x1080 video,
+  advancing position, same-player settings return, original Back and natural
+  ask/Quit. Their visible video changes are 166253, 43068 and 146226 pixels.
+  Four current image responses decode; three cards have fresh GUI evidence
+  and the fourth same-native card has an exact owning-input/pixel reuse bridge.
+  The combined audits reject 62 altered controls. No fourth fresh window,
+  arbitrary all-cover, device-output or full-film acceptance is inferred.
+- Current production Release AOT original playing-page ask/Quit and original
+  Episode Two switch pass independent audits. Actual video pairs change 33271,
+  36333 and 43204 pixels; every scene stays visible for at least five seconds.
+  Both runs exit zero and naturally drain for 8.033101/8.036261 seconds.
+  The first pending scene is rejected because native timeout precedes Quit;
+  a held server body does not establish a still-pending native request.
+- Two pending successors fail visibility without restoring their windows.
+  Both show native method minimize, actual main-window SC_MINIMIZE and
+  SIZE_MINIMIZED/iconic1. All hide records belong to the shadow. One has only
+  a read-tree action before failure; the other invokes the original second
+  episode parent button. The independent audit rechecks 39 original/frozen
+  inputs and rejects ten controls. Calling origin remains unproved.
 
 Local evidence: `.probe/goal-resume-20261115-evening/` contains
 `U5_SOURCE_SEMANTICS_COLD_B40_20261117_AUDIT_V1.json`,
@@ -93,8 +113,8 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    The isolated circular candidate improves several untraced measurements but
    still exceeds the unchanged 16.667ms budget. A separate diagnostic frame is
    288.579ms with 236.322ms of driver links. Trace results do not replace the
-   untraced measurements, and links cannot yet be attributed to individual
-   assets. The rejected prewarm/shadow/repaint experiments stay rejected.
+   untraced measurements. The rejected prewarm/shadow/repaint experiments stay
+   rejected.
    The shared stroke/rim-program candidate passes actual shader and component
    pixels but is rejected after the full same-source untraced comparison.
    Startup raster peaks are 324199/329501us; navigation raster peaks are
@@ -110,19 +130,39 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    windows and natural exit. Four altered controls fail. The two initial
    pre-start stability failures and their196/304 frames remain retained.
    The candidate remains outside product; performance remains unaccepted.
-2. Exercise actual PlayerPage presentation, progress, episode ownership and
-   return for the three exact anonymous selections, reusing qualified current
-   Debug inputs. Classify remaining cover failures from exact image responses
-   and visible decoding. The final family retains its original `mp4` candidate
-   kind while actual HLS is decoded. Preserve all failed observations.
-3. Extend current production Release AOT acceptance from idle ask/Quit to
-   active playback, original episode switching and pending-request Quit. Reuse
+   A matching-engine/PDB hardware diagnostic completes all twenty windows and
+   retains 1229 frames, 39 actual program descriptors and 78 generated GLSL
+   captures. Eight runtime-effect captures uniquely match four packaged
+   assets. The first failed stability run remains retained. Capturing can
+   affect timing; descriptor counts do not establish actual GL-link counts.
+   Next work captures real CompileAndAttach/link entry-return boundaries and
+   generated HLSL with actual public compiler ABI. An isolated one-line
+   shader-draw AA candidate is rejected: all twenty RGBA pairs differ, totaling
+   1025 changed bytes/432 pixels with maximum channel difference eight. Its
+   original shader/clip/layer/shape inputs and both sixteen-control cohorts
+   pass; no Profile or additional demand test runs after visual rejection.
+2. Preserve the three original PlayerPage and four specific-card acceptance
+   boundaries. The final family retains its original `mp4` candidate kind
+   while actual HLS is decoded. Earlier decoder, VM observer and request-guard
+   failures remain recorded; the fourth card uses exact input-bound reuse.
+3. Finish current production Release AOT pending-request Quit qualification.
+   Playing and original episode switching are accepted independently. Reuse
    qualified task-native components and new isolated profiles under their
-   existing entry contract. Coordinate GUI windows with the protocol branch.
+   existing entry contract. Prepare minimal shared-QPC native/helper tracing
+   for the unresolved minimize caller before another targeted diagnostic.
+   Preserve every failed run, original method body and production AOT. Never
+   restore or suppress minimizing to make the visibility gate pass. Coordinate
+   all diagnostic GUI windows with the performance branch.
 4. Reconcile all original eighteen items and twelve additions with current
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
+   The current V5 matrix has thirty rows and 45 rehashed evidence reports;
+   seven altered matrix coverage/scope controls fail.
+   Its independent source binding rechecks 97 explicit files and rejects
+   eleven scope/identity/progress/ownership/hash mutations. Current source
+   PlayerPage, exact-card and Release playing/switch scopes are closed; final
+   performance, pending Quit and same-product integration remain open.
 
 ## Boundaries
 

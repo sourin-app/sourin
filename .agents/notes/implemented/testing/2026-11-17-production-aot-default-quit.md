@@ -28,7 +28,13 @@ seconds. Capture Home, request its original close dialog, read the real
 accessibility tree, capture the dialog and invoke its original Quit semantic
 action. Require saved quit preference, normal exit, exact window removal and
 eight seconds of naturally empty owned Job membership. Reuse the qualified
-accessibility helper and its inert guard controls.
+accessibility helper and its inert guard controls. With a task-only media
+fixture, also invoke the original Home card and original episode control.
+Require changing pixels inside the native video rectangle, selected episode
+and source requests, five-second visible scenes, and the original ask/Quit.
+Use the actual accessibility parent/child tree: an episode's labelled text
+anchors its direct button parent. Source-level button flags do not establish
+the emitted accessibility role or action target.
 
 Independently rehash build inputs, loaded modules, runtime files, screenshots
 and raw receipts. Bind accepted Debug observations to their own package,
@@ -59,8 +65,43 @@ controls fail. Evidence is retained in
 `.probe/release-parallel-20261117/CURRENT_FINAL_AOT_DEFAULT_ASK_QUIT_DIAGNOSTIC_AUDITED_V1.json`
 and `CURRENT_AFFECTED_INPUT_PACKAGE_REUSE_AUDITED_V1.json` in that directory.
 
-Home settles to a network error, so content is unqualified. There is no active
-player. Ordinary foreground startup, Release active-player shutdown and
-performance remain separate. Earlier minimized-window and foreground-guard
-failures remain failed; their minimization cause is not established by this
-later shadow-window attribution.
+The idle scene settles to a network error and has no active player; it does
+not establish content. Two additional production-AOT scenes qualify the
+task-only two-episode video fixture. Original card playback produces a
+960x540 first frame and 33271 changing pixels inside a 300000-pixel video
+rectangle. Home and Player stay visible for 5.095417 and 5.054515 seconds;
+original ask/Quit exits zero with natural Job zero for 8.033101 seconds.
+
+Original Episode Two uses the labelled text's direct button parent, with
+identical bounds and adjacent depths. The actual second source request and
+production current-episode notification agree; both episodes produce native
+frames. Their respective video pairs change 36333 and 43204 pixels, and the
+second episode stays visible for 5.054110 seconds. Original ask/Quit exits
+zero with natural Job zero for 8.036261 seconds. Both scenes retain all 59
+runtime files, unchanged production AOT, no Dart test entry and no physical
+input. Independent audits reject four altered controls per scene.
+
+Retained evidence is in
+`.probe/goal-root-acceptance-next-20261117/CURRENT_RELEASE_ACTIVE_PLAYER_INDEPENDENT_AUDIT_V2.json`
+and `CURRENT_RELEASE_EPISODE_SWITCH_INDEPENDENT_AUDIT_V1.json` there.
+Pending-request Quit requires the native request still to be pending when
+Quit is invoked. A held server body alone cannot establish that condition
+after the native player has timed out. That scope remains under separate
+qualification. Two subsequent pending runs fail the unchanged visible-window
+gate. Both retain a native `minimize` method entry, plugin call on the actual
+main window, `SC_MINIMIZE`, then `SIZE_MINIMIZED` with iconic state. Their hide
+records belong to the shadow. The first run has only a read-tree helper and
+fails before its original card action; the second invokes the original
+Episode Two parent button and its helper drains naturally for 8.041545 seconds.
+The application's forced cleanup in these failed runs is not natural Quit.
+
+The independent audit rechecks 39 original inputs and frozen copies and
+rejects ten altered controls. Native logs establish the main-window minimize
+chain but lack a common clock and calling Dart origin. The source title-bar
+callback is a candidate, not an attributed cause. Preserve production AOT for
+minimal native/helper QPC diagnostics; a Dart calling-stack diagnostic would
+require a separately bound AOT and cannot retain this production-AOT claim.
+Evidence is in
+`.probe/goal-root-acceptance-next-20261117/visibility-review-v1/INDEPENDENT_VISIBILITY_ATTRIBUTION_AUDIT_V1.json`.
+Ordinary foreground startup and performance remain unqualified. Earlier
+minimized-window and foreground-guard failures remain failed.

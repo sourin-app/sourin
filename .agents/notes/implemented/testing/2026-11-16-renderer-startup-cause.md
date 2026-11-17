@@ -3,6 +3,8 @@
 Status: implemented
 
 Related: [Current UI and default close callback verification](2026-11-16-current-ui-default-close.md).
+The separate [shader quad AA rejection](../../rejected/architecture/2026-11-17-shader-quad-aa.md)
+retains this diagnostic boundary and the exact appearance contract.
 
 ## Problem
 
@@ -31,4 +33,24 @@ The independent audit rehashes 59 runtime files, 3588 build inputs and thirty tr
 
 Earlier failures remain retained: the original untraced entry correctly rejected startup tracing and needed forced cleanup after failing before callback installation; an old prewarm reference prevented the first diagnostic compile; and the successful successor compiler initially staged the AOT from the wrong path. Actual output was subsequently bound in a separate successful staging receipt without recompiling. None of these failed stages is counted as behavioral success.
 
-Next inspect generated shaders/cache or reproducible render recipes and evaluate a bounded full pipeline warm-up candidate with all frame records and startup latency retained. Revisit this decision if renderer, driver, shader assets, source, core or workload changes. No product optimization has yet been accepted; raw diagnostic sources, traces and receipts stay in the task probe directory.
+A matching-engine/PDB owned hardware diagnostic completes all twenty workload
+windows and retains 1229 frames, 39 actual program descriptors and 78 generated
+GLSL captures without capture errors. Eight runtime-effect captures uniquely
+match the four packaged surface assets; two engine effects remain unmatched.
+The initial pre-start stability failure is retained. The successful unchanged
+package retry exits zero, removes its exact window and naturally drains for
+8.043807 seconds without force. Capture can affect timing; these descriptor
+counts do not establish actual GL-link counts or performance acceptance.
+The one-byte primitive field is read as a one-byte enum, preserving the earlier
+raw four-byte observation without using its high bytes for classification.
+The independent receipt is
+`.probe/performance-parallel-20261117/next-driver-keys-v1/FULL_DRIVER_RETRY_AUDIT_V1.json`.
+
+Next bind real compile/link entry-return boundaries and generated HLSL to
+actual descriptors using the matching private layout and installed compiler
+ABI. Qualify owned hardware fixtures before any diagnostic GUI. Debug pauses
+and raw wall spans remain diagnostic; untraced full-frame validation is still
+required for admission. Rejected warm-up, shadow and repaint experiments stay
+rejected. Revisit this decision if renderer, driver, shader assets, source,
+core or workload changes. No product optimization is accepted; raw sources,
+traces and receipts stay in the task probe directory.

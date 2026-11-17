@@ -290,7 +290,7 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V16 matrix has thirty rows and 139 rehashed evidence reports;
+   The current V17 matrix has thirty rows and 155 rehashed evidence reports;
    twenty-two altered matrix/scope controls fail. Selected-only software pixels,
    compiled Profile AOT and actual runtime qualify; its empty native-key census
    and original-budget performance are rejected. Combined V1 pixels and static
@@ -322,6 +322,19 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    RIP/allocation-base/full568-byte Create code and nonempty saved-return inputs.
    Captured boundaries and complete mapping absence have separate gates.
    No track AOT, new formal budget or product renderer is admitted by preparation.
+   The exact7376-input/19-module mapping preparation and prefix pass. Its single
+   actual diagnostic is now consumed and rejected before Home readiness: the
+   hardware stop records Dr7=1025 versus same-thread prior arm Dr7=1, with all
+   four addresses identical. Root checks7640 predicates/7504 bound files and
+   preserves the forced-cleanup failure, zero accepted calls/keys and no original
+   twenty-window result. Full568-byte receipts belong to mapping-load stops34/37;
+   the current entry buffer was not persisted before the guard rejected it.
+   The transient second mapping loads37/unloads38. Neither product crash cause,
+   current complete code witness, bounded absence nor key effect is established.
+   A fresh stage-specific hardware-hit guard and saving evidence before validation
+   are being qualified with windowless native/fake controls. Every original
+   address/global/RW/LEN/Dr6 check remains, and the consumed approval cannot be
+   reused. Current PlayerPage/card/production Quit bridges remain accepted.
 
 ## Boundaries
 

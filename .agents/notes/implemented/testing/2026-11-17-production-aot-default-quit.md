@@ -208,7 +208,13 @@ scenarios. The hitfix successor passes actual dynamic hit/pixel parity,
 full24/72/20 pixels and its own source-to-Profile-AOT bridge. Its sole quiet
 plain runtime naturally completes all twenty windows and retains1174 frames/
 156 startup records, but original-budget build/raster/total-span failures1/8/14
-reject renderer admission. The V16 thirty-row matrix rehashes139 reports and
+reject renderer admission. The V17 thirty-row matrix rehashes155 reports and
 rejects twenty-two scope mutations; performance and the old minimize caller
 remain open. Rebind
 affected functional owning inputs only after a renderer is admitted to product.
+The separately admitted existing-AOT mapping diagnostic fails its first actual
+Create hardware-stop Dr7 guard before Home readiness, with zero captured keys
+and forced cleanup. Current-entry code bytes were not persisted before rejection;
+mapping-load code is separate. It does not qualify key absence, a saved-return
+boundary, performance or a product crash cause. New windowless hardware-stop
+and source/fake qualifications are pending; production AOT remains unchanged.

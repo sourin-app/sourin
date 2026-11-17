@@ -324,6 +324,28 @@ complete mapping absence remain distinct. V16 has thirty rows/139 rehashed
 reports and22 rejected scope mutations. Performance, historical minimize caller
 and product renderer acceptance remain false.
 
+The separately admitted existing-AOT diagnostic is consumed and rejected.
+Exact7376-source/19-module preparation and prefix pass, but the first actual
+Create stop rejects Dr7=1025 against same-thread prior arm Dr7=1. All four
+address registers match and only fixedbit10 differs. CoreV3's exact rejection
+is reproduced from the unchanged source. Root rehashes7504 files with7640
+checks; independent review checks155. Full568-byte receipts are from mapping
+load stops34/37; the current entry buffer was read but not persisted before the
+Dr7 guard rejected it, so full current-entry code equality is unqualified. The
+second mapping is transient, loading37/unloading38. Actual accepted Create/key
+counts are zero, ready/retirement/drain are absent, original20 is incomplete and
+cleanup is forced. No natural empty8-second receipt is claimed for this run.
+A debugger error and early exit do not establish a product crash cause.
+
+The source successor keeps exact arm readback and every address/global/RW/LEN/
+Dr6 guard, qualifying the executing hardware-stop fixedbit10 rule separately
+with a new windowless native fixture. Current bytes/region/context/prior arm
+must persist before any strict guard, including rejected samples. The original
+GUI/approval and every source/failed predecessor remain frozen; a successor
+requires new source, controls, exact closure and one separate admission. Track
+AOT remains unbuilt. V17 retains30 rows/155 rehashed reports with22 rejected
+scope mutations. Performance and historical minimize caller remain open.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

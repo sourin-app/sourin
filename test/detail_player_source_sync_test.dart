@@ -256,6 +256,10 @@ void main() {
       // reappear because the obsolete line-b request cleared its loading flag.
       expect(find.text('work line-a 正片'), findsNothing);
       expect(find.text('work line-b 中字'), findsNothing);
+      expect(find.byWidgetPredicate(
+        (widget) => widget.runtimeType.toString() == '_EpsSkeleton',
+      ), findsOneWidget,
+          reason: 'Only the current request may clear the loading indicator.');
       expect(tester.takeException(), isNull);
       newRequest.complete(_episodes('work').where((ep) => ep['flag'] == 'line-c').toList());
       await _advance(tester);

@@ -61,3 +61,10 @@ get_episodes transport seam. The clean prior commit fails five of the original
 eight behavior cases; a separate current-request failure control also fails
 before the catalogue fallback is added. No fake native playback is inferred
 from widget results.
+
+The stale-failure case reads the actual loading placeholder as well as episode
+content. Removing only the completion guard in an isolated copy fails both
+stale-success and stale-failure cases (seven pass, two fail); the full current
+focused suite passes 65 cases. The current native UI also follows the selected
+source and episode through real playback, settings, return and normal quit.
+These scoped results do not imply whole-repository or whole-package acceptance.

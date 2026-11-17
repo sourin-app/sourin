@@ -1,5 +1,10 @@
 # IMPLEMENTATION_PLAN_20261116_ACTIVE
 
+## Current continuation
+
+2026-11-17: see [current execution and evidence](IMPLEMENTATION_PLAN_20261117_ACTIVE.md).
+The retained entries below are historical scope/evidence, not current whole-goal acceptance.
+
 Status: active — executable plan for remaining objective; historical evidence remains in IMPLEMENTATION_PLAN_20261108.md.
 
 ## Objective and hard constraints

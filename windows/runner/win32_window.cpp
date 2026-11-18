@@ -13,6 +13,8 @@
 
 #include <cstdarg>
 
+#include "task_window_safety.h"
+
 /*
  * ★ 2026-10-28（N4-1）：这两个**必须在匿名 namespace 之外** ——
  * 否则 `SetImeCommitSink` 是内部链接，`flutter_window.cpp` 链接不到

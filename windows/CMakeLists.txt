@@ -56,6 +56,10 @@ add_subdirectory("runner")
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
+
+# Keep task-only activation guards in repository-owned sources, including plugins.
+target_compile_options(window_manager_plugin PRIVATE
+  "$<$<COMPILE_LANGUAGE:CXX>:/FI${CMAKE_CURRENT_SOURCE_DIR}/runner/task_window_safety_plugin.h>")
 include(cmake/plugin_compile_options.cmake)
 
 # Non-Visual-Studio generators need native NuGet inputs in their build graph.

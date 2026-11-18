@@ -1,10 +1,64 @@
 # Source and player continuation — 2026-11-17
 
 This continues the original scope in IMPLEMENTATION_PLAN_20261108.md. Current
-product input is 6bb7e49. Local work continues without remote publication.
+product code baseline is 6144bedc, with the task window guard recorded below.
+Local work remains without remote publication.
 Historical failures and successor receipts remain intact under `.probe/`.
-The user's latest instruction authorizes an active goal and parallel continuation.
-This supersedes the earlier no-goal preference in the historical plan.
+An earlier user instruction authorized an active goal and parallel continuation,
+superseding the old no-goal preference. Current priority and pause state follow.
+
+## Current priority — user instruction, 2026-11-18
+
+The user has reordered the remaining work. This queue supersedes the order
+in the historical execution detail below. The user has resumed the execution
+goal; stability and final package acceptance have now passed in this order,
+with performance deferred.
+
+1. Stability acceptance first, now passed. Generate the fresh native runner and window
+   plugin needed to validate the adopted PIP recovery and task nonactivation
+   fixes, using the already qualified normal-product AOT. Then validate the
+   current Release during playback, episode switching and an outstanding
+   request, followed by the original ask/Quit flow and natural owned-process
+   exit. Preserve earlier failed runs and the latest possible manual-minimize
+   clarification; historical cause remains unresolved.
+2. Final package verification after stability acceptance, now passed. Bind the current
+   product sources, native files, AOT and runtime assets in one package, then
+   perform the final source-bar/sorting/player/exit smoke checks. Reuse the
+   scoped three-protocol and four-cover evidence where owning inputs permit.
+3. Performance is deferred by the user and skipped in this execution phase.
+   Retain the original startup/all-frame budget, original twenty scenarios,
+   failed measurements and missing public-content inputs as open work. Do
+   not run more performance diagnostics, renderer experiments or benchmarks
+   in this phase. Performance is not a completion gate for steps 1 and 2;
+   skipping it does not qualify performance or complete the full original goal.
+
+Existing task-isolation, focus, real-account and publication boundaries remain
+in force. This priority update does not authorize external-account acceptance.
+
+Current result: stability acceptance has passed all three current-package
+scenes. Playing, episode-two switching and an outstanding request each finish
+through the original ask/Quit flow, natural exit zero and at least eight
+seconds of empty owned Job on both clocks. The 59-file short runtime package
+retains the qualified normal production CADA AOT and the guarded native runner
+and window plugin. Source/build/runtime ownership is explicitly bridged;
+the package is not described as 59 files freshly built from one commit.
+
+Final visibility smoke has passed Home, Settings, LAN header expand/collapse,
+source management, sort-page Back without saving, source-manager Back and
+original ask/Quit. The successful background-window run naturally exited zero,
+with empty-Job duration above eight seconds on both clocks, all 16 helpers naturally closed,
+and unchanged runtime/input files. Its six-stage test-selector build also passed.
+The earlier background attempt incorrectly requested a nonexistent Cancel
+button. That rejected attempt and its natural original-Quit cleanup remain
+recorded; the narrow successor uses the two observed original Back structures.
+The previous minimized attempt is separately explained by the user's direct
+confirmation of manual minimization; older run attribution remains open.
+Performance is skipped and unaccepted, and the full original goal remains open.
+Current evidence is recorded in
+`.probe/goal-root-acceptance-next-20261117/CURRENT_STABILITY_AND_FINAL_PACKAGE_PHASE_ACCEPTANCE_V1.json`
+and the 30-requirement successor `RECONCILED_18_PLUS_12_MATRIX_V29.md` in the same
+directory. V28's 337 historical references retain their original scopes; this
+phase checks new evidence and affected owning inputs rather than repeating them.
 
 ## Implemented and verified
 
@@ -113,7 +167,7 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
 `.probe/release-parallel-20261117/`; the latter contains
 `CURRENT_AFFECTED_INPUT_PACKAGE_REUSE_AUDITED_V1.json`.
 
-## Work in execution
+## Historical execution detail and remaining scope
 
 1. Attribute actual program descriptors and generated shaders to the measured
    synchronous driver links using matching offline engine symbols and an owned
@@ -468,6 +522,27 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    native Rust TVBox rather than JS. Eight generalized section error messages
    do not establish the underlying network/HTTP/parse/native error class.
    Transport proposals remain unapplied and have not restored original input.
+
+   Current stability acceptance qualifies the normal production CADA AOT,
+   19 LLVM native build stages and six guarded native successor stages, all
+   with natural owned-process exit. The opt-in task window safety guard
+   passes 189 headless behavior checks; its unguarded control fails 109.
+   The SDK declaration collision in the first forced-include attempt remains
+   failed; the repository-owned preloader successor preserves COM declarations.
+   Six native objects and the resource are reused by exact input binding.
+   The current 59-file short runtime passes playing, episode-two switching
+   and pending-request original ask/Quit acceptance, independently reviewed.
+   The first background visibility smoke failed its obsolete Cancel selector;
+   its original-Quit cleanup passed natural dual-clock drain. The narrow Back
+   helper successor passes six headless build/guard stages and the actual final
+   smoke now passes all16 helpers, LAN preference1->0, both Back operations,
+   unchanged order storage, exact module/runtime inputs and original ask/Quit.
+   Main exit0 and empty-Job duration above8 seconds on both clocks pass without force.
+   The limited current bridge binds21 Dart owners,4 native owners and runtime59;
+   core/native reuse keeps its actual source lineage, without a single-commit
+   package claim. V29 supersedes the stale current-state fields in V28 while
+   retaining all337 historical evidence references through its sealed anchor.
+   Performance remains deferred and skipped.
 
 ## Boundaries
 

@@ -9,6 +9,20 @@ superseding the old no-goal preference. Current priority and pause state follow.
 
 ## Current priority — user instruction, 2026-11-18
 
+The user's latest clarification allows access to real accounts and user data,
+reports that no application account is in use, and retains the no-focus
+requirement. A read-only presence check subsequently found pre-existing
+non-empty Windows credential entries and WebDAV configuration; these may be
+residual, and ownership, validity, and freshness remain unverified. Do not
+override the user's report based on entry presence alone.
+This supersedes the prior real-data access prohibition for the continuation;
+the saved goal text and historical evidence retain the older wording. Inspect
+actual configuration before treating an absent account as a test blocker.
+Performance remains deferred. A task-owned non-input Windows desktop is under
+review as an environment for unchanged ordinary startup; do not switch the
+input desktop, activate an existing user window or claim startup acceptance
+before its runtime behavior is observed.
+
 The user's current order is stability acceptance first, final package
 verification second, and performance retained but skipped. This order governs
 the current continuation. V29 stability, final package, scoped protocol and
@@ -29,6 +43,43 @@ The post-export requirement audit is recorded in
 thirty requirements, precise protocol/cover scopes, outstanding external
 conditions and the verified local ZIP. No new product gap was identified in
 the specified reachable UI or selected playback/cover paths.
+
+## Continuation update — 2026-11-18 evening
+
+The previously prepared real-library cover candidate was exercised once
+through the unmodified production repair API, but only in a task-owned database
+projection. The source database was opened read-only; exactly one identity
+was copied into a temporary database. The API filled its single missing
+history cover from the one existing exact-identity variant. The copied
+identity, row keys, all non-cover values and SQLite types remained unchanged;
+the real database/configuration and production core bytes were unchanged, no
+network was performed, and the owned host drained naturally. This verifies
+one local recovery case only; the unrelated missing cover in the visible top
+20 remains unresolved, and no arbitrary-cover or full-library claim follows.
+Receipt: `.probe/current-real-config-permission-20261118/one-real-cover-repair-owned-v1-c3ec451ca53241f3bbfafd8673d2d6ea/aggregate.json`.
+
+The ordinary-startup observation tool's first attempt failed before observing
+the app because Win32 reports a valid empty desktop enumeration as
+`FALSE`/`ERROR_SUCCESS`. A hash-bound v2 test-only successor handles that
+empty snapshot. It reached the unmodified product launch on a fresh
+non-input desktop, while the input desktop and foreground PID stayed
+unchanged; however, the product exited before its first frame with
+`0xC0000142` (`STATUS_DLL_INIT_FAILED`). The retained receipt has no loader
+diagnostic identifying the failing DLL or initialization callback, so the
+failure is not attributed to USER32. No UI actions, preference edits,
+account creation, or runtime-file changes occurred. The process exited
+naturally and the observer saw no focus/input-desktop violations, but this is
+a failed startup observation, not ordinary-startup acceptance. Earlier
+receipts and the v2 result remain intact. Do not retry from the same desktop
+environment until the failing initialization is independently identified.
+Receipt: `.probe/release-parallel-20261117/ordinary-inactive-desktop-boundary-v1/ordinary-desktop-actual-once-v2/result.json`.
+
+The read-only credential-presence check found non-empty entries for several
+cloud-provider credential targets and WebDAV. It inspected presence only,
+never credential blobs; it does not establish that an account is currently
+configured for application use or that credentials work. No login, remote
+transfer, or cleanup was attempted. Performance remains skipped per the
+user's priority.
 
 ## Accepted stability and package phase — user order, 2026-11-18
 

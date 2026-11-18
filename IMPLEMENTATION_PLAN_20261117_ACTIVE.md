@@ -393,6 +393,18 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    contains, widget-hit and semantics gates still pending before compilation.
    V22 reconciles30 requirements/242 rehashed reports and reuses the existing31
    scope rejection controls. New key presence does not establish widget or cost.
+   Actual headless validation now rejects the unconditionally native child clip:
+   all468 component images and10 boundary raster pairs are pixel equal, but
+   native contains/actual clipper/direct RenderClipPath hit yield9 differences
+   at40x40 and39.999x40 near the smallest positive float32 left-edge point.
+   Default callers, global dispatch and semantics retain their bounded positives.
+   The loader-only small-run failure and the actual behavior failure both retain
+   natural exit1/dual empty8 seconds. No AOT compiler once is consumed. V23
+   reconciles30 requirements/250 rehashed reports with the prior31 scope controls.
+   A distinct guarded child clip is being prepared: preserve the general path
+   for narrow/square logical or native bounds; return the original native Path
+   only for strictly wide native bounds. Keep all failed points and add native
+   size-rounding neighbors. Reuse468 only with its exact337x40 path proof.
 
 ## Boundaries
 

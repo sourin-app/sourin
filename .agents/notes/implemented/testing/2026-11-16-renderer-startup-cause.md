@@ -415,6 +415,20 @@ checks and Release's new source preparation qualify this two-file delta;
 fresh pixel/contains/hit/semantics and AOT are pending. V22 retains30 rows and
 242 rehashed reports, reusing the existing31 scope controls.
 
+The child-clip candidate is now rejected by actual boundary behavior. All468
+component images and10 boundary raster pairs are exact, but four native
+contains, four actual ShapeBorderClipper contains and one direct RenderClipPath
+hit differ. The40x40 and39.999x40 cases contain the smallest positive float32
+left-edge point before the change and exclude it afterward. Global dispatch,
+semantics and shared default callers remain bounded positives; they cannot
+override direct-hit failure. The SDK-loader-only predecessor and the actual
+behavior failure retain natural exit1/no force/dual empty8 seconds. No compiler
+once is consumed and no AOT is built. V23 retains30 rows/250 reports with the
+prior31 scope controls. A new guarded representation is under source review,
+including double sizes that become square in native float32 bounds; all9 failed
+points remain in its required gate. The existing468 wide337x40 cohort can be
+reused only with exact branch and native-path identity proof.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

@@ -224,6 +224,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
       // make the user think the icon click did nothing, which is more
       // confusing than allowing duplicates.
       ::CloseHandle(single_mutex);
+      // Task launches leave the existing instance untouched.
+      const DWORD task_value_size = ::GetEnvironmentVariableW(
+          L"SOURIN_TASK_NO_ACTIVATE", nullptr, 0);
+      if (task_value_size > 0) {
+        std::vector<wchar_t> task_value(task_value_size);
+        const DWORD task_value_length = ::GetEnvironmentVariableW(
+            L"SOURIN_TASK_NO_ACTIVATE", task_value.data(), task_value_size);
+        if (task_value_length > 0 && task_value_length < task_value_size &&
+            task_value[0] == L'1') {
+          return EXIT_SUCCESS;
+        }
+      }
       if (ActivateExistingInstance()) {
         return EXIT_SUCCESS;
       }

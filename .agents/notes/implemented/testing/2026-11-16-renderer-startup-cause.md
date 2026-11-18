@@ -429,6 +429,56 @@ including double sizes that become square in native float32 bounds; all9 failed
 points remain in its required gate. The existing468 wide337x40 cohort can be
 reused only with exact branch and native-path identity proof.
 
+The guarded successor qualifies all9 previous failing points and native
+size-rounding neighbors with12 actual sparse captures,36 branch receipts and
+4888 contains comparisons, all exact. The old468 states have independently
+qualified337x40 source/layout reuse; they are not fresh guarded executions.
+The first fixture's SDK semantics teardown failure remains natural exit1.
+An explicit body-end disposal plus guarded teardown fallback preserves all
+geometry and naturally exits0 with dual empty8. The final seven-flag audit
+is4C61AAF2; the actual successful owned result isB29A76F2.
+Compiler v1 fails before materialization/once on a string read argument.
+Its successor only canonicalizes that argument and binds a new packet; source,
+entry, recipe, lifecycle and output namespace remain unchanged. The first
+actual compiler succeeds naturally with dual empty8. Root510 independently
+verifies425 targets/runtime59 and only a new app.so. Full startup/original20
+measurement remains required; no timing, key effect or renderer is accepted.
+
+The sole guarded plain attempt8CF06B89 subsequently fails before workload
+start: Home does not stabilize within90 seconds. All8 public-source section
+requests fail, leaving one group/eight sections but zero source cards. Glass
+and surface demand readiness are true with no reported glass load error.
+Natural exit0/no force/dual empty8 qualify its cleanup, not a completed workload.
+The356 saved status snapshots report2381 frame records; the cleanup response
+reports357 startup samples. These are counts only: the saved failure contains
+no raw build/raster/span duration rows and completes0 of the20 windows.
+The collector's ready-loop exception precedes result fetching; its finally
+retrieves Quit but not raw results. Do not calculate full-budget statistics from
+these counts. The existing failed-phase result/startupResult extensions retain
+the original frame buffer, so a future failure-persistence repair requires no
+Dart/AOT or successful workload change. Diagnose public input availability
+separately without assigning shader, driver, clip or historical minimize cause.
+The nine-line failure-only collector candidate is source-qualified by exact
+whole-source byte inversion and remaining-module AST equality. It requests
+the existing failed-phase result before Quit only when the last actual status
+is failed and no full result has been saved; secondary fetch failure cannot
+replace the primary error. It has not executed or recovered exited raw data.
+Two separately owned anonymous direct transport requests time out without
+responses. Natural process cleanup passes, but socket10s does not meet a total
+request10s bound; the actual wall limitation remains explicit. V25 retains30
+requirements/294 rehashed evidence records and prior31 scope controls.
+The user reports no manual interaction with the historical minimized window.
+This removes the user-manual hypothesis while leaving the programmatic caller
+and old Dart/native ingress unbound; no new minimize diagnostic is run.
+V26 retains30 requirements/308 rehashed records. Old private Home metadata
+contains8 sections/154 positions after startup, but lacks startup per-card and
+cover-byte bindings; seeded cache restore changes cold semantics. Source-only
+Windows cache review finds that the common context attaches PersistentCache,
+while the default Windows cache-directory implementation returns invalid.
+An explicit packaged GLPB route still requires true binary payload, exact
+engine/interface/caps/driver bindings and actual hit/fallback/cost evidence.
+No cache producer, engine change or runtime hit is qualified.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

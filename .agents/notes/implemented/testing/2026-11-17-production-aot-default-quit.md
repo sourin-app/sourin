@@ -253,3 +253,35 @@ and the particular prefix does not transfer to v6. Historical Dart caller,
 hardware/user input origin and old root cause remain unproved. The prior single
 diagnostic's zero Dart/native callbacks stay scoped to that run and are not
 reproduced merely for another zero result.
+
+The distinct guarded child-clip experiment now passes actual precision
+qualification with12 sparse captures and all previous boundary failures exact.
+Existing468 states are reused only by their exact source/layout proof. The
+cleanup-only fixture successor naturally exits0; its failed predecessor stays
+failed. A compiler prelaunch string-path error consumes neither materialization
+nor the compiler once; the narrowly repaired successor performs the first
+actual compile successfully. Root510 verifies425 sources/runtime59 and only
+a new app.so. This isolated Profile experiment grants no new production
+playing/switch/pending Quit or ordinary startup acceptance. Existing owning
+bridges remain scoped; full startup/original20 performance is still pending.
+
+That sole guarded plain execution now fails before all20 timed windows because
+the8 anonymous public-source sections return network-incomplete and no cards.
+Its natural exit0/no force/dual empty8 establishes cleanup only. The saved356
+snapshots and357 startup-sample/2381-frame counts contain no raw duration rows,
+so they grant no original-budget or ordinary startup acceptance. The source,
+behavior and compiled runtime positives retain their owning scopes; production
+playing/switch/pending Quit bridges stay separate. Repair future failed-run
+raw-result persistence and inspect source availability before any separately
+justified successor, preserving the consumed failure and historical caller gap.
+The nine-line failure-only raw-result collector is now independently source
+qualified without AOT or successful workload changes, but remains unexecuted.
+The independent anonymous transport check obtains no responses and retains its
+total-request timeout limitation. The user explicitly reports no manual action
+on the historical minimized test window. This excludes that user-manual
+hypothesis; programmatic/Dart/native caller attribution remains open. The v5
+append clue and v6/zero-event limits are preserved without a new native probe.
+V26 retains30 requirements/308 rehashed records. Old private Home metadata
+does not qualify original cold input equivalence. The Windows persistent-cache
+route remains source-only feasibility, with no engine/cache producer or runtime
+hit. Production ownership bridges and historical caller limits stay separate.

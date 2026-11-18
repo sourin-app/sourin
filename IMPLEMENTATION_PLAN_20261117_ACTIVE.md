@@ -405,6 +405,47 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    for narrow/square logical or native bounds; return the original native Path
    only for strictly wide native bounds. Keep all failed points and add native
    size-rounding neighbors. Reuse468 only with its exact337x40 path proof.
+   The guarded successor now passes actual precision qualification:12 new
+   captures,36 actual branch receipts and4888 contains comparisons have zero
+   differences, including all9 former failures and native size neighbors.
+   The existing468 states are exact source/layout reuse, not fresh guarded
+   executions. Its first fixture retains natural exit1 for SDK semantics
+   cleanup; the cleanup-only successor naturally exits0 with dual empty8.
+   Compiler invocation v1 fails before source materialization or once because
+   its read helper receives a string path. A two-line successor canonicalizes
+   that argument and binds the new packet without changing source or recipe.
+   The first actual guarded AOT compiler then naturally exits0 with dual empty8;
+   Root510 verifies425 source targets and runtime59, with only app.so changed.
+   The complete startup/original20 plain measurement is next. No renderer,
+   original performance budget or whole-goal acceptance is granted by compile.
+   The sole guarded plain attempt is now consumed and fails Home readiness
+   before any of the20 timed windows. All8 public-source section requests fail;
+   Home has one group/eight sections but zero cards, while glass/demand resources
+   are ready. Natural exit0/no force/dual empty8 qualify cleanup only.
+   The356 stored status snapshots and357 startup-sample/2381-frame counts do not
+   contain raw duration rows; original-budget counts cannot be reconstructed.
+   The collector throws before its result fetch and its failure finally only
+   fetches Quit. Preserve this failure and its missing-data limit. Separately
+   repair failed-run raw persistence using the existing result extension and
+   inspect the anonymous public source availability; do not lower readiness,
+   alter the original workload or repeat this candidate just for timing.
+   V25 reconciles30 requirements/294 rehashed evidence records with the prior31
+   scope controls. Failed-run raw preservation is now source-qualified as nine
+   added failure-only lines before Quit, using the existing failed-phase result
+   extension; it has not been executed or used to recover the exited failure.
+   The separate two-request anonymous transport check times out without response
+   data. Its socket10s setting did not enforce a total10s request deadline; retain
+   that protocol limitation instead of reporting source availability restored.
+   The user directly confirms no manual action on the historical minimized test
+   window. Exclude the user-manual hypothesis; method-channel/Dart/native caller
+   attribution remains open and does not transfer from v5 to v6.
+   V26 retains30 requirements/308 rehashed evidence records with that human
+   testimony. Old task-private Home metadata has8 sections/154 card positions,
+   but no exact startup per-card or cover-byte binding; seeded disk restore
+   changes cold startup and is not admitted. Source-only Windows GLPB feasibility
+   identifies an invalid default disk-cache path and a possible three-file
+   engine candidate. Real payload, exact ABI/caps/driver and runtime load/cost
+   evidence remain absent; no engine or cache producer is implemented.
 
 ## Boundaries
 

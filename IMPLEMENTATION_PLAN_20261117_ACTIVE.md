@@ -382,6 +382,17 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    V21 reconciles all30 requirements with231 rehashed reports and31 rejected
    scope mutations. Original performance and historical caller remain open;
    product renderer and whole-goal acceptance remain false.
+   The completed74-key comparison qualifies35 shared canonical GP/FP inputs,
+   three newly observed keys including Conic class26, and one old key not seen
+   only in the new accepted set. Target old28/new30 stays byte equal. A distinct
+   private child-clip candidate now changes two files: nullable childClipShape
+   defaults to the original shape for shared callers; segmented row supplies
+   the original native rounded child contour. The general outer contour,
+   fallback and loaded shader remain unchanged. Root33 and Release selected
+   reviews qualify source and a fresh AOT preparation plan, with new pixel,
+   contains, widget-hit and semantics gates still pending before compilation.
+   V22 reconciles30 requirements/242 rehashed reports and reuses the existing31
+   scope rejection controls. New key presence does not establish widget or cost.
 
 ## Boundaries
 

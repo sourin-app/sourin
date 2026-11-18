@@ -403,6 +403,18 @@ rejection; diagnostic timing cannot replace it.
 V21 retains30 requirements,231 rehashed reports and31 rejected scope mutations.
 All failed checker predecessors remain available; no renderer is adopted.
 
+The74-key independent contrast preserves35 shared canonical key/GP/FP inputs,
+observes three new keys including PDB Conic class26, and scopes one old key as
+not seen only in the fresh accepted set. Old target28/new30 retains64 raw bytes
+and Circle6/CircularRRect7 with a null child. These results support a distinct
+child-clip experiment without widget or cost attribution. The private candidate
+adds a nullable childClipShape to shared Glass/Panel, with null retaining the
+old shape, and supplies a native rounded child clip only for segmented track.
+The complete general outer shape and renderer remain source equal. Root33
+checks and Release's new source preparation qualify this two-file delta;
+fresh pixel/contains/hit/semantics and AOT are pending. V22 retains30 rows and
+242 rehashed reports, reusing the existing31 scope controls.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

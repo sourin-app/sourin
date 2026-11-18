@@ -24,6 +24,12 @@ Release package. Stop new performance builds, diagnostics and measurements;
 retain the original workload, readiness, raw-frame budget and failed runs.
 Skipping performance does not accept it or complete the full original goal.
 
+The post-export requirement audit is recorded in
+[FINAL_ACCEPTANCE_20261118.md](FINAL_ACCEPTANCE_20261118.md), retaining all
+thirty requirements, precise protocol/cover scopes, outstanding external
+conditions and the verified local ZIP. No new product gap was identified in
+the specified reachable UI or selected playback/cover paths.
+
 ## Accepted stability and package phase — user order, 2026-11-18
 
 Stability and final package acceptance passed in the following order, with

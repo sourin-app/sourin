@@ -9,10 +9,25 @@ superseding the old no-goal preference. Current priority and pause state follow.
 
 ## Current priority — user instruction, 2026-11-18
 
-The user has reordered the remaining work. This queue supersedes the order
-in the historical execution detail below. The user has resumed the execution
-goal; stability and final package acceptance have now passed in this order,
-with performance deferred.
+The user's current order is stability acceptance first, final package
+verification second, and performance retained but skipped. This order governs
+the current continuation. V29 stability, final package, scoped protocol and
+cover acceptance are retained; successful scenes are not repeated without an
+affected owning-input change. Parallel work now checks the accepted package
+and remaining requirement boundaries without launching new performance work.
+
+The intervening performance preparation remains preserved under `.probe/`:
+V30 produced a successful Profile kernel, followed by a failed output-locator
+check. V31 gen_snapshot and the GLPB capture/cache candidate were prepared but
+not executed. No performance candidate was adopted in the product or final
+Release package. Stop new performance builds, diagnostics and measurements;
+retain the original workload, readiness, raw-frame budget and failed runs.
+Skipping performance does not accept it or complete the full original goal.
+
+## Accepted stability and package phase — user order, 2026-11-18
+
+Stability and final package acceptance passed in the following order, with
+performance deferred. The current continuation preserves this user order.
 
 1. Stability acceptance first, now passed. Generate the fresh native runner and window
    plugin needed to validate the adopted PIP recovery and task nonactivation

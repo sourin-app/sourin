@@ -432,20 +432,42 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    V25 reconciles30 requirements/294 rehashed evidence records with the prior31
    scope controls. Failed-run raw preservation is now source-qualified as nine
    added failure-only lines before Quit, using the existing failed-phase result
-   extension; it has not been executed or used to recover the exited failure.
+   extension. A completed headless fixture now executes the real nested RPC,
+   extension and whole finally AST: seven branches and14 UTF-8 outputs pass,
+   and the independent Release review passes36 checks. All1130 legacy frame
+   dictionaries/timing receipts survive exactly; result precedes Quit and fetch
+   failure preserves the primary error. The Python host naturally drains with
+   both empty-Job clocks above8 seconds. No new native frames, exited failure
+   recovery, source input restoration or original performance is qualified.
    The separate two-request anonymous transport check times out without response
    data. Its socket10s setting did not enforce a total10s request deadline; retain
    that protocol limitation instead of reporting source availability restored.
-   The user directly confirms no manual action on the historical minimized test
-   window. Exclude the user-manual hypothesis; method-channel/Dart/native caller
-   attribution remains open and does not transfer from v5 to v6.
-   V26 retains30 requirements/308 rehashed evidence records with that human
-   testimony. Old task-private Home metadata has8 sections/154 card positions,
+   The latest user clarification supersedes the earlier denial: manual
+   minimization to the taskbar may have happened because the window stayed on
+   top. The exact run/cause and native topmost flag remain unconfirmed. Manual,
+   task/system and programmatic alternatives remain open without a link to the
+   Home readiness failure; v5/v6 and old zero-event limits remain intact.
+   V26 preserves30 requirements/308 records as historical predecessor. V27
+   reconciles30 requirements/315 rehashed records with the latest clarification
+   and actual targeted fixture review. Old task-private Home metadata has8
+   sections/154 card positions,
    but no exact startup per-card or cover-byte binding; seeded disk restore
    changes cold startup and is not admitted. Source-only Windows GLPB feasibility
    identifies an invalid default disk-cache path and a possible three-file
    engine candidate. Real payload, exact ABI/caps/driver and runtime load/cost
    evidence remain absent; no engine or cache producer is implemented.
+
+   V28 now reconciles30 requirements/337 rehashed records. Windows PiP recovery
+   and immediate-call ordering are locally committed with53 headless tests and
+   zero scoped analysis issues. The existing-mutex noactivation guard is also
+   committed, with18 source-interpreted cases/198 assertions; native validation
+   remains open after the retained failed compiler lifecycle. Fresh native/AOT,
+   current Release playing/switch/pending Quit and final owning-input/smoke
+   acceptance must be renewed for these changes. Previous protocol and cover
+   evidence retains its exact scope. The selected Home source is bound to
+   native Rust TVBox rather than JS. Eight generalized section error messages
+   do not establish the underlying network/HTTP/parse/native error class.
+   Transport proposals remain unapplied and have not restored original input.
 
 ## Boundaries
 

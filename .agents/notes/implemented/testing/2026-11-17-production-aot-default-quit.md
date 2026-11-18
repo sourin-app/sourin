@@ -274,14 +274,34 @@ behavior and compiled runtime positives retain their owning scopes; production
 playing/switch/pending Quit bridges stay separate. Repair future failed-run
 raw-result persistence and inspect source availability before any separately
 justified successor, preserving the consumed failure and historical caller gap.
-The nine-line failure-only raw-result collector is now independently source
-qualified without AOT or successful workload changes, but remains unexecuted.
+The nine-line failure-only raw-result collector is independently source
+qualified without AOT or successful workload changes. Its completed targeted
+headless fixture executes the real nested RPC/extension and whole finally AST:
+seven branches and14 UTF-8 outputs pass, and independent Release review passes
+36 checks; all1130 legacy frames and
+timing receipts survive exactly, result precedes Quit, and secondary fetch
+failure preserves the primary error. The actual Python host exits naturally
+with both empty-Job clocks above8 seconds. This is collector code validation;
+it produces no new Sourin frames, exited8CF recovery or performance acceptance.
 The independent anonymous transport check obtains no responses and retains its
-total-request timeout limitation. The user explicitly reports no manual action
-on the historical minimized test window. This excludes that user-manual
-hypothesis; programmatic/Dart/native caller attribution remains open. The v5
-append clue and v6/zero-event limits are preserved without a new native probe.
-V26 retains30 requirements/308 rehashed records. Old private Home metadata
+total-request timeout limitation. The user's latest clarification supersedes
+the earlier denial: manual minimization to the taskbar may have happened because
+the window stayed on top. The exact run and actual cause remain unconfirmed;
+persistent topmost is user-reported, without a bound native style observation.
+Manual, task/system and programmatic alternatives remain open. The v5 append
+clue and v6/zero-event limits are preserved without a new native probe, and the
+current Home readiness failure is not attributed to the historical event.
+V26 retains30 requirements/308 records as the superseded predecessor; the
+successor matrix carries the clarification and completed fixture validation.
+Old private Home metadata
 does not qualify original cold input equivalence. The Windows persistent-cache
 route remains source-only feasibility, with no engine/cache producer or runtime
 hit. Production ownership bridges and historical caller limits stay separate.
+
+V28 retains30 requirements/337 rehashed records. Locally committed Windows PiP
+recovery/order repair passes53 headless tests and zero scoped analysis issues.
+The existing-mutex task nonactivation guard passes18 source-interpreted cases
+and198 assertions; no native execution qualification follows from those tests.
+Fresh native/AOT, current playing/switch/pending Quit and final owning-input
+acceptance are reopened. Prior successes retain their old owning source scope;
+no latest-source runtime result or historical minimize cause is claimed.

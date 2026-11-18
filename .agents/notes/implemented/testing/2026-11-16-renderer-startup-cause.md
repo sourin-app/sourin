@@ -462,15 +462,24 @@ The nine-line failure-only collector candidate is source-qualified by exact
 whole-source byte inversion and remaining-module AST equality. It requests
 the existing failed-phase result before Quit only when the last actual status
 is failed and no full result has been saved; secondary fetch failure cannot
-replace the primary error. It has not executed or recovered exited raw data.
+replace the primary error. The completed targeted headless fixture executes the
+real nested RPC/extension and whole finally AST across seven branches. It
+preserves all1130 legacy frame dictionaries and timing receipts, fetches result
+before Quit, and keeps the primary error when that fetch fails. This validates
+collector behavior only; no exited raw data or new native frames are recovered.
 Two separately owned anonymous direct transport requests time out without
 responses. Natural process cleanup passes, but socket10s does not meet a total
 request10s bound; the actual wall limitation remains explicit. V25 retains30
 requirements/294 rehashed evidence records and prior31 scope controls.
-The user reports no manual interaction with the historical minimized window.
-This removes the user-manual hypothesis while leaving the programmatic caller
-and old Dart/native ingress unbound; no new minimize diagnostic is run.
-V26 retains30 requirements/308 rehashed records. Old private Home metadata
+The user's latest clarification supersedes the earlier denial of manual action:
+they may have minimized the window to the taskbar because it stayed on top.
+Manual minimization is possible; the exact run and cause remain unconfirmed.
+Persistent topmost is a user report without a bound native style observation.
+Manual, task/system and programmatic alternatives remain open; old Dart/native
+ingress is unbound, and no link to the Home readiness failure is established.
+V26 retains30 requirements/308 records as the superseded predecessor; the
+successor matrix carries this clarification and completed fixture validation.
+Old private Home metadata
 contains8 sections/154 positions after startup, but lacks startup per-card and
 cover-byte bindings; seeded cache restore changes cold semantics. Source-only
 Windows cache review finds that the common context attaches PersistentCache,
@@ -478,6 +487,14 @@ while the default Windows cache-directory implementation returns invalid.
 An explicit packaged GLPB route still requires true binary payload, exact
 engine/interface/caps/driver bindings and actual hit/fallback/cost evidence.
 No cache producer, engine change or runtime hit is qualified.
+
+V28 retains30 requirements/337 rehashed records. Separately committed Windows
+PiP and existing-instance nonactivation repairs require fresh native/AOT and
+owning-input Release acceptance; they do not adopt a renderer optimization.
+The selected source routes through native Rust TVBox, not JS. All eight Home
+section messages are generalized failures without a retained underlying error
+class or HTTP clock. Unapplied transport proposals and an unsuccessful bundled
+public fetch do not establish input recovery or a backend failure cause.
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

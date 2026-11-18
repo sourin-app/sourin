@@ -363,6 +363,23 @@ performance acceptance. V18 reconciles30 rows/181 reports with26 scope mutations
 rejected. A fresh425-source/8609-input single-track AOT compile is separately
 approved after source/toolchain reviews; no product renderer is admitted.
 
+The single track AOT compile subsequently succeeds naturally, with dual empty
+8.0034857 seconds,425 source files/8609 unchanged inputs and runtime59 containing
+only a new app.so. Root9176/8675 and Release18114 qualify that source/runtime
+bridge. Its sole untraced original20 run is now consumed and naturally exits0
+with dual empty8.0332484 seconds. All1130 delivered frames and178 startup records
+remain. Exact raw integer budget failures are build2/raster73/total-span164, with
+maxima26621/407274/572170 microseconds; startup failures1/5/10 remain included.
+First heavy raster frames2/3 are194268/407274 microseconds. Root8903/8709 checks
+confirm all original20 actions, all raw frames, session, once authority and
+natural lifecycle, while preserving the older failed hitfix plain run. Runtime
+completion qualifies; original-budget performance and product adoption do not.
+No timing-difference cause, key effect, unique widget or compiler cost follows.
+Do not repeat this candidate for timing; the next hypothesis needs new causal
+evidence while retaining468 pixel/contains and source parity receipts.
+V20 reconciles30 rows/206 rehashed reports and rejects25 scope mutations.
+Original-budget performance and the historical minimize caller remain open.
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

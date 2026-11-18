@@ -231,3 +231,14 @@ Neither diagnostic timing nor captured positive inputs qualify formal performanc
 target effect or product renderer admission. Current production playing/switch/
 pending Quit bridges remain accepted; reopen affected owning inputs only after
 an admitted product renderer change.
+
+The private single-track AOT subsequently compiles naturally and retains425
+sources/8609 frozen inputs/runtime59, with only app.so changed. Its sole untraced
+original20 run naturally exits0 with dual empty8.0332484 seconds and preserves
+1130 frames/178 startup records. Original-budget build/raster/total-span failures
+2/73/164 reject renderer adoption. Root8903/8709 checks qualify the exact runtime
+and natural lifecycle without upgrading original production Release/Debug scopes.
+The old failed measurement remains immutable; this candidate is not repeated
+for timing. Current production playing/switch/pending bridges stay accepted.
+V20 reconciles30 rows/206 reports with25 scope mutations rejected; original
+performance and the historical minimize caller remain open.

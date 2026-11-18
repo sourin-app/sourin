@@ -290,8 +290,8 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    owning-input bridges and scoped evidence. Reuse completed library/live,
    danmaku, source-selection and motion scenarios. Include new protocol,
    Release and performance outcomes without converting scope limits into passes.
-   The current V18 matrix has thirty rows and 181 rehashed evidence reports;
-   twenty-six altered matrix/scope controls fail. Selected-only software pixels,
+   The current V20 matrix has thirty rows and 206 rehashed evidence reports;
+   twenty-five altered matrix/scope controls fail. Selected-only software pixels,
    compiled Profile AOT and actual runtime qualify; its empty native-key census
    and original-budget performance are rejected. Combined V1 pixels and static
    AOT qualify, but changed hit semantics reject V1 behavior. The hitfix successor
@@ -351,9 +351,19 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    sources/8609 frozen inputs. Only the row source and package-config local URI
    remap differ; entry, shell, Home, Window and seven other metadata files retain
    their bytes. Runtime59 must retain58 shared files with only app.so changed.
-   Compilation and a new untraced original20 budget run still require their own
-   receipts; reuse the qualified468 pixel/contains comparisons and unchanged
-   functional owning inputs. Product renderer and whole-goal acceptance remain false.
+   The sole compile subsequently naturally exits0 with dual empty8.0034857 seconds.
+   Root9176/8675 and Release18114 reviews qualify425 sources/8609 frozen inputs
+   and runtime59 with only app.so changed. The fresh untraced original20 is also
+   consumed: natural exit0, dual empty8.0332484 seconds, all20 complete and1130
+   delivered frames with178 startup records. Original build/raster/total-span
+   failures2/73/164 and maxima26621/407274/572170 microseconds reject renderer
+   adoption. Startup failures1/5/10 remain included; first heavy raster frames2/3
+   are194268/407274 microseconds. Root8903/8709 checks recompute raw integer
+   thresholds. No timing-difference cause or key effect is inferred. Reuse the
+   qualified468 pixel/contains comparisons and unchanged functional owning inputs.
+   Keep this candidate rejected, preserve all failed preparation/measurement
+   predecessors and do not repeat the same candidate merely for better timing.
+   Product renderer and whole-goal acceptance remain false.
 
 ## Boundaries
 

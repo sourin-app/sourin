@@ -89,6 +89,7 @@ class PipController {
 
   /// Windows 进入 PiP 前的窗口状态（退出时还原）
   _WinState? _saved;
+  Future<void> _windowsTransition = Future<void>.value();
 
   bool get isActive => _active;
   bool get isSupported => _supported;
@@ -145,6 +146,12 @@ class PipController {
   ///
   /// [aspectRatio] 视频宽高比（宽/高）。返回是否成功。
   Future<bool> enter({double aspectRatio = 16 / 9}) async {
+    if (Platform.isWindows) {
+      return _runWindowsTransition(() async {
+        if (!await probe()) return false;
+        return _enterWindows(aspectRatio);
+      });
+    }
     if (!await probe()) return false;
     if (_active) return true;
 
@@ -161,13 +168,12 @@ class PipController {
       }
     }
 
-    if (Platform.isWindows) return _enterWindows(aspectRatio);
-
     return false;
   }
 
   /// 退出画中画
   Future<bool> exit() async {
+    if (Platform.isWindows) return _runWindowsTransition(_exitWindows);
     if (!_active) return true;
 
     if (Platform.isAndroid) {
@@ -182,14 +188,20 @@ class PipController {
       }
     }
 
-    if (Platform.isWindows) return _exitWindows();
-
     _notify(false);
     return true;
   }
 
   /// 切换（`P` 键用）
   Future<bool> toggle({double aspectRatio = 16 / 9}) async {
+    if (Platform.isWindows) {
+      return _runWindowsTransition(() async {
+        if (!await probe()) return false;
+        return _active || _saved != null
+            ? _exitWindows()
+            : _enterWindows(aspectRatio);
+      });
+    }
     if (_active) return exit();
     return enter(aspectRatio: aspectRatio);
   }
@@ -203,7 +215,25 @@ class PipController {
   //  Windows：缩小窗口 + 置顶
   // ═══════════════════════════════════════════════════════════════════
 
+  // Capture, mutation and restoration share one queue so another key press
+  // cannot replace the original snapshot with an intermediate window state.
+  Future<bool> _runWindowsTransition(Future<bool> Function() transition) async {
+    final previous = _windowsTransition;
+    final released = Completer<void>();
+    _windowsTransition = released.future;
+    await previous;
+    try {
+      return await transition();
+    } finally {
+      released.complete();
+    }
+  }
+
   Future<bool> _enterWindows(double aspectRatio) async {
+    if (_active) return true;
+    // A failed rollback still owns the original snapshot. Restore it before
+    // capturing another one, even though entry never activated PiP.
+    if (_saved != null && !await _exitWindows()) return false;
     try {
       // ① 先存原状态（退出时要精确还原）
       _saved = _WinState(
@@ -241,6 +271,7 @@ class PipController {
       return true;
     } catch (e) {
       debugPrint('[PIP] Windows 进入失败: $e');
+      await _exitWindows();
       return false;
     }
   }
@@ -248,7 +279,7 @@ class PipController {
   Future<bool> _exitWindows() async {
     final s = _saved;
     if (s == null) {
-      _notify(false);
+      if (_active) _notify(false);
       return true;
     }
     try {
@@ -256,19 +287,17 @@ class PipController {
       await windowManager.setAlwaysOnTop(s.alwaysOnTop);
       await windowManager.setSize(s.size);
       await windowManager.setPosition(s.position);
-      try {
-        await windowManager.setSkipTaskbar(s.skipTaskbar);
-      } catch (_) {}
+      await windowManager.setSkipTaskbar(s.skipTaskbar);
       // 恢复最小尺寸（与初始化时一致）
       await windowManager.setMinimumSize(_minSize);
       await windowManager.setResizable(s.resizable);
       _saved = null;
-      _notify(false);
+      if (_active) _notify(false);
       return true;
     } catch (e) {
       debugPrint('[PIP] Windows 退出失败: $e');
-      _saved = null;
-      _notify(false);
+      // Keep both the snapshot and activity state until restoration completes.
+      // Public exit must be able to retry a partially changed window.
       return false;
     }
   }

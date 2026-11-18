@@ -303,8 +303,9 @@ The track-only successor passes468 full-component pairs with936 raw pixels,
 rehashes4953 inputs with29328 checks and the exact single row-local delta.
 Native outer/inner contains comparisons total95040 per cohort at three scales;
 actual event dispatch and complete semantics are not claimed. Old operation7
-retains six full raw receipts, white alpha.10, Canvas stroke.8, radius20 and
-shadow24; the AA-expanded radius band is not Canvas stroke width. Historical
+retains six full native onExecute memory-graph receipts, white alpha.10,
+Canvas stroke.8 and radius20. Shadow24 is a source default, not established by
+that old operation; the AA-expanded radius band is not Canvas stroke width. Historical
 geometry/style does not establish unique widget identity, current key effect
 or measured cost. No track AOT or formal budget is admitted.
 
@@ -379,6 +380,28 @@ Do not repeat this candidate for timing; the next hypothesis needs new causal
 evidence while retaining468 pixel/contains and source parity receipts.
 V20 reconciles30 rows/206 rehashed reports and rejects25 scope mutations.
 Original-budget performance and the historical minimize caller remain open.
+
+The frozen track source graph distinguishes two stroke branches: loaded stroke,
+shadow and mask retain resolve/silhouette scalar uniforms and drawShader's
+Canvas.drawRect recipe; fallback and clipping consume the new contour. The
+contour is still constructed before the loaded-stroke guard, so no unchanged
+CPU-cost claim follows. Existing old target28 metadata has a64-byte/16-word key,
+actual ProgramInfo R9 input with CircleGeometryProcessor class6 and one
+CircularRRectEffect class7 with a null child. This positive old-AOT input is not
+an operation7/widget join or a compiler-cost measurement. A fresh track-AOT
+diagnostic package preserves all cold20/startup/firstReady retirement/original
+saved returns. Its separately approved sole actual run now qualifies38 nonempty
+Create/input/original-return pairs in one current engine mapping. The old target
+key survives at new call30; all972 diagnostic frames and original20 windows
+remain retained. Root14009 checks rehash491 actual references, reuse the complete
+prelaunch input proof and verify each current568-byte entry and16-byte saved
+return with the same thread/mapping and staged debug registers. Retirement
+takes0.0817083 seconds; natural exit0 and continuous owned Job zero exceed8
+seconds on both clocks. Key presence does not identify the track widget or
+measure compilation cost. The consumed plain run remains the performance
+rejection; diagnostic timing cannot replace it.
+V21 retains30 requirements,231 rehashed reports and31 rejected scope mutations.
+All failed checker predecessors remain available; no renderer is adopted.
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

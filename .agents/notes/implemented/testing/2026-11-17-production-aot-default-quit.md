@@ -242,3 +242,14 @@ The old failed measurement remains immutable; this candidate is not repeated
 for timing. Current production playing/switch/pending bridges stay accepted.
 V20 reconciles30 rows/206 reports with25 scope mutations rejected; original
 performance and the historical minimize caller remain open.
+
+A new file-level historical v5 clue retains one owned stdout append sequence:
+SC_MOVE with caption bits and zero lParam, a recorded position change, SC_SIZE
+with top direction, then method/plugin/PostMessage/main-loop SC_MINIMIZE. Its
+resize screen point lies five pixels from the recorded top, compatible with
+the original six-DIP border at logged DPR1. StartDragging sends the move command
+and does not directly invoke Minimize. File order is not common-clock causality,
+and the particular prefix does not transfer to v6. Historical Dart caller,
+hardware/user input origin and old root cause remain unproved. The prior single
+diagnostic's zero Dart/native callbacks stay scoped to that run and are not
+reproduced merely for another zero result.

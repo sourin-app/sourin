@@ -364,6 +364,24 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    Keep this candidate rejected, preserve all failed preparation/measurement
    predecessors and do not repeat the same candidate merely for better timing.
    Product renderer and whole-goal acceptance remain false.
+   Next causal preparation compares the fresh track AOT's accepted key/GP/FP
+   inputs with the old target28 CircleGeometryProcessor6/CircularRRectEffect7
+   positive input. The sole fresh track native diagnostic now retains38 accepted
+   Create/saved-return pairs and972 frames across original20 windows; the old
+   target survives at call30 in one current engine mapping. Each568-byte entry
+   and16-byte saved return passes Root's actual physical review. Natural exit0
+   and dual-clock empty Job8 seconds qualify the session. This positive key
+   comparison leaves unique widget, key effect and compilation cost unproved;
+   formal performance still uses the rejected plain run.
+   Loaded shader stroke/shadow/mask recipes remain unchanged by
+   the single contour delta, while fallback/clip paths and contour construction
+   are affected. Preserve cold20/startup/retirement/drain; infer neither widget
+   identity nor cost from key presence or plain timing. Separately, historical
+   v5's owned raw log retains move/top-resize/minimize append order compatible
+   with source callbacks; it is a new clue, not historical caller attribution.
+   V21 reconciles all30 requirements with231 rehashed reports and31 rejected
+   scope mutations. Original performance and historical caller remain open;
+   product renderer and whole-goal acceptance remain false.
 
 ## Boundaries
 

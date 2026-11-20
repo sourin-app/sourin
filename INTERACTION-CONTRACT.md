@@ -143,7 +143,7 @@ const hideTabBar = computed(() => route.name === "detail" || route.name === "bro
 
 ## 六、已实测的硬指标（2026-09-22）
 
-在 `D:\WishProject\sourin-flutter-spike` 上跑出来的一手数据：
+在 `<REPO_ROOT>` 上跑出来的一手数据：
 
 | 指标 | Windows | Android (BlueStacks) |
 |---|---|---|

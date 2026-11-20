@@ -43,7 +43,7 @@
 // ★ 读数必须**一起报**：只看 ② 无法区分"截断正确"与"根本没量到"。
 //
 // 跑法（本文件不需要 native-media，纯 widget 测试）：
-//   & "C:\Users\iuuuuuu\flutter\bin\flutter.bat" test \
+//   & "<FLUTTER_SDK>\bin\flutter.bat" test \
 //       test\t97_resume_chip_fit_test.dart --reporter expanded
 
 import 'dart:io';

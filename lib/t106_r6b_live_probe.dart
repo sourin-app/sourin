@@ -58,7 +58,7 @@
 // # 用法（**必须**带隔离数据目录，否则本程序拒绝启动）
 // ```powershell
 // flutter build windows --release -t lib/t106_r6b_live_probe.dart `
-//   "--dart-define=DATA_DIR_OVERRIDE=D:\WishProject\sourin-flutter-spike\.probe\round66_r6b\data"
+//   "--dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>\.probe\round66_r6b\data"
 // # 外层再把 APPDATA / USERPROFILE 指进同一隔离目录（AGENTS §8「收尾必做」配方），
 // # 然后直接跑 build\windows\x64\runner\Release\sourin_spike.exe
 // ```

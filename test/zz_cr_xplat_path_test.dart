@@ -48,7 +48,7 @@
 //                 解出来是换行/制表符/退格… 或一个反斜杠；未识别的转义原样保留。
 //   raw 字面量（r'...'）：**不做转义**，反斜杠原样进入路径 ⇒ 直接算命中。
 // ⇒ '$_outDir\\449_dialog.png' 命中（运行时是 …\449_dialog.png）；
-//   r'D:\WishProject\…' 命中（raw，反斜杠原样）；
+//   r'X:\workspace\…' 命中（raw，反斜杠原样）；
 //   .split('\n') 之类**不**命中（运行时是换行，里面没有反斜杠）。
 //
 // 必须排除的误报源（逐条对照）：
@@ -170,26 +170,8 @@ const List<Waiver> kWaivers = <Waiver>[
     73,
     '同上（msyhbd.ttc 那一行），同一块代码、同一个理由。',
   ),
-  Waiver(
-    'task32_source_name_test.dart',
-    348,
-    'raw 字面量写死的**另一台机器/另一个仓库**的绝对路径'
-        '（r「D:…\cctv_to_client\…SourcePicker.vue」）。'
-        '它是「原版参考实现」的取样路径，语义就是「本机开发机上那个外部仓库」；'
-        '不存在时该用例自己 print + return（跳过而不是失败）⇒ macOS 上安全。'
-        '改成 Platform.pathSeparator 毫无意义：盘符 D: 本身已经把它钉成 Windows 专用。',
-  ),
-  Waiver(
-    'task37_poster_placeholder_test.dart',
-    491,
-    '同 task32 形态与理由：r「D:…\cctv_to_client\src\design\base.css」 '
-        '是外部仓库取样路径，不存在时 print + return（见同文件 :495-499）。',
-  ),
-  Waiver(
-    'task37_poster_placeholder_test.dart',
-    493,
-    '同上（theme-light.css 那一行），同一处取样、同一个理由。',
-  ),
+  // task32/task37 now read the explicit ORIGINAL_VUE_FIXTURE_ROOT and
+  // no longer have hard-coded paths; both stay in kMustBeCovered.
 ];
 
 // ───────────────────────── 源码扫描器 ─────────────────────────

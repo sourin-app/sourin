@@ -47,10 +47,13 @@ import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/tokens.dart';
 import 'package:sourin_spike/ui/widgets/danmaku_settings_dialog.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart';
+
+import 'probe_paths.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
 
 /// 探针输出（真机用；stdout 会被父进程写进 t104_out.log）
+late final Directory _outDir;
 final List<String> _log = <String>[];
 void say(String s) {
   _log.add(s);
@@ -74,7 +77,7 @@ Future<void> finish(int code) async {
   say('');
   say('== T104 PROBE pass=' + _pass.toString() + ' fail=' + _fail.toString() + ' ==');
   try {
-    final f = File('t104_probe_log.txt');
+    final f = probeFileUnder(_outDir, 't104_probe_log.txt');
     f.writeAsStringSync(_log.join('\n'));
   } catch (_) {}
   await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -110,6 +113,13 @@ bool panelPresent(bool Function(Widget) test) =>
     _root != null && _findFirst(_root!, test) != null;
 
 Future<void> main() async {
+  const fixtureName = 'PROBE_REPO_ROOT';
+  final playerSource = requireProbeFixtureFile(
+    fixtureName,
+    'lib/ui/player_page.dart',
+    dartDefine: const String.fromEnvironment(fixtureName),
+  );
+  _outDir = probeArtifactDirectory();
   WidgetsFlutterBinding.ensureInitialized();
   /*
    * ★★★ 必须在这里初始化 media_kit —— 与 lib/main.dart:35 / lib/shell.dart:287 同款。
@@ -132,7 +142,7 @@ Future<void> main() async {
   say('root=' + (_root == null ? 'null' : 'ok'));
 
   try {
-    await body();
+    await body(playerSource);
   } catch (e, st) {
     say('!! 探针异常: ' + e.toString());
     say(st.toString());
@@ -223,7 +233,7 @@ void stage(String s) {
   } catch (_) {}
 }
 
-Future<void> body() async {
+Future<void> body(File playerSource) async {
   say('');
   say('=== ① 弹幕设置面板：关闭时也有动画 ===');
 
@@ -275,9 +285,8 @@ Future<void> body() async {
 
   say('');
   say('=== ② 三个面板都接上了 SheetExitMotion（静态读数） ===');
-  // ⚠️ 真机的 cwd 是 Release 目录，没有 lib/ ⇒ 用绝对路径（探针专用，不进产品）
-  const abs = r'D:\WishProject\sourin-flutter-spike\lib\ui\player_page.dart';
-  final src = File(abs).readAsStringSync();
+  // Release 的 cwd 不是仓根；静态读数取自显式指定的 checkout。
+  final src = playerSource.readAsStringSync();
   ok('弹幕设置面板挂载点走 SheetExitMotion',
       src.contains('visible: _danmakuSheetOpen,'));
   ok('某视频站导入面板挂载点走 SheetExitMotion',

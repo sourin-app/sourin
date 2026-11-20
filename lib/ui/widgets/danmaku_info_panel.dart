@@ -366,7 +366,7 @@ class DanmakuAggregateFeed {
   ///
   /// # ⚠️ 目前**没有任何地方传 true** —— 已预留、尚未接线
   /// ```text
-  /// 完整数据流（实测；插件在独立仓 D:\WishProject\sourin-plugins-user）：
+  /// 完整数据流（实测；插件在独立仓 <WORKSPACE>\sourin-plugins-user）：
   ///
   ///   某个动画站插件.js  const truncated = raw.length > 0  ⇒ 真的会给 true
   ///   同一插件           query: { segment_index: 1 }      ⇒ 只拉第 1 段（理由诚实）

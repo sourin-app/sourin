@@ -62,11 +62,13 @@ import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'probe_paths.dart';
+
 import 'core/models.dart';
 import 'ui/widgets/app_loading.dart';
 import 'ui/widgets/live_embedded_player.dart';
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe\ops\nf10';
+late final Directory _outDir;
 
 /// ABN China —— 同机 ffprobe probe_ms=8005 的慢源（Owner 撞上的就是它）
 const _slowSource = 'https://mediaserver.abnvideos.com/streams/abnchina.m3u8';
@@ -107,7 +109,7 @@ Future<(int colors, double centerMean, int w, int h)> shoot(String name) async {
   }
   final img = await obj.toImage(pixelRatio: 1.0);
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  File('$_outDir\\$name.png').writeAsBytesSync(png!.buffer.asUint8List());
+  probeFileUnder(_outDir, '$name.png').writeAsBytesSync(png!.buffer.asUint8List());
   final rgba = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
   final bytes = rgba!.buffer.asUint8List();
   final w = img.width, h = img.height;
@@ -131,9 +133,9 @@ Future<(int colors, double centerMean, int w, int h)> shoot(String name) async {
 }
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory('ops/nf10');
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  Directory(_outDir).createSync(recursive: true);
   runApp(
     MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -247,7 +249,7 @@ Future<void> _drive() async {
     '--- rows ---',
     ...rows,
   ];
-  File('$_outDir\\result.txt').writeAsStringSync(lines.join('\n'));
+  probeFileUnder(_outDir, 'result.txt').writeAsStringSync(lines.join('\n'));
   say('==== RESULT ====');
   for (final l in lines) {
     if (!l.contains(',player=')) say(l);

@@ -54,6 +54,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/models.dart' show Episode;
 import 'ui/app_theme.dart';
 import 'ui/app_scaffold.dart';
@@ -62,7 +64,7 @@ import 'ui/widgets/episode_strip.dart' show EpisodePanel, SheetTransition;
 /// 本构建期望看到哪一极（post = 修复后；pre = 改前）
 const kExpect = String.fromEnvironment('EXPECT', defaultValue: 'post');
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 final List<String> _log = [];
 void say(String s) {
@@ -95,7 +97,7 @@ void note(String s) {
 /// ★ exit() 不展开 finally ⇒ 每条退出路径都必须先调用本函数。
 Future<Never> finish(int code) async {
   try {
-    final f = File('$_outDir\\t2m-run-$kExpect.txt');
+    final f = probeFileUnder(_outDir, 't2m-run-$kExpect.txt');
     f.writeAsStringSync('${_log.join('\n')}\n');
     debugPrint('[T2M] 产物已写 ${f.path} (${f.lengthSync()} B)');
   } catch (e) {
@@ -103,18 +105,6 @@ Future<Never> finish(int code) async {
   }
   await Future<void>.delayed(const Duration(milliseconds: 200));
   exit(code);
-}
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    final d = Directory(override);
-    if (!await d.exists()) await d.create(recursive: true);
-    return d.path;
-  }
-  final appdata =
-      Platform.environment['APPDATA'] ?? Platform.environment['HOME'] ?? '.';
-  return '$appdata${Platform.pathSeparator}app.sourin.player';
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -341,9 +331,10 @@ List<Episode> _fakeEpisodes(int n) => [
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
-  final dir = await _resolveDataDir();
   debugPrint('[T2M] ====== task-2(6) 选集抽屉阻尼 —— 逐帧取证 ======');
   say('数据目录: $dir');
   say('期望极: kExpect=$kExpect');

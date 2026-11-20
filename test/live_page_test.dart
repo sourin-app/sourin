@@ -4,7 +4,7 @@
 //
 // # 这个文件守的是什么
 //
-// 原版 `D:\WishProject\cctv_to_client\src\views\LiveView.vue`（586 行）
+// 原版 `<ORIGINAL_VUE_ROOT>\src\views\LiveView.vue`（586 行）
 // 的直播页行为，逐条钉死。分两类断言：
 //
 // ```text

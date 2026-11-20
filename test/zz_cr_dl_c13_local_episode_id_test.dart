@@ -157,7 +157,7 @@ void main() {
        * 真实现场（CI 原样）：
        * ```text
        * PathAccessException: Deletion failed,
-       *   path = 'C:\Users\RUNNER~1\AppData\Local\Temp\cr_dl_c13\logs'
+       *   path = '<TEMP>\cr_dl_c13\logs'
        *   (OS Error: The process cannot access the file because it is being used by another process,
        *    errno = 32)
        * ```

@@ -77,6 +77,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/models.dart' show LiveChannel;
@@ -102,13 +104,11 @@ import 'ui/app_scaffold.dart';
 /// 截图用的重绘边界（包住整棵 UI）
 final _rootKey = GlobalKey();
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// 探针媒体（编译期常量；默认用本机那份 20 秒的 HEVC 样本）
-const kProbeMedia = String.fromEnvironment(
-  'PROBE_MEDIA',
-  defaultValue: r'D:\WishProject\sourin-flutter-spike\hevc_sample.mp4',
-);
+// PROBE_MEDIA must select the original hevc_sample.mp4 fixture.
+late final String kProbeMedia;
 
 /// 全文日志 —— 每一行都进这里，由 `finish()` 落盘
 ///
@@ -163,7 +163,7 @@ void skip(String why) {
 /// ⚠️ `exit()` 不展开 `finally`、也不等 `debugPrint` 的限速队列
 ///    ⇒ 必须先 `writeAsStringSync` 再 `exit`。
 Future<Never> finish(int code) async {
-  const path = '$_outDir\\t72p-playback.txt';
+  final path = probeFileUnder(_outDir, 't72p-playback.txt').path;
   /*
    * ★ 退出码把 `skipped` 也算进去
    *
@@ -209,18 +209,6 @@ int liveChannelsCalls = 0;
 //  数据目录 / 截图
 // ═══════════════════════════════════════════════════════════════════════
 
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    final d = Directory(override);
-    if (!await d.exists()) await d.create(recursive: true);
-    return d.path;
-  }
-  final appdata =
-      Platform.environment['APPDATA'] ?? Platform.environment['HOME'] ?? '.';
-  return '$appdata${Platform.pathSeparator}app.sourin.player';
-}
-
 /// 把 `_rootKey` 那棵子树光栅化成 PNG
 ///
 /// ★ 返回 (路径, 唯一颜色数) —— 颜色数是**仪器自检**：
@@ -238,7 +226,7 @@ Future<(String, int)> shoot(String name) async {
   }
   final img = await obj.toImage(pixelRatio: 1.0);
   final data = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir\\t72p-$name.png';
+  final path = probeFileUnder(_outDir, 't72p-$name.png').path;
   File(path).writeAsBytesSync(data!.buffer.asUint8List());
 
   final rgba = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -378,6 +366,9 @@ Future<bool> waitUntil(
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  kProbeMedia = requireProbeMedia().path;
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
   /*
@@ -406,7 +397,6 @@ Future<void> main() async {
     say('Device.init 失败（忽略，有兜底）: $e');
   }
 
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
   final r = await SourinCore.startAsync(dir);
 

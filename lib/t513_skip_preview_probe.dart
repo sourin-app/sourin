@@ -44,7 +44,7 @@
 //
 // 运行（必须带 DATA_DIR_OVERRIDE，否则拒绝启动）：
 //   flutter build windows --debug -t lib/t513_skip_preview_probe.dart
-//     --dart-define=DATA_DIR_OVERRIDE=D:/WishProject/sourin-flutter-spike/.probe/t513_data
+//     --dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>/.probe/t513_data
 //   ⚠️ 用 --debug（走 build/windows/x64/runner/Debug/）—— --release 会覆盖
 //      共享的 Release/data/app.so（生产产物），污染后 t489 与 finger_gate[3b]
 //      会假红。CMakeLists.txt:158-161 的 CONFIGURATIONS Profile;Release 证明
@@ -69,6 +69,8 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
+
+import 'probe_paths.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
 import './design/icons/app_icons.dart';
@@ -79,12 +81,10 @@ import './design/icons/app_icons.dart';
 ///   （.probe/t465-0*.png 预览区采样 517~618 色）。
 /// ★ 4:3 是故意的：_previewAspect 初值 16:9，只有真素材的宽高比
 ///   才能证明"预览框跟着真实视频走"。
-const kProbeMedia = String.fromEnvironment(
-  'PROBE_MEDIA',
-  defaultValue: r'D:\WishProject\sourin-flutter-spike\.probe\t465_43.mp4',
-);
+// PROBE_MEDIA must select the original t465_43.mp4 fixture.
+late final String kProbeMedia;
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe\t513';
+late final Directory _outDir;
 
 final _rootKey = GlobalKey();
 
@@ -142,7 +142,7 @@ Future<(String, int)> shoot(String name) async {
   }
   final img = await obj.toImage(pixelRatio: 1.0);
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir/$name.png';
+  final path = probeFileUnder(_outDir, '$name.png').path;
   File(path).writeAsBytesSync(png!.buffer.asUint8List());
 
   final rgba = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -655,7 +655,7 @@ Future<String> resolveDataDir() async {
       '     flutter build windows --debug -t lib/t513_skip_preview_probe.dart',
     );
     say(
-      '       --dart-define=DATA_DIR_OVERRIDE=D:/WishProject/sourin-flutter-spike/.probe/t513_data',
+      '       --dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>/.probe/t513_data',
     );
     exit(3);
   }
@@ -669,6 +669,8 @@ Future<String> resolveDataDir() async {
 // ======================================================================
 
 void main() async {
+  kProbeMedia = requireProbeMedia().path;
+  _outDir = probeArtifactDirectory('t513');
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
@@ -704,8 +706,7 @@ void main() async {
     }
   }
 
-  Directory(_outDir).createSync(recursive: true);
-  say('输出目录 = ' + _outDir);
+  say('输出目录 = ' + _outDir.path);
   say(
     '媒体 = ' +
         kProbeMedia +
@@ -786,12 +787,12 @@ class _ProbePageState extends State<_ProbePage> {
       showAppDialog<SkipMarkerResult>(
         context: ctx,
         barrierDismissible: false,
-        builder: (_) => const SkipMarkerDialog(
+        builder: (_) => SkipMarkerDialog(
           provider: 'probe',
           id: 't513',
           title: 't513 真机实测',
           streamUrl: kProbeMedia,
-          duration: Duration(seconds: 40),
+          duration: const Duration(seconds: 40),
         ),
       ),
     );
@@ -809,7 +810,7 @@ class _ProbePageState extends State<_ProbePage> {
     }
     sink.writeln('');
     sink.writeln('RESULT pass=' + pass.toString() + ' fail=' + fail.toString());
-    final out = _outDir + '/result.txt';
+    final out = probeFileUnder(_outDir, 'result.txt').path;
     File(out).writeAsStringSync(sink.toString());
     say('RESULT pass=' + pass.toString() + ' fail=' + fail.toString());
     if (crashed.isNotEmpty) say('崩溃: ' + crashed);

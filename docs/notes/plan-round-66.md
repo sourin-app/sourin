@@ -1061,7 +1061,7 @@ AppIcons 161 个常量           第 65 轮已建好并全量接线，**保留**
 ```text
 lib/core/bili/ 只有 3 个文件：bili_api.dart / bili_bind.dart / bili_auto_update.dart
 ⇒ 全是「弹幕绑定」相关，**没有登录实现**
-⇒ 登录走的是插件侧（D:\WishProject\sourin-plugins-user\*.js 里含 login 的有多个）
+⇒ 登录走的是插件侧（<WORKSPACE>\sourin-plugins-user\*.js 里含 login 的有多个）
 ```
 
 **要先查清的三层**（不许猜着改）：
@@ -3500,8 +3500,8 @@ N14 = ✅ 已完成（07db0c3），有实测读数、有代价记录、有取舍
 ## 2. 插件库的实际位置与结构（已实地确认）
 
 ```text
-仓库：D:\WishProject\sourin-plugins     （git 仓库，私有）
-另有一个：D:\WishProject\sourin-plugins-user
+仓库：<WORKSPACE>\sourin-plugins     （git 仓库，私有）
+另有一个：<WORKSPACE>\sourin-plugins-user
 
 结构：
   src/types.ts        插件契约类型定义
@@ -3570,7 +3570,7 @@ $ grep -nE "^  async [a-zA-Z]+\(|capabilities" plugins/某站点A.ts
 
 | 位置 | 内容 | 数量 |
 |---|---|---|
-| 私库 `D:\WishProject\sourin-plugins\plugins\` | `某站点A.ts` | **1** 个源码 |
+| 私库 `<WORKSPACE>\sourin-plugins\plugins\` | `某站点A.ts` | **1** 个源码 |
 | 私库 `dist/plugins/` | `某站点A.js` | **1** 个产物 |
 | 数据目录 `%APPDATA%\app.sourin.player\plugins\` | `154.js` `360.js` `api-2.js` … | **32** 个 .js |
 
@@ -3627,7 +3627,7 @@ N15（插件发送能力）
 |---|---|---|---|
 | **R5** 直播控件被裁一半 | `live-ux` + **Lead 真机复现** | **只读** | ✅ **根因已定位**（900×600 下 ▶/🔇 压在 lineSwitcher 上），等 Owner 批修法 |
 | **R3-④** 弹窗双击透传 | `settings-ux` | **只读**，不改文件 | 🔄 进行中 |
-| **插件库同步** 31 个 .js 挪进私库 | `plugin-repo` | `D:\WishProject\sourin-plugins` | ✅ **完成 `7d92dab`**（31 个已推远端；某站点A 两版均留、未互相覆盖） |
+| **插件库同步** 31 个 .js 挪进私库 | `plugin-repo` | `<WORKSPACE>\sourin-plugins` | ✅ **完成 `7d92dab`**（31 个已推远端；某站点A 两版均留、未互相覆盖） |
 
 ★ 前两项**只读**是刻意的：定位清楚后由我决定改法，避免多人同时改 UI 文件。
 
@@ -4097,7 +4097,7 @@ M lib/ui/widgets/app_dialog_shell.dart        settings-ux: onDoubleTap
 ?? test/zz_t66_dialog_no_passthrough_test.dart 4 条
 ?? test/zz_t66_r5_player_no_overlap_test.dart  live-ux 的结构门禁（红着，指风险）
 
-私库 D:\WishProject\sourin-plugins（未提交）：
+私库 <WORKSPACE>\sourin-plugins（未提交）：
 M src/types.ts                  DanmakuSendRequest/Result（与 Rust 对齐）
 M plugins/某站点A.ts           danmakuSend ~200 行 + readCookieValue
 A tools/check-danmaku-send-parity.mjs

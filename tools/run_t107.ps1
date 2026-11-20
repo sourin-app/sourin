@@ -124,17 +124,11 @@ New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
 
 # ── 编（可跳过）─────────────────────────────────────────────────────────
 if (-not $NoBuild) {
+    . (Join-Path $PSScriptRoot 'resolve_dev_tool.ps1')
+    # Keep PATH first; use SOURIN_FLUTTER_ROOT / FLUTTER_ROOT only as fallback.
+    try { $flutter = Resolve-SourinFlutter -PathFirst } catch { Die $_.Exception.Message }
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
     Set-Content -Path $stamp -Value $dataDir -Encoding UTF8
-    # flutter 可执行：优先 PATH，其次本机固定位置（直接在 pwsh 里跑时 PATH 未必有）
-    $flutter = $null
-    $cmd = Get-Command flutter -ErrorAction SilentlyContinue
-    if ($cmd -ne $null) { $flutter = $cmd.Source }
-    if ($flutter -eq $null) {
-        $cand = 'C:\Users\iuuuuuuuu\flutter\bin\flutter.bat'
-        if (Test-Path $cand) { $flutter = $cand }
-    }
-    if ($flutter -eq $null) { Die "找不到 flutter：PATH 里没有，也没有 C:\Users\iuuuuuuuu\flutter\bin\flutter.bat" }
     Write-Host "== 构建探针入口（-t lib/t107_cs1_flow_probe.dart）==" -ForegroundColor Cyan
     Write-Host "   flutter=$flutter"
     Write-Host "   DATA_DIR_OVERRIDE=$dataDir"

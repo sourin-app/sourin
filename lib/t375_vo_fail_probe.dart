@@ -44,29 +44,13 @@ import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:path_provider/path_provider.dart';
+
+import 'probe_paths.dart';
 
 const String kTag = '[T375]';
 
-/// Media to open.
-///
-/// The path is chosen **at runtime by platform**, not baked in by a
-/// `String.fromEnvironment`: that mechanism is compile-time, so a build made
-/// for one platform carries the other platform's path and the probe refuses
-/// with "media missing" -- a wasted build. `T375_MEDIA` can still override.
-const String _kMediaOverride = String.fromEnvironment('T375_MEDIA');
-
-String _pickMedia() {
-  if (_kMediaOverride.isNotEmpty) return _kMediaOverride;
-  if (Platform.isAndroid) {
-    return '/storage/emulated/0/Android/data/app.sourin.sourin_spike/files/'
-        'media/t285_osd_test.mkv';
-  }
-  // Windows / desktop: the local sample the rest of this repo's probes use.
-  return r'D:\WishProject\sourin-flutter-spike\hevc_sample.mp4';
-}
-
-final String kMedia = _pickMedia();
+/// T375_MEDIA selects the exact local media (environment or --dart-define).
+const _mediaSetting = 'T375_MEDIA';
 
 /// Substrings that identify an output-layer initialisation failure. Several
 /// are listed on purpose: which one mpv actually prints is a reading, not an
@@ -91,7 +75,7 @@ const List<String> kProps = <String>[
 final StringBuffer _rep = StringBuffer();
 int _pass = 0;
 int _fail = 0;
-String _workDir = '';
+late final Directory _workDir;
 
 void _emit(String line) {
   _rep.writeln(line);
@@ -118,17 +102,6 @@ Future<String> _prop(NativePlayer n, String key) async {
   }
 }
 
-Future<String> _resolveWorkDir() async {
-  if (Platform.isAndroid) {
-    try {
-      final d = await getExternalStorageDirectory();
-      if (d != null) return d.path;
-    } catch (_) {}
-    return '/storage/emulated/0/Android/data/app.sourin.sourin_spike/files';
-  }
-  return Directory.current.path;
-}
-
 // ── 舞台：真渲染 Video widget 的最小形态（controller 初始化依赖它）──
 class _Stage extends StatelessWidget {
   const _Stage({required this.controller});
@@ -151,21 +124,26 @@ class _Stage extends StatelessWidget {
 Future<void> main() async {
   debugPrint = debugPrintSynchronously;
   WidgetsFlutterBinding.ensureInitialized();
-  _workDir = await _resolveWorkDir();
+  _workDir = probeArtifactDirectory();
 
   _emit('================================================================');
   _emit('t375  does the product already see "video output failed"?');
   _emit('================================================================');
-  _emit('workdir = $_workDir');
-  _emit('media   = $kMedia (exists=${File(kMedia).existsSync()})');
-
-  final mediaOk = File(kMedia).existsSync();
-  ok('A1 media is present on this device', mediaOk);
-  if (!mediaOk) {
-    _emit('REFUSING: media missing -- the instrument cannot produce a reading');
+  _emit('workdir = ${_workDir.path}');
+  final String kMedia;
+  try {
+    kMedia = requireProbeMedia(
+      name: _mediaSetting,
+      dartDefine: const String.fromEnvironment(_mediaSetting),
+    ).path;
+  } on StateError catch (e) {
+    ok('A1 media is present on this device', false);
+    _emit('REFUSING: $e -- the instrument cannot produce a reading');
     _finish(2);
     return;
   }
+  _emit('media   = $kMedia (exists=true)');
+  ok('A1 media is present on this device', true);
 
   try {
     MediaKit.ensureInitialized();
@@ -437,7 +415,7 @@ void _finish(int code) {
   _emit('');
   _emit('RESULT pass=$_pass fail=$_fail');
   try {
-    File('$_workDir/t375_report.txt').writeAsStringSync(_rep.toString());
+    probeFileUnder(_workDir, 't375_report.txt').writeAsStringSync(_rep.toString());
   } catch (e) {
     debugPrint('$kTag report write failed: $e');
   }

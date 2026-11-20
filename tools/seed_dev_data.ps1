@@ -366,7 +366,7 @@ if (Test-Path -LiteralPath $srcAggregate) {
 # # 为什么（2026-10-16 CI 实测踩到）
 # ```text
 # Get-ChildItem 回的是**长名**绝对路径，而 -Source 可能传进来的是**8.3 短名**
-# （CI runner 的 TEMP 就是 `C:\Users\RUNNER~1\AppData\Local\Temp\...`）。
+# （CI runner 的 TEMP 就是 `C:\Users\<SHORT_USER>\AppData\Local\Temp\...`）。
 # 两者长度不同 ⇒ Substring 切出来的「相对路径」是错的 ⇒ 拷贝静默变成 0 个。
 #
 # 实测（本机复现）：Source=C:\...\T1015_~2、FullName=C:\...\t1015_shortname_probe\plugins\mine.js

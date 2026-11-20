@@ -58,6 +58,8 @@ import 'package:material_ui/material_ui.dart' hide Page;
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/ffi.dart';
 import 'core/models.dart'; // ignore: unnecessary_import（显式带出领域类型，读代码时不必猜）
 import 'core/sourin_api.dart';
@@ -69,8 +71,8 @@ import 'ui/home_page.dart'
 
 // ⚠️ 一律用正斜杠：探针源码里**不出现反斜杠**，省掉一层转义（本文件是探针，
 //    不是产品代码；Dart 在 Windows 上照样认正斜杠）。
-const _outDir = 'D:/WishProject/sourin-flutter-spike/.probe';
-const _logFile = '$_outDir/t11-cache.txt';
+late final Directory _outDir;
+final _logFile = probeFileUnder(_outDir, 't11-cache.txt').path;
 
 final List<String> _log = [];
 
@@ -222,6 +224,7 @@ Future<void> guardHome() async {
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
   WidgetsFlutterBinding.ensureInitialized();
 
   // ★ 看门狗：无论卡在哪，产物里一定有一条 RESULT（t6 探针的教训）

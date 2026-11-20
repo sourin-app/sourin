@@ -59,7 +59,7 @@
 // # 先 build 到 Release 目录，再从**含 libmpv-2.dll 的目录**运行
 // $env:Path = "<flutter>\bin;$env:Path"
 // flutter build windows --release -t lib/t465_skip_dialog_probe.dart `
-//   --dart-define=DATA_DIR_OVERRIDE=D:\WishProject\sourin-flutter-spike\.probe\t465_data
+//   --dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>\.probe\t465_data
 // # 把 Release\* 复制到 .probe\t465_run\ 后：
 // .\sourin_spike.exe
 // # 结果：stdout 的 `[T465]` 行 + `%TEMP%\sourin_t465.txt` + .probe\t465-*.png
@@ -96,6 +96,8 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/widgets/overlay_motion.dart';
 import 'package:sourin_spike/ui/widgets/skip_marker_dialog.dart';
 import 'package:sourin_spike/ui/widgets/skip_timeline.dart';
+
+import 'probe_paths.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
 import './design/icons/app_icons.dart';
@@ -104,12 +106,10 @@ import './design/icons/app_icons.dart';
 ///
 /// ★ 为什么用 4:3：Task C「预览去黑边」的判据就是"画布跟随真实宽高比"。
 ///   用 16:9 的片源，改前改后**长得一模一样** ⇒ 什么也证明不了。
-const kProbeMedia = String.fromEnvironment(
-  'PROBE_MEDIA',
-  defaultValue: r'D:\WishProject\sourin-flutter-spike\.probe\t465_43.mp4',
-);
+// PROBE_MEDIA must select the original t465_43.mp4 fixture.
+late final String kProbeMedia;
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// 素材的**真实**宽高比（4:3）。
 ///
@@ -175,7 +175,7 @@ Future<(String, int)> shoot(String name) async {
   }
   final img = await obj.toImage(pixelRatio: 1.0);
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir\\t465-$name.png';
+  final path = probeFileUnder(_outDir, 't465-$name.png').path;
   File(path).writeAsBytesSync(png!.buffer.asUint8List());
 
   final rgba = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -572,6 +572,8 @@ Future<String> resolveDataDir() async {
 // ══════════════════════════════════════════════════════════════════════
 
 void main() async {
+  kProbeMedia = requireProbeMedia().path;
+  _outDir = probeArtifactDirectory();
   WidgetsFlutterBinding.ensureInitialized();
 
   // ★ 必须在 runApp **之前**（生产 `lib/shell.dart:248-276` 同一顺序）
@@ -717,13 +719,13 @@ class _ProbePageState extends State<_ProbePage> {
       showAppDialog<SkipMarkerResult>(
         context: ctx,
         barrierDismissible: false,
-        builder: (_) => const SkipMarkerDialog(
+        builder: (_) => SkipMarkerDialog(
           provider: 'probe',
           id: 't465',
           title: 't465 真机实测',
           // ★ 真实本地文件 ⇒ 预览**真的会出画面**
           streamUrl: kProbeMedia,
-          duration: Duration(seconds: 40),
+          duration: const Duration(seconds: 40),
         ),
       ),
     );

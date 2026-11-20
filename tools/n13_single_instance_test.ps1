@@ -29,7 +29,9 @@
 # into invalid tokens and the script fails to parse.
 
 $ErrorActionPreference = 'Stop'
-$exe = 'D:\WishProject\sourin-flutter-spike\build\windows\x64\runner\Release\sourin_spike.exe'
+$root = Split-Path -Parent $PSScriptRoot
+$exe = Join-Path $root 'build\windows\x64\runner\Release\sourin_spike.exe'
+$log = Join-Path $root '.probe\n13-single-instance.log'
 $lines = New-Object System.Collections.Generic.List[string]
 $fail = 0
 
@@ -94,7 +96,7 @@ $procs = LiveProcs
 Say "(1) after $($i*0.5)s: count=$($procs.Count) withWindow=$(@($procs | Where-Object {(MainHwnd $_.Id) -ne [IntPtr]::Zero}).Count)"
 if (-not $ok) {
   Say "FAIL #1 never produced a window; cannot continue"
-  $lines -join "`n" | Out-File -Encoding utf8 '.probe\n13-single-instance.log'
+  $lines -join "`n" | Out-File -Encoding utf8 -LiteralPath $log
   exit 1
 }
 $first = ($procs | Where-Object { (MainHwnd $_.Id) -ne [IntPtr]::Zero } | Select-Object -First 1)
@@ -185,5 +187,5 @@ Say "cleanup: count=$((LiveProcs).Count)"
 Say ""
 Say "=== RESULT: failures = $fail ==="
 
-$lines -join "`n" | Out-File -Encoding utf8 '.probe\n13-single-instance.log'
-Write-Host "`nwritten to .probe\n13-single-instance.log"
+$lines -join "`n" | Out-File -Encoding utf8 -LiteralPath $log
+Write-Host "`nwritten to $log"

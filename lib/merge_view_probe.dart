@@ -52,6 +52,8 @@ import 'package:flutter/widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/ffi.dart';
 import 'core/sourin_api.dart';
 import 'core/ui_prefs.dart';
@@ -63,7 +65,7 @@ import 'ui/app_scaffold.dart';
 /// 截图用的重绘边界（包住整棵 UI）
 final _rootKey = GlobalKey();
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 void say(String s) => debugPrint('[MV] $s');
 
@@ -78,19 +80,6 @@ void ok(String label, bool cond, [String extra = '']) {
     fail++;
     debugPrint('[MV] ✗ $label${extra.isEmpty ? '' : '  $extra'}');
   }
-}
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    final d = Directory(override);
-    if (!await d.exists()) await d.create(recursive: true);
-    return d.path;
-  }
-  final appdata = Platform.environment['APPDATA'] ??
-      Platform.environment['HOME'] ??
-      '.';
-  return '$appdata${Platform.pathSeparator}app.sourin.player';
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -114,7 +103,7 @@ Future<(String, int)> shoot(String name) async {
   }
   final img = await obj.toImage(pixelRatio: 1.0);
   final data = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir\\merge-$name.png';
+  final path = probeFileUnder(_outDir, 'merge-$name.png').path;
   File(path).writeAsBytesSync(data!.buffer.asUint8List());
 
   // 唯一颜色数（自检：退化图不能当证据）
@@ -214,9 +203,10 @@ Offset? centerOf(Element? e) {
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
   final r = await SourinCore.startAsync(dir);
 

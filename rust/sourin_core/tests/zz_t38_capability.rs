@@ -17,20 +17,17 @@
 use sourin_core::plugins::JsPluginProvider;
 use sourin_core::provider::MediaProvider;
 
-const REAL_STORE: &str =
-    r"C:\Users\iuuuuuuuu\AppData\Roaming\app.sourin.player\plugins\.data";
+mod support;
+use support::t38_fixture::{ProbeWorkspace, T38Fixture};
 
-fn tmp(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "sourin-t38-{tag}-{}",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn tmp(tag: &str) -> ProbeWorkspace {
+    ProbeWorkspace::new(tag).expect("create owned T38 workspace")
 }
 
 async fn hydrate(src: &str, dir: std::path::PathBuf) -> JsPluginProvider {
-    let mut p = JsPluginProvider::from_source(src).unwrap().with_data_dir(dir);
+    let mut p = JsPluginProvider::from_source(src)
+        .unwrap()
+        .with_data_dir(dir);
     p.hydrate_capabilities().await;
     p
 }
@@ -40,17 +37,10 @@ async fn hydrate(src: &str, dir: std::path::PathBuf) -> JsPluginProvider {
 /// 这是"用户不再看到验证码"的**唯一前提**。
 #[tokio::test]
 async fn real_srca_declares_can_auto_login() {
-    /*
-     * 2026-10-13: this test needs a REAL srca.js shipped in the repo.
-     * Per CONTRIBUTING rule 3, site plugins no longer ship here, so on a
-     * clean checkout the file is absent. Skip instead of failing --
-     * the repo cannot guarantee a machine-local plugin.
-     */
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/srca.js");
-    let Ok(src) = std::fs::read_to_string(path) else {
-        println!("[t38] skip: {path} is not shipped in this repo");
-        return;
-    };
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let src = fixture
+        .read_reference_source()
+        .expect("read reference/srca.js fixture");
 
     // ① 源码里必须**声明**（否则能力位无从谈起）
     assert!(
@@ -60,7 +50,8 @@ async fn real_srca_declares_can_auto_login() {
     );
 
     // ② 解析后必须为 true（这一条锁住 hydrate_capabilities 里那行赋值）
-    let p = hydrate(&src, tmp("real")).await;
+    let workspace = tmp("real");
+    let p = hydrate(&src, workspace.path().to_path_buf()).await;
     assert!(
         p.manifest().capabilities.can_auto_login,
         "★★★ 声明了 canAutoLogin: true，但 hydrate 后 can_auto_login 仍是 false —— \
@@ -89,7 +80,8 @@ globalThis.plugin = {
   async resolve() { return []; },
 };
 "#;
-    let p = hydrate(src, tmp("legacy")).await;
+    let workspace = tmp("legacy");
+    let p = hydrate(src, workspace.path().to_path_buf()).await;
     assert!(
         !p.manifest().capabilities.can_auto_login,
         "★★ 没声明 canAutoLogin 的插件，can_auto_login 必须是 **false** —— \
@@ -110,7 +102,8 @@ globalThis.plugin = {
   async resolve() { return []; },
 };
 "#;
-    let p = hydrate(src, tmp("false")).await;
+    let workspace = tmp("false");
+    let p = hydrate(src, workspace.path().to_path_buf()).await;
     assert!(!p.manifest().capabilities.can_auto_login);
     println!("[显式 false] 被正确尊重 ✓");
 }
@@ -130,7 +123,8 @@ globalThis.plugin = {
   async resolve() { return []; },
 };
 "#;
-    let p = hydrate(src, tmp("camel")).await;
+    let workspace = tmp("camel");
+    let p = hydrate(src, workspace.path().to_path_buf()).await;
     assert!(
         p.manifest().capabilities.can_auto_login,
         "★ `canAutoLogin`（camelCase）必须能转成 `can_auto_login` —— \
@@ -145,13 +139,12 @@ globalThis.plugin = {
 /// 这一条锁住"后端 → 前端"那段契约。
 #[tokio::test]
 async fn serialized_json_exposes_can_auto_login() {
-    /* 同上：仓库不再发布该插件 ⇒ 缺席时跳过（不是失败）。 */
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/srca.js");
-    let Ok(src) = std::fs::read_to_string(path) else {
-        println!("[t38] skip: {path} is not shipped in this repo");
-        return;
-    };
-    let p = hydrate(&src, tmp("json")).await;
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let src = fixture
+        .read_reference_source()
+        .expect("read reference/srca.js fixture");
+    let workspace = tmp("json");
+    let p = hydrate(&src, workspace.path().to_path_buf()).await;
 
     let m = p.manifest();
     let j = serde_json::to_value(&m).expect("序列化 manifest");

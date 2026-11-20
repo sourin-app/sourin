@@ -575,7 +575,7 @@ pub extern "C" fn sourin_detach_callbacks(callback_addr: usize, stream_addr: usi
 /// # 输入
 ///
 /// ```json
-/// { "dataDir": "C:/Users/x/AppData/Roaming/app.sourin.player" }
+/// { "dataDir": "<APP_DATA_DIR>" }
 /// ```
 ///
 /// # 返回

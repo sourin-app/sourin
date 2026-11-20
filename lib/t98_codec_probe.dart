@@ -95,13 +95,15 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 // ─────────────────────────────────────────────────────────────
 // 产物与输出
 // ─────────────────────────────────────────────────────────────
 
-const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
-const String _fixtureDir = r'D:\WishProject\sourin-flutter-spike';
-const String _art = '$_outDir\\t98_codec_probe.txt';
+late final Directory _outDir;
+const _fixtureRootName = 'PROBE_CODEC_FIXTURE_ROOT';
+final String _art = probeFileUnder(_outDir, 't98_codec_probe.txt').path;
 
 final List<String> _buf = <String>[];
 int _pass = 0;
@@ -265,7 +267,7 @@ Future<int> _savePng(String name) async {
   final data = await img.toByteData(format: ui.ImageByteFormat.png);
   img.dispose();
   if (data == null) return -1;
-  final f = File('$_outDir\\t98-$name.png');
+  final f = probeFileUnder(_outDir, 't98-$name.png');
   await f.writeAsBytes(data.buffer.asUint8List());
   return data.lengthInBytes;
 }
@@ -418,6 +420,26 @@ class _StageState extends State<_Stage> {
 // ─────────────────────────────────────────────────────────────
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final fixtureDir = requireProbeFixtureRoot(
+    _fixtureRootName,
+    dartDefine: const String.fromEnvironment(_fixtureRootName),
+  );
+  // ── 素材存在性（缺一个就拒绝，不给出"看起来跑过了"的读数）──
+  _head('素材');
+  var missing = 0;
+  for (final f in _fixtures) {
+    final p = probeFileUnder(fixtureDir, f.file);
+    final ok = p.existsSync();
+    if (!ok) missing++;
+    _buf.add('  ${f.file}  ${ok ? "${p.lengthSync()} B" : "★ 缺失"}');
+  }
+  if (missing > 0) {
+    _buf.add('REFUSING: $missing 个素材缺失 —— 拒绝给出读数');
+    await _write();
+    exit(2);
+  }
+
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
@@ -440,21 +462,6 @@ Future<void> main() async {
   _buf.add('t98 codec probe — 硬指标① 的 AC3 / DTS / ASS 真机取证');
   _buf.add('generated = ${DateTime.now().toIso8601String()}');
   _buf.add('cwd = ${Directory.current.path}');
-
-  // ── 素材存在性（缺一个就拒绝，不给出"看起来跑过了"的读数）──
-  _head('素材');
-  var missing = 0;
-  for (final f in _fixtures) {
-    final p = File('$_fixtureDir\\${f.file}');
-    final ok = p.existsSync();
-    if (!ok) missing++;
-    _buf.add('  ${f.file}  ${ok ? "${p.lengthSync()} B" : "★ 缺失"}');
-  }
-  if (missing > 0) {
-    _buf.add('REFUSING: $missing 个素材缺失 —— 拒绝给出读数');
-    await _write();
-    exit(2);
-  }
 
   var ready = false;
   final done = Completer<void>();
@@ -498,8 +505,7 @@ Future<void> main() async {
   for (final f in _fixtures) {
     _head('${f.file}  (期望音频=${f.audioLabel} / 字幕=${f.subKind} / 真实轨=${f.expectRealSubs})');
 
-    final path = '$_fixtureDir\\${f.file}'.replaceAll(r'\', '/');
-    final url = 'file:///$path';
+    final url = probeFileUnder(fixtureDir, f.file).uri.toString();
 
     var dur = Duration.zero;
     var pos = Duration.zero;

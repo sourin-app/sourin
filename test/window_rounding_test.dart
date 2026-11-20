@@ -350,7 +350,7 @@ LRESULT Win32Window::MessageHandler(HWND hwnd, UINT const message,
        *
        * ## ★ 真相：**原版选的就是 `SetWindowRgn`**
        *
-       * `D:\WishProject\cctv_to_client\src-tauri\src\rounded_window.rs`
+       * `<ORIGINAL_VUE_ROOT>\src-tauri\src\rounded_window.rs`
        * 文件头白纸黑字：
        * ```text
        * //! 圆角窗口（Windows）—— 用 `SetWindowRgn` **物理裁角**

@@ -48,7 +48,8 @@ import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:path_provider/path_provider.dart';
+
+import 'probe_paths.dart';
 
 const String kTag = '[T376]';
 
@@ -65,7 +66,7 @@ const List<String> kMpvProps = <String>[
 final StringBuffer _rep = StringBuffer();
 int _pass = 0;
 int _fail = 0;
-String _workDir = '';
+late final Directory _workDir;
 String _label = '(unset)';
 String _media = '';
 // ★ Empty means "do not override" i.e. the product default. Non-empty values
@@ -100,25 +101,6 @@ Future<String> _prop(NativePlayer n, String key) async {
   }
 }
 
-Future<String> _resolveWorkDir() async {
-  if (Platform.isAndroid) {
-    try {
-      final d = await getExternalStorageDirectory();
-      if (d != null) return d.path;
-    } catch (_) {}
-    return '/storage/emulated/0/Android/data/app.sourin.sourin_spike/files';
-  }
-  return Directory.current.path;
-}
-
-String _defaultMedia() {
-  if (Platform.isAndroid) {
-    return '/storage/emulated/0/Android/data/app.sourin.sourin_spike/files/'
-        'media/t285_osd_test.mkv';
-  }
-  return r'D:\WishProject\sourin-flutter-spike\hevc_sample.mp4';
-}
-
 /// Writes a genuine **audio-only** media file and returns its path.
 ///
 /// # Why the probe has to make this itself
@@ -136,7 +118,7 @@ String _defaultMedia() {
 /// "this media has no video" is true by construction rather than by
 /// assumption -- which is the property the arm depends on.
 String _synthAudioWav() {
-  final path = '$_workDir/t376_synth_audio.wav';
+  final path = probeFileUnder(_workDir, 't376_synth_audio.wav').path;
   const rate = 8000;
   const seconds = 30;
   const samples = rate * seconds;
@@ -174,10 +156,9 @@ String _synthAudioWav() {
 /// actually consumed -- a config read that silently falls back to defaults
 /// is indistinguishable from a config that was never written.
 String _loadConfig() {
-  final f = File('$_workDir/t376_config.txt');
+  final f = probeFileUnder(_workDir, 't376_config.txt');
   if (!f.existsSync()) {
     _label = '(no config file -> defaults)';
-    _media = _defaultMedia();
     return '(absent)';
   }
   final text = f.readAsStringSync();
@@ -193,9 +174,6 @@ String _loadConfig() {
     if (k == 'vo') _vo = v;
     if (k == 'hwdec') _hwdec = v;
   }
-  if (_media.isEmpty) _media = _defaultMedia();
-  // `media=SYNTH_AUDIO` -> a WAV generated on the spot (see _synthAudioWav).
-  if (_media == 'SYNTH_AUDIO') _media = _synthAudioWav();
   return text.replaceAll('\n', ' | ').trim();
 }
 
@@ -262,17 +240,16 @@ class _Stage extends StatelessWidget {
 Future<void> main() async {
   debugPrint = debugPrintSynchronously;
   WidgetsFlutterBinding.ensureInitialized();
-  _workDir = await _resolveWorkDir();
+  _workDir = probeArtifactDirectory();
 
   final cfg = _loadConfig();
 
   _emit('================================================================');
   _emit('t376  which Dart-side signal gates "the output layer never built"?');
   _emit('================================================================');
-  _emit('workdir = $_workDir');
+  _emit('workdir = ${_workDir.path}');
   _emit('label   = $_label');
   _emit('config  = $cfg');
-  _emit('media   = $_media (exists=${File(_media).existsSync()})');
   _emit('vo      = ${_vo.isEmpty ? '(product default)' : _vo}');
   _emit('hwdec   = ${_hwdec.isEmpty ? '(product default)' : _hwdec}');
 
@@ -280,13 +257,24 @@ Future<void> main() async {
       _label != '(unset)' && _label != '(no config file -> defaults)',
       'label=$_label');
 
-  final mediaOk = File(_media).existsSync();
-  ok('A1 media is present', mediaOk);
-  if (!mediaOk) {
-    _emit('REFUSING: media missing -- the instrument cannot produce a reading');
+  try {
+    // Keep the synthetic audio-only arm generated in the task output root.
+    if (_media == 'SYNTH_AUDIO') {
+      _media = _synthAudioWav();
+    } else {
+      _media = (_media.isEmpty
+              ? requireProbeMedia()
+              : requireLocalProbeFile(_media, setting: 't376_config.txt media'))
+          .path;
+    }
+  } on StateError catch (e) {
+    ok('A1 media is present', false);
+    _emit('REFUSING: $e -- the instrument cannot produce a reading');
     _finish(2);
     return;
   }
+  _emit('media   = $_media (exists=true)');
+  ok('A1 media is present', true);
 
   try {
     MediaKit.ensureInitialized();
@@ -537,8 +525,8 @@ void _finish(int code) {
   _emit('RESULT pass=$_pass fail=$_fail');
   try {
     final name = _label.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-    File('$_workDir/t376_report.txt').writeAsStringSync(_rep.toString());
-    File('$_workDir/t376_report_$name.txt').writeAsStringSync(_rep.toString());
+    probeFileUnder(_workDir, 't376_report.txt').writeAsStringSync(_rep.toString());
+    probeFileUnder(_workDir, 't376_report_$name.txt').writeAsStringSync(_rep.toString());
   } catch (e) {
     debugPrint('$kTag report write failed: $e');
   }

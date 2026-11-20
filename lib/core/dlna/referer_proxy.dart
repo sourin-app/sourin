@@ -4,7 +4,7 @@
 //
 // # 为什么必须有它（不是"优化"，是"没有就投不了"）
 //
-// 原版 D:\WishProject\srcl_to_client\src-tauri\src\streamproxy.rs 的文件头
+// 原版 <ORIGINAL_TAURI_ROOT>\src-tauri\src\streamproxy.rs 的文件头
 // 记录了一组实测结论（第 10-22 行）：
 //
 // ```text

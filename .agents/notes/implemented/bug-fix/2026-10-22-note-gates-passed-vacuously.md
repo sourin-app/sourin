@@ -30,8 +30,8 @@ Status: implemented
 3. **archived 在路径别名下红在与内容无关的地方。** 清单路径原来用
    `relative(repoRoot, manifestPath)` 算。`repoRoot` 来自 git
    （`C:/Users/<长用户名>/…`），`manifestPath` 来自 Node 的路径解析
-   （Windows 8.3 短名 `C:\Users\IUUUUU~1\…`）。两个字符串指向同一目录但字面量不同，
-   `relative()` 算出 `../../../../IUUUUU~1/…`，`ls-tree` 直接报
+   （Windows 8.3 短名 `C:\Users\<SHORT_USER>\…`）。两个字符串指向同一目录但字面量不同，
+   `relative()` 算出 `../../../../<SHORT_USER>/…`，`ls-tree` 直接报
    `is outside repository`。**门禁红了，但红的原因与封印一个字节无关** ——
    这种红会训练人「反正它老红」。
 

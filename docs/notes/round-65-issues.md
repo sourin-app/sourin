@@ -37,23 +37,23 @@
 
 ## 2026-10-17 23:5x —— 批次 A：插件私有仓（已完成，2 条记录）
 
-### ✅ A-1：`D:\WishProject\sourin-plugins` 已被**上游示例仓**占用，本地改用 `sourin-plugins-user`
+### ✅ A-1：`<WORKSPACE>\sourin-plugins` 已被**上游示例仓**占用，本地改用 `sourin-plugins-user`
 
-**发现**：按计划把本地仓建在同级 `D:\WishProject\sourin-plugins` 时，该目录**已存在**
+**发现**：按计划把本地仓建在同级 `<WORKSPACE>\sourin-plugins` 时，该目录**已存在**
 且不是空目录 —— 它是一个已有的 git 仓库，remote 指向
 `https://github.com/sourin-app/sourin-plugins.git`，内容是官方「插件写法示例」
 （TypeScript 示例 + 构建脚本 + node_modules），与 Owner 的本地插件**毫无关系**。
 
 **判断**：若直接在该目录初始化/推送，会污染甚至覆盖上游示例仓的 git 历史；
-而且我们的 `origin` 是 `iuuuuuuuu/sourin-plugins`，与该目录现有 origin 冲突。
+而且我们的 `origin` 是 `PRIVATE_PLUGIN_REPO`，与该目录现有 origin 冲突。
 
-**决策**：**不碰**那个目录，本地仓改建在 `D:\WishProject\sourin-plugins-user`。
-GitHub 上的仓库名仍是 `sourin-plugins`（在 `iuuuuuuuu` 账号下，与
+**决策**：**不碰**那个目录，本地仓改建在 `<WORKSPACE>\sourin-plugins-user`。
+GitHub 上的仓库名仍是 `sourin-plugins`（在 `<PRIVATE_PLUGIN_OWNER>` 账号下，与
 `sourin-app/sourin-plugins` 是**不同 owner 的两个仓库**，不冲突）。
 ```text
-GitHub 仓库  https://github.com/iuuuuuuuu/sourin-plugins   ← 新建的私库
-本地克隆     D:\WishProject\sourin-plugins-user            ← 用这个
-被让开的目录 D:\WishProject\sourin-plugins                 ← 上游示例仓，未改动
+GitHub 仓库  PRIVATE_PLUGIN_REPO   ← 新建的私库
+本地克隆     <WORKSPACE>\sourin-plugins-user            ← 用这个
+被让开的目录 <WORKSPACE>\sourin-plugins                 ← 上游示例仓，未改动
 ```
 
 **若 Owner 不同意**：想让本地目录也叫 `sourin-plugins`，需要先把现有那个示例仓
@@ -73,7 +73,7 @@ GitHub 仓库  https://github.com/iuuuuuuuu/sourin-plugins   ← 新建的私库
 （`find . -name '*.bak*'` 递归查过，无第 4 个。）
 
 > ⚠️ 这里**不写具体源名**：本文件在仓库内，会被 `t98` 站名门禁扫描。
-> 具体文件名见私有仓 `iuuuuuuuu/sourin-plugins` 的实际文件清单。
+> 具体文件名见私有仓 `PRIVATE_PLUGIN_REPO` 的实际文件清单。
 > 上一版我把三个真实文件名照抄进来，`t98` 立刻变红 —— 已改回中性占位。
 
 **判断**：不是漏拷 —— 源目录本来就只有 3 个。计划里的「4」是估计值写实了。
@@ -89,7 +89,7 @@ GitHub 仓库  https://github.com/iuuuuuuuu/sourin-plugins   ← 新建的私库
 ### 批次 A 完成读数（2026-10-17）
 
 ```text
-仓库 URL    https://github.com/iuuuuuuuu/sourin-plugins
+仓库 URL    PRIVATE_PLUGIN_REPO
 私有状态    isPrivate=true  visibility=PRIVATE
             佐证（绕开 API 限流）：匿名 raw 访问本仓 404、公开仓对照 200
             佐证：匿名 git ls-remote 要求密码，公开仓对照成功
@@ -101,7 +101,7 @@ GitHub 仓库  https://github.com/iuuuuuuuu/sourin-plugins   ← 新建的私库
             commit 一致：本地 HEAD == origin/main == 8208ed2
 
 隐私扫描    git grep HEAD（已提交树）：
-            iuuuuuuuu 0 命中 / WishProject 0 命中 / C:\Users 0 命中
+            搜索 token 示例：<HOST_IDENTIFIER>（占位，不表示当前扫描结果）
             扩展：app.sourin.player / APPDATA / sourin-flutter-spike 均 0 命中
             服务端复核：从 GitHub 全新 clone 后 grep，全部 0 命中
 

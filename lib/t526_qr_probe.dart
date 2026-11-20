@@ -23,7 +23,7 @@
 //
 // ```text
 // flutter build windows --release -t lib/t526_qr_probe.dart \
-//   "--dart-define=DATA_DIR_OVERRIDE=D:\WishProject\sourin-flutter-spike\.probe\t526data"
+//   "--dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>\.probe\t526data"
 // build\windows\x64\runner\Release\sourin_spike.exe
 // ```
 //
@@ -49,6 +49,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/sourin_api.dart';
@@ -63,8 +65,8 @@ import 'ui/widgets/qr_view.dart';
 //  产物路径
 // ═══════════════════════════════════════════════════════════════════════
 
-const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
-const String _logPath = '$_outDir\\t526-qr-probe.txt';
+late final Directory _outDir;
+final String _logPath = probeFileUnder(_outDir, 't526-qr-probe.txt').path;
 
 // ═══════════════════════════════════════════════════════════════════════
 //  计数 / 日志
@@ -263,7 +265,7 @@ Future<Shot> shoot(String name) async {
   if (bd == null || png == null) throw StateError('toByteData 返回 null');
   final bytes = png.buffer.asUint8List();
   final raw = bd.buffer.asUint8List();
-  final path = '$_outDir\\t526-qr-probe-$name.png';
+  final path = probeFileUnder(_outDir, 't526-qr-probe-$name.png').path;
   File(path).writeAsBytesSync(bytes, flush: true);
 
   // 每 7 像素采样一次颜色数 —— 「截图非退化」的判据
@@ -279,6 +281,7 @@ Future<Shot> shoot(String name) async {
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   await Device.init();
@@ -353,7 +356,7 @@ Future<void> _body(String dir) async {
       dir.toLowerCase().contains('.probe'), dir);
   ok('⓪ 隔离目录里有部署版 srcv.js',
       File('$dir\\plugins\\srcv.js').existsSync(),
-      '$_outDir 之外的用户库一个字节都没碰');
+      '${_outDir.path} 之外的用户库一个字节都没碰');
 
   // ─────────────────────────────────────────────────────────────────
   //  ① 命令层（真请求）—— 与 UI 无关，先证明 DLL 真的能出二维码

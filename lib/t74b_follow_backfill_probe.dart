@@ -67,6 +67,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/models.dart';
@@ -81,7 +83,7 @@ import 'ui/app_scaffold.dart';
 const String kBadProvider = 'srca';
 const String kBadId = '3841';
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// 日志缓冲 —— `finish()` 会把它写成**产物文件**
 ///
@@ -124,7 +126,7 @@ void note(String s) {
 ///   于是"跑了但没证据" —— 与"没跑"在事后完全无法区分。
 Future<Never> finish(int code) async {
   try {
-    final f = File('$_outDir\\t74b-follow-backfill.txt');
+    final f = probeFileUnder(_outDir, 't74b-follow-backfill.txt');
     f.writeAsStringSync('${_log.join('\n')}\n');
     debugPrint('[T74B] 产物已写 ${f.path} (${f.lengthSync()} B)');
   } catch (e) {
@@ -137,18 +139,6 @@ Future<Never> finish(int code) async {
 // ═══════════════════════════════════════════════════════════════════════
 //  数据目录
 // ═══════════════════════════════════════════════════════════════════════
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    final d = Directory(override);
-    if (!await d.exists()) await d.create(recursive: true);
-    return d.path;
-  }
-  final appdata =
-      Platform.environment['APPDATA'] ?? Platform.environment['HOME'] ?? '.';
-  return '$appdata${Platform.pathSeparator}app.sourin.player';
-}
 
 /// 等一帧真的画完（真实应用进程里没有 `tester.pump()`）
 ///
@@ -186,6 +176,8 @@ final _pageKey = GlobalKey<FollowPageState>();
 final _rootKey = GlobalKey();
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
   // media_kit 必须在 runApp 之前（`shell.dart:276` 的同一条）。
@@ -204,7 +196,6 @@ Future<void> main() async {
     say('Device.init 失败（忽略，有兜底）: $e');
   }
 
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
   final r = await SourinCore.startAsync(dir);
 

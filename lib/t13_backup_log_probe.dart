@@ -63,6 +63,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/app_log.dart';
 import 'core/device.dart';
 import 'core/ffi.dart';
@@ -74,7 +76,7 @@ import 'ui/settings_page.dart';
 import 'ui/widgets/backup_panel.dart';
 import 'ui/widgets/settings_sub_page.dart';
 
-const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 const String _tag = String.fromEnvironment('T13_TAG', defaultValue: 'run1');
 
 int pass = 0;
@@ -106,7 +108,7 @@ void note(String s) => say('·  $s');
  * 只有每行都 flush，才能看到"**卡在哪一步**"（而不是"什么都没写"）。
  * ```
  */
-final File _traceFile = File('$_outDir\\t13-trace-$_tag.txt');
+final File _traceFile = probeFileUnder(_outDir, 't13-trace-$_tag.txt');
 
 void trace(String s) {
   try {
@@ -134,7 +136,7 @@ void armWatchdog() {
   Timer(const Duration(seconds: 210), () {
     trace('★★ WATCHDOG 触发（210 秒未跑完）⇒ 强制落盘并退出');
     try {
-      File('$_outDir\\t13-backup-log-$_tag.txt').writeAsStringSync(
+      probeFileUnder(_outDir, 't13-backup-log-$_tag.txt').writeAsStringSync(
         '${_log.join('\n')}\n★ WATCHDOG TIMEOUT（210 秒）—— 上面是卡住前拿到的全部读数\n',
         flush: true,
       );
@@ -144,7 +146,7 @@ void armWatchdog() {
 }
 
 Future<Never> finish(int code) async {
-  final f = File('$_outDir\\t13-backup-log-$_tag.txt');
+  final f = probeFileUnder(_outDir, 't13-backup-log-$_tag.txt');
   try {
     f.writeAsStringSync('${_log.join('\n')}\n');
   } catch (e) {
@@ -154,16 +156,6 @@ Future<Never> finish(int code) async {
   debugPrint('[T13] RESULT pass=$pass fail=$fail');
   await Future<void>.delayed(const Duration(milliseconds: 250));
   exit(code);
-}
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    await Directory(override).create(recursive: true);
-    return override;
-  }
-  final appData = Platform.environment['APPDATA'] ?? '.';
-  return '$appData\\app.sourin.player';
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -403,7 +395,7 @@ Future<Shot> shoot(String name) async {
   final bytes = raw.buffer.asUint8List();
   final w = image.width;
   final h = image.height;
-  final path = '$_outDir\\t13-$_tag-$name.png';
+  final path = probeFileUnder(_outDir, 't13-$_tag-$name.png').path;
   await File(path).writeAsBytes(png.buffer.asUint8List(), flush: true);
 
   // 仪器自检：每 7 像素采样一次数颜色（退化图只有 1~2 色）
@@ -480,13 +472,14 @@ List<String> logRowsIn(Element scope) {
  * ```
  */
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
   try {
     await _main();
   } catch (e, st) {
     trace('★★ main() 逃出异常：$e');
     trace('$st');
     try {
-      File('$_outDir\\t13-backup-log-$_tag.txt').writeAsStringSync(
+      probeFileUnder(_outDir, 't13-backup-log-$_tag.txt').writeAsStringSync(
         '★ 探针在 main() 阶段就崩了，一条判据都没跑\n$e\n$st\n',
         flush: true,
       );
@@ -496,6 +489,7 @@ Future<void> main() async {
 }
 
 Future<void> _main() async {
+  final dir = probeDataDirectory().path;
   trace('══════ main() 进入 ══════');
   armWatchdog();
   WidgetsFlutterBinding.ensureInitialized();
@@ -508,7 +502,6 @@ Future<void> _main() async {
   await Device.init();
   trace('Device.init 之后');
 
-  final dir = await _resolveDataDir();
   trace('dataDir = $dir');
   await UiPrefs.load(dir);
   trace('UiPrefs.load 之后');

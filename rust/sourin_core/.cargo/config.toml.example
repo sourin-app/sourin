@@ -6,7 +6,7 @@
 # ```powershell
 # Copy-Item .cargo\config.toml.example .cargo\config.toml
 # # 然后把下面的 <NDK> 换成你本机的 NDK 路径，例如：
-# #   C:/Users/你的用户名/AppData/Local/Android/Sdk/ndk/27.0.12077973
+# #   <ANDROID_SDK>/ndk/27.0.12077973
 # ```
 #
 # # 为什么要显式指定链接器

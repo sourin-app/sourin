@@ -280,7 +280,7 @@ flutter test test/zz_t66_verify_danmaku_proxy_shots_test.dart --concurrency=1
 **读数**（Lead 亲自跑，扫的是**整棵已发布树**，不是本次 staged diff）：
 
 ```powershell
-git grep -l -E "iuuuuuuuu" HEAD -- . | sed 's/^HEAD://' | sed 's#/[^/]*$##' | sort | uniq -c | sort -rn
+git grep -l -E "<HOST_IDENTIFIER>" HEAD -- . | sed 's/^HEAD://' | sed 's#/[^/]*$##' | sort | uniq -c | sort -rn
 ```
 
 ```text

@@ -44,12 +44,12 @@ t98         ：'<站点代号>' 不许出现（别泄露站名）
 
 ### 红 2：`zz_t66_selfaudit_crossgate_test.dart` —— 注释被判成代码
 
-原判据：`s.contains('D:\WishProject')`（裸 contains，不剥注释）。
+原判据：对本机工作区绝对路径做裸 `contains`（不剥注释；具体路径已脱敏）。
 实测命中的是 `zz_t66_danmaku_send_safety_gate_test.dart:79-95` 的**注释**：
 
 ```text
- *   Platform.script   = file:///D:/WishProject/sourin-flutter-spike/main.dart
- *   实测 `Directory.current = D:\WishProject\sourin-flutter-spike`
+ *   Platform.script   = file:///<REPO_ROOT>/main.dart
+ *   实测 `Directory.current = <REPO_ROOT>`
 ```
 
 那是一段**排障证据**（证明"为什么 `Directory.current` 可靠"），

@@ -56,7 +56,7 @@
 // # 用法（同 t72p：隔离数据目录 + 从带 libmpv-2.dll 的目录运行）
 // ```powershell
 // flutter build windows --release -t lib/t2_detail_button_probe.dart `
-//   "--dart-define=DATA_DIR_OVERRIDE=D:\WishProject\sourin-flutter-spike\.probe\t2d-data"
+//   "--dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>\.probe\t2d-data"
 // ```
 // ⚠️ 绝不指向用户的真库（本探针会挂真 PlayerPage / MediaPage）。
 
@@ -68,6 +68,8 @@ import 'package:window_manager/window_manager.dart';
 
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
+
+import 'probe_paths.dart';
 
 import 'core/models.dart' show Episode;
 import 'ui/app_theme.dart';
@@ -81,7 +83,7 @@ import 'ui/player_page.dart'
         debugPlayerPlaybackFailureState;
 import 'ui/app_scaffold.dart';
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 final List<String> _log = [];
 
@@ -95,7 +97,7 @@ void say(String s) {
   debugPrint('[T2D] $s');
   // ignore: avoid_slow_async_io
   try {
-    File('$_outDir\\t2d-detail-button.txt').writeAsStringSync(_log.join('\n'));
+    probeFileUnder(_outDir, 't2d-detail-button.txt').writeAsStringSync(_log.join('\n'));
   } catch (_) {}
 }
 
@@ -115,7 +117,7 @@ Future<void> finish(int code) async {
   say('');
   say('RESULT pass=$pass fail=$fail');
   try {
-    final f = File('$_outDir\\t2d-detail-button.txt');
+    final f = probeFileUnder(_outDir, 't2d-detail-button.txt');
     await f.writeAsString(_log.join('\n'));
     debugPrint('[T2D] 产物已写 ${f.path} (${f.lengthSync()} B)');
   } catch (e) {
@@ -123,18 +125,6 @@ Future<void> finish(int code) async {
   }
   await Future<void>.delayed(const Duration(milliseconds: 200));
   exit(code);
-}
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    final d = Directory(override);
-    if (!await d.exists()) await d.create(recursive: true);
-    return d.path;
-  }
-  final appdata =
-      Platform.environment['APPDATA'] ?? Platform.environment['HOME'] ?? '.';
-  return '$appdata${Platform.pathSeparator}app.sourin.player';
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -397,6 +387,8 @@ void pushHistoryEntry() {
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
   // ★★ 必须在 runApp 之前（shell.dart:276 / t72p:388 的同一条）。
@@ -419,7 +411,6 @@ Future<void> main() async {
     }
   }
 
-  final dir = await _resolveDataDir();
   debugPrint('[T2D] ====== task-2(4) 底栏「选集」按钮 —— 真渲染取证 ======');
   say('数据目录: $dir');
 

@@ -83,7 +83,7 @@
 // # 跑法
 //
 // ```powershell
-// & D:\WishProject\sourin-flutter-spike\.probe\flutter_test_lock.ps1 `
+// & .\.probe\flutter_test_lock.ps1 `
 //     -Paths 'test/zz_t53s_settings_live_toggle_test.dart' -Agent add-remote-order
 // ```
 

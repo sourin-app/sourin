@@ -37,6 +37,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/probe_paths.dart';
 
 import 'package:sourin_spike/ui/tokens.dart';
 import 'package:sourin_spike/ui/widgets/provider_name.dart';
@@ -341,17 +342,13 @@ final b = 1;
        * 这条测试会告诉他：原版**自己**的注释说详情页标题区**应该**有站名
        * —— 只是它没做到。删掉等于把原版未兑现的意图也删了。
        *
-       * ⚠️ 原版路径在**另一个仓库**（`cctv_to_client`）。它不存在时
-       *    这条测试**跳过而不是失败** —— 否则在只有 Flutter 侧的
-       *    环境里会变成假失败（铁律 12：先怀疑验证工具）。
+       * 用 ORIGINAL_VUE_FIXTURE_ROOT 显式选择原版参考仓库。
+       * 缺夹具时立即报环境错误，不能把未读到原版当作断言通过。
        */
-      final p = File(r'D:\WishProject\cctv_to_client\src\components\SourcePicker.vue');
-      if (!p.existsSync()) {
-        // ignore: avoid_print
-        print('⚠️ 跳过：原版仓库不在本机（$p）—— '
-            '这是环境缺失，不是实现回归');
-        return;
-      }
+      final p = requireProbeFixtureFile(
+        'ORIGINAL_VUE_FIXTURE_ROOT',
+        'src/components/SourcePicker.vue',
+      );
 
       final src = p.readAsStringSync();
       expect(src.contains('详情页标题区已展示过站名'), isTrue,
@@ -369,13 +366,10 @@ final b = 1;
        * 这条钉住"原版确实没渲染"这个事实 —— 它同时解释了
        * 为什么我们的实现必须**真的渲染**（上一条断言守着）。
        */
-      final p = File(
-          r'D:\WishProject\cctv_to_client\src\components\SourceSwitchDialog.vue');
-      if (!p.existsSync()) {
-        // ignore: avoid_print
-        print('⚠️ 跳过：原版仓库不在本机（$p）');
-        return;
-      }
+      final p = requireProbeFixtureFile(
+        'ORIGINAL_VUE_FIXTURE_ROOT',
+        'src/components/SourceSwitchDialog.vue',
+      );
 
       final src = p.readAsStringSync();
       final tplIdx = src.indexOf('<template>');

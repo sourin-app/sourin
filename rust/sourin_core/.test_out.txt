@@ -1,4 +1,4 @@
-﻿cargo :    Compiling sourin_core v0.1.0 (D:\WishProject\sourin-flutter-spike\rust\sourin_core)
+﻿cargo :    Compiling sourin_core v0.1.0 (<REPO_ROOT>\rust\sourin_core)
 At line:2 char:1
 + cargo test --release --lib 2>&1 | Out-File -Encoding utf8 .test_out.t ...
 + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

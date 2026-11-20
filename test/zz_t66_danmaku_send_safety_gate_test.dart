@@ -76,11 +76,11 @@ import 'package:flutter_test/flutter_test.dart';
  * 第一版：File.fromUri(Platform.script).parent.parent
  *
  * 实测读数：
- *   Platform.script   = file:///D:/WishProject/sourin-flutter-spike/main.dart
+ *   Platform.script   = file:///<REPO_ROOT>/main.dart
  *                                      ↑ 不是测试文件，是 main.dart
- *   appRoot 推算      = D:\WishProject            ← **多上了一层**
+ *   appRoot 推算      = <WORKSPACE>             ← **多上了一层**
  *
- * ⇒ 于是 `sourin-plugins` 被算到 D:\sourin-plugins（不存在）
+ * ⇒ 于是 `sourin-plugins` 被算到 <WORKSPACE 的父目录>/sourin-plugins（不存在）
  *   ⇒ 源码/产物两处**全部跳过**
  *   ⇒ 只剩用户数据目录 1 处被查
  *   ⇒ 门禁**看起来全绿**，实际只覆盖了 1/3
@@ -92,7 +92,7 @@ import 'package:flutter_test/flutter_test.dart';
  * # 为什么 `Directory.current` 可靠
  * ```text
  * flutter test 从仓库根运行（CI 与本地一致），
- * 实测 `Directory.current = D:\WishProject\sourin-flutter-spike`。
+ * 实测 `Directory.current = <REPO_ROOT>`。
  * ```
  */
 final Directory _appRoot = Directory.current;

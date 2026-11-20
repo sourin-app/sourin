@@ -10,11 +10,11 @@
 //   (b) 我们过滤掉了      → 候选有、url 非空、drm=false，却被某处丢掉
 //   (c) 候选被标 DRM      → drm_protected=true（某电视台视频线）
 //
-// 运行（真网络，必须 --ignored）：
+// 运行（真网络，必须显式指定 SOURIN_T84_PLUGIN_DIR 并加 --ignored）：
 //   cargo test --manifest-path rust/sourin_core/Cargo.toml --test t84_live_8_14_probe -- --ignored --nocapture --test-threads=1
 //
-// ★ 只读用户目录：plugins 从 %APPDATA%\app.sourin.player\plugins 复制到临时目录，
-//   绝不写入用户目录（全队硬规则 2）。
+// SOURIN_T84_PLUGIN_DIR 指向预先隔离的插件源码夹具；只复制顶层普通 .js 文件。
+// ffmpeg/ffprobe 可通过 SOURIN_FFMPEG / SOURIN_FFPROBE 显式指定，默认由 PATH 查找。
 
 use sourin_core::commands as cmds;
 use sourin_core::commands_provider as cp;
@@ -35,22 +35,28 @@ fn host_of(u: &str) -> String {
     s.split(['/', '?']).next().unwrap_or("").to_string()
 }
 
+fn plugin_fixture_files() -> std::fs::ReadDir {
+    let src = std::env::var_os("SOURIN_T84_PLUGIN_DIR")
+        .filter(|path| !path.is_empty())
+        .expect("SOURIN_T84_PLUGIN_DIR must point to a prepared plugin fixture directory");
+    std::fs::read_dir(src).expect("read explicit plugin fixture directory")
+}
+
 async fn with_real_plugins(tag: &str) -> Arc<AppState> {
+    let plugins = plugin_fixture_files();
     let dir = std::env::temp_dir().join(format!(
         "sourin-t84-{tag}-{}",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let st = AppState::bootstrap(dir).await.expect("bootstrap");
-    let appdata = std::env::var("APPDATA").unwrap();
-    let src = std::path::PathBuf::from(&appdata)
-        .join("app.sourin.player")
-        .join("plugins");
     let dst = st.data_dir.join("plugins");
     std::fs::create_dir_all(&dst).unwrap();
     let mut copied = 0;
-    for e in std::fs::read_dir(&src).unwrap().flatten() {
-        if e.path().extension().and_then(|s| s.to_str()) == Some("js") {
+    for e in plugins.flatten() {
+        if e.file_type().is_ok_and(|kind| kind.is_file())
+            && e.path().extension().and_then(|s| s.to_str()) == Some("js")
+        {
             if std::fs::copy(e.path(), dst.join(e.file_name())).is_ok() {
                 copied += 1;
             }
@@ -318,26 +324,12 @@ async fn resolve_empty_candidate_matrix() {
 //     判据：ffprobe 能列出 h264 视频轨，但 ffmpeg 解码 3 秒出现
 //           error while decoding MB / top block unavailable ⇒ 载荷加密
 // ═══════════════════════════════════════════════════════════════════════
-fn ffprobe_path() -> String {
-    if let Ok(p) = std::env::var("SOURIN_FFPROBE") {
-        return p;
-    }
-    let cand = "C:\\Users\\iuuuuuuuu\\AppData\\Local\\Programs\\ffmpeg\\ffmpeg-2026-05-28-git-7b46c6a2a3-full_build\\bin\\ffprobe.exe";
-    if std::path::Path::new(cand).exists() {
-        return cand.to_string();
-    }
-    "ffprobe".to_string()
+fn ffprobe_path() -> std::ffi::OsString {
+    std::env::var_os("SOURIN_FFPROBE").unwrap_or_else(|| "ffprobe".into())
 }
 
-fn ffmpeg_path() -> String {
-    if let Ok(p) = std::env::var("SOURIN_FFMPEG") {
-        return p;
-    }
-    let cand = "C:\\Users\\iuuuuuuuu\\AppData\\Local\\Programs\\ffmpeg\\ffmpeg-2026-05-28-git-7b46c6a2a3-full_build\\bin\\ffmpeg.exe";
-    if std::path::Path::new(cand).exists() {
-        return cand.to_string();
-    }
-    "ffmpeg".to_string()
+fn ffmpeg_path() -> std::ffi::OsString {
+    std::env::var_os("SOURIN_FFMPEG").unwrap_or_else(|| "ffmpeg".into())
 }
 
 async fn run_cmd(mut cmd: tokio::process::Command) -> String {

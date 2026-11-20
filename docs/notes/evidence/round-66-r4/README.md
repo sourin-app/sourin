@@ -20,7 +20,7 @@
 ```powershell
 # 1) 编探针（隔离数据目录编译期写死，绝不碰 %APPDATA%\app.sourin.player）
 flutter build windows --release -t lib/t105_r4_dialogs_probe.dart `
-  "--dart-define=DATA_DIR_OVERRIDE=D:/WishProject/sourin-flutter-spike/.probe/round66_r4_device/data"
+  "--dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>/.probe/round66_r4_device/data"
 
 # 2) 跑（隔离 APPDATA/USERPROFILE，PID 差集收尾）
 powershell -NoProfile -ExecutionPolicy Bypass -File .probe/round66_r4_device/run_t105.ps1 -Prefix fix2_ -TimeoutSec 240

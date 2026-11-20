@@ -12,7 +12,7 @@
 // ```
 // 所以 `hydrate_capabilities` 现在做「**声明 或 运行时探测**」。
 //
-// # ⚠️ 这些测试全部用**真实部署版插件**（读用户目录）
+// # ⚠️ 账户相关测试只使用显式任务快照，不发现或读取用户目录
 //
 // 因为要证明的正是"用户那份（没有声明的）也能被正确识别"。
 // 用仓库版测会**假绿** —— 那份有声明，探测分支根本不会跑。
@@ -20,59 +20,25 @@
 use sourin_core::plugins::load_plugins_hydrated;
 use sourin_core::provider::MediaProvider;
 
-const REAL_PLUGINS: &str =
-    r"C:\Users\iuuuuuuuu\AppData\Roaming\app.sourin.player\plugins";
+mod support;
+use support::t38_fixture::{ProbeWorkspace, T38Fixture};
 
-fn tmp(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "sourin-t38p-{tag}-{}",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-    ));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn tmp(tag: &str) -> ProbeWorkspace {
+    ProbeWorkspace::new(tag).expect("create owned T38 workspace")
 }
 
-/// 把真实 plugins/（含 .data 凭据）复制到隔离目录
-fn seed_real(tag: &str) -> std::path::PathBuf {
-    let root = tmp(tag);
-    let dst = root.join("plugins");
-    std::fs::create_dir_all(&dst).unwrap();
-    let src = std::path::PathBuf::from(REAL_PLUGINS);
-    for e in std::fs::read_dir(&src).unwrap().flatten() {
-        let p = e.path();
-        let name = p.file_name().unwrap();
-        if p.is_file() {
-            let _ = std::fs::copy(&p, dst.join(name));
-        } else if p.is_dir() {
-            // .data/
-            let d2 = dst.join(name);
-            std::fs::create_dir_all(&d2).unwrap();
-            for e2 in std::fs::read_dir(&p).unwrap().flatten() {
-                let _ = std::fs::copy(e2.path(), d2.join(e2.file_name()));
-            }
-        }
-    }
-    dst
-}
-
-/// ★★★ 核心：**部署版**（无声明）也必须被探测出 can_auto_login = true
-/// 本机是否部署了这个插件（用户机器相关，CI 上必然没有）
-///
-/// ★ 按 Owner 口径「具体网站插件不进仓库」—— 这个插件现在只在**用户本机**。
-///   ⇒ 依赖它的测试在**夹具缺席时跳过**（而不是 panic 失败）。
-fn has_deployed(name: &str) -> bool {
-    std::path::PathBuf::from(REAL_PLUGINS).join(name).exists()
+/// Copy only the explicitly selected plugin snapshot, never application data.
+fn seed_fixture(tag: &str) -> ProbeWorkspace {
+    T38Fixture::from_env()
+        .expect("select explicit T38 fixture")
+        .copy_plugins(tag)
+        .expect("copy explicit plugins fixture")
 }
 
 #[tokio::test]
 async fn deployed_plugin_gets_can_auto_login_via_probe() {
-    // ★ 夹具缺席则跳过（本机没部署这份插件 ⇒ 无从验证）
-    if !has_deployed("srca.js") {
-        println!("[t38-probe] skip: 本机未部署 srca.js（该插件不进仓库）");
-        return;
-    }
-    let dir = seed_real("deployed");
+    let workspace = seed_fixture("deployed");
+    let dir = workspace.path().to_path_buf();
 
     // 先确认前提：部署版**真的没有**声明（否则本测试变成假绿）
     let dep = std::fs::read_to_string(dir.join("srca.js")).unwrap();
@@ -117,10 +83,7 @@ async fn deployed_plugin_gets_can_auto_login_via_probe() {
     );
 
     // ★ 运行时方法本身也应为 true（与上面互相印证）
-    assert!(
-        srca.can_auto_login().await,
-        "★ 运行时方法本身应是 true"
-    );
+    assert!(srca.can_auto_login().await, "★ 运行时方法本身应是 true");
 }
 
 /// ★★ 声明优先：有声明时**不探测**（零额外开销）
@@ -129,7 +92,8 @@ async fn deployed_plugin_gets_can_auto_login_via_probe() {
 /// 结果必须是 **true**（说明走的是声明、没去问方法）。
 #[tokio::test]
 async fn declaration_wins_and_skips_probe() {
-    let dir = tmp("decl-wins");
+    let workspace = tmp("decl-wins");
+    let dir = workspace.path().to_path_buf();
     std::fs::write(
         dir.join("decl.js"),
         r#"
@@ -159,7 +123,8 @@ globalThis.plugin = {
 /// ★ 探测**容错**：方法抛异常 ⇒ 当 false（不能当 true）
 #[tokio::test]
 async fn probe_failure_is_treated_as_false() {
-    let dir = tmp("probe-throw");
+    let workspace = tmp("probe-throw");
+    let dir = workspace.path().to_path_buf();
     std::fs::write(
         dir.join("boom.js"),
         r#"
@@ -188,7 +153,8 @@ globalThis.plugin = {
 /// ★ 没有 `canAutoLogin` 方法的插件 ⇒ false（不报错）
 #[tokio::test]
 async fn plugin_without_method_is_false() {
-    let dir = tmp("no-method");
+    let workspace = tmp("no-method");
+    let dir = workspace.path().to_path_buf();
     std::fs::write(
         dir.join("plain.js"),
         r#"
@@ -217,7 +183,8 @@ globalThis.plugin = {
 /// 结果必须是 **false**（说明被门控挡住了，压根没问）。
 #[tokio::test]
 async fn probe_is_gated_on_login_support() {
-    let dir = tmp("gate");
+    let workspace = tmp("gate");
+    let dir = workspace.path().to_path_buf();
     std::fs::write(
         dir.join("nologin.js"),
         r#"
@@ -234,7 +201,10 @@ globalThis.plugin = {
     .unwrap();
 
     let (plugins, _) = load_plugins_hydrated(&dir, None).await;
-    let p = plugins.iter().find(|p| p.manifest().id == "nologin").unwrap();
+    let p = plugins
+        .iter()
+        .find(|p| p.manifest().id == "nologin")
+        .unwrap();
     let v = p.manifest().capabilities.can_auto_login;
     println!("\n[门控] can_auto_login = {v}（不支持登录 ⇒ 不探测 ⇒ false）");
     assert!(
@@ -247,12 +217,8 @@ globalThis.plugin = {
 /// ★ 整机视角：真实 26 个插件里，**恰好 srca 一个**拿到 can_auto_login
 #[tokio::test]
 async fn only_srca_gets_auto_login_among_real_plugins() {
-    // ★ 夹具缺席则跳过（该插件不进仓库，CI / 干净机器上没有）
-    if !has_deployed("srca.js") {
-        println!("[t38-probe] skip: 本机未部署 srca.js（该插件不进仓库）");
-        return;
-    }
-    let dir = seed_real("real-all");
+    let workspace = seed_fixture("real-all");
+    let dir = workspace.path().to_path_buf();
     let (plugins, _) = load_plugins_hydrated(&dir, None).await;
 
     let mut yes = Vec::new();

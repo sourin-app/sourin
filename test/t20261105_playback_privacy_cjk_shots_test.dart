@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -13,8 +14,7 @@ import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 
 const _fontFamily = 'PlaybackPrivacyCjk1105';
-const _iconFontPath =
-    r'C:\Users\iuuuuuuuu\flutter\bin\cache\artifacts\material_fonts\MaterialIcons-Regular.otf';
+
 const _captureKey = ValueKey<String>('playback-privacy-cjk-capture');
 const _syntheticFailure =
     '播放地址打开失败，稍后可重试。 '
@@ -42,6 +42,7 @@ const _privateMarkers = <String>[
 
 final _shots = <Map<String, Object?>>[];
 String? _fontPath;
+String? _iconFontPath;
 
 bool _containsPrivateFields(String text) => _privateMarkers.any(text.contains);
 
@@ -51,27 +52,54 @@ String _visibleText(WidgetTester tester) => tester
     .join('\n');
 
 Future<void> _loadCjkFont() async {
-  for (final path in [
-    r'C:\Windows\Fonts\simhei.ttf',
-    r'C:\Windows\Fonts\msyh.ttc',
-  ]) {
-    final file = File(path);
+  final windowsRoot = Platform.environment['SystemRoot'];
+  if (windowsRoot == null || windowsRoot.isEmpty) {
+    throw StateError(
+      'SystemRoot is required to locate a local Windows CJK font',
+    );
+  }
+  for (final name in ['simhei.ttf', 'msyh.ttc']) {
+    final file = File('$windowsRoot/Fonts/$name');
     if (!await file.exists()) continue;
     final bytes = await file.readAsBytes();
     final loader = FontLoader(_fontFamily)
       ..addFont(Future.value(ByteData.sublistView(bytes)));
     await loader.load();
-    _fontPath = path;
+    _fontPath = file.path;
     return;
   }
   throw StateError('A local CJK font is required; refusing unreadable shots');
 }
 
+Future<File> _materialIconFontFile() async {
+  // Use the SDK selected by the test's package configuration, even when a
+  // custom engine supplies the flutter_tester executable from another tree.
+  final library = await Isolate.resolvePackageUri(
+    Uri.parse('package:flutter/foundation.dart'),
+  );
+  if (library == null || !library.isScheme('file')) {
+    throw StateError('Flutter SDK not found in the test package configuration');
+  }
+  final file = File.fromUri(
+    library.resolve(
+      '../../../bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
+    ),
+  );
+  if (!await file.exists()) {
+    throw StateError(
+      'MaterialIcons-Regular.otf missing from the Flutter SDK cache',
+    );
+  }
+  return file;
+}
+
 Future<void> _loadIconFont() async {
-  final bytes = await File(_iconFontPath).readAsBytes();
+  final file = await _materialIconFontFile();
+  final bytes = await file.readAsBytes();
   final loader = FontLoader('MaterialIcons')
     ..addFont(Future.value(ByteData.sublistView(bytes)));
   await loader.load();
+  _iconFontPath = file.path;
 }
 
 Widget _host(Widget child) {

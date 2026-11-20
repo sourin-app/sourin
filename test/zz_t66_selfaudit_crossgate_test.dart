@@ -193,8 +193,8 @@ void main() {
        * ```text
        * `zz_t66_danmaku_send_safety_gate_test.dart` 第 79-95 行**注释**里
        * 记录了真机实测读数：
-       *   Platform.script = file:///D:/WishProject/.../main.dart
-       *   Directory.current = D:\WishProject\...
+       *   Platform.script = file:///<REPO_ROOT>/main.dart
+       *   Directory.current = <REPO_ROOT>
        * ⇒ 那是**排障证据**（证明"为什么 Directory.current 可靠"）
        * ```
        * 让它红 = 逼人删掉证据去换绿 —— 本仓反复记过"为了绿而销毁证据"的错。
@@ -232,8 +232,8 @@ void main() {
      * `zz_t66_danmaku_send_safety_gate_test.dart` 在第 79-95 行的**注释**里
      * 记录了真机实测读数：
      * ```text
-     *  *   Platform.script   = file:///D:/WishProject/sourin-flutter-spike/main.dart
-     *  *   实测 `Directory.current = D:\WishProject\sourin-flutter-spike`
+     *  *   Platform.script   = file:///<REPO_ROOT>/main.dart
+     *  *   实测 `Directory.current = <REPO_ROOT>`
      * ```
      * 而上面那条用**裸 `s.contains(marker)`** ⇒ 把注释里的**实测记录**
      * 判成了"代码里写死本机路径" ⇒ 红。
@@ -255,10 +255,9 @@ void main() {
      * （**不抄第二份** —— 本仓记过"同一纪律只能有一个实现"）。
      *
      * ⚠️ 上面那条（裸 contains 版）**保留不删**，理由是它守的是另一件事：
-     *   「连注释里都不许出现」是更严的口径，而当前仓里恰好**有**合法注释，
-     *   所以它暂时是红的。
+     *   它仍打印其它门禁注释里的历史路径命中，但不据此判失败。
      *   ⇒ 两条都要：
-     *     · 裸版（严）：暴露"当前有 1 处注释命中"这个事实
+     *     · 裸版：报告实际的注释命中数，不把数量写成断言
      *     · 剥注释版（正）：判"代码里有没有真的写死"
      *   ★ 但裸版**不该红** —— 它应该改成"打印提醒"。
      *     见下面 `_printRawHits`。

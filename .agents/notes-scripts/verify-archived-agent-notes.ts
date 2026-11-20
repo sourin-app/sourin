@@ -137,9 +137,9 @@ if (repoRoot) {
   } else if (baseOid !== "") {
     /* 清单在**提交里**的路径，必须与 git 的视角一致。
        不能写 `relative(repoRoot, manifestPath)`：`repoRoot` 来自 git
-       （`C:/Users/iuuuuuuuu/...`），`manifestPath` 来自 Node 的路径解析
-       （Windows 8.3 短名 `C:\Users\IUUUUU~1\...`）。两个字符串指向同一个目录，
-       但 `relative()` 只比字面量，于是算出 `../../../../IUUUUU~1/...`，
+       （`C:/Users/<LONG_USER>/...`），`manifestPath` 来自 Node 的路径解析
+       （Windows 8.3 短名 `C:\Users\<SHORT_USER>\...`）。两个字符串指向同一个目录，
+       但 `relative()` 只比字面量，于是算出 `../../../../<SHORT_USER>/...`，
        `ls-tree` 直接报 "is outside repository" —— 门禁红在一个**与内容无关**的原因上。
        2026-10-22 在真仓库里实测到这条（`git rev-parse --show-toplevel` 与
        `process.cwd()` 在临时目录/短用户名下确实不同形）。

@@ -75,7 +75,7 @@
  *
  * ```text
  * flutter build windows --debug -t lib/t513_danmaku_probe.dart
- *   --dart-define=DATA_DIR_OVERRIDE=D:/WishProject/sourin-flutter-spike/.probe/t513d/data
+ *   --dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>/.probe/t513d/data
  * ```
  *
  * ⚠️ 不能省略 `--debug`：`--release` 会覆盖**共享**的
@@ -114,6 +114,8 @@ import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/player_page.dart';
 import 'package:sourin_spike/ui/widgets/danmaku_overlay.dart';
+
+import 'probe_paths.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
 
@@ -128,11 +130,11 @@ import 'ui/app_theme.dart';
 ///   见文件头「为什么必须暂停才能做像素对照」。
 ///   实测这块素材在播时视频区 1.6s 变化率就有 15.5%
 ///   （原假设「它是静止的」被实测推翻，所以才改成冻结对照）。
-const kProbeMedia = String.fromEnvironment('PROBE_MEDIA',
-    defaultValue: r'D:\WishProject\sourin-flutter-spike\.probe\t465_43.mp4');
+// PROBE_MEDIA must select the original t465_43.mp4 fixture.
+late final String kProbeMedia;
 
 /// 产物目录（截图 + result.txt）
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe\t513d';
+late final Directory _outDir;
 
 final _rootKey = GlobalKey();
 
@@ -201,7 +203,7 @@ Future<(String, int, Uint8List, int, int)> shot(String name) async {
   final h = img.height;
   final png = bd == null ? Uint8List(0) : bd.buffer.asUint8List();
   final px = raw == null ? Uint8List(0) : raw.buffer.asUint8List();
-  final path = _outDir + '/' + name + '.png';
+  final path = probeFileUnder(_outDir, '$name.png').path;
   if (png.isNotEmpty) File(path).writeAsBytesSync(png);
   final colors = _sampleColors(px);
   say('截图 ' + name + ': ' + w.toString() + 'x' + h.toString() + '  '
@@ -445,7 +447,7 @@ Future<String> resolveDataDir() async {
     say('   真实用户库 %APPDATA%/app.sourin.player 写播放进度。');
     say('   正确命令：');
     say('     flutter build windows --debug -t lib/t513_danmaku_probe.dart');
-    say('       --dart-define=DATA_DIR_OVERRIDE=D:/WishProject/sourin-flutter-spike/.probe/t513d-data');
+    say('       --dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>/.probe/t513d-data');
     exit(3);
   }
   final d = Directory(override);
@@ -458,7 +460,7 @@ Future<String> resolveDataDir() async {
 // ======================================================================
 
 Future<void> finish(int code) async {
-  final out = _outDir + '/result.txt';
+  final out = probeFileUnder(_outDir, 'result.txt').path;
   final sb = StringBuffer();
   sb.writeln('TAG t513-danmaku');
   sb.writeln('RESULT pass=' + pass.toString() + ' fail=' + fail.toString());
@@ -477,6 +479,8 @@ Future<void> finish(int code) async {
 // ======================================================================
 
 Future<void> main() async {
+  kProbeMedia = requireProbeMedia().path;
+  _outDir = probeArtifactDirectory('t513d');
   WidgetsFlutterBinding.ensureInitialized();
 
   try {
@@ -1089,5 +1093,5 @@ Future<void> body() async {
         'playing=' + debugPlayerIsPlaying().toString());
   }
 
-  note('截图: 01..10 共 10 张，全部落在 ' + _outDir);
+  note('截图: 01..10 共 10 张，全部落在 ' + _outDir.path);
 }

@@ -18,37 +18,18 @@
 use sourin_core::plugins::JsPluginProvider;
 use sourin_core::provider::MediaProvider;
 
-const REAL_PLUGINS: &str =
-    r"C:\Users\iuuuuuuuu\AppData\Roaming\app.sourin.player\plugins";
-
-fn tmp(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("sourin-t38-{tag}"));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+mod support;
+use support::t38_fixture::T38Fixture;
 
 #[tokio::test]
 async fn deployed_srca_reports_can_auto_login_at_runtime() {
-    /*
-     * 2026-10-13: this test compares the DEPLOYED plugin against the one
-     * shipped in the repo. Per CONTRIBUTING rule 3 the repo no longer
-     * ships site plugins, so both legs of the comparison are gone:
-     *   - deployed copy lives only on a user machine (%APPDATA%)
-     *   - repo copy is intentionally absent
-     * => skip when either is missing instead of failing. The repo cannot
-     *    guarantee a machine-local plugin.
-     */
-    let dep_path = std::path::PathBuf::from(REAL_PLUGINS).join("srca.js");
-    let Ok(dep) = std::fs::read_to_string(&dep_path) else {
-        println!("[t38] skip: deployed plugin not found at {}", dep_path.display());
-        return;
-    };
-    let repo_path = concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/srca.js");
-    let Ok(repo) = std::fs::read_to_string(repo_path) else {
-        println!("[t38] skip: {repo_path} is not shipped in this repo");
-        return;
-    };
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let dep = fixture
+        .read_deployed_source()
+        .expect("read plugins/srca.js fixture");
+    let repo = fixture
+        .read_reference_source()
+        .expect("read reference/srca.js fixture");
 
     println!("\n=========== 部署版 vs 仓库版 ===========");
     println!("部署版 字节 = {}", dep.len());
@@ -67,14 +48,11 @@ async fn deployed_srca_reports_can_auto_login_at_runtime() {
     );
 
     // ── 关键：部署版的**运行时探测**结果 ──
-    //   数据目录用真实 .data 的副本（那里有 credentials）
-    let data = tmp("deployed-data");
-    let real_data = std::path::PathBuf::from(REAL_PLUGINS).join(".data");
-    if real_data.join("srca.json").exists() {
-        std::fs::copy(real_data.join("srca.json"), data.join("srca.json"))
-            .expect("复制 store");
-        println!("已复制真实 store（含 credentials）");
-    }
+    //   插件只读写显式 store 的独占临时副本。
+    let workspace = fixture
+        .copy_store("deployed-data")
+        .expect("copy explicit store fixture");
+    let data = workspace.path().to_path_buf();
 
     let mut p_dep = JsPluginProvider::from_source(&dep)
         .expect("解析部署版")
@@ -109,8 +87,12 @@ async fn deployed_srca_reports_can_auto_login_at_runtime() {
     }
 
     // ── 阳性对照：把凭据删掉 → 运行时也必须变 false ──
-    let data2 = tmp("deployed-nocred");
-    let mut v: serde_json::Value = serde_json::from_str(&dep_store()).unwrap();
+    let workspace2 = fixture
+        .copy_store("deployed-nocred")
+        .expect("copy explicit store fixture");
+    let data2 = workspace2.path().to_path_buf();
+    let raw = std::fs::read_to_string(data2.join("srca.json")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     v.as_object_mut().unwrap().remove("credentials");
     std::fs::write(
         data2.join("srca.json"),
@@ -128,13 +110,4 @@ async fn deployed_srca_reports_can_auto_login_at_runtime() {
         !runtime2,
         "★ 没有凭据时运行时探测必须是 false（否则「能不能自动重登」这个判据是坏的）"
     );
-}
-
-fn dep_store() -> String {
-    std::fs::read_to_string(
-        std::path::PathBuf::from(REAL_PLUGINS)
-            .join(".data")
-            .join("srca.json"),
-    )
-    .expect("读真实 store")
 }

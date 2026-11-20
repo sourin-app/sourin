@@ -80,6 +80,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/ffi.dart';
 import 'core/models.dart';
 import 'core/sourin_api.dart';
@@ -90,12 +92,12 @@ import 'ui/live_availability.dart';
 import 'ui/player_page.dart' show PlayerPage;
 import 'ui/widgets/source_bar.dart' show SourceBar;
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 // ⚠️ 必须**转义**反斜杠：非 raw 字符串里的 `\t` 是**制表符**，
 //    写出来的路径会变成 ".probe<TAB>6-livestrip.txt" ⇒ 写文件抛异常
 //    ⇒ 被 catch 静默吞掉 ⇒ 产物一个都不落（实测踩了三次才发现）。
-//    （t2d 探针用的是 '$_outDir\\t2d-…'，这里照它改）
-const _logFile = '$_outDir\\t6-livestrip.txt';
+//    和其他探针一样，落到显式设置的 PROBE_ARTIFACT_ROOT。
+final _logFile = probeFileUnder(_outDir, 't6-livestrip.txt').path;
 
 final List<String> _log = [];
 
@@ -607,6 +609,7 @@ Future<List<StreamCandidate>> fakeFetch(
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
   WidgetsFlutterBinding.ensureInitialized();
 
   /*

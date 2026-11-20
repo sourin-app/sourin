@@ -41,7 +41,7 @@ import 'package:sourin_spike/ui/app_theme.dart';
 
 /// 输出目录
 ///
-/// ⚠️ 原来写死的是开发机的绝对路径（`D:\WishProject\sourin-flutter-spike\.probe`）——
+/// ⚠️ 原来写死的是开发机的绝对路径（`<REPO_ROOT>\.probe`）——
 ///    那个目录**不在仓库里**（见 `.gitignore`），在别的机器/CI 上必然失败。
 ///    改成相对当前工作目录 ⇒ 本机与 CI 行为一致，且产物落在被忽略的位置。
 const _outDir = 'build/probe-shots';

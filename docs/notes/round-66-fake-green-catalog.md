@@ -582,7 +582,7 @@
 ```text
 案例（本轮我踩的）：`truncated` 是否有插件实现 ——
       我在主仓 grep `plugins/`（0 处命中）就下结论"永远是 false"。
-      实际插件在**独立 git 仓** D:\WishProject\sourin-plugins-user，
+      实际插件在**独立 git 仓** <WORKSPACE>\sourin-plugins-user，
       某个动画站插件确实返回 `truncated: true`。
 发现：Lead 去插件仓查，推翻了结论。
 预防：**"某字段有没有被赋值"这类问题，必须连插件私库/外部仓一起查**。

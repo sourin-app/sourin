@@ -65,8 +65,9 @@ import 'package:flutter/scheduler.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
+
+import 'probe_paths.dart';
 
 import 'core/device.dart';
 import 'core/ffi.dart';
@@ -88,7 +89,7 @@ const String kTag = '[T377]';
 /// 截图用的重绘边界（包住整棵 UI）
 final _rootKey = GlobalKey();
 
-String _workDir = '';
+late final Directory _workDir;
 final StringBuffer _rep = StringBuffer();
 int _pass = 0;
 int _fail = 0;
@@ -118,7 +119,7 @@ void skip(String why) {
 }
 
 Future<Never> _finish(int code) async {
-  final path = '$_workDir/t377_report.txt';
+  final path = probeFileUnder(_workDir, 't377_report.txt').path;
   final effective = (code != 0 || _fail > 0 || _skip > 0) ? 1 : 0;
   final body = StringBuffer()
     ..writeln('TAG t377-banner')
@@ -136,38 +137,6 @@ Future<Never> _finish(int code) async {
   exit(effective);
 }
 
-Future<String> _resolveWorkDir() async {
-  if (Platform.isAndroid) {
-    try {
-      final d = await getExternalStorageDirectory();
-      if (d != null) return d.path;
-    } catch (_) {}
-    return '/storage/emulated/0/Android/data/app.sourin.sourin_spike/files';
-  }
-  return r'D:\WishProject\sourin-flutter-spike\.probe';
-}
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    final d = Directory(override);
-    if (!await d.exists()) await d.create(recursive: true);
-    return d.path;
-  }
-  final base =
-      Platform.environment['APPDATA'] ?? Platform.environment['HOME'] ?? '.';
-  return '$base${Platform.pathSeparator}app.sourin.player';
-}
-
-/// ④ 用的媒体：Windows 用本机样本；Android 用 t285 那套已在设备上的文件
-String _defaultMedia() {
-  if (Platform.isAndroid) {
-    return '/storage/emulated/0/Android/data/app.sourin.sourin_spike/files/'
-        'media/t285_osd_test.mkv';
-  }
-  return r'D:\WishProject\sourin-flutter-spike\hevc_sample.mp4';
-}
-
 /// 运行期配置（可选）：`<workdir>/t377_config.txt`，`key=value` 每行一条
 ///
 /// 支持 `media=<path>` —— 让**同一个 APK** 能在不同机器上换媒体，
@@ -175,7 +144,7 @@ String _defaultMedia() {
 String _cfgMedia = '';
 
 void _loadConfig() {
-  final f = File('$_workDir/t377_config.txt');
+  final f = probeFileUnder(_workDir, 't377_config.txt');
   if (!f.existsSync()) return;
   for (final raw in f.readAsLinesSync()) {
     final line = raw.trim();
@@ -338,7 +307,7 @@ Future<(String, int)> shoot(String name) async {
   }
   final img = await obj.toImage(pixelRatio: 1.0);
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_workDir/t377-$name.png';
+  final path = probeFileUnder(_workDir, 't377-$name.png').path;
   File(path).writeAsBytesSync(png!.buffer.asUint8List());
 
   final rgba = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -460,6 +429,14 @@ Future<void> openPlayerPage() async {
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _workDir = probeArtifactDirectory();
+  _loadConfig();
+  // Keep the runtime config override used to select a fixture on Android.
+  final media = (_cfgMedia.isEmpty
+          ? requireProbeMedia()
+          : requireLocalProbeFile(_cfgMedia, setting: 't377_config.txt media'))
+      .path;
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
   // ★ media_kit 必须在 runApp 之前（`shell.dart:276` 记录过漏了它的事故）
@@ -474,13 +451,9 @@ Future<void> main() async {
       MediaKit.ensureInitialized(libmpv: dll.absolute.path);
     } else {
       _emit('★ 致命：找不到 libmpv-2.dll ⇒ 无法取证');
-      _workDir = await _resolveWorkDir();
       await _finish(2);
     }
   }
-
-  _workDir = await _resolveWorkDir();
-  _loadConfig();
 
   try {
     await Device.init();
@@ -488,7 +461,6 @@ Future<void> main() async {
     _emit('Device.init 失败（忽略，有兜底）: $e');
   }
 
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
 
   // ★ 强制浅色：只去掉"跑的那一刻系统主题"这个外部变量，
@@ -525,10 +497,8 @@ Future<void> main() async {
     _emit('LiquidGlassWidgets.initialize 失败（不致命）: $e');
   }
 
-  final media = _cfgMedia.isNotEmpty ? _cfgMedia : _defaultMedia();
-
   _emit('══════ t377 「输出层建不起来」的用户可见提示 —— 端到端取证 ══════');
-  _emit('平台: ${Platform.operatingSystem}  工作目录: $_workDir');
+  _emit('平台: ${Platform.operatingSystem}  工作目录: ${_workDir.path}');
   _emit('数据目录: $dir');
   _emit('媒体: $media (存在=${File(media).existsSync()})');
 

@@ -82,6 +82,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/ui_prefs.dart';
@@ -96,7 +98,7 @@ import 'ui/widgets/sync_panel.dart';
 // 常量
 // ══════════════════════════════════════════════════════════════════════════
 
-const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// 产物标签（两次运行不互相覆盖）。
 const String _tag = String.fromEnvironment('T92_TAG', defaultValue: 'presets');
@@ -145,7 +147,7 @@ void ok(String line, bool cond, [String extra = '']) {
 }
 
 Future<Never> finish(int code) async {
-  final f = File('$_outDir\\t92-preset-$_tag.txt');
+  final f = probeFileUnder(_outDir, 't92-preset-$_tag.txt');
   try {
     f.writeAsStringSync('${_log.join('\n')}\n');
   } catch (e) {
@@ -159,16 +161,6 @@ Future<Never> finish(int code) async {
 // ══════════════════════════════════════════════════════════════════════════
 // 数据目录
 // ══════════════════════════════════════════════════════════════════════════
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    await Directory(override).create(recursive: true);
-    return override;
-  }
-  final appData = Platform.environment['APPDATA'] ?? '';
-  return '$appData\\app.sourin.player';
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // 元素树（照 t87 已验证的实现）
@@ -363,7 +355,7 @@ Future<Shot> shoot(String name) async {
   final bytes = raw.buffer.asUint8List();
   final w = image.width;
   final h = image.height;
-  final path = '$_outDir\\t92-preset-$_tag-$name.png';
+  final path = probeFileUnder(_outDir, 't92-preset-$_tag-$name.png').path;
   await File(path).writeAsBytes(png.buffer.asUint8List(), flush: true);
 
   // 仪器自检：每 7 像素采样一次数颜色（退化图只有 1~2 色）
@@ -382,6 +374,8 @@ Future<Shot> shoot(String name) async {
 // ══════════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
   // ★ 必须在 runApp 之前（`shell.dart:276` 的同一条）
@@ -389,7 +383,6 @@ Future<void> main() async {
 
   await Device.init();
 
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
 
   // ★ 强制浅色：去掉"跑的那一刻系统主题"这个外部变量。

@@ -18,9 +18,9 @@
 //
 // # ★ 数据隔离
 //
-// **只读**用户真实 store 的内容，**复制**到 `.probe/t38/<id>.json`，
-// 用 `with_data_dir(.probe/t38)` 让插件读写那个副本 ——
-// 用户的 `%APPDATA%\app.sourin.player` **零写入**。
+// 只读 SOURIN_T38_FIXTURE_ROOT 内显式选择的任务 store 快照，
+// 复制到唯一临时目录后以 with_data_dir 交给插件，退出作用域时清理副本。
+// 不自动发现用户目录、应用数据或仓库 .probe 路径。
 //
 // ⚠️ 本探针会**真的联网**（srca.org），因为"自动重登是否成功"
 //    只能靠真实站点回答；mock 掉就失去意义了。
@@ -30,40 +30,15 @@ use sourin_core::plugins::JsPluginProvider;
 //   没有它 `p.session()` / `p.can_auto_login()` 全都报 "method not found"
 use sourin_core::provider::MediaProvider;
 
-/// 用户真实插件存储（只读取源）
+// 显式任务快照输入（只读源，仅副本交给插件）。
 mod support;
 use support::real_creds_required_echo;
+use support::t38_fixture::T38Fixture;
 
-const REAL_STORE: &str = r"C:\Users\iuuuuuuuu\AppData\Roaming\app.sourin.player\plugins\.data";
-
-fn probe_dir() -> std::path::PathBuf {
-    let d = std::path::PathBuf::from(
-        r"D:\WishProject\sourin-flutter-spike\.probe\t38",
-    );
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-/// 把用户真实 store 复制一份到探针目录（**只读源，不写源**）
-fn seed_probe_store(id: &str) -> std::path::PathBuf {
-    let dir = probe_dir();
-    let src = std::path::PathBuf::from(REAL_STORE).join(format!("{id}.json"));
-    let dst = dir.join(format!("{id}.json"));
-    if src.exists() {
-        std::fs::copy(&src, &dst).expect("copy store");
-        println!("[seed] 已复制 {src:?} -> {dst:?}");
-    } else {
-        println!("[seed] ★ 用户 store 不存在: {src:?}（凭据不在）");
-    }
-    dir
-}
-
-fn load_srca(dir: std::path::PathBuf) -> JsPluginProvider {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/plugins/srca.js"
-    ))
-    .expect("读 srca.js");
+fn load_srca(fixture: &T38Fixture, dir: std::path::PathBuf) -> JsPluginProvider {
+    let src = fixture
+        .read_reference_source()
+        .expect("read reference/srca.js fixture");
     JsPluginProvider::from_source(&src)
         .expect("解析 srca.js")
         .with_data_dir(dir)
@@ -72,22 +47,32 @@ fn load_srca(dir: std::path::PathBuf) -> JsPluginProvider {
 #[ignore = "走真实网络 + 真实第三方账号重登链路：站点随时可能改接口/弹验证码，结果不稳定（且需要开发机上的真实凭据）。手动跑：cargo test -- --ignored --nocapture"]
 #[tokio::test]
 async fn t38_diagnose_auto_login_chain() {
-    // ★ 需要开发机上的真实凭据；本机没有就跳过（见 tests/support/mod.rs）
+    // ★ 显式快照缺席即报错；既有 ignored 标记仍控制网络 opt-in。
     if let Some(_why) = real_creds_required_echo("t38_diagnose_auto_login_chain") {
         return;
     }
-    let dir = seed_probe_store("srca");
-    let p = load_srca(dir.clone());
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let workspace = fixture
+        .copy_store("diagnostic")
+        .expect("copy explicit store fixture");
+    let dir = workspace.path().to_path_buf();
+    let p = load_srca(&fixture, dir.clone());
 
     println!("\n================ ① 会话 / 凭据 ================");
     let sess = p.session().await;
     match &sess {
         Ok(Some(s)) => {
             println!("session()      → Some");
-            println!("  token         = {}…", &s.token.chars().take(24).collect::<String>());
+            println!(
+                "  token         = {}…",
+                &s.token.chars().take(24).collect::<String>()
+            );
             println!("  expires_at    = {:?}", s.expires_at);
             println!("  display_name  = {:?}", s.display_name);
-            println!("  is_expired_at(now) = {}", s.is_expired_at(chrono::Utc::now().timestamp()));
+            println!(
+                "  is_expired_at(now) = {}",
+                s.is_expired_at(chrono::Utc::now().timestamp())
+            );
             println!("  effective_expires_at = {:?}", s.effective_expires_at());
         }
         Ok(None) => println!("session()      → None ★ 没有会话！"),
@@ -121,7 +106,10 @@ async fn t38_diagnose_auto_login_chain() {
     match p.auto_login().await {
         Ok(Some(s)) => {
             println!("★★ auto_login() → Ok(Some) 成功！");
-            println!("   token        = {}…", &s.token.chars().take(24).collect::<String>());
+            println!(
+                "   token        = {}…",
+                &s.token.chars().take(24).collect::<String>()
+            );
             println!("   display_name = {:?}", s.display_name);
         }
         Ok(None) => println!("★★ auto_login() → Ok(None) ★ 没凭据，返回了 null"),
@@ -159,7 +147,7 @@ async fn t38_diagnose_auto_login_chain() {
 #[ignore = "走真实网络 + 真实第三方账号重登链路：站点随时可能改接口/弹验证码，结果不稳定（且需要开发机上的真实凭据）。手动跑：cargo test -- --ignored --nocapture"]
 #[tokio::test]
 async fn t38_session_state_verdict() {
-    // ★ 需要开发机上的真实凭据；本机没有就跳过（见 tests/support/mod.rs）
+    // ★ 显式快照缺席即报错；既有 ignored 标记仍控制网络 opt-in。
     if let Some(_why) = real_creds_required_echo("t38_session_state_verdict") {
         return;
     }
@@ -174,8 +162,12 @@ async fn t38_session_state_verdict() {
      * ```
      * 所以"看到验证码" ⟺ `can_auto_login() == false`。
      */
-    let dir = seed_probe_store("srca");
-    let p = load_srca(dir);
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let workspace = fixture
+        .copy_store("diagnostic")
+        .expect("copy explicit store fixture");
+    let dir = workspace.path().to_path_buf();
+    let p = load_srca(&fixture, dir);
 
     let has_session = matches!(p.session().await, Ok(Some(_)));
     let can = p.can_auto_login().await;

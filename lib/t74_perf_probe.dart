@@ -56,6 +56,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/models.dart';
@@ -70,7 +72,7 @@ import 'ui/widgets/page_transition.dart';
 
 // ─────────────────────────── 基础设施 ───────────────────────────
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// ══════════════════════════════════════════════════════════════════════
 /// 双极对照（task-74 ⑤ 的 raster 地板归因）—— 复用同一份探针代码
@@ -143,11 +145,11 @@ final _glassPole = _envOr('T74_GLASS', '');
 final _livePole = _envOr('T74_LIVE', 'on');
 
 String get _startupFile => _poleTag.isEmpty
-    ? '$_outDir\\t74_perf_real_startup.txt'
-    : '$_outDir\\t74_perf_pole_${_poleTag}_startup.txt';
+    ? probeFileUnder(_outDir, 't74_perf_real_startup.txt').path
+    : probeFileUnder(_outDir, 't74_perf_pole_${_poleTag}_startup.txt').path;
 String get _pagesFile => _poleTag.isEmpty
-    ? '$_outDir\\t74_perf_real_pages.txt'
-    : '$_outDir\\t74_perf_pole_${_poleTag}_pages.txt';
+    ? probeFileUnder(_outDir, 't74_perf_real_pages.txt').path
+    : probeFileUnder(_outDir, 't74_perf_pole_${_poleTag}_pages.txt').path;
 
 /// 只跑哪些页（空 = 全部）。双极法用 `search,settings`：这两页没有视频、
 /// 没有网络图，raster 地板最干净。
@@ -628,7 +630,7 @@ Future<(String, int)> _shoot(String name) async {
   final img = await ro.toImage(pixelRatio: 1.0);
   final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
   if (data == null) return ('(no bytes)', -1);
-  final path = '$_outDir\\t74p-$name.png';
+  final path = probeFileUnder(_outDir, 't74p-$name.png').path;
   File(path).writeAsBytesSync(data.buffer.asUint8List());
   // ★ 唯一颜色数 = 仪器自检：全黑/全白图不能当"页面渲染了"的证据
   final seen = <int>{};
@@ -682,19 +684,10 @@ Future<String> _resolveDataDir() async {
   //   理由：极 P-off 会往数据目录写 `disabled-providers.json`（落盘双写），
   //   若两极共用同一个编译期目录，P-off 会**永久污染** P-on 那一极
   //   ⇒ A/B 就不再是同条件对照。走环境变量 ⇒ 同一个二进制、两个干净目录。
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
+  final dir = probeDataDirectory(runtimeSetting: 'T74_DATA');
   final runtime = _envOr('T74_DATA', '');
-  final chosen = runtime.isNotEmpty ? runtime : override;
-  if (chosen.isNotEmpty) {
-    final d = Directory(chosen);
-    if (!await d.exists()) await d.create(recursive: true);
-    say('数据目录来源 = ${runtime.isNotEmpty ? '运行期 T74_DATA' : '编译期 DATA_DIR_OVERRIDE'}');
-    return d.path;
-  }
-  final appdata = Platform.environment['APPDATA'] ??
-      Platform.environment['HOME'] ??
-      Directory.current.path;
-  return '$appdata\\app.sourin.player';
+  say('数据目录来源 = ${runtime.isNotEmpty ? '运行期 T74_DATA' : 'DATA_DIR_OVERRIDE'}');
+  return dir.path;
 }
 
 Future<T> _timed<T>(String label, Future<T> Function() f) async {
@@ -879,6 +872,7 @@ String _hhmmss() {
 }
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
   final t0 = DateTime.now();
   _origDebugPrint = debugPrint;
   debugPrint = _capturePrint;
@@ -1010,7 +1004,7 @@ Future<void> main() async {
   // 「跑完没报错 ⇒ 认为极生效了」。这里直接数渲染路径的类名 + 给画面打指纹。
   say('──────── 极的生效证据（不是"没报错"，是数出来的）────────');
   note('渲染路径普查（全树 runtimeType 计数）：${_poleEvidence()}');
-  _firstShotDigest = _digestOf('$_outDir\\t74p-00-first-frame.png');
+  _firstShotDigest = _digestOf(probeFileUnder(_outDir, 't74p-00-first-frame.png').path);
   note('首帧截图指纹 = $_firstShotDigest  （与别的极比：相同 ⇒ 该极是空操作）');
   {
     // 仪器自检：普查必须**数到东西**，全 0 说明遍历没生效（假证据）

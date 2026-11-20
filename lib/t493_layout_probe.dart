@@ -51,6 +51,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/models.dart' as models;
@@ -66,7 +68,7 @@ import 'ui/widgets/poster_card.dart';
 // 常量
 // ══════════════════════════════════════════════════════════════════════════
 
-const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// ★ A/B 闸门（与 lib/ui/tokens.dart:256 同一个 define、同一个默认值）
 const String _arm = String.fromEnvironment('LAYOUT_AB', defaultValue: 'fixed');
@@ -138,7 +140,7 @@ Future<Never> finish(int code) async {
   say('');
   say('RESULT pass=$pass fail=$fail');
   say('ARM ab=$_arm mode=${_armLabel()} size=${_size.label}');
-  final path = '$_outDir\\t493-${_armLabel()}-${_size.label}.txt';
+  final path = probeFileUnder(_outDir, 't493-${_armLabel()}-${_size.label}.txt').path;
   try {
     final f = File(path);
     f.writeAsStringSync('${_log.join('\n')}\n');
@@ -262,7 +264,7 @@ Future<Shot> shoot(String name) async {
   if (bd == null) throw StateError('toByteData 返回 null');
   final rgba = bd.buffer.asUint8List();
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir\\t493-$name.png';
+  final path = probeFileUnder(_outDir, 't493-$name.png').path;
   if (png != null) {
     File(path).writeAsBytesSync(png.buffer.asUint8List());
   }
@@ -277,16 +279,6 @@ Future<Shot> shoot(String name) async {
 // ══════════════════════════════════════════════════════════════════════════
 // 数据目录
 // ══════════════════════════════════════════════════════════════════════════
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    await Directory(override).create(recursive: true);
-    return override;
-  }
-  final appData = Platform.environment['APPDATA'] ?? '';
-  return '$appData\\app.sourin.player';
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // 确定性取数（只替换取数那一步，页面本体是生产代码）
@@ -767,10 +759,11 @@ String _hex(int c) => '#${c.toRadixString(16).padLeft(6, '0').toUpperCase()}';
 // ══════════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   await Device.init();
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
   AppTheme.setMode(AppThemeMode.light);
 

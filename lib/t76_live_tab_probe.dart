@@ -62,6 +62,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/models.dart';
@@ -75,7 +77,7 @@ import 'ui/widgets/settings_kit.dart';
 // 常量
 // ══════════════════════════════════════════════════════════════════════════
 
-const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 const String _artifact = 't76-live-tab.txt';
 
 /// `settings_page.dart:2928-2936` 的三个常量：
@@ -165,7 +167,7 @@ void ok(String line, bool cond, [String extra = '']) {
 ///   本函数。否则中途中止的那一次会**不留产物**，于是"跑了但没证据"
 ///   —— 与"没跑"在事后完全无法区分。
 Future<Never> finish(int code) async {
-  final f = File('$_outDir\\$_artifact');
+  final f = probeFileUnder(_outDir, '$_artifact');
   try {
     f.writeAsStringSync('${_log.join('\n')}\n');
   } catch (e) {
@@ -179,16 +181,6 @@ Future<Never> finish(int code) async {
 // ══════════════════════════════════════════════════════════════════════════
 // 数据目录
 // ══════════════════════════════════════════════════════════════════════════
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    await Directory(override).create(recursive: true);
-    return override;
-  }
-  final appData = Platform.environment['APPDATA'] ?? '';
-  return '$appData\\app.sourin.player';
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // 元素树工具
@@ -517,7 +509,7 @@ Future<Shot> shoot(String name, {Rect? strip}) async {
   }
   final img = await ro.toImage(pixelRatio: 1.0);
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir\\t76-$name.png';
+  final path = probeFileUnder(_outDir, 't76-$name.png').path;
   File(path).writeAsBytesSync(png!.buffer.asUint8List());
 
   final raw = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -555,6 +547,8 @@ Future<Shot> shoot(String name, {Rect? strip}) async {
 // ══════════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   final t0 = DateTime.now();
 
   WidgetsFlutterBinding.ensureInitialized();
@@ -591,7 +585,6 @@ Future<void> main() async {
     note('Device.init 失败（沿用默认）: $e');
   }
 
-  final dir = await _resolveDataDir();
   say('数据目录 = $dir');
   await UiPrefs.load(dir);
   PageTransitionStyleStore.syncFromPrefs();

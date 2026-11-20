@@ -30,23 +30,15 @@ use std::sync::Arc;
 
 mod support;
 use support::real_creds_required_echo;
+use support::t38_fixture::T38Fixture;
 
-const REAL_STORE: &str = r"C:\Users\iuuuuuuuu\AppData\Roaming\app.sourin.player\plugins\.data";
-
-fn probe_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::path::PathBuf::from(format!(
-        r"D:\WishProject\sourin-flutter-spike\.probe\t38-{tag}"
-    ));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-async fn srca_at(dir: std::path::PathBuf) -> JsPluginProvider {
-    let src =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/srca.js"))
-            .unwrap();
-    let mut p = JsPluginProvider::from_source(&src).unwrap().with_data_dir(dir);
+async fn srca_at(fixture: &T38Fixture, dir: std::path::PathBuf) -> JsPluginProvider {
+    let src = fixture
+        .read_reference_source()
+        .expect("read reference/srca.js fixture");
+    let mut p = JsPluginProvider::from_source(&src)
+        .unwrap()
+        .with_data_dir(dir);
     p.hydrate_capabilities().await;
     p
 }
@@ -54,13 +46,17 @@ async fn srca_at(dir: std::path::PathBuf) -> JsPluginProvider {
 #[ignore = "走真实网络 + 真实第三方账号重登链路：站点随时可能改接口/弹验证码，结果不稳定（且需要开发机上的真实凭据）。手动跑：cargo test -- --ignored --nocapture"]
 #[tokio::test]
 async fn t38_corrupt_session_with_credentials_reports_expired() {
-    // ★ 需要开发机上的真实凭据；本机没有就跳过（见 tests/support/mod.rs）
-    if let Some(_why) = real_creds_required_echo("t38_corrupt_session_with_credentials_reports_expired") {
+    // ★ 显式快照缺席即报错；既有 ignored 标记仍控制网络 opt-in。
+    if let Some(_why) =
+        real_creds_required_echo("t38_corrupt_session_with_credentials_reports_expired")
+    {
         return;
     }
-    let dir = probe_dir("corrupt");
-    let src = std::path::PathBuf::from(REAL_STORE).join("srca.json");
-    std::fs::copy(&src, dir.join("srca.json")).unwrap();
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let workspace = fixture
+        .copy_store("corrupt")
+        .expect("copy explicit store fixture");
+    let dir = workspace.path().to_path_buf();
 
     // ── 把 `session` 写坏（保留 credentials 完好）──
     let path = dir.join("srca.json");
@@ -69,7 +65,7 @@ async fn t38_corrupt_session_with_credentials_reports_expired() {
     v["session"] = serde_json::Value::String("{ 这不是合法 JSON".to_string());
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let p = srca_at(dir.clone()).await;
+    let p = srca_at(&fixture, dir.clone()).await;
 
     println!("\n=========== ★ session 值损坏 + 凭据完好 ===========");
     println!("can_auto_login() = {}", p.can_auto_login().await);

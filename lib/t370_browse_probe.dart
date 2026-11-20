@@ -74,6 +74,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/models.dart' as models;
@@ -88,7 +90,7 @@ import './design/icons/app_icons.dart';
 // 常量
 // ══════════════════════════════════════════════════════════════════════════
 
-const String _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// 与生产 `shell.dart:3769 _openBrowse` 同一个源/标题
 const String _provider = '360';
@@ -146,7 +148,7 @@ void ok(String line, bool cond, [String extra = '']) {
 Future<Never> finish(int code) async {
   say('');
   say('RESULT pass=$pass fail=$fail');
-  final f = File('$_outDir\\t370-browse.txt');
+  final f = probeFileUnder(_outDir, 't370-browse.txt');
   try {
     f.writeAsStringSync('${_log.join('\n')}\n');
   } catch (e) {
@@ -160,16 +162,6 @@ Future<Never> finish(int code) async {
 // ══════════════════════════════════════════════════════════════════════════
 // 数据目录
 // ══════════════════════════════════════════════════════════════════════════
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    await Directory(override).create(recursive: true);
-    return override;
-  }
-  final appData = Platform.environment['APPDATA'] ?? '';
-  return '$appData\\app.sourin.player';
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // 元素树
@@ -374,7 +366,7 @@ Future<Shot> shoot(String name) async {
   if (bd == null) throw StateError('toByteData 返回 null');
   final rgba = bd.buffer.asUint8List();
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir\\t370-$name.png';
+  final path = probeFileUnder(_outDir, 't370-$name.png').path;
   if (png != null) {
     File(path).writeAsBytesSync(png.buffer.asUint8List());
   }
@@ -450,6 +442,8 @@ Future<models.Page<MediaItem>> _detLoader(int page) async {
 // ══════════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
   // ★ 必须在 runApp 之前（`shell.dart:276` 的同一条）
@@ -457,7 +451,6 @@ Future<void> main() async {
 
   await Device.init();
 
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
 
   // ★ 强制浅色：只去掉"跑的那一刻系统主题"这个外部变量，

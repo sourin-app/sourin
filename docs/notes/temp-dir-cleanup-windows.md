@@ -11,7 +11,7 @@
    ★★ CR-13：点「已下载」的第03集 CR13…
 
 PathAccessException: Deletion failed,
-  path = 'C:\Users\RUNNER~1\AppData\Local\Temp\cr_dl_c13\logs'
+  path = '<TEMP>\cr_dl_c13\logs'
   (OS Error: The process cannot access the file because it is being used by another process,
    errno = 32)
 ```

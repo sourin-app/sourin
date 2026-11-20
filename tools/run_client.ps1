@@ -53,12 +53,9 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$flutter = "C:\Users\iuuuuuuuu\flutter\bin\flutter.bat"
-if (-not (Test-Path $flutter)) {
-    $cmd = Get-Command flutter -ErrorAction SilentlyContinue
-    if (-not $cmd) { throw "找不到 flutter（既不在 $flutter，也不在 PATH）" }
-    $flutter = $cmd.Source
-}
+. (Join-Path $PSScriptRoot 'resolve_dev_tool.ps1')
+# Keep the explicitly selected SDK ahead of PATH.
+$flutter = Resolve-SourinFlutter
 
 
 # =======================================================================

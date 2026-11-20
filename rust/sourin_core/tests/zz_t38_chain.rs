@@ -23,22 +23,7 @@ use std::sync::Arc;
 
 mod support;
 use support::real_creds_required_echo;
-
-const REAL_STORE: &str = r"C:\Users\iuuuuuuuu\AppData\Roaming\app.sourin.player\plugins\.data";
-
-fn probe_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::path::PathBuf::from(format!(
-        r"D:\WishProject\sourin-flutter-spike\.probe\t38-{tag}"
-    ));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
-fn seed(dir: &std::path::Path) {
-    let src = std::path::PathBuf::from(REAL_STORE).join("srca.json");
-    std::fs::copy(&src, dir.join("srca.json")).expect("copy real store");
-}
+use support::t38_fixture::T38Fixture;
 
 /// ⚠️ **必须**调 `hydrate_capabilities()`（实测踩到）
 ///
@@ -53,13 +38,13 @@ fn seed(dir: &std::path::Path) {
 /// 看起来像"状态判定坏了"，实际是**探针自己少调了一步**
 ///（真实应用走 `load_plugins_hydrated`，它内部会调）。
 /// ⚠️ 这正是 VERIFY-LESSONS 里"假红/假绿"那一类：**先确认脚手架对了再信结论**。
-async fn srca_at(dir: std::path::PathBuf) -> JsPluginProvider {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/plugins/srca.js"
-    ))
-    .unwrap();
-    let mut p = JsPluginProvider::from_source(&src).unwrap().with_data_dir(dir);
+async fn srca_at(fixture: &T38Fixture, dir: std::path::PathBuf) -> JsPluginProvider {
+    let src = fixture
+        .read_reference_source()
+        .expect("read reference/srca.js fixture");
+    let mut p = JsPluginProvider::from_source(&src)
+        .unwrap()
+        .with_data_dir(dir);
     // 与 `load_plugins_hydrated` 同一步（真实应用就是这样拿能力位的）
     p.hydrate_capabilities().await;
     p
@@ -96,12 +81,7 @@ fn make_expired_token(orig: &str) -> String {
             let end = rest
                 .find(|c: char| !c.is_ascii_digit())
                 .unwrap_or(rest.len());
-            format!(
-                "{}\"exp\":{}{}",
-                &payload[..i],
-                yesterday,
-                &rest[end..]
-            )
+            format!("{}\"exp\":{}{}", &payload[..i], yesterday, &rest[end..])
         }
         None => payload.clone(),
     };
@@ -159,12 +139,15 @@ fn b64url_encode(data: &[u8]) -> String {
 #[ignore = "走真实网络 + 真实第三方账号重登链路：站点随时可能改接口/弹验证码，结果不稳定（且需要开发机上的真实凭据）。手动跑：cargo test -- --ignored --nocapture"]
 #[tokio::test]
 async fn t38_expired_token_full_chain() {
-    // ★ 需要开发机上的真实凭据；本机没有就跳过（见 tests/support/mod.rs）
+    // ★ 显式快照缺席即报错；既有 ignored 标记仍控制网络 opt-in。
     if let Some(_why) = real_creds_required_echo("t38_expired_token_full_chain") {
         return;
     }
-    let dir = probe_dir("expired");
-    seed(&dir);
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let workspace = fixture
+        .copy_store("expired")
+        .expect("copy explicit store fixture");
+    let dir = workspace.path().to_path_buf();
 
     // ── 把 token 换成已过期的 ──
     let path = dir.join("srca.json");
@@ -176,17 +159,25 @@ async fn t38_expired_token_full_chain() {
     let newtok = make_expired_token(&old);
     sess["token"] = serde_json::Value::String(newtok.clone());
     // expiresAt 也改成过去（两处都要改 —— effective_expires_at 择优）
-    sess["expiresAt"] =
-        serde_json::Value::String("2020-01-01T00:00:00+08:00".to_string());
+    sess["expiresAt"] = serde_json::Value::String("2020-01-01T00:00:00+08:00".to_string());
     v["session"] = serde_json::Value::String(serde_json::to_string(&sess).unwrap());
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
     println!("\n=========== ★ 场景：token 已过期 ===========");
-    let p = srca_at(dir.clone()).await;
-    println!("login_required = {}", p.manifest().capabilities.login_required);
-    println!("login_supported= {}", p.manifest().capabilities.login_supported);
+    let p = srca_at(&fixture, dir.clone()).await;
+    println!(
+        "login_required = {}",
+        p.manifest().capabilities.login_required
+    );
+    println!(
+        "login_supported= {}",
+        p.manifest().capabilities.login_supported
+    );
     println!("session_expired()      = {}", p.session_expired().await);
-    println!("session_needs_refresh()= {}", p.session_needs_refresh().await);
+    println!(
+        "session_needs_refresh()= {}",
+        p.session_needs_refresh().await
+    );
     println!("can_auto_login()       = {}", p.can_auto_login().await);
 
     // ── 关键：走真 Registry ──
@@ -211,7 +202,12 @@ async fn t38_expired_token_full_chain() {
         let sj: serde_json::Value = serde_json::from_str(s).unwrap();
         println!(
             "救活后 token 前缀 = {}…",
-            &sj["token"].as_str().unwrap_or("").chars().take(28).collect::<String>()
+            &sj["token"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(28)
+                .collect::<String>()
         );
         println!("救活后 expiresAt  = {}", sj["expiresAt"]);
     }
@@ -233,12 +229,15 @@ async fn t38_expired_token_full_chain() {
 #[ignore = "走真实网络 + 真实第三方账号重登链路：站点随时可能改接口/弹验证码，结果不稳定（且需要开发机上的真实凭据）。手动跑：cargo test -- --ignored --nocapture"]
 #[tokio::test]
 async fn t38_no_credentials_is_expired() {
-    // ★ 需要开发机上的真实凭据；本机没有就跳过（见 tests/support/mod.rs）
+    // ★ 显式快照缺席即报错；既有 ignored 标记仍控制网络 opt-in。
     if let Some(_why) = real_creds_required_echo("t38_no_credentials_is_expired") {
         return;
     }
-    let dir = probe_dir("nocred");
-    seed(&dir);
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let workspace = fixture
+        .copy_store("nocred")
+        .expect("copy explicit store fixture");
+    let dir = workspace.path().to_path_buf();
 
     // 删掉 credentials（模拟"凭据丢了"）
     let path = dir.join("srca.json");
@@ -252,16 +251,17 @@ async fn t38_no_credentials_is_expired() {
     let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let sess_str = v["session"].as_str().unwrap().to_string();
     let mut sess: serde_json::Value = serde_json::from_str(&sess_str).unwrap();
-    sess["token"] = serde_json::Value::String(make_expired_token(
-        sess["token"].as_str().unwrap(),
-    ));
+    sess["token"] = serde_json::Value::String(make_expired_token(sess["token"].as_str().unwrap()));
     sess["expiresAt"] = serde_json::Value::String("2020-01-01T00:00:00+08:00".into());
     v["session"] = serde_json::Value::String(serde_json::to_string(&sess).unwrap());
     std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let p = srca_at(dir).await;
+    let p = srca_at(&fixture, dir).await;
     println!("\n=========== 阳性对照：无凭据 + token 过期 ===========");
-    println!("login_required = {}", p.manifest().capabilities.login_required);
+    println!(
+        "login_required = {}",
+        p.manifest().capabilities.login_required
+    );
     println!("can_auto_login() = {}", p.can_auto_login().await);
     println!("session_expired()= {}", p.session_expired().await);
 
@@ -272,11 +272,7 @@ async fn t38_no_credentials_is_expired() {
     let ok = reg.ensure_session("srca").await;
     println!("ensure_session() = {ok:?}");
 
-    assert_eq!(
-        ok,
-        Some(false),
-        "★ 没凭据 → 确实救不活，如实返回 false"
-    );
+    assert_eq!(ok, Some(false), "★ 没凭据 → 确实救不活，如实返回 false");
     assert_eq!(
         st,
         Some(sourin_core::provider::SessionState::Expired),

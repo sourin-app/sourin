@@ -13,7 +13,7 @@
 
 ```bash
 $ ls -la .gitattributes
--rw-r--r-- 1 iuuuuuuuu 197609 5485 Oct  8 18:36 .gitattributes
+-rw-r--r-- 1 <OWNER> 197609 5485 Oct  8 18:36 .gitattributes
 ```
 
 它已经规定了：

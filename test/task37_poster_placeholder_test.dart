@@ -36,7 +36,7 @@
 // ② 用**不存在的 URL** 强制进入占位态（必然发生，不靠运气）
 // ```
 //
-// # 原版依据（`D:\WishProject\cctv_to_client\src\`）
+// # 原版依据（`<ORIGINAL_VUE_ROOT>\src\`）
 //
 // ```css
 // /* design/base.css:734 —— 深色（默认） */
@@ -51,6 +51,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:sourin_spike/probe_paths.dart';
 
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/tokens.dart';
@@ -485,18 +486,17 @@ void main() {
        * 原版**两个主题都是 5%**，即"与背景只差 5%"是**刻意的设计**，
        * 不是"没调好"。
        *
-       * ⚠️ 原版在**另一个仓库**，不存在时跳过而不是失败
-       *    （否则只有 Flutter 侧的环境会假失败 —— 铁律 12）。
+       * 用 ORIGINAL_VUE_FIXTURE_ROOT 显式选择原版参考仓库；
+       * 缺任一 CSS 夹具都报环境错误，不将未执行断言当作通过。
        */
-      final base = File(r'D:\WishProject\cctv_to_client\src\design\base.css');
-      final light =
-          File(r'D:\WishProject\cctv_to_client\src\design\theme-light.css');
-
-      if (!base.existsSync() || !light.existsSync()) {
-        // ignore: avoid_print
-        print('⚠️ 跳过：原版仓库不在本机（${base.path}）');
-        return;
-      }
+      final base = requireProbeFixtureFile(
+        'ORIGINAL_VUE_FIXTURE_ROOT',
+        'src/design/base.css',
+      );
+      final light = requireProbeFixtureFile(
+        'ORIGINAL_VUE_FIXTURE_ROOT',
+        'src/design/theme-light.css',
+      );
 
       final baseSrc = base.readAsStringSync();
       final lightSrc = light.readAsStringSync();

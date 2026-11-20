@@ -4181,7 +4181,7 @@ class _Cover extends StatelessWidget {
   /// 这个封面是**本地文件**还是**网络 URL**
   ///
   /// ⚠️ **不能**只看 `Uri.tryParse(...).hasScheme`（CR-11）：
-  ///   Windows 盘符路径 `C:\Users\…\_sourin-cover.jpg`
+  ///   Windows 盘符路径 `C:\Users\<USER>\_sourin-cover.jpg`
   ///   会被 URI 解析器读成「scheme = `C`」⇒ `hasScheme == true` ⇒ 落进
   ///   `Image.network` 分支；而主力平台 Windows 上
   ///   `Image.network('C:\…')` 必然加载失败 ⇒ 本地封面永远退化成

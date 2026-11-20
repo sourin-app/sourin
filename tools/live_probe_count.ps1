@@ -71,7 +71,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$root = 'D:\WishProject\sourin-flutter-spike'
+$root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'build\windows\x64\runner\Release\sourin_spike.exe'
 $appSo = Join-Path $root 'build\windows\x64\runner\Release\data\app.so'
 
@@ -119,16 +119,21 @@ $MinProductSoBytes = 8MB
 
 if (-not $NoBuild) {
   Write-Host '=== build (product entry: lib/shell.dart) ==='
-  $flutter = 'C:\Users\iuuuuuuuu\flutter\bin\flutter.bat'
-  if (-not (Test-Path $flutter)) { Fail "flutter not found: $flutter" }
+  . (Join-Path $PSScriptRoot 'resolve_dev_tool.ps1')
+  try { $flutter = Resolve-SourinFlutter } catch { Fail $_.Exception.Message }
 
   # Kill any running instance first: it locks the exe and makes the
   # INSTALL step fail with a confusing MSB3073 message.
   Get-Process sourin_spike -ErrorAction SilentlyContinue | Stop-Process -Force
   Start-Sleep -Milliseconds 600
 
-  & $flutter build windows --release -t lib/shell.dart
-  if ($LASTEXITCODE -ne 0) { Fail "build failed (exit $LASTEXITCODE)" }
+  Push-Location -LiteralPath $root
+  try {
+    & $flutter build windows --release -t lib/shell.dart
+    if ($LASTEXITCODE -ne 0) { Fail "build failed (exit $LASTEXITCODE)" }
+  } finally {
+    Pop-Location
+  }
 }
 
 if (-not (Test-Path $exe)) { Fail "exe missing: $exe" }

@@ -33,7 +33,7 @@
 //
 // ```text
 // flutter build windows --debug -t lib/t21_shot_probe.dart
-//   --dart-define=DATA_DIR_OVERRIDE=D:/WishProject/sourin-flutter-spike/.probe/yamby/t21data
+//   --dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>/.probe/yamby/t21data
 // ```
 //
 // ⚠️ 不能省 `--debug`：`--release` 会覆盖**共享**的
@@ -116,6 +116,8 @@ import 'package:sourin_spike/core/models.dart';
 import 'package:sourin_spike/core/ui_prefs.dart';
 import 'package:sourin_spike/ui/app_theme.dart';
 import 'package:sourin_spike/ui/player_page.dart';
+
+import 'probe_paths.dart';
 import 'ui/app_scaffold.dart';
 import 'ui/app_theme.dart';
 import './design/icons/app_icons.dart';
@@ -135,11 +137,11 @@ import './design/icons/app_icons.dart';
 ///   「静止画面也能截」与「正在播的画面能截」是两件事，阳性对照必须站得住。
 ///   ⇒ 换成 214740 B / 40 秒的 `.probe\t465_43.mp4`：实测 `position=0.6s`、
 ///     `isPlaying=true`、写出 640x480 / 140323 B 的 JPEG（与源分辨率一致）。
-const kProbeMedia = String.fromEnvironment('PROBE_MEDIA',
-    defaultValue: r'D:\WishProject\sourin-flutter-spike\.probe\t465_43.mp4');
+// PROBE_MEDIA must select the original t465_43.mp4 fixture.
+late final String kProbeMedia;
 
 /// 产物目录（result.txt + 截图证据）
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe\yamby';
+late final Directory _outDir;
 
 final _rootKey = GlobalKey();
 
@@ -188,7 +190,7 @@ void skip(String why) {
 //  落盘（增量写，允许被超时杀掉）
 // ======================================================================
 
-String _artifactPath() => _outDir + '\\t21p-shot.txt';
+String _artifactPath() => probeFileUnder(_outDir, 't21p-shot.txt').path;
 
 void flush(String stage) {
   final body = StringBuffer()
@@ -237,7 +239,7 @@ Future<String> resolveDataDir() async {
     say('   真实用户库 %APPDATA%/app.sourin.player 写播放进度。');
     say('   正确命令：');
     say('     flutter build windows --debug -t lib/t21_shot_probe.dart');
-    say('       --dart-define=DATA_DIR_OVERRIDE=D:/WishProject/sourin-flutter-spike/.probe/yamby/t21data');
+    say('       --dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>/.probe/yamby/t21data');
     exit(3);
   }
   final d = Directory(override);
@@ -408,6 +410,8 @@ Future<bool> injectKeyDownUp(LogicalKeyboardKey logical,
 // ======================================================================
 
 Future<void> main() async {
+  if (mode != 'pre') kProbeMedia = requireProbeMedia().path;
+  _outDir = probeArtifactDirectory('yamby');
   WidgetsFlutterBinding.ensureInitialized();
 
   /*
@@ -446,8 +450,9 @@ Future<void> main() async {
 
   say('数据目录: ' + dataDir);
   say('模式: ' + mode);
-  say('探针媒体: ' + kProbeMedia +
-      ' (存在=' + File(kProbeMedia).existsSync().toString() + ')');
+  if (mode != 'pre') {
+    say('探针媒体: $kProbeMedia (存在=${File(kProbeMedia).existsSync()})');
+  }
 
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
@@ -681,8 +686,10 @@ Future<void> body(String dataDir) async {
       tip != null && tip.contains('已截图') && tip.contains('字节'),
       tip ?? '');
 
-  final copied = _outDir + '\\t21p-shot-' +
-      DateTime.now().millisecondsSinceEpoch.toString() + '.jpg';
+  final copied = probeFileUnder(
+    _outDir,
+    't21p-shot-' + DateTime.now().millisecondsSinceEpoch.toString() + '.jpg',
+  ).path;
   try {
     f0.copySync(copied);
     say('证据副本: ' + copied + ' (' +

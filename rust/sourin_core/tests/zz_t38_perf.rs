@@ -28,15 +28,8 @@ use sourin_core::plugins::JsPluginProvider;
 use sourin_core::provider::MediaProvider;
 use std::time::Instant;
 
-const REAL_PLUGINS: &str =
-    r"C:\Users\iuuuuuuuu\AppData\Roaming\app.sourin.player\plugins";
-
-fn tmp(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("sourin-t38perf-{tag}"));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
+mod support;
+use support::t38_fixture::T38Fixture;
 
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -53,13 +46,10 @@ fn median(mut v: Vec<f64>) -> f64 {
 
 #[tokio::test]
 async fn measure_probe_cost() {
-    let dir = tmp("perf");
-    // ★ 依赖**用户本机部署**的那份插件（不进仓库）⇒ 缺席则跳过（不是失败）。
-    let plugin_path = std::path::PathBuf::from(REAL_PLUGINS).join("srca.js");
-    let Ok(dep) = std::fs::read_to_string(&plugin_path) else {
-        println!("[t38-perf] skip: 本机未部署 {}（该插件不进仓库）", plugin_path.display());
-        return;
-    };
+    let fixture = T38Fixture::from_env().expect("select explicit T38 fixture");
+    let dep = fixture
+        .read_deployed_source()
+        .expect("read plugins/srca.js fixture");
 
     // 前置：确认它**没有**声明（否则不会走探测分支，量不到东西）
     assert!(
@@ -67,13 +57,11 @@ async fn measure_probe_cost() {
         "★ 前提：部署版必须没有声明，才量得到探测分支的开销"
     );
 
-    // 数据目录（含凭据 ⇒ canAutoLogin() 会返回 true）
-    let data = dir.join(".data");
-    std::fs::create_dir_all(&data).unwrap();
-    let real_data = std::path::PathBuf::from(REAL_PLUGINS).join(".data");
-    if real_data.join("srca.json").exists() {
-        std::fs::copy(real_data.join("srca.json"), data.join("srca.json")).unwrap();
-    }
+    // 数据目录仅为显式输入的独占副本，源快照不写入。
+    let workspace = fixture
+        .copy_store("perf")
+        .expect("copy explicit store fixture");
+    let data = workspace.path().to_path_buf();
 
     let make = |d: std::path::PathBuf| {
         JsPluginProvider::from_source(&dep)

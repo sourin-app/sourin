@@ -13,7 +13,7 @@
 // ```
 //
 // ═══════════════════════════════════════════════════════════════════════
-//  ★★ 先说清楚：原版（D:\WishProject\srcl_to_client）**没有这三项**
+//  ★★ 先说清楚：原版（<ORIGINAL_TAURI_ROOT>）**没有这三项**
 // ═══════════════════════════════════════════════════════════════════════
 //
 // 不是"还没找到"，是**确实不存在** —— grep 证据：
@@ -255,7 +255,7 @@ class _PlaybackSettingsPageState extends State<PlaybackSettingsPage> {
   /// 版本      sourin-core 0.1.0   （SourinApi.version → Rust 的 sourin_core_version()）
   /// 系统      windows · "Windows 10 专业工作站版" 10.0 (Build 19045)
   /// 设备形态  桌面（鼠标键盘）     （Device.kind，走平台通道判定）
-  /// 数据目录  C:\Users\…\AppData\Roaming\app.sourin.player
+  /// 数据目录  <APPDATA>\app.sourin.player
   /// ```
   String _envInfo = '';
   bool _envBusy = false;

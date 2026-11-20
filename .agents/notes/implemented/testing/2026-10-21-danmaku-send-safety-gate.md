@@ -94,9 +94,9 @@ bool hasHostFingerprintHook(String libDir)
 第一版用 `File.fromUri(Platform.script).parent.parent` 定位仓根。实测：
 
 ```text
-Platform.script   = file:///D:/WishProject/sourin-flutter-spike/main.dart
+Platform.script   = file:///<REPO_ROOT>/main.dart
                                   ↑ 不是测试文件，是 main.dart
-appRoot 推算      = D:\WishProject            ← 多上了一层
+appRoot 推算      = <WORKSPACE>            ← 多上了一层
 ⇒ sourin-plugins 被算到 D:\sourin-plugins（不存在）
 ⇒ 源码/产物两处全部跳过，只剩用户数据目录 1 处被查
 ⇒ 门禁**看起来全绿**，实际只覆盖 1/3

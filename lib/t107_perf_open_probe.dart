@@ -65,7 +65,7 @@
 // # 用法
 // ```powershell
 // flutter build windows --release -t lib/t107_perf_open_probe.dart `
-//   "--dart-define=DATA_DIR_OVERRIDE=D:\WishProject\sourin-flutter-spike\.probe\round107\data"
+//   "--dart-define=DATA_DIR_OVERRIDE=<REPO_ROOT>\.probe\round107\data"
 // # 外层把 APPDATA / USERPROFILE 指进同一个隔离目录，再直接跑 exe
 // ```
 // 产物：`.probe/round107/t107_open_probe.log`（本文件自己写，不依赖控制台）

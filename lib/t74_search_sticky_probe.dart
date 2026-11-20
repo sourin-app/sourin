@@ -84,6 +84,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'probe_paths.dart';
+
 import 'core/device.dart';
 import 'core/ffi.dart';
 import 'core/models.dart' show MediaItem, SearchEventKind, SearchStreamEvent;
@@ -101,7 +103,7 @@ final _rootKey = GlobalKey();
 ///   不必在树上做 `findAncestorStateOfType` 的盲找。
 final _pageKey = GlobalKey<SearchPageState>();
 
-const _outDir = r'D:\WishProject\sourin-flutter-spike\.probe';
+late final Directory _outDir;
 
 /// 条带取多高去做逐字节比对 = **吸顶后**条带的高度 = `minExtent` = 50
 ///
@@ -198,7 +200,7 @@ void note(String s) {
 ///   于是"跑了但没证据" —— 与"没跑"在事后完全无法区分。
 Future<Never> finish(int code) async {
   try {
-    final f = File('$_outDir\\t74s-search-sticky.txt');
+    final f = probeFileUnder(_outDir, 't74s-search-sticky.txt');
     f.writeAsStringSync('${_log.join('\n')}\n');
     debugPrint('[T74S] 产物已写 ${f.path} (${f.lengthSync()} B)');
   } catch (e) {
@@ -211,18 +213,6 @@ Future<Never> finish(int code) async {
 // ═══════════════════════════════════════════════════════════════════════
 //  数据目录 / 截图
 // ═══════════════════════════════════════════════════════════════════════
-
-Future<String> _resolveDataDir() async {
-  const override = String.fromEnvironment('DATA_DIR_OVERRIDE');
-  if (override.isNotEmpty) {
-    final d = Directory(override);
-    if (!await d.exists()) await d.create(recursive: true);
-    return d.path;
-  }
-  final appdata =
-      Platform.environment['APPDATA'] ?? Platform.environment['HOME'] ?? '.';
-  return '$appdata${Platform.pathSeparator}app.sourin.player';
-}
 
 /// FNV-1a（32 位）—— 用来给"顶部条带"出一个可逐字比对的指纹
 String _fnv(List<int> bytes, int start, int end) {
@@ -257,7 +247,7 @@ Future<(String, int, String, String, int)> shoot(String name) async {
   }
   final img = await obj.toImage(pixelRatio: 1.0);
   final png = await img.toByteData(format: ui.ImageByteFormat.png);
-  final path = '$_outDir\\t74s-$name.png';
+  final path = probeFileUnder(_outDir, 't74s-$name.png').path;
   File(path).writeAsBytesSync(png!.buffer.asUint8List());
 
   final rgba = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
@@ -505,6 +495,8 @@ SearchStreamEvent _hit(String name, List<MediaItem> items) => SearchStreamEvent(
 // ═══════════════════════════════════════════════════════════════════════
 
 Future<void> main() async {
+  _outDir = probeArtifactDirectory();
+  final dir = probeDataDirectory().path;
   WidgetsFlutterBinding.ensureInitialized();
 
   /*
@@ -526,7 +518,6 @@ Future<void> main() async {
     say('Device.init 失败（忽略，有兜底）: $e');
   }
 
-  final dir = await _resolveDataDir();
   await UiPrefs.load(dir);
   final r = await SourinCore.startAsync(dir);
 

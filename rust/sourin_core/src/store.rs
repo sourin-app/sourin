@@ -4970,6 +4970,49 @@ mod tests {
     //  ★★★ 真实数据实测（默认 #[ignore]，需显式 --ignored 才跑）
     // ═══════════════════════════════════════════════════════════════════
 
+    // This historical assertion set runs only against a caller-selected snapshot.
+    // Resolve no real application directory and perform no I/O on missing input.
+    fn explicit_repoint_snapshot(
+        input: Option<std::ffi::OsString>,
+    ) -> Result<std::path::PathBuf, &'static str> {
+        let value = input.ok_or("SOURIN_T67_SNAPSHOT_DB must name an explicit snapshot")?;
+        let text = value.to_str().ok_or("snapshot path must be Unicode")?;
+        if text.trim().is_empty()
+            || text.chars().any(char::is_control)
+            || text.split(['/', '\\']).any(|part| part == "." || part == "..")
+        {
+            return Err("snapshot path must be nonempty without dot traversal");
+        }
+        let path = std::path::PathBuf::from(&value);
+        if !path.is_absolute() {
+            return Err("snapshot path must be absolute");
+        }
+        #[cfg(windows)]
+        if !matches!(path.components().next(), Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)))
+        {
+            return Err("snapshot path must use a local disk");
+        }
+        Ok(path)
+    }
+
+    #[test]
+    fn repoint_snapshot_input_fails_before_any_io_without_explicit_absolute_path() {
+        assert!(explicit_repoint_snapshot(None).is_err());
+        for value in ["", " ", "relative.db", "../snapshot.db", "folder/../snapshot.db"] {
+            assert!(explicit_repoint_snapshot(Some(value.into())).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn repoint_snapshot_input_preserves_an_explicit_task_path() {
+        let path = std::env::temp_dir().join("sourin-snapshot-input-does-not-read.db");
+        assert!(path.is_absolute());
+        assert_eq!(explicit_repoint_snapshot(Some(path.as_os_str().to_owned())).unwrap(), path);
+        let traversal = std::env::temp_dir().join(".").join("snapshot.db");
+        assert!(explicit_repoint_snapshot(Some(traversal.into_os_string())).is_err());
+    }
+
     /// 在**用户真实数据的只读副本**上跑一次真实换源
     ///
     /// # 为什么 `#[ignore]`
@@ -4990,6 +5033,7 @@ mod tests {
     /// # 跑法
     ///
     /// ```powershell
+    /// $env:SOURIN_T67_SNAPSHOT_DB = "<OWNED_SNAPSHOT_DB>"
     /// cargo test --release --lib real_user_data_repoint -- --ignored --nocapture
     /// ```
     ///
@@ -5010,13 +5054,9 @@ mod tests {
     #[test]
     #[ignore = "依赖 .probe/dbcopy-t67c/ 取证件；用 --ignored 显式跑"]
     fn real_user_data_repoint_laojiu() {
-        let snap = std::path::Path::new(
-            r"D:\WishProject\sourin-flutter-spike\.probe\dbcopy-t67c\dsh-media.db",
-        );
-        if !snap.exists() {
-            eprintln!("[SKIP] 快照不存在: {}", snap.display());
-            return;
-        }
+        let snap = explicit_repoint_snapshot(std::env::var_os("SOURIN_T67_SNAPSHOT_DB"))
+            .expect("必须显式选择原有一致性快照；不发现或回退真实用户库");
+        assert!(snap.is_file(), "显式快照不是可用文件: {}", snap.display());
 
         // ★ 在**临时副本**上跑 —— 绝不改动取证件本身
         let tmp = std::env::temp_dir().join(format!(

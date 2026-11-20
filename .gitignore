@@ -239,3 +239,7 @@ Microsoft/
 #   模式取的是这两个具体名字（不是 `*.json`，那会误伤配置）。
 /base.json
 /main.json
+
+# Local seek-validation build roots and NuGet migration marker (generated only).
+/build-seek-click-v[1-8]/
+/NuGet/

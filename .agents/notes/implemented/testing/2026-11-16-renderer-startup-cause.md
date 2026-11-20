@@ -723,6 +723,50 @@ cohort或DPR已相同。
 `sourin-shader-validation-20261120-round8/lead/pixel-execution/PIXEL_READBACK_V1.json`。
 主代理原始链检查仍单独有效，正式采用需要补齐受影响行为/原预算与相应独立复核。
 
+### 无新增 trace 候选的原动作准入边界
+
+当前无新增 trace 私有 DLL 为 `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB`，
+派生闭包为 `7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587`。
+它复用原 shader 对象候选的两个真实 ANGLE 对象，将五段 present trace 对象换回已资格原对象，
+只重编身份消费者；3535 个复用对象及实际库字节、246 条实际 include 已核。编译/链接自然 0，
+原 OUT/SDK 的成员大小、mtime、文件身份守卫未变；这不是全父源码新鲜重验，也不是生产采用。
+AOT 仍为原 `8E68C741…0331A`，原 20 动作区逐字保留。原滚动是 450 ms linear、
+测量窗口仍为 700 ms；读回器首稿误写滚动条件而拒绝的日志保留，后继只修读侧条件。
+
+全帧读回不能只使用第 20 动作结束的 result。既存真实原件中 result 为 1112 帧，pre-Quit
+原件为 1120 帧，计入尾部后 totalSpan 超限为 14 而非 13。新读回核原始时钟方程、帧号唯一、
+原动作/窗口成员及 Quit 分母，并用实际数据的时钟、窗口时长、Quit 帧数三种篡改证明会拒绝；
+没有重新运行旧应用。它修正采集边界，不能反过来称旧 result 已包含尾帧。
+
+新 DLL 的首次捕获在原动作开始前被 `CAPTURE_SIZE_BOUND` 拒绝：Dart ready 为
+1592×904 / DPR1，原生日志随后为 160×28；没有同期 IsIconic/placement/caller，不能叫已归因
+最小化或认定 Owner 操作。26 条失败 raw 的 build/raster/total 超限为 2/13/17，零个原动作；
+清理 Finish 得到 35 条材料并不赋予采集资格。原 Quit 自然 0、无 force、双时钟空 Job ≥8 秒。
+
+仅改变被动观察输入的后继先用自有未显示窗口实测：读真实矩形/placement/三时钟，错误出生
+身份被拒绝，重复状态只落一行，自然退出/双空 ≥8。首次测试缺协调器亲和前置，在子进程创建前
+失败，原件保留；队友草稿的 foreground 返回契约、64 位签名和错误重抛缺口由 root 私有副本修正。
+观察器不改变窗口、焦点、输入或显示设置；只记录采样状态，不证明连续历史或 caller。
+
+该后继捕获也在原动作前失败：8 个首页区块请求均失败，最终 8 区块/0 卡片，90 秒稳定条件
+未满足。551 条 raw 的 build/raster/total 超限为 1/22/35，零个原动作；清理完成的 30 条材料
+仍未资格。四条已保存窗口状态均非 iconic、非 foreground，但只到采样上限；运行快照为
+1990×1130 / 1592×904 / DPR1.25 / display65539，前次 ready 为 DPR1 / display65537。
+Flutter 物理/逻辑尺寸与 Win32 桌面坐标不可混用，当前显示枚举不可追溯归因窗口移动或 Owner。
+原 Quit 自然 0、无 force、双空 ≥8；未执行第三次启动，也未构建消费者。
+
+随后仅对原匿名分类 20、page1 的同一公开 GET 经原 loopback 代理做一次请求，零重试、零跳转，
+TLS 未放宽：curl35、HTTP000、0 字节，握手失败。它证明这一次请求没有就绪，不证明此前八个
+请求共享同一根因，更不把独立更新服务的 502 移作区块原因。路由队友报告因漏 `lead/` 读错根，
+保持 partial；root 直接读正确原件核八区块和单次请求。显示复核只读现有快照和当前 API。
+
+本轮根读回 `sourin-performance-20261120-round9/lead/ROUND9_FAILED_CAPTURE_SCOPE_READBACK_V1.json`
+SHA256 `7D06222203B300EC2DD4CF61B9996FFBCFEF481B3D9E5A21CF369313D60A3C66` 只证明上述原件链一致。
+两次失败共 577 raw 全保留，原 20 未开始、材料未资格、性能未通过；不得通过延长就绪超时、换
+内容、移动/恢复窗口、删冷帧或反复启动挑成绩绕过。再开须先有精确匿名请求恢复内容就绪的新证据，
+并只读绑定原几何/DPR/显示 cohort 或明确新 cohort 的授权与不可比边界。产品、既验 seek 与本地
+Release ZIP 均未改变；普通启动、真实外链、Top20 和历史 caller 条件仍另行未验收。
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

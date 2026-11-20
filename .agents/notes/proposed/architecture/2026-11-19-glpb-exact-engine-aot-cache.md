@@ -232,6 +232,23 @@ geometry/compute/stream-output保持原样，不擅改ShaderExecutable头布局�
 
 这只是proposed+实际API fixture和私有静态资格，尚未证明像素、全部状态、应用链接收益或正式性能。
 
+### 当前无新增 trace 候选未取得原 20 运行资格
+
+私有 DLL `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB` /闭包
+`7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587` 已按实际父对象谱系重链：
+恢复原 compositor、无即时 cache 标签，仅编新身份。原 AOT 与原动作不改，3535 对象和 246 include
+资格只到静态构建。第一次捕获在截图前因窗口尺寸界失败，后继只补已经真实隐窗红绿验证的被动
+状态观察；第二次因八区块请求失败、0 卡片及 90 秒就绪超时而失败。两次都未开始原 20 动作，
+26/551 raw 保留，均按原 Quit 自然 0/无 force/双空 ≥8；清理 Finish 的 35/30 材料不能用于消费。
+后继 DPR1.25/display65539 与此前 DPR1/display65537 也不构成同 cohort；源码与当前显示枚举不证明
+是谁移动/最小化窗口。单次精确原匿名分类 GET 经原代理出现 curl35/TLS 握手失败/HTTP000，
+没有重试、凭据、TLS 放宽、第三次客户端或新 consumer。
+
+详细事实与再开条件由[渲染启动归因](../../implemented/testing/2026-11-16-renderer-startup-cause.md)
+持有。旧 trace 对、API/局部像素阳性保留原范围，本方案仍 proposed；全帧读回须包含 pre-Quit
+追加帧，不能把动作末 result 当完整 raw。路由/显示内容未满足时不测性能，不延长原就绪门或
+重播失败挑成绩；只有具体 owning input 改变及新的匿名内容/显示准入证据才允许后继。
+
 ## Acceptance criteria
 
 闭包与 alias 恢复、identity-only 重链、SDK 未改分别具备新鲜有限回执，且真实 runtime 绑定正确 DLL/header/import lib/AOT。

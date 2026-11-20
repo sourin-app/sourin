@@ -296,4 +296,15 @@ V30/V31 的失败和污染输入审计仍保留在 `.probe/`，不与 V32 混用
 ## 本地提交前的已完成补证
 
 - 后继真实D3D离屏绘制只针对原私有缓存header（无即时日志）验证像素：固定人工VS/PS、同设备/常量/纹理/顶点/光栅与混合状态，直接Create和cache miss/hit分别画入独立RGBA8 render target，CopyResource到staging后Map，opaque与alpha两对共32768字节完全一致；真实覆盖各1152像素，中心色和边角clear另检。先改变候选alpha draw的红色常量，实际GPU回读出现1152字节差，同一像素门自然exit1；随后原状态自然exit0，所有owned Job无force、双空≥8秒。root另从原raw重算并亲看PNG。它只证明人工shader/指定状态的局部绘制等价，不是35程序的全像素、debug-label等价或性能通过。证据 `sourin-shader-validation-20261120-round8/lead/pixel-execution/PIXEL_READBACK_V1.json`。
-- Owner要求先本地提交，目标开发已暂停。产物忽略规则、已有seek修复和已验UI复用源码已分批提交；私有引擎/脚本/日志/图片仍只留统一任务目录，不入源码库。原20无新增trace候选仅准备中，未编译或执行，不记通过；不执行远端push、PR、tag或发布。
+- Owner要求的本地检查点已完成：43cfb07、22b9846、71fba84、f440d68。既有seek与已验UI源码已入库，原实测范围不变；私有引擎/脚本/日志/图片仍只留统一任务目录，不入源码库。无新增trace候选的当前结果以下述原件为准，不沿用准备阶段状态。未执行远端push、PR、tag或发布。
+
+## 无新增 trace 候选的当前阻断
+
+- 新私有 DLL `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB` /派生闭包 `7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587` 已实际单身份编译/重链自然0、无force、双空≥8；3535复用对象/实际库字节及246实际include已核，原OUT/SDK成员stat不变，不是全父源码新鲜重验。它仅恢复原compositor以去除新增trace，cache算法、原AOT8E68…0331A及原20动作区保持；没有生产安装或正式性能通过。
+- 首捕获在start前 `CAPTURE_SIZE_BOUND` 失败，26 raw、0动作，Dartready1592×904/DPR1而原生日志160×28；无同期iconic/placement/caller，不能归因Owner或DLL。原退出自然0/无force/双空8.0096秒，清理35材料未资格。
+- 被动状态观察后继先经自有未显示窗口真实API及错误birth红控验证；首次测试因亲和前置不足在子进程前拒绝，原件保留。后继只读PID/birth/Job/HWND、状态变化和三时钟，不恢复/激活/输入。第二次捕获8区块请求失败、0卡片，90秒原就绪门拒绝，551 raw、0动作；已保存四条状态均非iconic/foreground但不是连续历史。自然0/无force/双空8.0110/8.0123秒，清理30材料仍未资格，未建consumer。
+- 两次失败raw的build/raster/total超限分别2/13/17和1/22/35，577帧全保留；原20未开始，不是正式性能样本。既存原20读回另发现动作末1112帧与preQuit1120帧分母不同；计入尾部totalSpan超限14而非13。新读回经时钟/窗口/Quit计数的实际数据篡改拒绝，原动作700ms窗口不改。
+- 本次Flutter快照1990×1130/逻辑1592×904/DPR1.25/display65539，不等于前次DPR1/display65537。显示只读枚举和源码仅给准入边界，不追溯Owner移动、最小化或caller；Win32桌面矩形与Flutter尺寸不可混用。
+- 只对原匿名分类20/page1同公开GET经既有loopback路由单次请求，零重试/凭据/跳转、TLS不放宽：curl35、HTTP000、0字节握手失败。这不是此前八请求共同根因，也不采用更新服务502来解释区块。网络队友报告漏lead根而未读当前run，保持partial；root读取正确原件核结论，不把独审未覆盖标绿。
+- 根离线读回 `sourin-performance-20261120-round9/lead/ROUND9_FAILED_CAPTURE_SCOPE_READBACK_V1.json`，SHA `7D06222203B300EC2DD4CF61B9996FFBCFEF481B3D9E5A21CF369313D60A3C66`。读回通过只证明原件链一致，非采集/性能/生产资格；无第三次客户端、无新合格材料或消费，完整18+12继续active。路由内容恢复及原显示cohort的新只读准入证据缺失前，不延长超时/换内容/改DPR或重复启动挑成绩。
+- 统一round9任务目录实盘点约584.2MB，其中唯一plain引擎构建约298.9MB、两份不同失败native配置/运行及根验证约285.2MB；可用约78.29GiB。保留唯一可复用构建及失败原件，不删证据、不安装生产；未创建第三套运行包。

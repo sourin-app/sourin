@@ -1194,8 +1194,24 @@ readback observed-pair-review-v2.json now checks actual ready/quit/log reference
 still uses the root identity bridge and is not an independent full frame attribution or performance pass.
 Real GPU artificial-shader opaque/alpha pairs also match32768 bytes; changing candidate red tint on
 GPU produces1152 differing bytes and natural red1 before original-state green0. This is bounded pixel
-evidence, not full product/debug-label equivalence. No original sample is recollected. Owner requested
-local checkpoint commits before more work; no-trace original20 prep stays unbuilt/unrun.
+evidence, not full product/debug-label equivalence. Owner's local checkpoint commits are complete
+(43cfb07/22b9846/71fba84/f440d68). The no-added-trace private DLL is now
+`C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB`, derived closure
+`7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587`; one identity TU and
+link qualified 3535 reused objects/246 actual includes without SDK/OUT mutation, not fresh full-source.
+Both new capture attempts failed before start: first CAPTURE_SIZE_BOUND (26raw), then an observer-only
+successor failed the unchanged90-second Home readiness gate (8failed sections/0cards/551raw).
+Both naturally quit0/noForce/dualempty8s; cleanup35/30 materials remain unqualified, no consumer.
+The passive state observer passed a real hidden owned-window/birth-fault check; the successor saved
+4noniconic/nonforeground states, not continuous history or caller attribution. DPR/display snapshots
+changed1/65537 to1.25/65539. One exact anonymous category20 GET through the existing route failed
+curl35/TLS/HTTP000/0bytes without retries or credentials. Do not make a third launch, move/restore a
+window, extend readiness, swap content or claim performance. First obtain genuinely new route-content
+and original display/cohort admission evidence. Root failed-scope readback is round9/lead/
+ROUND9_FAILED_CAPTURE_SCOPE_READBACK_V1.json; all577raw and checker failures retained.
+All-raw budgets must use pre-Quit append-only data: the saved former20 result1112 vs preQuit1120
+changes totalSpan excess13 to14. Original20 body/700ms windows remain unchanged.
+Round9 artifacts total about584.2MB; available disk about78.29GiB. No third package or production install.
 
 The latest product source is compiled into Release AOT `58131BEB…CA9361E`, with all 3483 actual
 kernel inputs matched. Asset checks qualify reuse of 58 non-AOT files (including actual rebuilt

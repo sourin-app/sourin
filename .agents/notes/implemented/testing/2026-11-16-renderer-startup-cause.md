@@ -824,13 +824,19 @@ SHA256 `9554E764B8B945AC08FDD461F58434586C26525883D5BF69EBB75028F346F55D`。
 读回通过只证明这些原件绑定；生产源码、既验seek、Release ZIP及其它未验授权边界未改变。
 后续只在具体 owning input 变化或直接反证下重开，不重采该pair或重复已完成的fixture。
 
-### 第11轮正式性能准入边界
+### 当前GLPB关闭路径的全帧验收边界
 
-第11轮独立只读预审确认：当前没有真正移除 capture/consume observer 的新鲜 Profile AOT/DLL/plain 原 20 执行路径。R9 plain DLL 仅是 derived-object identity boundary；R10 capture/consume 是真实同包但带 observer 的诊断运行，严格预算仍分别超 7/156/301 与 8/150/263。故 formalPathCurrentlyAvailable=false、qualificationStatus=unknown—not run；不能把 formal unknown 写成性能 failed，也不能把诊断红结果抹掉。
+GLPB关闭的新原20样本已执行并独立复核：新AOT 85BCA990…DA7E9（17,154,952字节），source entry只剥离GLPB channel/回执，保留FrameTiming和五控制命令；旧AOT/引擎未改。初版删services整行导致rootBundle未定义，真实kernel自然exit1且无force；只补show rootBundle的fresh修订两阶段自然0/双空8.0043与8.0217秒，3485实际kernel输入匹配。namespace为goal-profile-formal-off-r11，compiledProbeRoot为独立任务根。
 
-正式重开必须改变 owning inputs：移除 observer/capture/consume 源接线，重新绑定 AOT、DLL、main、包、profile 和冻结输入；原 20 动作、700ms 窗口和 rawUs*60<=1000000 不变，全部冷帧、窗口外帧、窗口内帧及 Quit tail 保留。
+59文件新包相对第10轮capture仅换off EXE和新AOT，原DLL 09B0BCCB…926648、core、资产及主屏main按hash复用。native off编译/链接已有实际回执；此模式没有配置GLPB捕获/消费/统计，Dart无GLPB调用，但没有本次逐API动态跟踪，不输出“实际API调用次数0”。Python模块闭包首检正确暴露遗漏两个外部已绑定helper的匹配错误；新读侧把所有精确module名字纳入集合后仍执行严格name/path集合比较，真实额外未绑定模块负控拒绝，未重编或重打包。
 
-同轮 Top20、普通启动和历史 caller 审计均未改变全目标状态：Top20 identity chain false；ordinary startup blocked；historical caller unknown。
+一次性实际运行完成原15导航+1准备+4滚动：所有700ms窗口、450ms linear滚动保持。Home为主屏96DPI/DPR1、物理/逻辑1592×904、8区块154卡片；首显原生日志真实blocked=1，表明新任务HWND在首显前阻止了一次越主屏位置请求，不推断发起caller或历史原因。三条被动状态记录均非iconic/foreground，只证明所采样状态，不冒充连续窗口历史。18实际加载包映像匹配，原Quit自然exit0，无force/清理错误，准确HWND消失，Job双空8.0651/8.0664秒。
+
+动作末1076帧、pre-Quit与Quit计1096帧，追加20尾帧保留；冷20帧、窗内792帧、窗外284帧恰好覆盖1096。严格build/raster/total超限3/12/26，最大47640/704219/999204微秒，p95为985/4570/10584微秒。冷/窗内/窗外超限分别2/6/10、1/2/10、0/4/6；启动并非唯一失败范围，不删除任意帧。原始时钟方程、帧号唯一、动作顺序/成员、无丢Quit尾帧独立重算一致；时钟/700ms/Quit分母三种真实数据篡改均被拒绝。预算实测失败，已经不是“新GLPB-off路径未执行”；不重播此样本选成绩。
+
+root亲看Home和Settings两PNG：Home混合已解码图与灰占位，Settings可见；不宣称全部封面解码、全程像素等价或与旧capture/consume跨运行因果提速。当前匿名上游数据可能变化，卡片数量/几何一致不足以证明内容像素一致。当前只关闭额外GLPB观察，不是无探针Release；严格性能、生产采用、普通启动、Top20、真实外链、历史caller与完整18+12仍未通过。
+
+根回执 sourin-performance-20261120-round12/lead/ROOT_GLPB_OFF_ORIGINAL20_READBACK_V1.json，SHA256 B568F780D0DB5ADFBF16997F8432B86A5C02D22B88431AB2611552844964EBD6；精确源/包/原件链与失败均保留，未经远端发布。
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

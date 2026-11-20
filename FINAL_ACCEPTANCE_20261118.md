@@ -313,7 +313,7 @@ V30/V31 的失败和污染输入审计仍保留在 `.probe/`，不与 V32 混用
 
 - 第10轮先对同包core现成匿名文本接口做一次分类20/page1 GET：HTTP200、14记录/13非空封面，独立六根/命名空间、无账号或凭据读取，自然0/无force/双空8.0481秒；真实非HTTP scheme被拒绝。它是reqwest/rustls路径，不重播curl/Schannel，也不反推此前八区块共同根因。
 - 仅私有runner main加入编译宏与原合法非激活hook控制的首显前主屏准入；共享guard真隐窗红控自然1、绿控自然0且尺寸保留。初版误传新增环境hook被原AOT隔离拒绝、Quit未注册、owned强制清理，原件完整保留。修订删除新hook、保持AOT白名单，静态非法hook负控明确拒绝；main真实编译后只读纠正报告路径，不重编成功对象。
-- 同plain DLL C65C5AD5…773CB、闭包7FA1F59A…12587、原AOT8E68…0331A和修订main对象401239C3…6098：capture/consume各一次完成原15导航+1准备+4滚动，700ms窗口/450ms linear/原动作区逐字保持。两臂实见首显/ready为当前主屏、96DPI、1592×904/DPR1，8区块154卡片；各18加载映像匹配，准确HWND消失，原Quit自然0/无force，双空分别8.0463/8.0486、8.0282/8.0282秒。只记录采样窗口状态，不声称连续历史或历史caller。
+- 同plain DLL 09B0BCCB…926648、闭包7FA1F59A…12587、原AOT8E68…0331A和修订main对象401239C3…6098：capture/consume各一次完成原15导航+1准备+4滚动，700ms窗口/450ms linear/原动作区逐字保持。两臂实见首显/ready为当前主屏、96DPI、1592×904/DPR1，8区块154卡片；各18加载映像匹配，准确HWND消失，原Quit自然0/无force，双空分别8.0463/8.0486、8.0282/8.0282秒。只记录采样窗口状态，不声称连续历史或历史caller。
 - 捕获39描述符/38唯一blob/506424字节，manifest `3156F44CCCA7D1E17515ED90C7573E0B398716FDBFB3692C63F2E0452EB7EB18`，真实Finish及原decoder重开后才编消费配置。消费者base59+材料39=98件，首预检固定59误拒发生在GUI前；读侧修正后缺材料/多成员负控均拒绝，未重采或重编AOT。原件与只读副本39文件消费后逐项同hash。
 - 消费真实41load、39return/binary/matched/driver accepted、2reject、0fallback/reentrant，session nonce8119367108902853076。不写成41全命中，不从总数回溯拒绝原因，也不改helper静态false为资格绿。root实际counter/session/material链及38blob/key/长度/格式已读回。
 - capture动作末812/preQuit830（18尾帧），consume动作末908/preQuit925（17尾帧），冷/窗内/窗外全部计入；Quit计数等于preQuit，不声明Quit后到exit逐帧完整。原整数判据下build/raster/total超限capture **7/156/301**，consume **8/150/263**；consumer最大52550/372920/690855μs，p95为4572/38033/82312μs，冷启动115帧和窗外199帧保留。**原20运行完成，但性能明确未通过**。
@@ -330,8 +330,22 @@ V30/V31 的失败和污染输入审计仍保留在 `.probe/`，不与 V32 混用
 
 - **历史最小化事件仍未归因**。原件直接显示目标原生最小化消息链，但没有共同事件时钟或 caller 身份；源码可达路径不是某次历史调用的动态见证。接收方修改过的 WM_WINDOWPOSCHANGING/WINDOWPOS 几何和 flags 不能反推出发起 caller。V4 手动最小化只限该次确认运行；callerAttributed=false、historicalCauseResolved=false。
 
-- **正式严格性能路径当前不可用、未执行**。第 11 轮预审结论是 formalPathCurrentlyAvailable=false、qualificationStatus=unknown—not run。第 9 轮 plain DLL build 只达到 derived-object identity boundary；第 10 轮 capture/consume 带 observer，不能作为无观测正式路径。不能把 formal unknown 改写成正式性能失败，也不能升格为 pass。重开必须移除 capture/consume observer 的 owning source inputs，绑定新的 Profile AOT、DLL、main、包和冻结清单，在真正无 observer 的 native/plain Profile 路径运行未改变的原 20，保留 cold、in-window、outside-window 与 Quit tail 全 raw，再按严格整数式逐帧验收。
+- **新GLPB关闭路径现已实测但严格预算失败**。第11轮停点的formalPathCurrentlyAvailable=false只属当时尚未接线。第12轮已绑定新AOT85BCA990…DA7E9、原字节DLL/main、off EXE及新59文件包，实际完成原20；1096 pre-Quit raw含20追加尾帧，build/raster/total超限3/12/26，最大47640/704219/999204μs、p95为985/4570/10584μs。自然0、无force、Job双空8.0651/8.0664秒。保留原FrameTiming测量并关闭额外GLPB调用，不是“完全无observer”或普通Release。独立原件重算及三类篡改拒绝，性能仍未通过，不重播挑成绩。
 
 - **第 10 轮有观测诊断运行的预算失败仍独立有效**：capture build/raster/total 超限 7/156/301，consume 超限 8/150/263，所有原帧保留；这些红结果不能被 formal unknown 覆盖，也不能改写成无观测正式结果。
 
-汇总回执为 sourin-performance-20261120-round11/ROUND11_ACCEPTANCE_SCOPE_RECEIPTS_V1.json。原目标保持 active；本轮没有访问真实数据库或凭据，没有网络、GUI、编译或应用运行，也没有重跑 seek、Release、capture 或 consume；完整同产品包和完整 18+12 交付仍未验收。
+第11轮只读审计的Top20、普通启动、外链和历史caller结论保留原范围；新模式实际运行与准确预算见以下原件。
+
+## 当前GLPB关闭样本的原件绑定
+
+GLPB关闭的新原20样本已执行并独立复核：新AOT 85BCA990…DA7E9（17,154,952字节），source entry只剥离GLPB channel/回执，保留FrameTiming和五控制命令；旧AOT/引擎未改。初版删services整行导致rootBundle未定义，真实kernel自然exit1且无force；只补show rootBundle的fresh修订两阶段自然0/双空8.0043与8.0217秒，3485实际kernel输入匹配。namespace为goal-profile-formal-off-r11，compiledProbeRoot为独立任务根。
+
+59文件新包相对第10轮capture仅换off EXE和新AOT，原DLL 09B0BCCB…926648、core、资产及主屏main按hash复用。native off编译/链接已有实际回执；此模式没有配置GLPB捕获/消费/统计，Dart无GLPB调用，但没有本次逐API动态跟踪，不输出“实际API调用次数0”。Python模块闭包首检正确暴露遗漏两个外部已绑定helper的匹配错误；新读侧把所有精确module名字纳入集合后仍执行严格name/path集合比较，真实额外未绑定模块负控拒绝，未重编或重打包。
+
+一次性实际运行完成原15导航+1准备+4滚动：所有700ms窗口、450ms linear滚动保持。Home为主屏96DPI/DPR1、物理/逻辑1592×904、8区块154卡片；首显原生日志真实blocked=1，表明新任务HWND在首显前阻止了一次越主屏位置请求，不推断发起caller或历史原因。三条被动状态记录均非iconic/foreground，只证明所采样状态，不冒充连续窗口历史。18实际加载包映像匹配，原Quit自然exit0，无force/清理错误，准确HWND消失，Job双空8.0651/8.0664秒。
+
+动作末1076帧、pre-Quit与Quit计1096帧，追加20尾帧保留；冷20帧、窗内792帧、窗外284帧恰好覆盖1096。严格build/raster/total超限3/12/26，最大47640/704219/999204微秒，p95为985/4570/10584微秒。冷/窗内/窗外超限分别2/6/10、1/2/10、0/4/6；启动并非唯一失败范围，不删除任意帧。原始时钟方程、帧号唯一、动作顺序/成员、无丢Quit尾帧独立重算一致；时钟/700ms/Quit分母三种真实数据篡改均被拒绝。预算实测失败，已经不是“新GLPB-off路径未执行”；不重播此样本选成绩。
+
+root亲看Home和Settings两PNG：Home混合已解码图与灰占位，Settings可见；不宣称全部封面解码、全程像素等价或与旧capture/consume跨运行因果提速。当前匿名上游数据可能变化，卡片数量/几何一致不足以证明内容像素一致。当前只关闭额外GLPB观察，不是无探针Release；严格性能、生产采用、普通启动、Top20、真实外链、历史caller与完整18+12仍未通过。
+
+根回执 sourin-performance-20261120-round12/lead/ROOT_GLPB_OFF_ORIGINAL20_READBACK_V1.json，SHA256 B568F780D0DB5ADFBF16997F8432B86A5C02D22B88431AB2611552844964EBD6；精确源/包/原件链与失败均保留，未经远端发布。

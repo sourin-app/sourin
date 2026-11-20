@@ -103,3 +103,17 @@ closedDraw，frame70及其后总40个timing-only继续保留；ready之后新增
 V34/V36/V41 的自然退出和解析通过不代表严格性能通过；原 18+12 的性能目标仍未验收。
 只有采集接口、trace schema、chunk 协议、帧号语义、解析器或对应输入改变时才重开影响面；
 没有输入变化不重复这些已完成诊断。
+
+### 同一原包的第17轮默认Ring新采样
+
+第16轮同一98文件消费者包、新原子Quit AOTA453…75B80与纯DLL8A05…C80569不变，仅新task observer在全新隔离profile读默认Ring：未设置engine switches/recorded streams、未clear、不stream、不调用原20。首次root命令的authority模板未替换，在创建app/run/profile前拒绝，失败原件保留；只纠正argv摘要后的实际应用仅一次。PID16692实际原Quit自然exit0/noForce/Job双空8.010688/8.0122255秒，HWND消失；root亲看Home真实海报，17实际加载映像及39物料原/副本逐hash核对，包未复制/修改。
+
+原Ring23340事件，4095同tick组及60个精确重复extra均原样保留，默认streams为Dart/Embedder/GC/Microtask。ready原始114帧、pre-Quit/同响应原始124帧、0动作窗、complete=false/measurementCompleteBeforeQuit=false不伪装complete；完整原件仅声明同步Quit边界，非进程寿命。Ring覆盖115个完整DoDraw，唯一frame147在packet尾只有开始、rasterFinish在packet外；148–155仅FrameTiming，ready114均有完整trace。3个早期E缺B、2个worker尾B及3个raster尾B均明报，不补结束或零时长。
+
+根复用成熟R6帧号核对与R7有界尾draw规则/coverage-delta并集，另一执行体用time+原ordinal子属配对及sorted-interval merge；115帧的1840项整数对比全一致。新原件四项错PID/错frame/保时钟方程但搬raster/删早期DoDraw B均在指定门真实拒绝，既非套旧报告，也未改新app结果。文件/时钟覆盖另有7个真实子进程负控及新原件正例；源码RPC调用另核禁止start/setflags和包身份错配。
+
+本次frame2 raster287836微秒，shader_compile并集148806（其中PersistentCacheLoad39030、cache_hit76688），compositor present115077；frame3 raster316914，shader254162（load36179/hit178337），present43550；frame45 raster122750，shader97398（load58336，其中单load53517/hit28512），present21243。嵌套值不相加。35个program/load/hit闭区间与同进程35次driver accepted计数呼应，Ring无cache_miss或driver_link_program名称；这是当前binary命中路径仍有大量工作的证据，不是“零driver工作”。
+
+frame3的buildFinish→rasterStart181247微秒，其中181227与前序同raster线程Draw重叠；frame14对应312961/312933。它定位了排队等待，不把totalSpan等同单帧独占计算。cache_hit包含真实ProgramBinary、LinkStatus、observer及后处理，现Ring没有单独ProgramBinary/CheckLinkStatus/DXGI/GPU子段，不能把该包络移作任何一个API独占或VSync根因，更不能把本次同号帧耗时搬给第16轮原20。UI细粒度或特定控件归因仍以实际存在scope为限，不补mock。
+
+根双算法回执 sourin-performance-20261120-round17/root/ROOT_TWO_ALGORITHM_CROSSCHECK_V1.json，SHA256 605EBB138B64F5FC11406243AF726C158F4B2D76D53FF02C568FF8E03A294A0F。同包时序实验只关闭此批Ring的有限归因与覆盖校验；它不是新的原20预算样本、普通未修改启动或像素/性能验收，第16轮1234完整帧及1/11/25超限仍原样保留。

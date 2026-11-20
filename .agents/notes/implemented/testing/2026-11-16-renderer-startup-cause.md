@@ -848,3 +848,11 @@ Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this
 decision if renderer, driver, shader assets, source, core or workload changes.
 No product optimization is accepted; raw sources, traces and receipts stay
 in the task probe directory.
+
+### 第17轮同包默认Ring缩小当前binary命中包络
+
+新输入只为观察：复用第16轮98文件消费者包、8A05…DLL/A453…AOT和新39物料（均不改/不复制），只启动一次全新隔离profile读默认Ring/flags/前后VM时钟，未start原20、未开engine switches或修改streams。实测PID16692自然Quit0/noForce/双空8.010688/8.0122255秒；0动作窗，ready/末Quit的complete均false且末measurementCompleteBeforeQuit=false，124原始帧完整持久化，不能改成原20通过。root亲看Home真实海报，17加载映像与39原材料/副本hash保持。
+
+23340原事件用两种保重复次数/原ordinal的算法独立绑定115完整Draw，1840整数对比一致；ready114覆盖，147为唯一采样尾open draw，148–155仅timing，缺口不补。frame2 raster287836中program148806/present115077；frame3 raster316914中program254162/present43550，program内load36179/hit178337；frame45 raster122750中load58336（单load53517）/hit28512。35个真实program/load/hit与35driver accepted呼应，无source miss/link trace；binary命中仍有大包络，不证明ProgramBinary单独耗时、DXGI、GPU或VSync。frame3及14的排队等待分别几乎被前一raster Draw覆盖，不能认作UI独占慢。精确配对/真负控由[帧号归因](2026-11-19-frame-number-trace-attribution.md)持有。
+
+下一输入的私有trace草案只在ReadLive/ABI/Caps/D3D整函数以及实际ProgramBinary/LinkStatus/resource resolution添加scope，保原查询、所有返回与时序调用；移去trace反向字节等于父源，SDK未修改。但该草案未编译/链接/运行、未采用，不能靠源码反向相等授予新DLL或实际子阶段资格；原CRLF锚点错误的未执行前驱保留。先针对该新诊断输入取得更细真实区间，不据大包络缓存driver/caps或删必要调用。第16轮严格预算1/11/25仍red，本次无原20/seek/Release重测或性能通过。

@@ -373,3 +373,13 @@ root亲看Home和Settings两PNG：Home混合已解码图与灰占位，Settings�
 独立原decoder拒旧AOT物料，新39descriptor/38payload/506424字节身份绑定新AOT/同8A05DLL，consumer39load/39driver accepted/0reject/0fallback，消费后39物料文件及副本hash保持。root亲见四截图，Home海报状态不等价、Settings同hash；加载18/17映像逐hash核验。完整性仅截至Finish后同步Quit响应，不涵盖响应之后的析构帧，不据此宣布普通未修改启动/全程像素/性能或完整18+12通过；旧R15缺5raw失败原件保留。
 
 [协议决定与验证边界](.agents/notes/implemented/testing/2026-11-20-atomic-quit-raw-packet.md)。根回执sourin-performance-20261120-round16/ROOT_ATOMIC_QUIT_PAIR_READBACK_V1.json，SHA256 2B29ACFE7A0FDCC145092B2129674E0B30582CDD3B246EDDBFB93B36E1334C92。下一步只基于25个已冻结超限帧的真实时钟和动作标签选择新的性能归因输入，不重播此次样本、已验seek或稳定Release。
+
+## 同包默认Ring仅启动诊断：命中包络已定位，非原20性能验收
+
+第17轮复用原98文件消费者包、A453…AOT/8A05…DLL及只读39物料不变，在新隔离profile只启动一次读默认Ring/flags/前后VM clock，无原20、无engine switch/stream/clear变更。原Quit自然0/noForce/双空8.010688/8.0122255秒，准确HWND消失；ready114/pre-Quit及Quit124raw、0动作窗、complete=false和measurementCompleteBeforeQuit=false保持。root亲看Home真实海报，17加载包映像、39物料原/副本hash保持；这不是普通未修改启动或最终同产品整包验收。
+
+23340事件全部保留重复次数与原ordinal，两种独立算法对115完整Draw的1840项整数核对一致；ready114覆盖，147尾draw右删失，148–155仅timing。它们的raw全部保留，只缺完整trace；每个缺边显报，不拼旧事件或补E。真实新原件错PID/帧号/栅格钟/删关键B均在指定门拒绝，文件覆盖另有7个真实负控；整Ring/进程寿命覆盖未通过且未宣称。
+
+本次frame2 raster287836us，program并集148806/present115077；frame3 raster316914us，program254162（load36179/hit178337）/present43550；frame45 raster122750us，load58336（单load53517）/hit28512。这些嵌套区间不相加。35个program/load/hit与35driver accepted/0fallback/0reject同进程计数相符，无cache_miss或source driver_link_program事件；说明命中仍保留重工作，而非ProgramBinary/DXGI/GPU或VSync独占根因。本次frame3和14长total的大段等待与之前raster Draw重叠，不凭total指责UI。不能把这些新run同号帧搬给第16轮25个原20超限帧。
+
+[精确覆盖与归因](.agents/notes/implemented/testing/2026-11-19-frame-number-trace-attribution.md)持有原件与反例，双算法回执sourin-performance-20261120-round17/root/ROOT_TWO_ALGORITHM_CROSSCHECK_V1.json，SHA256 605EBB138B64F5FC11406243AF726C158F4B2D76D53FF02C568FF8E03A294A0F。下一私有两角色trace输入只细分ReadLive/D3D/ABI/Caps及ProgramBinary/LinkStatus/资源查询；源码逆变换精确还原父源，但未编译/未运行/未采用，新的DLL身份必须重新capture材料，不许重用旧物料。第16轮严格预算1/11/25和全部其它未验收项保持。

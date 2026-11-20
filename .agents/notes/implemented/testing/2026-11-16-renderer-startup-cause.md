@@ -824,6 +824,14 @@ SHA256 `9554E764B8B945AC08FDD461F58434586C26525883D5BF69EBB75028F346F55D`。
 读回通过只证明这些原件绑定；生产源码、既验seek、Release ZIP及其它未验授权边界未改变。
 后续只在具体 owning input 变化或直接反证下重开，不重采该pair或重复已完成的fixture。
 
+### 第11轮正式性能准入边界
+
+第11轮独立只读预审确认：当前没有真正移除 capture/consume observer 的新鲜 Profile AOT/DLL/plain 原 20 执行路径。R9 plain DLL 仅是 derived-object identity boundary；R10 capture/consume 是真实同包但带 observer 的诊断运行，严格预算仍分别超 7/156/301 与 8/150/263。故 formalPathCurrentlyAvailable=false、qualificationStatus=unknown—not run；不能把 formal unknown 写成性能 failed，也不能把诊断红结果抹掉。
+
+正式重开必须改变 owning inputs：移除 observer/capture/consume 源接线，重新绑定 AOT、DLL、main、包、profile 和冻结输入；原 20 动作、700ms 窗口和 rawUs*60<=1000000 不变，全部冷帧、窗口外帧、窗口内帧及 Quit tail 保留。
+
+同轮 Top20、普通启动和历史 caller 审计均未改变全目标状态：Top20 identity chain false；ordinary startup blocked；historical caller unknown。
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

@@ -319,3 +319,19 @@ V30/V31 的失败和污染输入审计仍保留在 `.probe/`，不与 V32 混用
 - capture动作末812/preQuit830（18尾帧），consume动作末908/preQuit925（17尾帧），冷/窗内/窗外全部计入；Quit计数等于preQuit，不声明Quit后到exit逐帧完整。原整数判据下build/raster/total超限capture **7/156/301**，consume **8/150/263**；consumer最大52550/372920/690855μs，p95为4572/38033/82312μs，冷启动115帧和窗外199帧保留。**原20运行完成，但性能明确未通过**。
 - root亲看四张PNG：捕获首页全占位，消费者首页可见海报；最终设置图同hash，不能宣称全程像素等价或跨运行因果提速。有限独审只核capture830raw/39材料及38blob，环境审查为partial，不能转作consumer独审成功。root离线另核两臂完整原件；时钟、700ms窗口、Quit分母篡改及“隐藏拒绝”/错误payload hash负控都拒绝。
 - 根回执 `sourin-performance-20261120-round10/lead/ROUND10_PRIMARY_FULL20_PAIR_ROOT_READBACK_V1.json`，SHA `9554E764B8B945AC08FDD461F58434586C26525883D5BF69EBB75028F346F55D`。仅读回通过，不生产采用、不正式发布、不推送。已验seek、生产源码和Release ZIP保持；原18+12继续active，普通启动、Top20精确封面、A8真实外链、历史caller和完整交付不因本轮局部通过而升级。
+
+## Round 11 — Remaining gates and formal performance boundary
+
+第11轮新增四份互斥范围的只读审计；回执哈希和范围见 sourin-performance-20261120-round11/。它们是边界复核，不创建新的产品或动态验收。
+
+- **Top 20 封面身份链仍未建立**。只核对点名脱敏回执、隔离投影文件字节 hash 和源码 hash，没有打开 SQLite 或读取真实数据库。精确 share/native/origin child → canonical response → poster row → 实际 poster bytes 链条均为 false；既有投影为 donor=0、cover change=0、空封面 2→2。origin child 明确 disabled，aggregate child 选择数为 0；不能启用 child、按标题或 57 项猜 poster，也不能把投影 hash 当当前真实库状态。top20Resolved=false。
+
+- **普通未修改启动与退出仍阻塞、未验收**。一次被动 session metadata 只看到 probe 所在 session 1 为 Console/Active，foreground owner 也在 session 1；没有独立活动交互会话。只读 metadata 不能推导专属会话或 VM 已获授权，ordinaryStartupAccepted=false、ordinaryNaturalQuitAccepted=false；task NO_ACTIVATE 阳性不能替代普通默认 focus 模式。重开需要 Owner 明确指定并授权已运行的干净专属交互会话或 VM，再绑定当前 Release 和隔离数据根。
+
+- **历史最小化事件仍未归因**。原件直接显示目标原生最小化消息链，但没有共同事件时钟或 caller 身份；源码可达路径不是某次历史调用的动态见证。接收方修改过的 WM_WINDOWPOSCHANGING/WINDOWPOS 几何和 flags 不能反推出发起 caller。V4 手动最小化只限该次确认运行；callerAttributed=false、historicalCauseResolved=false。
+
+- **正式严格性能路径当前不可用、未执行**。第 11 轮预审结论是 formalPathCurrentlyAvailable=false、qualificationStatus=unknown—not run。第 9 轮 plain DLL build 只达到 derived-object identity boundary；第 10 轮 capture/consume 带 observer，不能作为无观测正式路径。不能把 formal unknown 改写成正式性能失败，也不能升格为 pass。重开必须移除 capture/consume observer 的 owning source inputs，绑定新的 Profile AOT、DLL、main、包和冻结清单，在真正无 observer 的 native/plain Profile 路径运行未改变的原 20，保留 cold、in-window、outside-window 与 Quit tail 全 raw，再按严格整数式逐帧验收。
+
+- **第 10 轮有观测诊断运行的预算失败仍独立有效**：capture build/raster/total 超限 7/156/301，consume 超限 8/150/263，所有原帧保留；这些红结果不能被 formal unknown 覆盖，也不能改写成无观测正式结果。
+
+汇总回执为 sourin-performance-20261120-round11/ROUND11_ACCEPTANCE_SCOPE_RECEIPTS_V1.json。原目标保持 active；本轮没有访问真实数据库或凭据，没有网络、GUI、编译或应用运行，也没有重跑 seek、Release、capture 或 consume；完整同产品包和完整 18+12 交付仍未验收。

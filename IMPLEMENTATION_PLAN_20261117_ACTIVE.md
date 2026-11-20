@@ -1239,3 +1239,10 @@ Do not repeatedly poll/re-audit when a concrete source or executable boundary ca
 Ordinary unmodified startup/exit, Top 20 exact cover, real-account external-chain acceptance,
 historical minimize attribution and formal full-goal delivery remain open. The latest-source local
 package binding is now qualified only for the explicit synthetic/noactivate scope above.
+
+### 2026-11-20 — Round 11 remaining gates and formal performance boundary
+
+The four bounded read-only reviews in round11 are now root-read and hash-bound.
+Top20 exact share to canonical response to poster bytes remains false: donor=0, empty cover 2→2, disabled child remains disabled, and current real DB/config state is unknown. Ordinary unmodified startup is BLOCKED_NOT_ACCEPTED because no separate authorized interactive session or VM was supplied; a passive session-1 metadata sample is not authorization and task NO_ACTIVATE cannot substitute. Historical native minimize events are directly observed, but initiating caller and historical cause remain unknown.
+Formal strict performance is unknown—not run: no current untraced observer-free Profile/AOT/DLL path is available. The round10 capture/consume pair remains a diagnostic all-raw failure (capture 7/156/301, consume 8/150/263) and must not be relabeled as the formal untraced result. The original18+12 goal remains active; do not rerun seek, old capture/consume, or any unchanged successful range.
+Receipts: sourin-performance-20261120-round11/top20-review/task-70-top20-exact-review-v1.json; ordinary-startup-review/ORDINARY_STARTUP_READ_ONLY_REVIEW_V1.json; minimize-caller-review/MINIMIZE_CALLER_BOUNDARY_REVIEW_V1.json; perf-formal-review/ROUND11_FORMAL_PERFORMANCE_PREAUDIT_V1.json.

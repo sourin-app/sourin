@@ -195,7 +195,9 @@ class _PosterCardState extends State<PosterCard> {
   void _imageLoaded(String? cover, int revision) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || revision != _coverRevision || cover != widget.cover ||
-          _loaded || _failed) return;
+          _loaded || _failed) {
+        return;
+      }
       setState(() => _loaded = true);
     });
   }
@@ -220,6 +222,88 @@ class _PosterCardState extends State<PosterCard> {
         }
       });
     });
+  }
+
+  // Reuse the exact Image widget across unrelated card-state updates. Image
+  // keeps observing its own inherited dependencies; only decode sizing here
+  // depends on the current card width and device pixel ratio.
+  Image? _coverImage;
+  ({String url, int revision, double width, double dpr})? _coverImageKey;
+
+  Image _coverFor(String cover, int coverRevision, double width) {
+    final key = (
+      url: cover,
+      revision: coverRevision,
+      width: width,
+      dpr: MediaQuery.devicePixelRatioOf(context),
+    );
+    if (_coverImageKey == key) return _coverImage!;
+    final image = coverImage(
+      context,
+      url: cover,
+      // 卡片宽度已知（`w` 就是本卡片的逻辑宽）⇒ 不需要 LayoutBuilder
+      layoutWidth: width,
+      /*
+       * ★★★ 2026-10-01：把**目标框高度**与**源图宽高比**
+       * 一起传下去 —— 修 Owner 报的「外部视频源封面糊」
+       *
+       * # 为什么需要高度
+       * 卡片是 **2:3 竖版**（`AppMetrics.posterAspect`），
+       * 而 某视频站封面是 **16:9 横版**（实测 API 返回 2560×1440）。
+       * `BoxFit.cover` 在"源图比目标框更宽"时**按高度放大**：
+       * ```text
+       * 目标 148×223、源 2560×1440
+       *   scaleH = 223/1440 = 0.1549  ← cover 取这个
+       *   ⇒ 实际绘制 396×223
+       * ⇒ 需要解码 **396** px 宽，而只给 layoutWidth 只有 148
+       *   ⇒ 水平放大 2.68 倍 ⇒ **糊**
+       * ```
+       * ⇒ 必须把高度告诉 `coverImage`，它才能反推 396。
+       *
+       * ⚠️ 高度**由宽高比算**（`w / posterAspect`）而不是
+       *    另取一个常量：`AspectRatio` 用的就是同一个
+       *    `posterAspect`（`:200`）⇒ 两者**同源**，
+       *    改了比例不会出现"布局按新比例、解码按旧比例"的错位。
+       */
+      layoutHeight: width / AppMetrics.posterAspect,
+      fit: BoxFit.cover,
+      /*
+       * `frameBuilder` 实现「首次加载才淡入」：
+       * `wasSynchronouslyLoaded` 为 true 说明图已在缓存里
+       * → 直接显示（不做淡入动画）。
+       *
+       * 这正是原版 `isImageReady()` 判定的等价物 ——
+       * 原版要自己维护一个"已就绪 URL 集合"，
+       * Flutter 的 ImageCache 直接给了这个信息。
+       */
+      frameBuilder: (context, child, frame, wasSync) {
+        if (!_loaded && (wasSync || frame != null)) {
+          _imageLoaded(cover, coverRevision);
+        }
+        if (wasSync) return child;
+        return AnimatedOpacity(
+          opacity: frame == null ? 0 : 1,
+          duration: Motion.base,
+          curve: Motion.easeOut,
+          child: child,
+        );
+      },
+      loadingBuilder: (context, child, progress) {
+        // A null chunk event also occurs before the first
+        // frame. Only frameBuilder can confirm decoded pixels.
+        if (progress == null) {
+          return child;
+        }
+        return const SizedBox.shrink();
+      },
+      errorBuilder: (context, error, stack) {
+        // 加载失败 → 记下来，显示中性占位
+        _imageFailed(cover, coverRevision);
+        return const SizedBox.shrink();
+      },
+    );
+    _coverImageKey = key;
+    return _coverImage = image;
   }
 
   @override
@@ -406,70 +490,7 @@ class _PosterCardState extends State<PosterCard> {
                           if (widget.cover != null &&
                               widget.cover!.isNotEmpty &&
                               !_failed)
-                            coverImage(
-                              context,
-                              url: widget.cover!,
-                              // 卡片宽度已知（`w` 就是本卡片的逻辑宽）⇒ 不需要 LayoutBuilder
-                              layoutWidth: w,
-                              /*
-                               * ★★★ 2026-10-01：把**目标框高度**与**源图宽高比**
-                               * 一起传下去 —— 修 Owner 报的「外部视频源封面糊」
-                               *
-                               * # 为什么需要高度
-                               * 卡片是 **2:3 竖版**（`AppMetrics.posterAspect`），
-                               * 而 某视频站封面是 **16:9 横版**（实测 API 返回 2560×1440）。
-                               * `BoxFit.cover` 在"源图比目标框更宽"时**按高度放大**：
-                               * ```text
-                               * 目标 148×223、源 2560×1440
-                               *   scaleH = 223/1440 = 0.1549  ← cover 取这个
-                               *   ⇒ 实际绘制 396×223
-                               * ⇒ 需要解码 **396** px 宽，而只给 layoutWidth 只有 148
-                               *   ⇒ 水平放大 2.68 倍 ⇒ **糊**
-                               * ```
-                               * ⇒ 必须把高度告诉 `coverImage`，它才能反推 396。
-                               *
-                               * ⚠️ 高度**由宽高比算**（`w / posterAspect`）而不是
-                               *    另取一个常量：`AspectRatio` 用的就是同一个
-                               *    `posterAspect`（`:200`）⇒ 两者**同源**，
-                               *    改了比例不会出现"布局按新比例、解码按旧比例"的错位。
-                               */
-                              layoutHeight: w / AppMetrics.posterAspect,
-                              fit: BoxFit.cover,
-                              /*
-                               * `frameBuilder` 实现「首次加载才淡入」：
-                               * `wasSynchronouslyLoaded` 为 true 说明图已在缓存里
-                               * → 直接显示（不做淡入动画）。
-                               *
-                               * 这正是原版 `isImageReady()` 判定的等价物 ——
-                               * 原版要自己维护一个"已就绪 URL 集合"，
-                               * Flutter 的 ImageCache 直接给了这个信息。
-                               */
-                              frameBuilder: (context, child, frame, wasSync) {
-                                if (!_loaded && (wasSync || frame != null)) {
-                                  _imageLoaded(cover, coverRevision);
-                                }
-                                if (wasSync) return child;
-                                return AnimatedOpacity(
-                                  opacity: frame == null ? 0 : 1,
-                                  duration: Motion.base,
-                                  curve: Motion.easeOut,
-                                  child: child,
-                                );
-                              },
-                              loadingBuilder: (context, child, progress) {
-                                // A null chunk event also occurs before the first
-                                // frame. Only frameBuilder can confirm decoded pixels.
-                                if (progress == null) {
-                                  return child;
-                                }
-                                return const SizedBox.shrink();
-                              },
-                              errorBuilder: (context, error, stack) {
-                                // 加载失败 → 记下来，显示中性占位
-                                _imageFailed(cover, coverRevision);
-                                return const SizedBox.shrink();
-                              },
-                            ),
+                            _coverFor(cover!, coverRevision, w),
 
                           // 旧 `? '?'` 与大号首字都不再作为封面内容。
                           // 标题留在海报下方，占位只用不参与朗读的小图标。

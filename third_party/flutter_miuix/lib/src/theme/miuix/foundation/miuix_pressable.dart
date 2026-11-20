@@ -126,12 +126,19 @@ class _MiuixPressableState extends State<MiuixPressable>
   // 遮罩 alpha 的 spring 动画。
   late final AnimationController _overlayController;
 
-  // sink 缩放的 spring 动画。
-  late final AnimationController _sinkController;
+  // Most pressables only use the overlay. Allocate optional feedback lazily,
+  // retaining its controller if feedbackType changes and later switches back.
+  AnimationController? _sink;
+  AnimationController get _sinkController =>
+      _sink ??= (AnimationController.unbounded(vsync: this)..value = 1.0);
 
   // tilt 的 spring 动画。
-  late final AnimationController _tiltXController;
-  late final AnimationController _tiltYController;
+  AnimationController? _tiltX;
+  AnimationController? _tiltY;
+  AnimationController get _tiltXController =>
+      _tiltX ??= AnimationController.unbounded(vsync: this);
+  AnimationController get _tiltYController =>
+      _tiltY ??= AnimationController.unbounded(vsync: this);
   double _tiltXTarget = 0.0;
   double _tiltYTarget = 0.0;
   Alignment _tiltOrigin = Alignment.center;
@@ -140,18 +147,14 @@ class _MiuixPressableState extends State<MiuixPressable>
   void initState() {
     super.initState();
     _overlayController = AnimationController.unbounded(vsync: this);
-    _sinkController = AnimationController.unbounded(vsync: this)
-      ..value = 1.0;
-    _tiltXController = AnimationController.unbounded(vsync: this);
-    _tiltYController = AnimationController.unbounded(vsync: this);
   }
 
   @override
   void dispose() {
     _overlayController.dispose();
-    _sinkController.dispose();
-    _tiltXController.dispose();
-    _tiltYController.dispose();
+    _sink?.dispose();
+    _tiltX?.dispose();
+    _tiltY?.dispose();
     super.dispose();
   }
 

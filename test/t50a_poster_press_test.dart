@@ -782,40 +782,45 @@ void main() {
       );
     });
 
-    test('D2 ★ task-74 的 `coverImage(` 接线必须存活', () {
+    test('D2 ★ task-74 的封面解码尺寸接线必须存活', () {
       final code = _src(kPosterSrc);
 
       expect(
         code.contains('Image.network('),
         isFalse,
-        reason:
-            '★ task-74：`PosterCard` 不能再直接 `Image.network`'
-            '（那样 `cacheWidth` 就丢了，海报会按源分辨率解码）',
+        reason: '★ task-74：海报必须通过 coverImage 按目标尺寸解码',
       );
 
-      final lines = code.split('\n');
-      final i = lines.indexWhere((l) => l.trim() == 'coverImage(');
+      final helper = RegExp(
+        r'^[ \t]*Image\s+_coverFor\s*\(\s*String\s+cover\s*,\s*'
+        r'int\s+coverRevision\s*,\s*double\s+width\s*,?\s*\)\s*\{'
+        r'([\s\S]*?)^  \}',
+        multiLine: true,
+      ).firstMatch(code);
+      expect(helper, isNotNull, reason: '封面组件由 _coverFor 提供');
       expect(
-        i >= 0,
-        isTrue,
-        reason: '★★ task-74 判据依赖这处接线存活：`coverImage(` 必须独占一行',
+        helper!.group(1),
+        matches(RegExp(
+          r'\bcoverImage\s*\(\s*context\s*,\s*url:\s*cover\s*,\s*'
+          r'layoutWidth:\s*width\s*,\s*'
+          r'layoutHeight:\s*width\s*/\s*AppMetrics\.posterAspect\s*,\s*'
+          r'fit:\s*BoxFit\.cover\s*,',
+        )),
+        reason: '解码尺寸必须来自本卡片的布局宽高及 BoxFit.cover',
       );
-      final window = lines
-          .sublist(i, (i + 5).clamp(0, lines.length))
-          .join('\n');
-      _rec('[T50A] D2 coverImage( 在第 ${i + 1} 行（剥离注释后的行号）');
+
+      final build = RegExp(
+        r'^[ \t]*Widget\s+build\s*\(\s*BuildContext\s+context\s*\)\s*\{'
+        r'([\s\S]*?)^  \}',
+        multiLine: true,
+      ).firstMatch(code);
+      expect(build, isNotNull, reason: '需要检查卡片实际的 build 路径');
       expect(
-        window.contains('url: widget.cover!,'),
-        isTrue,
-        reason:
-            '★★ `coverImage(` 之后 5 行内必须出现 `url: widget.cover!,`；'
-            '实测窗口 = ${window.replaceAll('\n', ' ⏎ ')}',
+        build!.group(1),
+        matches(RegExp(r'\b_coverFor\s*\(\s*cover!\s*,\s*coverRevision\s*,\s*w\s*\)')),
+        reason: 'build 必须把实际封面 URL、版本及卡片布局宽度传给 _coverFor',
       );
-      expect(
-        window.contains('layoutWidth:'),
-        isTrue,
-        reason: '★ 解码宽度必须继续由布局宽度推导（task-74 的机制本身）',
-      );
+      _rec('[T50A] D2 build → _coverFor → coverImage，使用海报的布局宽高');
     });
 
     test('D3 ★ 不 import `package:flutter/material.dart`（仓库硬纪律）', () {

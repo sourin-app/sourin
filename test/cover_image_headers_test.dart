@@ -90,6 +90,11 @@ void main() {
     const url = 'https://img3.doubanio.com/key.jpg';
     expect(provider(url), provider(url));
     expect(provider(url).hashCode, provider(url).hashCode);
+    final cached = provider(url);
+    final images = <NetworkImage, String>{cached: 'loaded'};
+    expect(images[provider(url)], 'loaded');
+    expect(images[provider('$url?variant=2')], isNull);
+    expect(cached.headers, same(cached.headers));
     expect(
       provider(url),
       isNot(NetworkImage(url)),

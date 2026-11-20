@@ -32,7 +32,7 @@ Map<String, String>? _coverHeaders(String url) {
 /// Small visible icons and animated images remain valid.
 class _CoverNetworkImage extends ImageProvider<NetworkImage>
     implements NetworkImage {
-  const _CoverNetworkImage(this.url);
+  _CoverNetworkImage(this.url) : headers = _coverHeaders(url);
 
   // Covers are finite downloads. Keep this deadline independent of the core's
   // intentionally unbounded video-body transport. Every received body chunk
@@ -115,7 +115,7 @@ class _CoverNetworkImage extends ImageProvider<NetworkImage>
   double get scale => 1.0;
 
   @override
-  Map<String, String>? get headers => _coverHeaders(url);
+  final Map<String, String>? headers;
 
   @override
   WebHtmlElementStrategy get webHtmlElementStrategy =>
@@ -195,21 +195,14 @@ class _CoverNetworkImage extends ImageProvider<NetworkImage>
 
   @override
   bool operator ==(Object other) =>
-      other is _CoverNetworkImage &&
-      url == other.url &&
-      scale == other.scale &&
-      mapEquals(headers, other.headers);
+      other is _CoverNetworkImage && url == other.url;
+
+  // Scale and header policy are fixed for a URL. ImageCache looks up the same
+  // provider repeatedly while resolving it; do not reparse the URL each time.
+  late final int _hashCode = Object.hash(_CoverNetworkImage, url);
 
   @override
-  int get hashCode => Object.hash(
-    runtimeType,
-    url,
-    scale,
-    Object.hashAllUnordered(
-      headers?.entries.map((header) => Object.hash(header.key, header.value)) ??
-          const <int>[],
-    ),
-  );
+  int get hashCode => _hashCode;
 }
 
 Future<void> _rejectTransparentSentinel(ui.ImmutableBuffer buffer) async {

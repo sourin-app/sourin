@@ -6,6 +6,15 @@ Related: [Current UI and default close callback verification](2026-11-16-current
 The separate [shader quad AA rejection](../../rejected/architecture/2026-11-17-shader-quad-aa.md)
 retains this diagnostic boundary and the exact appearance contract.
 
+当前解析器的重复次数、真实帧号与独立交叉检查由
+[按帧号归因](2026-11-19-frame-number-trace-attribution.md)持有；
+本篇既有运行和拒绝记录保持各自冻结范围，不将它们转为新源码的性能通过。
+
+隔离引擎的身份闭包、GLPB 采集和只读消费候选见
+[同引擎同 AOT 缓存提案](../../proposed/architecture/2026-11-19-glpb-exact-engine-aot-cache.md)；
+[稳定指纹任务版](../architecture/2026-11-20-stable-program-binary-caps-fingerprint.md)已有新实际 39 次驱动接受；
+未获性能资格，不改变本篇旧证据或归因的范围。
+
 ## Problem
 
 Surface asset loading and shadow variants improved peaks but left performance over budget. FrameTiming identifies the long frame without identifying the work inside it. Repeating those variants cannot distinguish shader compilation, driver linking or widget work.
@@ -495,6 +504,215 @@ The selected source routes through native Rust TVBox, not JS. All eight Home
 section messages are generalized failures without a retained underlying error
 class or HTTP clock. Unapplied transport proposals and an unsuccessful bundled
 public fetch do not establish input recovery or a backend failure cause.
+
+### 首动作前的有界就绪重观测
+
+V38 在等待 timing 回执时出现迟到卡片工作：settledVisible 由 20 变 19、dirtyAncestors 由 2 变 1，
+原 signature 守卫在首个导航前拒绝。该失败保留 0 窗口和 37 帧；自然 Quit、exit 0 及双时钟
+空 Job 超过八秒只证明清理，runtimeQualified 仍为 false。
+
+V39 只修任务采集入口的开始时序：记录变化快照并有界重观测，额外要求全部可见卡片已提交、
+卡片 dirty 路径计数为零，再保留原 signature 一致检查。不放宽 signature，不删除原始帧。
+原 20 动作、各 700 ms 窗口、默认 renderer 与对应内容 cohort、从 _run 起的动作/测量/缓冲代码，
+以及整数 `rawUs * 60 <= 1,000,000` 预算均保持。冷启动和窗口外帧继续计入，不清缓冲、不预热。
+
+已有回执完成 20 窗口、1009 帧：启动 19、窗口外 239、导航 585、滚动准备 42、设置滚动 124。
+自然 exit 0、无强制清理、双时钟 Job 自然排空超过八秒；build/raster/totalSpan 超预算 2/29/66，
+性能仍失败。不能由其它运行的单次读数确定优化因果，也不重复同候选挑选有利样本。
+
+实际 preStartChecks=1、retriesObserved=0，仅覆盖首次检查成功，不能证明 retry 分支动态通过。
+90 秒限制在尝试入口/之间检查，每次 drain 另有最多 30 秒 timeout，不是严格总墙钟 90 秒。
+candidate/committed 签名对已有独立重算；最终完整 snapshot 未保存，finalSignatureEqual 只是运行时布尔，
+不能声称独立重算最后快照。重观测改变启动到首动作的间隔时，该间隔里的原始帧也不能删除。
+
+原回执为 `.probe/perf-frame-audit-20261119-d81ef6c9/V39_INDEPENDENT_RAW_FRAMES_AND_COLLECTOR_DELTA_V1.json`
+与 `.probe/perf-product-candidate-20261119-root-v1/V39_UNTRACED_ALL_RAW_FRAME_AUDIT_V1.json`。
+这是既有采集器行为与读数的补记，本次没有重跑编译、应用、解析或测试。失败阶段 raw result 在 Quit 前保存、
+secondary error 不覆盖 primary error 的现有段落继续有效；它不能恢复旧运行已丢失的 duration。
+收益是保留失败材料并防止迟到卡片误作稳定入口；代价是额外快照/RPC 等待与开始时点变化。
+只有 collector/RPC、ready/signature 语义、buffer/落盘格式或对应输入改变时才重开影响面。
+
+### 实际缓存全命中后仍存在的启动工作
+
+只补取原样本没有记录的事件：同 98 文件消费者复用同 DLL/AOT/只读清单，仅开启新的隔离任务启动观察；
+Profile 默认 Ring 已记录 Embedder，不加引擎开关，不调用原 20 动作。PID 70176 有 35/35 实际 binary accepted、
+0 reject/fallback（只启动，不能用 39 次全工作负载作分母）。窗口非激活并准确消失，自然 exit 0、无强制清理，
+151 个空 Job 样本，QPC/单调 8.036565/8.0382904 秒。首页实机截面是真实海报与灰占位并见，
+与前一对字节相同首页不是相同内容就绪；不声称全场画面等价、真实库 Top 20 或普通启动通过。
+
+真实 10298 个事件以同一 PID、栅格线程和真实 frame_number 绑定 42 帧；首批 40/8 receipt 精确追加到 Quit 前
+70/13，Quit 计 70，不证明 Quit 后每帧存在。第 2 帧 raster 197597 μs，程序构建包络 133375 μs，
+其中 PersistentCacheLoad 36112 μs、cache_hit 72575 μs；呈现包络另为 53379 μs。第 3 帧 raster 232241 μs，
+程序构建包络 164174 μs（其中 load 22036、hit 126162），呈现包络 61346 μs；两大包络并集 225520 μs。
+第 12 帧 raster 3900 μs、totalSpan 232474 μs，buildFinish→rasterStart 220531 μs 中有 220516 μs
+与此前栅格 DoDraw 重叠。归因只属于该次运行；不凭零 compile/link 标记断言所有底层 driver 无编译。
+
+shader_compile 标记包含缓存读取、emitAndInstallProcs 与 finalize（其中创建程序）；cache_hit 位于 finalize，
+包含已读 payload 的解析、ProgramBinary、link 状态查询、observer 与属性设置，不包括此前的 Package::Load。
+不能用任一包络或差值冒充 glProgramBinary 专属耗时。呈现还包含 EGL 绑定、
+framebuffer blit、swap 与呈现通知，不能把整个 FlutterCompositorPresentLayers 当作 SwapBuffers 或 GPU CPU 时间。
+读回可扰动后续帧，只做诊断；严格预算与此前 20 窗口结果保留，不复跑此次已取得的证据。
+实际事件及 4 项拒绝对照见 [按帧号归因](2026-11-19-frame-number-trace-attribution.md)。
+
+### 已保存真实原生 API 的独立子项
+
+在统一任务目录 `sourin-glpb-startup-20261120-round6/` 中，
+`driver-micro/actual-manager-v3/result.json` 绑定同源默认 Flutter EGL Manager 的 render context；
+无需 HWND、Pbuffer 或 window surface。最初 MSVC wrapper 链接虽 exit 0，却遗留所属 vctip，
+不能自然排空且清理强制，失败原件保留；直接 lld 后继自然链接，但旧 Pbuffer 的 EGL 指纹不符，
+在任何 ProgramBinary 前 exit 1。最后只改变夹具初始化为原 Manager，精确 EGL/GL/
+DXGI adapter/driver/format 与 manifest 相符，所有原材料只读，39 个程序逐一实际 LINK_STATUS=1、
+GL_NO_ERROR。编译、链接及夹具各自然 exit 0、双时钟空 Job 超过八秒，不启动 Sourin。
+
+同次 39 条 Package::Load 合计 14954.3 μs（逐次重新开文件/哈希/ABI），CreateProgram 合计419.7，
+ProgramBinary 合计2421.2，紧随的 link status 查询合计137630.2，后两者合140051.4 μs。
+查询可等待底层完成，但这里不观测 worker 或 GPU，不把 API 时间回填到应用第3帧。
+单条 link 查询最大19700 μs，也不说明该条在真实应用以同样顺序或成本出现。
+
+私有固定 batch=4 后继仅改变提交/查询调度，不设 compiler threads，不创建窗口或 draw；
+39 程序、10批的实际 status/error 全通过。ProgramBinary API 合7159.8 μs、查询合104087，
+同调用线程 submit→join 包络并集111296.7，整个 schedule138212.9（含IO/log/间隙）。
+重叠的每程序 pending span 不相加；先前串行不重跑，驱动全局缓存未重置，故不是受控因果提速。
+原包、SDK、引擎不变，不能将预热挪出正式启动窗口；生产还需要确切将用的 key 集、同一 context
+所有者/生命周期、逐项失败回退和首次使用的完成交接。
+
+`ROOT_SAVED_NATIVE_API_READBACK_V1.json` 对已存原始QPC独立复算与六个Job终态一致；
+`binary-schedule/BATCH4_SAME_THREAD_RAW_AUDIT_V1.json` 保留1489项核对及六个离线拒绝对照。
+provider-only 私有候选保留7次live reader/逐次读验，7批×256小调用的批均值中位，
+旧HashBytes为0.658594 μs、新0.301563，Open/Close0.287109；不支持解释22ms加载或126ms hit。
+原v1/v2编译失败、v3实际27/31 exit1和后继仅IO的6/6 exit0分开，不能追认v3全绿；
+未据此修改生产或重编已验DLL。
+
+### 真正实时指纹读取的子项
+
+新的无窗夹具以原default Manager、原Ganesh options和稳定版Reader执行24次真实同线程读取，
+不是Package或驱动提交。首次906.7 μs、后23次中位563.7；D3D完整包络中位385.5，
+其中QueryInterface/GetAdapter/GetDesc/CheckInterfaceSupport合段366.2；不能指给其中
+某一个API。OptionsAndCaps中位146.4（JSON dump100.4），EGL query+封装/hash11.5、
+InterfaceAbi5.5。相邻QPC点是独占相邻子段，不能把包络与内部合段相加；数据只属于
+该fixture，13×3×563.7与22ms load只是量级对照，不是应用逐帧归因或节省承诺。
+
+回执在统一任务目录 `sourin-performance-20261120-round7/fingerprint-cost/` 的
+`FINGERPRINT_QPC_RAW_AUDIT_V1.json`（974项及5个离线篡改拒绝），三阶段自然exit0/noForce、
+双时钟Job空≥8s。原source逆除任务插点等同，实际scope/generation/expected/unbound拒绝与
+重绑新epoch通过；原3534对象只核size/mtime/file-ID不变，不能说全字节重验。
+不缓存driver version或caps：同device/epoch/未removed没有完整不可变性证明，Windows
+声明和ANGLE的初始化快照不足以支撑跳过实时读取。后继只在新输入下拆四COM子项，不复跑旧微测。
+
+### 呈现包络保留未归因子项
+
+`present-path/PRESENT_PATH_READONLY_ACTUAL_RECEIPT_V2.json` 独立重读相同10298事件/42对
+present，第3帧61346 μs包络内没有子scope，限定round3–6任务树未找到已存ETW。
+13个呈现链源码与该实际DLL的既有canonical inputs一致；真实链是WindowSurfaceD3D→SurfaceD3D
+→SwapChain11。外层还含view锁/resize、MakeCurrent、blit，以及swap之后的OnFramePresented
+（可条件DwmFlush），均不能指定为当前实测根因。五个互斥CPU trace段随后按下一节生成了独立私有DLL与新运行；原未应用候选与静态回执保留，
+撤掉trace添加后与原源码同字节不单独赋予运行、像素或性能资格。
+
+### 五段呈现trace的新同DLL/AOT实际读回
+
+私有构建实际重编compositor与唯一identity consumer两单元、复用3534个实际对象（含原caps
+替代物），453条新include按父canonical读取核hash；direct lld自然link。三阶段均自然exit0
+/noForce/双空≥8s，新DLL `AAEE1D80906AA920CD8A754A2C0B663656FF28515AAB7D26C921EE2F2D7BC127`、
+闭包 `8F525D744F177CBFBE1FB8EDBEFB15F65171B975B783661F666C775A613BF052`。
+它是父source资格继承+实际复用对象/库+两个新TU/source/command的有限派生对象闭包，
+不是重新核完父32812源码或完整宿主；OUT7259/SDK112只核size/mtime/file-ID未变，不冒充全byte。
+初稿的parentDll、lldhash、缺失引号、modulebasename和caps include错误在运行前由root纠正，
+旧稿保留未执行。新source只加trace，不改原调用、效果、VSync或AOT。
+
+新DLL与原 `8E68C741…0331A` AOT先做一次startup-only捕获：35项全部store、0reject，
+manifest `7FF03DF213BB4444C7FBF3B0BE3DEE3BBBBF7D8E1EC8B10453C4B20A26192DE9`、
+34唯一payload/460892字节；真实Finish/decoder复核后，才编新consumer任务常量。新94文件消费者
+只读35物料实际35load/return/matched/binary/accepted、0fallback/reject，同native nonce。
+两次均自然exit0/不激活/窗口消失，双空≥8s；不复用旧39项、更不改其标签，不调用原20动作。
+
+捕获106raw/106present覆盖；消费84raw/44完整present覆盖，ready43全部在完整帧中，
+40timing-only含正在RPC尾部的frame70。匹配与负例由[按帧号归因](2026-11-19-frame-number-trace-attribution.md)持有。
+消费者frame2 raster224570 μs，其外层present80289、SwapBuffers70605、
+OnFramePresented8844、OnFrameGenerated488、MakeCurrent1、blit338，其余13；
+frame3 raster240528，其present49390、SwapBuffers49315、OnFramePresented1、
+OnFrameGenerated6、MakeCurrent11、blit51，其余6。五段互斥，可以与outer剩余核对；
+SwapBuffers仍含EGL/ANGLE验证、可能offscreen copy、DXGI调用和swap通知，不能再直接叫
+DXGI Present/GPU耗时或VSync根因；OnFramePresented的8844也不能无事件地指定DwmFlush。
+
+第3帧cache命中后程序构建仍重，未删除底层driver工作。新无窗7读COM拆分另外观测
+CheckInterfaceSupport邻接段首390.9 μs、后6中位203.55；QI/GetAdapter/GetDesc各约
+0.30/0.30/0.10。这只属新7读fixture，不能把旧24合段重标其独占或外推应用帧。
+仍不删driver-version实时查询，不缓存未证不可变值。
+
+所有原始帧仍按整数预算保留，capture build/raster/total超1/5/10，consume1/7/13；
+它们是diagnostic，不是正式原20预算样本，性能依然未通过。root亲查两Home截面不相同：
+capture有全图、consume部分占位，不能作全场视觉等价或跨运行缓存因果。回执在统一任务目录
+`sourin-performance-20261120-round7/lead/ROOT_PRESENT_TRACE_STARTUP_PAIR_V1.json`。
+
+### 本次物料中的精确DXBC重复
+
+同次35 descriptor指向34唯一payload，460892字节；离线scanner验证前置64位长度及DXBC
+container/chunk/SHDR-SHEX结构，得到68物理嵌入块（34VS/34PS）与70 descriptor引用，
+48个精确stage+container字节类；13类重复、首个以外20次出现。8个长度/offset/overlap
+变异按指定拒绝。它没有完整解外层ANGLE metadata，不能声称实际Create次数、runtime
+资源复用、worker并发或收益；源链已确认loadBinary worker调用D3D Create，但source顺序不量化成本。
+
+回执 `sourin-performance-20261120-round7/shader-bytecode-census/census-result.json` SHA256
+`7953768B0E0796E72CFD3B450DF8E82F8478E58FFE47CCAF43D94F4CA32ACE1C`。
+这个实际重复只支持准备同device/逐字节/VS-PS分离/成功后保存/限量/重置清空的task-only
+shader对象候选及真实D3D fixture；不修改实时指纹、不跳过device健康、不改VSync、不移出冷启动
+窗口。原ResourceManager每wrapper allocate/decr保持，cache额外COM引用和debug labels另有
+生命周期风险，不能称所有状态等价；尚未编入生产或取得应用/像素/原预算资格。
+
+### Shader对象复用候选的真实API资格与失败
+
+只在私有header实现同device canonical IUnknown强引用、独立VS/PS、size+完整字节key、
+成功Create后保存、每hit返回单份AddRef、128条/4MiB bound、实时GetDeviceRemovedReason、
+Clear前后caller引用有效；默认关闭。真D3D（本次合法DXBC而非GL包decoder）通过19项，
+包含同字节异blob命中、不同stage/长度、第二真实device、Clear/recreate、并发单store、
+禁用原调用与invalid bytes两次原driver失败不入。API特性guard首次误写11_0（0xb000），
+实际已存cohort为11_1（0xb100），故在shader前安全拒绝；校正枚举后的独立后继三阶段自然0，
+原失败不升级。只去memcmp的私有负副本在full-byte-key实际检查自然exit1/noForce，
+证明功能门能真正红；原19正例/source未改。这些顺序API时长不作为因果提速或应用预算。
+
+将两个ANGLE CreateResource与release-before-device-clear、唯一identity消费者编入私有DLL，
+856条实际include按派生父input核；不改Resource11/ShaderExecutable布局或原allocate/decr。
+实际新DLL `BBC682A6…8CCA9F0`/闭包 `A15BECD2…97AF6B3`只在task宏显式1下启用，
+3compile+link自然0/noForce/双空≥8；localstatic析构警告和debug-label共享副作用仍未取得
+生产资格。新AOT未编、新捕获自己35store/0reject/0IO失败、真实Finish后自然0、86raw保留，
+严格指标1/8/15仍红；没有原20动作，不再测旧包seek。
+
+这次退出前没有打印releaseDeviceResources计数：原Dart quit路径不提供C++Renderer析构见证。
+零条日志不是证明hits=0，更不是runtime cachehit阳性；该次operational通过、cacheWitness=false。
+`shader-runtime-next/capture/circle-shader-capture-v1-once` 原件保留。后继只在实际publish/hit
+同锁点加默认关闭、显式task启用、最多first-store/first-hit两条Win32 metadata观察，
+保存LastError且无路径/key/bytecode；新DLL身份/新捕获，不通过重复同样候选挑成绩。
+没有记录到的应用cache命中，不从API夹具或静态callsite猜绿。
+
+即时观察输入的独立后继DLL为 `09C38892…495A43`、派生闭包 `42AC2EB4…DB2B1F2`；
+仍同AOT、原worker/cache算法。root逆除onlyincludes/method/2call与原header逐字节相同，
+独审v1两个false由切片查错，不是source反证，v1保留，v2与rootinverse核state/返回/LastError
+通过。WriteFile可能失败/partial且mutex内同步阻塞，只是best-effort诊断，不许当无输出=无hit。
+
+新startupcapture实际35store/0reject、33唯一payload/434416字节、manifest
+`4BCE53AF3AEC8603A32A56BEA370EE1ACC7356C338A67D1F90F615D4306FA7BC`，
+自然exit0/noForce/双空8.0386/8.0402秒。原log真实first-store hits0/misses1/stores1
+(thread38564)、first-hit hits1/misses8/stores8(thread42704)，证明此owned进程cache实例
+至少一次真正hit，不是GLkey或某device/完整worker历史的归因。95raw/46完整present、49
+timing-only含RPCtailframe101，不补end、不删raw。
+
+同新DLL/AOT只读93文件consumer实际36load、35package return/binary/matched/driveraccepted、
+0fallback、1rejected，同session nonce6166147067304357515；不可写成全命中/0reject，也不能
+仅计数回溯该次拒绝具体分支。原initialReceipt曾1attempt/0return，不能claim初态全0。
+另有first-store(0/1/1thread40788)与first-hit(1/8/8thread45620)两即时标签，聚合语义同上。
+97ready/preQuit/quitraw，97完整present均覆盖，Ring22411事件；自然0/noForce/双空
+8.0483/8.0540秒。root亲看Home capture部分占位而consumer实际图更多，像素/内容状态
+不同，不构成跨运行因果或全场视觉等价；截图物理1592×904但控件规模也异，不能默许同内容
+cohort或DPR已相同。
+
+新诊断全帧严格build/raster/total分别capture1/6/11、consume1/9/11仍超，不是正式原20，
+不声称性能提升或通过，也不重复候选挑成绩。root回执
+`sourin-performance-20261120-round7/lead/ROOT_OBSERVED_SHADER_STARTUP_PAIR_V1.json`，
+该文件名沿用V1但schema为V2；首readchecker的regex转义/旧capture路径错误保留，由只读v2修复，不重run应用。
+候选只能记为task-only object reuse实际hit+局部driver接受已见，未获production/pixel/原预算资格。
+新增pair独立审读task53只有未执行成功的JS草稿，读取ready快照代替timing等checker问题未
+形成最终结果；root已停止此辅助审计并标未合格，不把文件存在当验证，也不因此重新采样。
+主代理原始链检查仍单独有效，正式采用需要补齐受影响行为/原预算与相应独立复核。
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.

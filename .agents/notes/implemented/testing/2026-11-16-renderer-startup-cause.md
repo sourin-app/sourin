@@ -710,8 +710,17 @@ cohort或DPR已相同。
 `sourin-performance-20261120-round7/lead/ROOT_OBSERVED_SHADER_STARTUP_PAIR_V1.json`，
 该文件名沿用V1但schema为V2；首readchecker的regex转义/旧capture路径错误保留，由只读v2修复，不重run应用。
 候选只能记为task-only object reuse实际hit+局部driver接受已见，未获production/pixel/原预算资格。
-新增pair独立审读task53只有未执行成功的JS草稿，读取ready快照代替timing等checker问题未
-形成最终结果；root已停止此辅助审计并标未合格，不把文件存在当验证，也不因此重新采样。
+新增pair独审task53在原收束时没有成功终态，失败稿和未合格状态保留。晚到的有限
+读回`observed-pair-review/observed-pair-review-v2.json`由root实际读过，修正ready/quit原件
+来源后核两臂标签和36load/35accepted/1reject/0fallback；身份仍借root桥，不构成独立
+完整帧算法或正式预算复核。原始应用未重采样，不把旧错误稿改成通过。
+
+同一私有header另在真D3D人工shader绘制下覆盖opaque miss与alpha hit：独立RGBA8 RT
+到staging Map两对32768字节完全一致，真实非空三角各1152像素，中心色/clear另检。先将
+候选alpha的红tint常量改值，真实GPU回读1152字节差使同一门自然exit1；随后原状态自然0，
+所有owned Job无force/双空≥8，root独立raw读回且亲看PNG。只证这两人工绘制状态，不代表
+本次35shader/debug-label/全产品像素或性能。原件在
+`sourin-shader-validation-20261120-round8/lead/pixel-execution/PIXEL_READBACK_V1.json`。
 主代理原始链检查仍单独有效，正式采用需要补齐受影响行为/原预算与相应独立复核。
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain

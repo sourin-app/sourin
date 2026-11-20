@@ -18,25 +18,37 @@ override the user's report based on entry presence alone.
 This supersedes the prior real-data access prohibition for the continuation;
 the saved goal text and historical evidence retain the older wording. Inspect
 actual configuration before treating an absent account as a test blocker.
-Performance remains deferred. A task-owned non-input Windows desktop is under
-review as an environment for unchanged ordinary startup; do not switch the
-input desktop, activate an existing user window or claim startup acceptance
-before its runtime behavior is observed.
+Performance was previously deferred, but the newest full-goal instruction
+restores it as a required acceptance item. A task-owned non-input Windows
+desktop was tried for unchanged ordinary startup and the current release
+failed before its first frame; do not switch the input desktop, activate an
+existing user window or claim startup acceptance without a supported route
+that also preserves the no-focus constraint.
 
-The user's current order is stability acceptance first, final package
-verification second, and performance retained but skipped. This order governs
-the current continuation. V29 stability, final package, scoped protocol and
-cover acceptance are retained; successful scenes are not repeated without an
-affected owning-input change. Parallel work now checks the accepted package
-and remaining requirement boundaries without launching new performance work.
+The previous order deferred performance, but the user's new full-goal
+instruction restores it as an outstanding acceptance requirement. V29
+stability, final package, scoped protocol and cover acceptance are retained;
+successful scenes are not repeated without an affected owning-input change.
+The current continuation audits the one-shot V30 failure and will not repeat
+it without a new bounded execution authority.
 
 The intervening performance preparation remains preserved under `.probe/`:
 V30 produced a successful Profile kernel, followed by a failed output-locator
-check. V31 gen_snapshot and the GLPB capture/cache candidate were prepared but
-not executed. No performance candidate was adopted in the product or final
-Release package. Stop new performance builds, diagnostics and measurements;
-retain the original workload, readiness, raw-frame budget and failed runs.
-Skipping performance does not accept it or complete the full original goal.
+check. The actual V31 one-shot run is under `.probe/pp32`: its fresh Profile
+kernel stage naturally exited 0, then the output-census check stopped the run
+before `gen_snapshot`. Separately, `.probe/pp31/source` was audited and found
+to be a contaminated partial copy with a reused V30 `app.dill`; it was not the
+V31 compiler input. V32 subsequently completed the current-source Profile
+kernel and `gen_snapshot` stages and staged a 59-file runtime. That compiler
+phase had no GUI or frame measurement; the later isolated proxy-route run
+below completes all original 20 scenarios and retains full frame records, but
+rejects the strict budget. No performance candidate was adopted in the
+  product or final Release package. The user has restored performance to the
+  full-goal scope; the later measured run is recorded below.
+The V30 one-shot authority remains consumed and explicitly forbids retries;
+any successor needs a fresh frozen output contract and separate one-shot
+authority. Retain the original workload, readiness, raw-frame budget and
+failed runs; no performance result is accepted yet.
 
 The post-export requirement audit is recorded in
 [FINAL_ACCEPTANCE_20261118.md](FINAL_ACCEPTANCE_20261118.md), retaining all
@@ -74,17 +86,115 @@ receipts and the v2 result remain intact. Do not retry from the same desktop
 environment until the failing initialization is independently identified.
 Receipt: `.probe/release-parallel-20261117/ordinary-inactive-desktop-boundary-v1/ordinary-desktop-actual-once-v2/result.json`.
 
+### 2026-11-18 follow-up — startup diagnostic bridge and Top 20 cover
+
+A read-only bridge binds the v2 failed launch's EXE SHA256 to the executable
+inside the verified current Windows ZIP. It records 166 observer samples and
+zero input-desktop/foreground changes. Historical Loader Snaps for a different
+EXE captured `USER32.dll` failing `DLL_PROCESS_ATTACH`; a no-window GUI control
+reached `WinMain` on `Default` but failed on the private desktop. This supports
+a desktop-environment hypothesis only: the current EXE's failing module and
+the OS condition remain unidentified. No repair or ordinary-startup acceptance
+is established. No new product launch, input-desktop switch, focus change,
+registry write, or process-memory modification was performed during this
+read-only review. Bridge:
+`.probe/release-parallel-20261117/ordinary-inactive-desktop-boundary-v1/ORDINARY_STARTUP_HISTORICAL_BRIDGE_V1.json`.
+
+The Top 20 candidate was examined in a task-owned database/config projection.
+It is a TVBox child already present in the copied configuration, but the
+aggregate has an explicit empty child selection and the child is disabled.
+Consequently it is not registered in the isolated runtime; this is not a
+missing plugin/configuration-file case. The unmodified production cover repair
+API returned zero, leaving the projection at two empty cover rows. This
+candidate has no nonempty exact-identity cover variant in the projected
+favorites/progress/history rows, so the local donor path cannot resolve it.
+This does not prove an upstream cover is unavailable. No source was enabled
+and no network request or real-library write was made. Receipt:
+`.probe/remaining-cover-20261118-top20-v1/top20-repair-owned-v1-9bed3664cb59464c8850c5ea3a1ae57f/aggregate.json`.
+
+The full-goal continuation resumed the existing V30 Profile build evidence.
+Its one-shot Kernel stage exited naturally with code 0 and remained drained
+for more than eight seconds, but the declared `kernel-observed-outputs.txt`
+was empty, although the isolated build tree contains a 64,682,784-byte
+`app.dill` at
+`.probe/pp30/source/.dart_tool/flutter_build/055890d95b7063c6574cda4b01e375d5/app.dill`.
+The coordinator therefore rejected the missing unique absolute `app.dill`
+output record before `gen_snapshot`; the file cannot be promoted after the
+fact because it was not named by the approved output-list contract.
+The V30 authorization explicitly disallows retries and is consumed. No AOT,
+runtime stage, GUI, or performance measurement was produced. A successor
+requires a new frozen input/output contract and separate one-shot authority.
+Receipt: `.probe/pp30/build-once-v1/result.json` and
+`.probe/pp30/build-once-v1/current-full20-profile-kernel/result.json`.
+
+At the time of this earlier note, the historical plan under the isolated
+`app-tray-barrier-counterexample` fixture cited
+`PRIVATE_DESKTOP_INITIALIZATION_CAUSE_QUALIFIED_V1.json`, but a bounded search
+did not find the raw receipt. A later search located the receipt at
+`.probe/goal-resume-20261115-evening/PRIVATE_DESKTOP_INITIALIZATION_CAUSE_QUALIFIED_V1.json`
+and independently rehashed all 27 declared evidence files; all hashes match.
+Its native fixture records private-desktop `NtGdiInit` returning zero with
+`STATUS_ACCESS_DENIED`, and a default-desktop control returning one. This
+confirms the historical fixture only. Its source commit and core are not the
+current Release's; the current failure's DLL/callback therefore remains
+unknown, and ordinary-startup acceptance remains false. See the 2026-11-19
+correction below and `.probe/goal-remaining-review-20261119-c8a4e3/REMAINING_REVIEW.json`.
+
+The accepted native provenance review also confirms why the earlier minimize
+event cannot be resolved from current source alone: its QPC review is
+cross-process, but the sequence is module-local, the asynchronous message ID
+is not carried, and no Dart caller is attributed. The latest production AOT
+pending-quit run observed zero native minimize method entries; this proves
+that run's negative control, not the historical caller. Existing root review
+rejected false-quit/forced-cleanup/scope-inflation controls but marked old
+caller attribution unresolved. Do not infer a historical minimize call from
+the V4 user attestation or from the accepted current run.
+
 The read-only credential-presence check found non-empty entries for several
 cloud-provider credential targets and WebDAV. It inspected presence only,
 never credential blobs; it does not establish that an account is currently
 configured for application use or that credentials work. No login, remote
-transfer, or cleanup was attempted. Performance remains skipped per the
-user's priority.
+transfer, or cleanup was attempted. A8 remains scoped to existing local and
+anonymous protocol evidence until an authorized test account/environment is
+available.
 
-## Accepted stability and package phase — user order, 2026-11-18
+### Full-goal continuation — renewed by the user
+
+The user has renewed the objective to finish the original 18+12 requirements,
+including performance, and has explicitly said to keep working until complete.
+The no-focus/no-input-desktop-switch and no-unauthorized credential, real-DB,
+login, transfer, or remote-cleanup constraints remain in force. The new active
+goal therefore does not waive the missing per-action permissions for compiler,
+GUI, network, credential, or database operations.
+
+The already-consumed V30 performance authorization was read-only audited. Its
+single Profile kernel command exited zero and naturally drained, producing a
+64,682,784-byte `app.dill` under the frozen task-owned source tree. The
+Flutter `assemble` tool's `build-outputs` writer does not populate a precreated
+empty file: it writes only when the path does not exist or its current text
+differs, and this tool's implementation reads an existing empty file after
+skipping the initial write. Consequently the output list stayed zero bytes;
+the harness could not identify the unique kernel and stopped before
+`gen_snapshot`, Profile AOT staging, GUI, or measurement. V30 explicitly
+allows one execution only, disallows retries, and grants no GUI or measurement
+permission. Its partial output and authority remain preserved; do not rerun
+or reuse that authorization. A successor must use a fresh run root and a
+newly reviewed output-manifest strategy, then obtain explicit new authority
+before any compiler command.
+
+The already-prepared public source-index lookup for the unresolved Top 20
+cover was also reviewed. Its one bounded search ended naturally with exit 1
+and `Unable to reach Agent2API: fetch failed`; it yielded no public source
+result and did not access user credentials, browser state, or the real
+library. Do not repeat the same failed network operation. Continue static
+inspection of the source's actual poster-bearing endpoints/parsers; any new
+network request still needs an explicit bounded scope and permission.
+
+## Accepted stability and package phase — historical snapshot, 2026-11-18
 
 Stability and final package acceptance passed in the following order, with
-performance deferred. The current continuation preserves this user order.
+performance deferred at that time. The later full-goal renewal below
+supersedes this historical priority.
 
 1. Stability acceptance first, now passed. Generate the fresh native runner and window
    plugin needed to validate the adopted PIP recovery and task nonactivation
@@ -97,17 +207,18 @@ performance deferred. The current continuation preserves this user order.
    product sources, native files, AOT and runtime assets in one package, then
    perform the final source-bar/sorting/player/exit smoke checks. Reuse the
    scoped three-protocol and four-cover evidence where owning inputs permit.
-3. Performance is deferred by the user and skipped in this execution phase.
+3. At that phase, performance was deferred by the user and skipped.
    Retain the original startup/all-frame budget, original twenty scenarios,
    failed measurements and missing public-content inputs as open work. Do
    not run more performance diagnostics, renderer experiments or benchmarks
-   in this phase. Performance is not a completion gate for steps 1 and 2;
-   skipping it does not qualify performance or complete the full original goal.
+   within that historical phase. Performance was not a completion gate for
+   steps 1 and 2; skipping it did not qualify performance or complete the full
+   original goal. The later renewal below supersedes this deferral.
 
 Existing task-isolation, focus, real-account and publication boundaries remain
 in force. This priority update does not authorize external-account acceptance.
 
-Current result: stability acceptance has passed all three current-package
+At the time of this phase, stability acceptance had passed all three current-package
 scenes. Playing, episode-two switching and an outstanding request each finish
 through the original ask/Quit flow, natural exit zero and at least eight
 seconds of empty owned Job on both clocks. The 59-file short runtime package
@@ -125,12 +236,165 @@ button. That rejected attempt and its natural original-Quit cleanup remain
 recorded; the narrow successor uses the two observed original Back structures.
 The previous minimized attempt is separately explained by the user's direct
 confirmation of manual minimization; older run attribution remains open.
-Performance is skipped and unaccepted, and the full original goal remains open.
+Performance was skipped and unaccepted at this phase; the full original goal
+remains open, with later continuation recorded below.
 Current evidence is recorded in
 `.probe/goal-root-acceptance-next-20261117/CURRENT_STABILITY_AND_FINAL_PACKAGE_PHASE_ACCEPTANCE_V1.json`
-and the 30-requirement successor `RECONCILED_18_PLUS_12_MATRIX_V29.md` in the same
-directory. V28's 337 historical references retain their original scopes; this
-phase checks new evidence and affected owning inputs rather than repeating them.
+
+## Full-goal continuation — 2026-11-18
+
+The latest user instruction restores every remaining item, including
+performance, to the active completion goal. The current audited state is:
+
+- V30's one-shot Profile Kernel stage exited 0, but its declared output list
+  was empty. Its no-retry authority is consumed; no AOT or frame measurement
+  exists. A fresh output contract and execution authority are required.
+  Read-only source inspection of the pinned Flutter 3.47.5 implementation
+  identifies the precise contract fault: `assemble.dart`'s
+  `writeListIfChanged` writes a missing `--build-outputs` file, but when that
+  path already exists empty it only rewrites on unequal content. V30 created
+  an empty file, so the successful Kernel output (`app.dill`) never appeared
+  in the observer list. The next preparation must use a fresh run directory
+  and a manifest path that does not exist before `assemble`; validate the
+  recorded absolute `app.dill` and its hash before admitting `gen_snapshot`.
+  This is source-only preparation guidance, not a V31 build approval or a
+  reused V30 authorization. Root must review a new exact one-shot compiler
+  authority before any compiler process starts.
+- 2026-11-19 V31 output-contract audit: the separate `.probe/pp31` static
+  preflight confirmed V30's kernel stage naturally exited 0 while its existing
+  `--build-outputs` file remained empty and its generated `app.dill` existed
+  separately at 64,682,784 bytes. The pinned Flutter `assemble.dart` explains
+  why: it writes a missing list, but leaves an existing empty list untouched
+  when contents compare equal. The preflight reserved fresh paths under
+  `.probe/pp31/build-once-v1`, which remained absent; it did not start a new
+  source copy, compiler, GUI, network or timing run. Independently, the actual
+  V31 one-shot was executed under `.probe/pp32` with its own plan and authority:
+  the Profile kernel exited 0 and naturally drained beyond eight seconds, but
+  the output-census assertion failed before `gen_snapshot`; V31 AOT, runtime
+  staging, GUI and measurement were not reached. Preserve that consumed V31
+  authority and failure receipt; no retry is implied.
+- The current package's unchanged ordinary launch exited `0xC0000142` on the
+  non-input desktop. The input desktop and foreground did not change. The
+  failing module is unknown; ordinary startup is not accepted.
+- The Top 20 Sou4K child has no same-identity local cover donor and was not
+  registered in the isolated runtime. Search results from this provider set
+  `cover: None`; its detail path resolves cloud shares through
+  `/api/check-links`, not a poster endpoint. No request was made because no
+  identity-safe cover endpoint was established.
+- The old private-desktop `NtGdiInit` receipt has since been located and its
+  declared evidence hashes reverified, but remains scoped to its historical
+  native fixture and does not identify the current Release's failing DLL.
+  Historical minimize attribution likewise remains unresolved by the
+  existing native timeline, whose method caller and cross-file clock are
+  absent.
+- Credential presence alone does not prove an application account or valid
+  credentials. No login, transfer, or cleanup was performed.
+
+The goal remains active and not accepted. Continue when fresh bounded
+authorities or compliant test conditions become available; do not reuse the
+consumed V30 authority, repeat the known-failing startup in the same desktop
+environment, or infer success from preparation-only artifacts.
+
+### 2026-11-19 — V31 output-contract stop, `.probe/pp31` copy audit, and seek regression
+
+Read-only inspection found `.probe/pp31/source` is not a clean build input. All
+819 source paths named by the V30 plan exist there; one path
+(`lib/ui/widgets/miuix_controls.dart`) differs from the V30 frozen hash because
+the click-to-seek fix is now present. The directory also contains a
+64,682,784-byte `app.dill` whose SHA256 is exactly the V30 output hash
+`67F07BE443AEDEDD4328301F17CBD6224C64A1C81E7571A7C5BBFD534CDA94B8`.
+It is therefore a contaminated partial copy, not a fresh compiler result, and
+was not the actual V31 source root. The V31 compiler plan, one-shot authority,
+and failed output-census receipt belong to `.probe/pp32`; its kernel stage
+passed, but no V31 AOT or GUI measurement exists. The `.probe/pp31` audit itself
+ran no compiler, GUI, network or measurement.
+
+The click-to-seek work was re-run on the final working tree after analyzer/lint
+cleanup. The 31 ordinary progress/control tests pass, and the serial
+native-media cohort passes 24, including PlayerPage and native WAV seek
+(`time-pos=22.576s`, one commit, at least 300ms continued playback). Focused
+analysis of the six changed Dart files reports `No issues found!`; formatter,
+diff check and the 423-note gate are also verified. See the 2026-11-19 section
+in `FINAL_ACCEPTANCE_20261118.md` for exact logs. No new Release or ZIP was
+built, so this closes only the reported seek defect, not final package binding.
+
+The user's instruction to continue restores performance as a goal but does not
+turn the consumed V30 one-shot into a reusable authority. The prior V30 plan
+also explicitly says its execution was not approved, its authority permits one
+compiler execution only, and GUI/network/measurement were not approved. Any
+successor must use a fresh immutable source/toolchain/runtime/output plan and
+the original performance workload. Other remaining conditions stay as listed
+in `FINAL_ACCEPTANCE_20261118.md`; do not re-run ordinary startup in the same
+failing desktop, infer the unresolved historic minimize caller, use title-only
+cover matching, or treat local proxy tests as external account/transfer proof.
+
+### 2026-11-19 — progress-click seek continuation
+
+A page-level double-tap recognizer may delay a single tap's Miuix value callback
+until after pointer-up. The adapter commits that late tap while preserving drag
+preview/end, cancellation, and immediate ordinary-tap behavior. On the final
+working tree, 31 ordinary control/progress widget tests and 24 serial
+native-media tests passed, including the production PlayerPage seek path and an
+independent local WAV/libmpv check (native position 22.576s, one seek commit,
+then at least 300ms playback advance; observed range 303–340ms). The old adapter behavior was temporarily restored;
+the click regression failed and passed again after restoration.
+
+Formatter check, `git diff --check`, and the 423-note gate pass. Focused
+`flutter analyze` on the six actually changed Dart files reports `No issues
+found!` (exit 0). A broader seven-file check that includes unchanged legacy
+`zz_t1023` has only that file's existing import/const infos; it is not conflated
+with the six-file result. Exact logs and outstanding overall-goal boundaries
+are in `FINAL_ACCEPTANCE_20261118.md`. The user's running Release and final
+ZIP were not replaced. This closes only the click-to-seek issue;
+performance, ordinary startup, the Top 20 cover, external account/transfer
+scope, and historical minimize attribution remain open.
+
+### 2026-11-19 — V32 current-source compiler and static runtime bridge
+
+V32 used a new task-owned source root at `.probe/pp33/source`, frozen against
+current HEAD `c58b7dc7cbd765b7fe469dc73aa81a0911ac4589` with 819 input files.
+Its one compiler authority was consumed exactly once: the Profile kernel and
+`gen_snapshot` stages both exited 0, had no forced cleanup, and each owned Job
+naturally drained for more than eight seconds. Because Flutter left the output
+manifest empty, the runner admitted only the unique `app.dill` generated under
+that fresh source root, copied it byte-for-byte to `compiler-input/app.dill`,
+and then ran `gen_snapshot`; no V30/V31 kernel was reused.
+
+The resulting AOT is `.probe/pp33/full20-profile-app.so`, SHA256
+`5163D4DEDF0CA5BFE82D16507EA8C77A7877AA3FC06304D47F77C7967F6C29C0`.
+`baseline-runtime/` contains exactly 59 staged files; only `data/app.so` and
+`flutter_windows.dll` differ from the normal runtime. Receipts are
+`.probe/pp33/build-once-v1/result.json`,
+`.probe/pp33/build-once-v1/CURRENT_PROFILE_KERNEL_PRODUCER_BRIDGE_V32.json`,
+`.probe/pp33/build-once-v1/CURRENT_PROFILE_STATIC_RUNTIME_STAGE_V32.json`,
+and the read-only static PE bridge
+`.probe/pp33/CURRENT_PROFILE_NATIVE_PE_ABI_STATIC_BRIDGE_V32.json`. That
+bridge checks 22 native EXE/DLL images and 179 imported Profile-engine symbols;
+the named/ordinal symbols resolve against the Profile export table, with no
+ordinal-name mapping change versus the normal Release engine. This is only an
+import-table preflight, not proof of ABI signatures, runtime dynamic loading,
+or successful engine initialization.
+
+A subsequent read-only audit rehashed all 59 staged files against both V32's
+runtime manifest and the normal runtime manifest. The exact inventory and
+per-file sizes/hashes match, and exactly `data/app.so` plus `flutter_windows.dll`
+differ from the normal runtime. Receipt:
+`.probe/pp33/CURRENT_PROFILE_STAGED_RUNTIME_REHASH_V32.json`. This remains
+static evidence only and does not qualify runtime initialization, GUI startup,
+or frame performance.
+
+This was a build/staging result, not performance acceptance: its original
+build receipt records `actualGUIStarted=false` and
+`actualRuntimeQualified=false`. A later isolated run using the V32 AOT/runtime
+and preserved workload completed all 20 windows and naturally exited zero,
+with runtime qualification; its 1172-frame strict budget comparison failed
+(build/raster/totalSpan over-budget counts 1/7/14; maxima 35,998/346,368/
+530,909 μs). Keep the build-only receipt's original fields unchanged. The
+current measurement and its window-by-window scope are recorded in
+`FINAL_ACCEPTANCE_20261118.md` and
+`.probe/perf-route-adapter-20261119-766ae2cfa4/circle-current-normal-full20-v32-loopback-v1/result.json`.
+Any successor optimization must retain the same workload and exact frame
+budget, fresh source/runtime bindings, and separately admitted quiet window.
 
 ## Implemented and verified
 
@@ -614,9 +878,61 @@ Fresh parallel results are under `.probe/protocol-parallel-20261117/` and
    core/native reuse keeps its actual source lineage, without a single-commit
    package claim. V29 supersedes the stale current-state fields in V28 while
    retaining all337 historical evidence references through its sealed anchor.
-   Performance remains deferred and skipped.
+   At this historical phase performance had been deferred; the later full-goal
+   renewal supersedes that decision. It remains unaccepted and required by the
+   active goal.
 
 ## Boundaries
+
+### 2026-11-19 — seek Release same-package continuation
+
+The current click fix has a naturally successful isolated `shell.dart` Release
+assemble, with AOT `4B5B8A05...E170`. The exact compiler dependency census contains
+3680 real files and one SDK wildcard sentinel; all 328 project inputs match the
+current worktree. The 59-file staged runtime changes only `data/app.so` against
+the accepted native/assets baseline. It is not a fresh single-commit native build.
+
+All three same-package stability cases now naturally exit zero through original
+ask/Quit with dual-clock empty Job durations above eight seconds. Final Home,
+Settings, LAN disclosure, source management, sort Back and original ask/Quit
+smoke also passes all 16 helpers. Receipt:
+`.probe/seek-click-release-v1/CURRENT_RELEASE_STABILITY_AND_VISIBILITY_ACCEPTANCE_V1.json`.
+Original minimized/forced-cleanup and selector failures remain failures. A
+PerMonitorV2 helper manifest corrects mixed coordinate interpretation without
+changing the qualified helper object or guards; successful GUI runs use 96 DPI,
+so 125% DPI is not claimed as runtime-qualified.
+
+Release single-click verification passes in v5 on that same production AOT:
+one owned-window mouse down/up on the actually visible slider, no drag and no
+slider accessibility action, advances isolated persisted playback32→93→98s.
+The video burn-in reads00:01:38.917 in the final screenshot. Original ask/Quit
+naturally exits zero, both empty-Job clocks exceed8s, no forced cleanup or log
+exceptions. Continuous distinct hover messages expose the slider while the real
+system cursor remains outside; engine TME_LEAVE/Add/hover deduplication explains
+the earlier harness issue as a supported hypothesis, not a traced Leave claim.
+v1-v4 stopped before any click and remain preserved failures. Receipt:
+`.probe/seek-click-release-v1/CURRENT_RELEASE_CLICK_STABILITY_VISIBILITY_ACCEPTANCE_V2.json`.
+The new local ZIP under `dist-deliver/sourin-windows-click-seek-20261119-4b5b8a05/`
+is43,830,914bytes, SHA256`791F01507C28C19A4D166B7682BC9210E51C78E2BA2C9F28799510008F359175`;
+all59 archive entries match runtime path/size/decompressed-content hashes, and328
+project compiler inputs were reverified. No remote publication occurred. This
+96DPI window-message acceptance does not claim physical-input or125%DPI testing.
+The original anonymous performance category20 production-core request was
+successfully retried in a fresh isolated profile using the existing
+credential-free loopback proxy. The unmodified production core returned 14
+items (13 covers) in 0.709 seconds; actual HTTP count was not instrumented and
+compatibility fallback remained unchanged. The independent anonymous HTTP
+transport proof returned 14 items (13 covers) in about 0.88 seconds. This is a
+distinct proxy-route network cohort; it does not retroactively change the
+failed direct-route attempts.
+
+V32's preserved original20 Profile workload has now completed on that isolated
+proxy-route cohort: all 20 windows, 1172 full frames, natural exit 0, no forced
+cleanup, original Home readiness (8 sections, 154 cards, 20 stable visible
+posters). Runtime qualification passed, but `performanceAccepted=false` and
+`allFrameBudgetMet=false`; counts and exact retained frame windows are in the
+current acceptance report. The workload ran but did not pass its frame budget.
+The full 18+12 goal is active with no token budget cap.
 
 Ordinary startup intentionally focuses its window, conflicting with the task's
 no-focus restriction. Task-safe Release acceptance stays scoped accordingly.
@@ -625,7 +941,277 @@ conditions; no real account or owner profile is used. Short upstream clips are
 reported as short clips. No full-film-duration, physical-input or system-audio
 requirement is invented. Blocked media probes remain explicit.
 
+### 2026-11-19 — full-goal measurement and evidence-scope correction
+
+The V32 isolated loopback-proxy run completed the unchanged original twenty
+scenarios and retained all 1172 frame records, including the 206-frame cold
+startup interval and frames outside timed windows. Strict 60 Hz results are
+build/raster/total-span counts **1/7/14**, p95 **805/2,915/5,630 μs**, maxima
+**35,998/346,368/530,909 μs**; budget is not accepted. No frames were
+discarded to improve the result. The 20-window summary is in the acceptance
+document and the raw run is
+`.probe/perf-route-adapter-20261119-766ae2cfa4/circle-current-normal-full20-v32-loopback-v1/result.json`.
+This proxy-route result is not directly comparable to the old direct-route
+cohort without qualification. Continue with frame-level startup/first-navigation
+causal classification before changing rendering code.
+
+The old private-desktop initialization evidence was also found and rehashed:
+all 27 declared fixture/evidence hashes match. It proves only the old native
+fixture's private/default `NtGdiInit` contrast, not the current Release's
+initialization failure or A11 ordinary launch. Current versus historical
+binary identities and remaining boundaries are summarized in
+`.probe/goal-remaining-review-20261119-c8a4e3/REMAINING_REVIEW.json`.
+
 Independent preparations, source requests, builds and component tests run in
 parallel under agreed task-owned resource limits. Actual Profile measurements
 reserve a quiet exclusive window. Successors use new run directories. Reusable
 evidence is bridged by owning inputs rather than rerunning unrelated successes.
+
+### 2026-11-19 — actual GLPB material and corrected frame attribution
+
+The full18+12 goal remains active without a token budget cap (`remainingTokens=null`).
+Current delivery and seek same-package receipts are unchanged. V6 completes the
+original20 diagnostic and retains967 frames,39 distinct genuine GLPB key/payload
+pairs and39 physically guarded saved returns, with natural exit0 and no force.
+The independent952-check/182-input review is
+`.probe/perf-frame-audit-20261119-d81ef6c9/GLPB_V6_INDEPENDENT_MATERIAL_REVIEW_V1.json`.
+Its original mapping coverage false remains: the missing arm witness belongs to a
+thread registered during post-original20 retirement. A nine-case pure successor
+fixture corrects that ordering, without promoting old coverage or executing a
+new native run. No consumer hit, complete driver fingerprint, visual equivalence
+or performance acceptance follows. Earlier failures and the unexplained V4
+abort trigger remain preserved.
+
+The fresh V34 task-only trace entry leaves product source and original20 intact.
+Its1103 raw frames and90 chunks bind uniquely by actual rasterizer frame_number;
+natural exit0/no force qualify lifecycle, not performance. The initial root
+set-deduplicating analysis wrongly removed genuine same-tick repetitions and is
+not used. Multiplicity-preserving independent parsers and5851 cross-checks now
+agree; only four noncritical trace-boundary B/E edges remain incomplete.
+Frame4 raster465049us contains shader union457369us and nested driver-link
+union424233us. Frame43 build27594us contains LAYOUT27052us with nested
+BUILD18293us. Do not add nested scopes or transfer traced durations into V32.
+First Search's two earlier MakeGpuImage spans1133/329us do not explain its
+shader-heavy raster; retain SnapshotWidget and all visual behavior.
+Reference: `.probe/perf-frame-audit-20261119-d81ef6c9/V34_INDEPENDENT_REPORT_CROSSCHECK_V1.json`.
+The next independent task-only build/layout-scoped diagnostic identifies concrete
+widget work; it is not the subsequent required untraced full-budget acceptance.
+
+### 2026-11-19: actual allocation candidate and collector race recovery
+
+V36 completed original20 with1081 frames/94 chunks. Two independent widget scope
+analyses agree in1316 additional cross-checks. Frame41 exclusive RenderParagraph
+6556us/Image5110us/Scavenge1870us support local work, not a HomePage rewrite;
+HomePage itself is34us. Traced values remain diagnostic only.
+
+Two actual production optimizations are now bound into fresh pp38: optional
+press feedback controllers allocate lazily (ordinary4→1), and fixed-URL cover
+headers/hash are reused.57 related tests plus final6 lifecycle cases pass;
+23 before/after PNG pairs match. Conditional InkWell wrappers were withdrawn
+after live callback-transition review; original interaction tree remains.
+
+V38 compiled successfully but its runtime pre-start signature guard rejected
+late card work (settled20→19,dirty2→1).0 windows/37 raw frames retained;
+natural exit0/no force/dual empty Job>8s do not qualify this failed measurement.
+Failure receipts remain under perf-allocation-current-20261119-v1.
+
+Fresh pp39 changes only the task collector's start handling to bounded recorded
+reobservation, with stricter all-visible/clean readiness and unchanged signature
+comparison. Original20 actions/windows/budget and every startup/outside raw frame
+remain; no buffer reset, warmup or failed-run deletion. The successor actually
+completed20 windows/1009 frames, runtimeQualified=true, natural exit0/no force
+and dual empty Job>8s. Exact build/raster/totalSpan violations2/29/66,
+max52898/744768/1053517us and p951476/9235/23429us still fail the budget.
+All19 startup/239 outside/585 navigation/42 setup/124 scroll frames remain.
+There was one pre-start check and no retry, so the retry branch is not dynamically
+qualified. The90s loop-entry limit is not a strict total wall-clock cap including
+individual30s drains; final snapshot was not saved, only its equality result.
+Root and independent raw-frame/collector-delta audits agree. See
+`.probe/perf-product-candidate-20261119-root-v1/V39_UNTRACED_ALL_RAW_FRAME_AUDIT_V1.json`
+and `.probe/perf-frame-audit-20261119-d81ef6c9/V39_INDEPENDENT_RAW_FRAMES_AND_COLLECTOR_DELTA_V1.json`.
+Do not infer candidate-caused regression from cross-run timing or rerun unchanged
+inputs merely to select favorable numbers.
+
+GLPB static v4 resolves four native vtable slots by matching PE/PDB symbols,
+including the base description-store overload. No consumer installed/hit,
+actual context fingerprint or untraced performance acceptance follows.
+Original18+12 remains active without a token-budget limit.
+
+The standalone GLPB payload validator now compiles with MSVC /W4 /WX and accepts
+all39 actual key entries (37 distinct complete payloads), rejecting702 malformed
+adaptations. Overlay-v3 places validation before returning cached SkData, but
+is still an unbuilt engine proposal. Bounded manifest registration and an actual
+context fingerprint remain necessary; no consumer hit/performance claim follows.
+Root is preparing an isolated checkout at the SDK-pinned engine revision rather
+than modifying the shared SDK or assuming an application-side ANGLE DLL replaces
+the engine's statically linked ANGLE.
+
+V40 continuation: poster-image configuration reuse was compiled into the fixed
+Profile runtime and the unchanged original20 workload completed twice under
+separate launch receipts. Both runs retained every raw frame and naturally
+qualified lifecycle, but both failed the strict all-frame 60 Hz budget. Keep the
+two receipts separate; do not choose the better sample as a performance pass.
+
+### 2026-11-19 — Top 20 exact-cover continuation
+
+Read-only review of the existing isolated projection confirms the candidate uses
+cloud detail, while its configured aggregate child is disabled and unselected.
+The exact identity appears once in progress and once in history, with no nonempty
+cover donor; the projection database hash is unchanged. Static source review
+finds no exact identity bridge from this detail branch to a recommendation/share
+poster. No real database, credentials, application, or network request was used.
+Keep the Top 20 cover unresolved; the next prerequisite is a verifiable exact
+share/response identity mapping, followed by isolated image-decode and
+non-cover-field-preservation checks. Receipts are recorded in
+`FINAL_ACCEPTANCE_20261118.md` and `.probe/remaining-cover-20261118-top20-v1/`.
+
+### 2026-11-19 — linked engine and actual V41 causal diagnostic
+
+The GLPB-specific pinned engine now completes `windows gen_snapshot` compilation
+and final linkage with natural exit0. The first failed include-layout attempt is
+retained; its successor changes only the generated identity header include.
+Receipt: `.probe/engine-build-pinned-20261119-v1/ninja-glpb-windows-result-v2.json`.
+The DLL still has compile-only identity, not qualified closure, real GL capture,
+consumer hit, driver acceptance, visual or performance acceptance. Complete the
+bounded Windows producer wiring and independently bind the real build-input
+closure before any same-DLL capture/consume qualification.
+
+Fresh V41 keeps V40's product inputs and original20 workload, adding only the
+task entry's exact trace flags and build/layout timeline scopes. Both Profile
+compiler stages naturally exit0, with no force and dual empty-Job clocks over8s.
+Root reads back3485 observed kernel inputs and all59 staged runtime files; only
+app.so differs from V40. In a reserved quiet window the actual workload completes
+20windows,1031raw frames and90trace chunks, then original ask/Quit naturally exits0
+and drains over8s. Tracing adds overhead: strict counts6/21/50 are diagnostic,
+not a performance pass or a causal comparison with another run. The same-run
+frame-number-to-scope analysis now binds all1031 actual draw frame numbers.
+Separate widget/raster and raw-only reports pass5192 cross-checks, including653
+common named-scope interval unions. Frame3 raster881912us contains shader867856us
+and nested driver-link792494us. Frame64 build106530us includes RenderParagraph
+exclusive44371us, Image12450us and Scavenge7044us. These instrumented scopes are
+diagnostic, not pure CPU or transferable V40 timings. Continue real-cache wiring
+and scoped offscreen-build experiments without removing visible UI or weakening
+focus/semantics; retain every raw frame and all failures.
+See `.probe/pp41/ROOT_STATIC_BUILD_AUDIT_V41.json` and
+`.probe/perf-layout-trace-current-20261119-v41/ROOT_RAW_TIMING_AUDIT_V41.json`.
+The original18+12 goal remains active without a token-budget cap.
+
+### 2026-11-19 — reviewed capture/observer and task-runner bridge
+
+Root independently rehashed all17 candidate baselines/results, the handoff
+references and22 test logs, then repeated the read-only apply-check. The fixed
+capture/driver-observer successor patch is `8DC7D453…2BD96`; its7 pinned-header
+compiles,2 actual-GN syntax checks,375 Windows-IO/decoder checks and52 synthetic
+correlation checks are scoped evidence, not actual GL or driver acceptance.
+Review: `.probe/glpb-runtime-harness-20261119-v1/ROOT_CAPTURE_OBSERVATION_COMPILE_ONLY_REVIEW_V1.json`.
+Only isolated compile-only integration/build is authorized. Preserve the false
+identity, collect a fresh final-source closure, independently review the
+noncircular identity and verify post-relink invariance before runtime use.
+
+The isolated task C-ABI bridge compiles under `/W4 /WX` against the candidate's
+real public header and passes104 fake-engine-API checks. It is explicit/default
+off, requires consumer plus observer configuration, propagates terminal setup
+failure, and records failed/unreadable stats without retrying Finish to green.
+A private mutation removing the one-shot Finish guard fails check18 while the
+original helper hash remains unchanged. These tests are not native-engine
+execution; actual task-wrapper/platform-channel wiring remains next. Initial
+stdout-encoding failure is retained in fixture-v1, with successful successor in
+fixture-v2 and the deliberate red control in rollback-negative-v1.
+
+The reviewed17-file successor has subsequently been applied once to the
+isolated engine with exact after-byte verification; the false identity and
+args bytes remain unchanged. GN regeneration naturally exits0. Actual Ninja
+`windows gen_snapshot -j6` starts at2026-11-19 19:51:15+08:00 and root reads
+back its live log/PID. Keep this in-progress build separate from the previous
+DLL's successful link; no final-link or runtime acceptance exists yet for this
+integration. Receipts: `engine-build-pinned-20261119-v1/integration-full-v3-v1/`.
+
+The same Ninja PID64140 then reaches599/599 and naturally exits0 at
+2026-11-19 19:58:48+08:00. New compile-only DLL `AF089762…CC652` exports all6
+GLPB C APIs and3 existing runner bridge names, each once. Root independently
+rehashes32901 final-candidate materials, matches4944 compile dependency blocks,
+checks39 directory member sets and verifies header-derived outputs do not
+reenter the canonical material set. `ROOT_FULL_V3_FINITE_CLOSURE_REVIEW_V1.json`
+is a finite material-boundary audit, not hermeticity, final relink or GL proof.
+Capture and consume must share exact DLL **and AOT**; do not compile capture vs.
+consume mode into Dart defines that change app.so.
+
+Home viewport trials concluded: wide36 mounted/20 visible becomes33/20 for
+horizontal168, but it loses an actually decoded cover at first mouse reveal.
+Zero horizontal breaks real direction-key traversal; zero vertical alone does
+not reduce wide mounts. No candidate adopted. Keep the behavior and failed
+receipts; `home-cache-extent-20261119-v1/HOME_CACHE_EXTENT_BOUNDARY_EXPERIMENT_V1.json`
+is component evidence, not an application budget pass.
+
+### Current takeover — 2026-11-20
+
+[FINAL_ACCEPTANCE_20261118.md](FINAL_ACCEPTANCE_20261118.md) owns the acceptance matrix and exact receipts.
+The original 18+12 goal remains active. Keep the completed seek fix and its separately bound Release ZIP;
+do not rerun seek, static closure, AOT, or any already-qualified capture/consume pair without changed owning inputs.
+
+The original task DLL and AOT have nine verified correlated driver accepts. The changed
+[stable caps fingerprint](.agents/notes/implemented/architecture/2026-11-20-stable-program-binary-caps-fingerprint.md)
+now has its own qualified private DLL `064F25F4…FCD4F35` with the same AOT `8E68C741…0331A`:
+39 fresh captured descriptors, 38 unique payloads, and 39/39 actual driver accepts without rejection or fallback.
+This does not identify every old rejection, install a production engine, or qualify other contexts/drivers.
+Two stored screenshots match in this pair; they do not establish whole-run equivalence.
+The [decode observation component](.agents/notes/implemented/testing/2026-11-20-poster-decode-observation.md)
+has a separate real component test; geometry-settled remains geometry-only in the unchanged AOT.
+
+The saved pre-Quit consumer frames still fail the original strict budget (1120 frames, 1/10/14 excess
+for build/raster/total span); 11 of its 14 total-span excesses are in startup. No already-failed
+unchanged sample is rerun to select timing. Further performance work must isolate remaining work
+on the changed owner and preserve cold, in-window and outside-window frames and original actions.
+A separate startup-only read of the default VM ring on the identical package now binds all
+40 initial saved frames (42 covered in the ring); 35/35 startup requests are accepted. Its
+frame 3 spends 225520 of 232241 raster microseconds in the union of program creation and
+compositor presentation. Frame 12 waits behind the prior draw; neither event is an exclusive
+driver-call timing. This is diagnostic, not a new full20 attempt or performance acceptance.
+
+Independent surfaceless native API probes now qualify 39 actual original binaries; serial binary/status
+calls total 2421.2/137630.2 microseconds. One fixed-batch4 successor also accepts all 39; its submit/join
+union is 111296.7 microseconds. These are separate diagnostics, not application frames or controlled
+performance improvement. The old serial and startup workload are not rerun. The old 61346-microsecond present envelope remains coarse; a changed private trace DLL now
+adds five exclusive present CPU scopes. Its new startup capture35/consumer35 actual driver accepts
+share the original AOT. Capture106 raw frames have full phase coverage; consumer84 raw frames have
+44 complete phase frames and40 timing-only, with a partial tail draw70 explicitly retained.
+Consumer frame2 present80289us includes SwapBuffers70605; frame3 present49390 includes SwapBuffers49315.
+This still is not DXGI/GPU/VSync attribution or performance acceptance. No full20/old sample is rerun.
+The new real Reader24 and separate COM7 probes locate D3D CheckInterfaceSupport and caps dump cost;
+no live driver-version/caps cache is admitted. Actual35-material embedded DXBC repetition only justifies
+a private same-device exact-byte shader-object reuse candidate. Its real-D3D19 controls and
+full-key fault-red are qualified. New private shader DLLBBC682…CCA9F0 startup35 capture naturally
+exits but has no hit witness because Renderer teardown logging was bypassed; keep that consumed run.
+A changed default-off bounded immediate observer DLL09C388…495A43 now has actual first-store and
+first-hit labels in both capture/consume, same original AOT. New capture35/33blobs and read-only
+consumer36loads/35correlated driver accepts/1reject/0fallback qualify only those scopes. Capture95raw
+includes46complete phase frames and49timing-only; consume97raw has97complete phases. Budgets remain
+red (1/6/11 and1/9/11); no original20 retry or production renderer admission. Root and source inverse
+receipts are under round7/lead, new runtime under shader-observed-runtime. Current local Release ZIP
+is not changed or requalified by this private candidate.
+Task53 was unqualified at its original stop; retain failed drafts and stop receipt. A later bounded
+readback observed-pair-review-v2.json now checks actual ready/quit/log references and counters; it
+still uses the root identity bridge and is not an independent full frame attribution or performance pass.
+Real GPU artificial-shader opaque/alpha pairs also match32768 bytes; changing candidate red tint on
+GPU produces1152 differing bytes and natural red1 before original-state green0. This is bounded pixel
+evidence, not full product/debug-label equivalence. No original sample is recollected. Owner requested
+local checkpoint commits before more work; no-trace original20 prep stays unbuilt/unrun.
+
+The latest product source is compiled into Release AOT `58131BEB…CA9361E`, with all 3483 actual
+kernel inputs matched. Asset checks qualify reuse of 58 non-AOT files (including actual rebuilt
+font equality). New candidate runtime59 manifest `B8C63848…61D1E20` is staged in round6
+`release-candidate-v1`, but old three-exit/16-action/ZIP receipts do not transfer. Fresh owned
+exit/cover wiring is independent of the completed seek. New playing/switch/pending cases now all
+exit naturally on this exact package with 18 matching loaded images and dual empty Job ≥8 seconds.
+The original 16-action smoke also naturally passes on this package. A separate real HTTP+visible
+cover run matches 9/9 tiles and 225/225 pixels and exits naturally. Local candidate ZIP43,831,371 bytes
+`FBBFFD3B…6237F13` has all59 entries/content/CRC verified in `release-local-package-v1`.
+This is current-source local package-phase acceptance, not formal release or the whole goal.
+
+Owner's concurrency requirement is retained in goal rev10 (introduced in rev9): keep independent substantive agents active, with
+disjoint writes and root review. Only dependent steps or the owned measurement/GUI window are serial.
+Do not repeatedly poll/re-audit when a concrete source or executable boundary can be advanced.
+
+Ordinary unmodified startup/exit, Top 20 exact cover, real-account external-chain acceptance,
+historical minimize attribution and formal full-goal delivery remain open. The latest-source local
+package binding is now qualified only for the explicit synthetic/noactivate scope above.

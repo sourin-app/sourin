@@ -305,3 +305,15 @@ and198 assertions; no native execution qualification follows from those tests.
 Fresh native/AOT, current playing/switch/pending Quit and final owning-input
 acceptance are reopened. Prior successes retain their old owning source scope;
 no latest-source runtime result or historical minimize cause is claimed.
+
+### 当前Release AOT与旧退出范围
+
+当前三处Dart变化已有新隔离Release AOT与59文件包；没有转移旧动态资格，而是分别实际
+运行新的playing/switch/pending、原16动作烟测和固定HTTP/可见封面见证，全部按各自
+任务非激活/合成数据范围自然退出，原件随后与本地ZIP逐件绑定。旧原ask/Quit仍保留其旧包范围。构建、资产与成员继承
+由[任务窗口与同包边界](../bug-fix/2026-11-18-task-window-safety-and-package-acceptance.md)持有，
+新退出驱动保留四个确切原MSAA模式和无激活/合成HLS路径，重绑包/工具/profile后
+已有三项新应用结果，不重播旧seek；普通默认启动、真实外链和严格性能仍未验收。历史最小化的v5/v6 PID/HWND与log byte offset
+可保留同文件先后，但本轮原件仍无共同QPC/调用栈/输入焦点来源；
+`historical-minimize/historical_minimize_incremental_review_v1.json` 的passed仅指有限证据记录，
+oldCallerAttributed/oldCauseResolved均为false，不能提升为已归因。

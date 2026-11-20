@@ -100,6 +100,14 @@ empty_cookie 摘掉运行时 return 反模式、补 #[ignore]（与兄弟一致�
   判定为 keyring crate 进程内缓存与 OS 的瞬态不同步，只影响隔离空间；
   根修需动 crate，超出本篇范围，如复发另案。
 
+### 2026-11-20 A8 外部链证据边界
+
+本轮 A8 准入检查只读取本地无秘密 scope/intent 元数据，未登录、未读取凭据、未联网，也未执行远端转存或清理。合成 `.invalid` fixture 的元数据匹配仅得到 `FIXTURE_MATCH_OFFLINE_ONLY`；同一 scope 下替换对象的负对照退出 2 / `TARGET_NOT_EXACTLY_APPROVED`；缺少 Owner scope 的负对照退出 2 / `OWNER_SCOPE_AND_INTENT_NOT_SUPPLIED`。三项均明确 `executionAllowed=false`、`externalExecuted=false`、`a8Accepted=false`；合成通过不是 Owner 授权、真实账号/对象归属证明、OS 隔离证明或外部链通过。
+
+真实外部链仍缺：专用可丢弃测试账号及安全配置方式；经明确授权的 profile 与不重叠的四服务 keyring namespace；逐项限定的 HTTPS origin、登录/转存/清理权限、任务专属目录及单个合成对象；真实对象创建回执及服务端对象 ID 归属证据；足以证明会话、profile 与 OS 隔离的独立证据。scope JSON、profile override、旧匿名请求、存在性摘要或本地 fixture 均不能替代这些输入。清理仅可针对此次创建且独立验证归属的对象；未获许可不能登录、转存、删除或清理。
+
+回执：`任务证据根/sourin-glpb-startup-20261120-round6/external-chain/HANDOFF-A8.md` 与 `offline-scope-review-v1.json`；它们证明的是本地离线元数据判定及负对照，不是真实外部操作。
+
 ## 教训（通用）
 
 **测试与用户数据共享任何进程外存储时，"先隔离再跑"必须是结构性的**

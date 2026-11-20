@@ -13,6 +13,10 @@ The proposed/implemented/rejected note audit found these overlapping owners.
 Their decisions remain intact. This note adds per-image request metadata, not a
 replacement CDN or a change to media transport.
 
+固定 URL 的前端 provider 重复解析与 hash 复用由
+[封面 provider 身份复用](../simplification/2026-11-19-cover-provider-identity-reuse.md)持有；
+本篇的传输头解释和持久化规则保持不变。
+
 ## Problem
 
 A fetched PanWebShare catalog contains poster URLs ending in

@@ -78,11 +78,15 @@ flutter analyze lib            # 0 error；不要新增 warning
 ## 3. 用户数据安全（违反任何一条都是事故）
 
 ```text
-· 绝不读写 %APPDATA%\app.sourin.player          ← 用户的真实收藏 / 进度 / 片头片尾 / 凭据
+· Owner 于 2026-11-18 明确授权：开发期间可在其指示下使用 %APPDATA%\app.sourin.player
+  启动/查看客户端；当日曾按此授权启动现有 Release 并查看窗口（标题「源影」）。
+  这是当次使用记录，不表示客户端当前仍运行。
+  该授权不代表测试可默认写真实库；需要隔离的自动化测试仍按下条使用 DATA_DIR_OVERRIDE。
 · 绝不在 <用户目录>\Videos\源影 里建 / 改 / 删    ← 用户的真实缓存视频
 · 跑测试必须隔离：--dart-define=DATA_DIR_OVERRIDE=<临时目录>，并清掉沙盒 ui-prefs.json
   里的 dsh.download.dir（它只决定从哪读偏好，**不校验**里面的真实下载路径）
-· 要真机启动：APPDATA / USERPROFILE 都指到临时目录，加 SOURIN_NO_REMOTE_AUTOSTART=1
+· 未获针对性授权的启动仍使用隔离 APPDATA / USERPROFILE，并加 SOURIN_NO_REMOTE_AUTOSTART=1；
+  已获 Owner 明确指示使用真实本机数据时，可遵照该指示启动
 · 只结束**你自己启动的 PID**（taskkill //PID <pid> //F），绝不按进程名批量杀
 · 不碰 Windows 凭据管理器里的真实凭据；不拷真实数据目录里的 sync-settings.json /
   remote-pref.json / plugins/.data/（含凭据，且会自动同步或占端口）
@@ -91,8 +95,9 @@ flutter analyze lib            # 0 error；不要新增 warning
 ```
 
 · 只读纪律：「看代码」≠ 下载/安装/运行 —— 复核源码只读源码与仓库元数据，禁下载 release
-  产物、禁解压、禁运行 exe，不得让被测软件写注册表或用户目录；确需实际运行先要用户授权，
-  误装误跑立刻还原并如实汇报
+  产物、禁解压、禁运行 exe；不得让被测软件写注册表或用户目录。确需实际运行须先获用户授权；
+  Owner 2026-11-18 对开发期间使用真实本机数据的明确授权，适用于其指示的客户端开发启动，
+  不自动授权登录、读取/导出凭据、真实云同步/转存或远端清理等外部操作。
 数据目录的完整清单见 [DATA-DIR.md](DATA-DIR.md)。
 
 ---
@@ -276,6 +281,10 @@ build/windows/x64/runner/Release/sourin_spike.exe &
   ls .agents/notes/implemented/architecture/
   rg --hidden --glob '!.agents/notes/archived/**' "关键词" .agents/notes/
   ```
+
+补记与续接按[单一笔记出口](../.agents/notes/implemented/process/2026-10-17-notes-tree-is-single-decision-record.md)执行：
+先读既有决定及其验证范围，不另建 TODO 或手写进度索引；只有所属输入变化、证据缺失或新反证才重开影响面。
+`implemented` 不代表完整目标通过，完成也不自动归档仍有效的安全与行为约束。
 
 ### 7.1 笔记是「现行法律」，不是流水账
 

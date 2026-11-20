@@ -1,110 +1,65 @@
-# Agent Note: Library cover lifecycle and background recovery
+# Agent Note: 媒体库封面生命周期与后台恢复
 
 Status: implemented
 
-Applies from 2026-11-08.
+适用于自 2026-11-08 起的媒体库封面持久化、显示与后台恢复；隔离候选及 Top20 的证据边界以 2026-11-19 的既有回执为准。
 
-Independent: the audit of proposed, implemented and
-rejected cover notes found no decision owning persistence and display URL
-lifetime. Existing title backfill and image decode sizing remain separate.
+Independent: 对 proposed、implemented、rejected 封面笔记的审计没有发现负责持久化与显示 URL 生命周期的既有决定。标题回填与图像解码尺寸保留各自的职责。
 
 ## Problem
 
-Session proxy URLs in followed items become unusable after restart. History and
-continue-watching lists omit required cover headers. URL-only proxy deduplication
-mixes headers from different providers. Poster errors remain latched indefinitely.
-Registering many posters also evicts active HLS segment headers.
+追更条目中的会话代理 URL 在重启后失效。历史与继续观看列表遗漏必需的封面请求头。只按 URL 去重代理会混合不同 provider 的请求头。海报错误状态持续锁住，不会自行恢复；大量海报注册还会挤出正在播放的 HLS 分片请求头。
 
 ## Decision
 
-Database writes store original cover URLs. All library display commands, homepage
-items and details share proxy registration, using child headers for aggregate
-items. Only the internal loopback token route is considered ephemeral; ordinary
-local image servers remain supported. Proxy deduplication includes required
-headers, and cover entries own their headers independently from video streams.
+数据库保存原始封面 URL。所有媒体库显示命令、首页条目及详情共用代理注册；聚合条目使用原始 child 的请求头。只有内部带 token 的 loopback 路由属于临时地址，普通本地图像服务仍受支持。代理去重包含必需请求头，封面条目独立拥有自己的请求头，不与视频流争用其生命周期。
 
-Library views render existing records before starting shared background recovery.
-The [library page admission contract](2026-11-11-library-load-request-ownership.md)
-requires the initiating page to remain visible at the frame boundary; hidden
-retained pages still accept local data without starting a new recovery request.
-Recovery reuses valid metadata across library tables or requests enabled source
-details. Work is serialized, limited to 24 items with concurrency four and a
-four-second detail timeout. A rotating cursor prevents permanently unavailable
-items from starving later records. The frontend coalesces requests and applies
-a one-minute cooldown. Compare-and-update changes cover fields only, preserving
-ordering, progress, follow state and concurrently replaced covers.
+媒体库先渲染已有记录，再启动共享后台恢复。[页面恢复准入契约](2026-11-11-library-load-request-ownership.md)要求发起页面在帧边界仍然可见；保留在后台的隐藏页面仍接收本地数据，但不发起新的恢复请求。恢复复用媒体库各表中同一精确身份的有效元数据；只有 provider 与原始 child 均启用时才请求源详情。禁用状态和显式为空的聚合选择必须保留，不能为了填图启用 child 或替换聚合选择。
 
-When all stored covers are missing, a source detail can supply artwork only if
-its complete MediaId matches the requested provider and native ID. This is the
-same ownership boundary enforced by expired-singleton refresh. A readable image
-returned with a different work or provider identity cannot become the selected
-record's cover. Rejection leaves all library tables unchanged; a matching detail
-still changes only the selected cover fields through the existing conditional
-database update.
+恢复批次串行执行，每次最多处理 24 个条目，内部并发为 4，详情超时为 4 秒。轮转游标避免永久不可用条目饿死后续记录。前端合并重叠请求并施加一分钟冷却。比较后更新只写 cover 字段，保留排序、播放进度、追更状态及并发写入的新封面，不重写完整记录。
 
-Poster cards retry a failed URL twice, after two and four seconds. A URL change
-resets the budget, and disposal cancels the pending retry.
+所有存量封面都为空时，详情也只有在完整 MediaId 与请求的 provider、native ID 完全一致时才能供图；失效单封面刷新沿用同一归属边界。属于另一作品或 provider 的可解码图像不能成为所选记录的封面。拒绝时媒体库各表均保持不变；身份匹配时仍仅经既有条件式数据库更新修改所选 cover 字段。标题、年份、图像相似度、单独的数字元数据 ID 或一张可读取的图片都不构成身份映射。
 
-The shared native Flutter cover loader bounds connection acquisition and response
-headers to twenty seconds each, and cancels an image body after twenty seconds
-without bytes. Actual data resets the body deadline, preserving slow progressing
-posters. Non-200 responses cancel their body immediately and retain the received
-status. Cancellation completes before closing progress events; late completions
-are handled and failed cache entries are evicted so existing card retries work.
-Gzip decoding, byte progress, CDN headers, sentinel rejection and decode dimensions
-are retained. These limits apply only to covers, not video-body transport or the
-web image implementation.
+海报卡片在 URL 失败后分别等待 2 秒、4 秒，最多重试两次。URL 变化会重置预算，销毁卡片会取消待执行重试。
+
+共享原生 Flutter 封面加载器分别对连接获取和响应头设置 20 秒上限；图像正文连续 20 秒没有字节时取消。实际字节到达会重置正文期限，保留持续缓慢传输的海报。非 200 响应立即取消正文并保留收到的状态码。取消完成后才关闭进度事件；迟到完成被妥善处理，失败缓存项被逐出，使现有卡片重试可继续工作。Gzip 解码、字节进度、CDN 请求头、哨兵值拒绝及解码尺寸规则均保留。这些限制只适用于封面，不改变视频正文传输或 Web 图像实现。
+
+隔离回执不是操作真实数据的授权。2026-11-18 用户针对其指示的本机客户端开发启动、查看所作的授权，不表示客户端当前仍运行，不表示自动化可默认写真实库，也不自动授权登录、凭据读取或导出、真实云同步、转存和远端清理。自动化仍使用隔离数据；凭据、用户 plugins/.data 与真实缓存视频不属于封面取证范围。单候选副本的结果不能扩大该授权；回执不披露标题、native ID、share URL 或秘密值。
 
 ## Alternatives considered
 
-Clearing stale covers alone leaves permanent placeholders. Refetching all details
-before displaying the library delays navigation and repeatedly contacts sources.
-Rewriting complete favorite or progress records can overwrite concurrent changes.
-Sharing the video header cache with posters makes browsing affect active playback.
-Checking only whether a detail contains a usable cover accepts artwork belonging
-to another work. Title similarity or a valid image response does not establish
-the exact provider and native identity required for persisted library records.
+只清空过期 URL 实现简单，却会留下永久占位图。展示前重取全部详情可以获得新元数据，却拖慢导航并反复联系源。重写整条收藏或进度记录看似直接，却可能覆盖并发改动。让封面共用视频请求头缓存可以少维护一套状态，却会使浏览海报影响正在播放的分片。只检查详情是否包含可用图片可以扩大命中，但会接收别的作品的封面；标题相似或图片有效也无法建立持久化记录所需的精确 provider/native 身份。因此恢复保留精确身份、独立请求头和条件式仅封面写入，不按标题猜图。
 
 ## Consequences
 
-[Completed HTML recovery](2026-11-11-html-cover-recovery-after-save.md) extends
-definite invalid-body evidence and publishes singleton checks after saving.
-Exact identity and conditional cover-only updates remain unchanged.
+[完整 HTML 响应恢复](2026-11-11-html-cover-recovery-after-save.md)扩展确定性无效正文的判据，并在保存成功后才发布单条检查结果；精确身份和条件式仅封面更新保持不变。
 
-Integration tests read real database rows and local HTTP responses: origin
-persistence, restart display for four library views, source-specific headers,
-aggregate child headers, metadata-preserving recovery, disabled-source exclusion,
-fair progress and active video segment access after 4096 cover registrations.
-Widget tests observe a decoded image after a real HTTP 503 and retry; another
-local HTTP case stalls headers/body, checks timeout and late-response cancellation,
-then decodes the same recovered URL with gzip. A progressing image crosses the
-original wait interval without timing out. The history page's decode-size check
-uses its actual Image and layout at two widths; hardcoding its card width causes
-the check to fail. Coordinator
-tests cover concurrent callers, cooldown and synchronous failure recovery.
+### 已有实现验证及范围
 
-The all-missing identity regression uses the real recovery API and database with
-a loopback image service. Wrong-native-ID and wrong-provider details are compared
-against full favorite, progress and history snapshots, including another owner's
-same-native-ID record and ordering. The matching-ID control permits only the
-three selected cover fields to change. The compiled baseline produced two
-intended failures and one passing control: foreign detail artwork was actually
-written into all three selected records. Evidence is retained in
-`.probe/parallel-astra-1108/native-verify-v51/v54-library-identity-red-v1.log`.
-The coordinating post-change run of the complete `library_cover_lifecycle`
-integration target passes all 21 tests, with zero failures or ignored tests.
-Compilation takes 47.65 seconds and execution 4.61 seconds; the source hashes
-remain frozen and the three identity tests retain the same bytes as the qualified
-baseline. Evidence is retained in
-`.probe/parallel-astra-1108/native-verify-v51/v54-library-lifecycle-green-v1.log`
-and its matching source receipt.
+既有集成测试读取实际数据库行与本地 HTTP 响应，覆盖原始 URL 持久化、四种媒体库视图的重启显示、源专用请求头、聚合 child 请求头、保留非封面元数据的恢复、禁用源排除、公平推进，以及 4096 次封面注册后正在播放的视频分片仍可访问。
 
-Bounded validation and replacement of existing stale URLs is governed by
-[expired-cover refresh](2026-11-10-expired-library-cover-refresh.md); it extends
-the missing-metadata recovery here without a full network scan. Recovery reads
-the first 100 history/progress entries and all favorites/follows. Revisit these
-bounds if the UI adds deeper history paging. These tests do not establish live
-source availability or final native UI acceptance.
+Widget 测试在真实 HTTP 503 与重试后观察到解码图像；另一条本地 HTTP 用例停滞响应头或正文，检查超时及迟到响应取消，再以 gzip 解码同一恢复 URL。持续传输的图片越过原等待间隔而不超时。历史页解码尺寸检查读取实际 Image 及两种宽度下的布局；将卡片宽度硬编码会使检查失败。协调器测试覆盖并发调用者、冷却与同步失败后的恢复。
 
+全空封面的身份回归使用实际恢复 API、数据库和 loopback 图像服务。错误 native ID、错误 provider 的详情与完整收藏、进度和历史快照比较，包含另一归属方的同 native ID 记录及排序。匹配身份的对照只允许所选三处 cover 字段变化。可编译基线产生两个预期失败和一个通过的对照：外来详情图片确实写入所选三条记录。原始证据保留于 `.probe/parallel-astra-1108/native-verify-v51/v54-library-identity-red-v1.log`。协调后的完整 `library_cover_lifecycle` 集成目标通过全部 21 个测试，失败 0、忽略 0；编译耗时 47.65 秒，执行耗时 4.61 秒。该次源文件哈希保持冻结，三个身份测试与合格基线的字节一致。证据保留于 `.probe/parallel-astra-1108/native-verify-v51/v54-library-lifecycle-green-v1.log` 及对应源文件回执。这些是既有测试读数，不代表 2026-11-19 补记时重新执行。
 
-Related retained decision: [failure callback revision ownership](2026-11-12-poster-failure-callback-revision.md). The card failure-callback decision adds cover-revision ownership to the existing bounded two/four-second retries; durable/display conversion, requests and persistence decisions remain unchanged.
+已有失效 URL 的有界验证与替换由[过期封面刷新](2026-11-10-expired-library-cover-refresh.md)负责；它扩展缺失元数据恢复，但不增加全量网络扫描。恢复读取历史、进度各前 100 条以及全部收藏、追更；界面增加更深历史分页时需要重新审视该边界。上述测试不能证明当前上游可用，也不是最终原生界面验收。
+
+### 隔离单候选与 Top20 的验收边界
+
+单精确候选副本的修复、解码及非封面不变结论，各自只覆盖原回执明确列出的同一身份和隔离副本；即使该项成功，也不能外推为其他空封面、真实库、当前 Top20 或完整目标通过。Top20 名称下的现有投影同样只包含一个精确候选，不是当前真实列表的二十项全量审计。
+
+2026-11-18 授权后，从真实库只读投影到全新任务副本的另一单精确候选，已有成功回执 `.probe/current-real-config-permission-20261118/one-real-cover-repair-owned-v1-c3ec451ca53241f3bbfafd8673d2d6ea/aggregate.json`。其投影为 favorites 0 条、progress 与 history 各 1 条，全部原字段及 SQLite 类型与来源一致；未修改的生产 `repair_library_covers` 复用同身份保留的非空变体，仅补齐 1 条 history 封面，报告与实际改动均为 1，空封面 1→0。回执确认行键、完整身份、全部非封面字段及类型不变，真实库与真实配置未修改，原禁用状态和 provider/native ID 未改变，既有插件拷贝数为 0，真实 keyring 未读写。该候选运行时未注册，未安排网络探测，以无界面的同步调用和自然宿主退出结束；没有声明完整应用 shutdown API、普通默认启动、实际图像解码、性能、全部封面或完整目标验收。回执明确该候选与仍未解决的历史 Top20 候选不同，不能把成功的 1→0 与下述 Top20 的 2→2 混为同一次修复。
+
+`.probe/remaining-cover-20261118-top20-v1/TOP20_EXISTING_EXACT_COVER_EVIDENCE_RECONCILIATION_20261119_V1.json` 对齐现有回执：该身份在 favorites 为 0 条、progress 与 history 各 1 条，三表非空封面 donor 均为 0；生产修复 API 已执行，报告与观察到的 cover 改动均为 0，空封面仍为 2→2。候选运行时未注册，原始 child 显式禁用，聚合选择显式为空。原回执报告所有非封面字段及 SQLite 类型、身份与行键保持不变；零改动不是封面恢复通过。
+
+`TOP20_EXISTING_PROJECTION_EXACT_BRANCH_20261119_V2.json` 使用生产聚合常量校正既有 V1 的猜名误判；V1 的 providerIsAggregate=false 不作为有效结论。原 `aggregate.json` 的 noNetworkScopeReason 文本声称存在非空变体并已填充，与精确投影和 0 改动计数矛盾，不能当作 donor 或成功证据。错误诊断与原始回执保留，不通过删除失败或采信叙述改写验收结果。
+
+同目录 `COVER_ENDPOINT_STATIC_AUDIT_20261119_V1.json` 与 `.probe/cover-local-identity-review-20261119-b6f04d/REVIEW.json` 的有界源码审查区分 cloud 搜索身份与推荐 link/meta 身份：搜索保留 kind、disk、加密 share，推荐海报只属于各自响应行；cloud 详情的 check-links 解析播放地址和标签，详情 cover 为空。现有证据没有建立该精确 share 到推荐 poster 的映射；只改搜索结果 cover 也没有接入存量媒体库详情/修复消费路径。
+
+`.probe/cover-archive-exact-20261119-v1/BOUNDED_LOCAL_ARCHIVE_EXACT_SHARE_LOOKUP_20261119_V1.json` 记录对十份点名源码、协议或交付档案的有界查找：精确 native、加密 share 和同 share poster 行命中均为 0，旧投影及其 WAL/SHM 保持不变；当次 SQLite 只在新任务副本打开。该否定范围不是工作区全量普查，不描述当前真实库，也不证明其他本地或上游映射不可能。
+
+Top20 未验收的最小缺失证据，是同一精确 provider/native 身份下既有非空 poster 与可离线读取的对应图像字节，或已保存、可独立复现的精确 share/request→response→poster 归属链。链必须绑定 provider、原始 child、完整 native 身份、请求与路由所有权，并能独立核验 cloud 与 link/meta 的身份关联；标题、年份、海报相似度或单独数字元数据 ID 不足以补齐。只有这一所属输入变化、证据缺失或新反证出现时才重开对应影响面，不重复旧检索或建立进度清单。
+
+具备该输入仍只满足隔离验证前置：有效映射必须由实际详情/修复路径消费，在隔离副本中观察图像实际解码、条件式仅 cover 写入，以及全部非封面字段和 SQLite 类型不变；provider/child 启用策略与显式空聚合选择始终不变。既有尺寸头检查不是完整像素解码，源码、测试或哈希本身也不能替代当前原生显示和用户验收。`implemented` 表示恢复机制已落地，不表示 Top20 或完整目标通过。2026-11-19 的本次补记只同步既有正文和回执，不重新打开数据库、不发网络请求、不重算哈希或重跑测试。
+
+相关保留决定：[失败回调的封面修订归属](2026-11-12-poster-failure-callback-revision.md)。卡片失败回调在既有 2 秒、4 秒有界重试上增加 cover revision 归属；持久化/显示转换、请求和持久化决定均不改变。

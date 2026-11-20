@@ -81,10 +81,7 @@ cover addresses remain under Flutter's ordinary fake test HTTP client.
 Every gated action releases its held file operation in finally, with teardown
 release as an additional safeguard; assertion failures cannot leave a gate held.
 
-Native conversion and current wrapper identity are fixture results here; they
-do not establish a live source image's availability or final native pixels. The
-startup check is a source-order guard, not execution of a second application.
-Root must distinguish any import/fixture error from a meaningful behavioral RED.
+本地传输夹具中的 native 转换和当前 wrapper 身份仅证明夹具所覆盖的行为，不证明真实公开分享的原始响应、poster 字节、在线可用性或最终原生像素。Dart 首启顺序检查只是源码顺序守卫，不是第二次应用启动；合成分享/响应不得当作真实外部身份链。导入或夹具错误与有意义的行为 RED 必须区分。2026-11-20 task-21 只读既有 Top20 task 投影，没有保存 response capture、HTTP body 或 poster bytes；favorites 0 条、progress/history 各 1 条，精身份非空 cover donor 为 0，修复 API 改动 0，空封面仍 2→2。该候选的精确 share→response→poster 身份未建立。标题、年份、外观相似、57 条标题列表或单独 metadata ID 均不能补身份。已有位置：`任务证据根/sourin-glpb-startup-20261120-round6/top20-exact/task-21-exact-identity-block-v1.json`。
 
 ## Verification
 
@@ -151,12 +148,7 @@ claimed by these Dart tests.
 
 ## Consequences
 
-The old behavior and the implemented durable/display ordering boundaries are
-qualified by the RED, 28-case GREEN and 75 related passing cases above. Final
-post-lint analysis remains a coordinator-owned follow-up check. A freshly
-restarted ordinary native client must still use the same isolated profile and
-decode current-session covers after normal prior-client exit. The implemented
-Dart decision alone does not complete that native acceptance gate.
+原行为与 durable/display 持久化边界仍仅由上述 RED、28 项 GREEN、75 项相关通过及最终 22/22 冷快照/转换回归支持；最终 post-lint analysis 仍由协调者负责，不把笔记同步说成重跑验证。普通原生 Release 的冷重启及实际当前会话封面解码仍未通过：必须使用隔离 profile，并在前一客户端正常退出后确认新会话图像；本地合成 Dart fixture 不等于匿名公开服务响应，也不能代替真实身份链或原生像素验收。2026-11-20 的 ordinary-session 只读准入回执显示专用授权为 false、没有独立 Active/Connected 交互会话，前台仍属当前探测 session，故 ordinary default-user Release startup 保持 BLOCKED；未启动 GUI、未切换桌面、未注入输入或抢焦点。回执为 `任务证据根/sourin-glpb-startup-20261120-round6/ordinary-session/A11_READ_ONLY_SESSION_ADMISSION_V1.json`。Dart 快照决定已落地不等于原生默认启动或完整目标通过。
 
 
 Final verification after the braces/import-only cleanup: the 18 frozen-behavior

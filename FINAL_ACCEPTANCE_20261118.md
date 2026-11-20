@@ -354,4 +354,12 @@ root亲看Home和Settings两PNG：Home混合已解码图与灰占位，Settings�
 
 在实际pinned SkJSONWriter类及真实Skia核心实现下，四种十进制方法改用现成SkStrAppend函数，保持实时能力读取、全部输出字段、float/hex和状态机。故障副本先真实自然exit73；候选正例自然exit0，kFast/kPretty原件逐字节分别1562905/2263461字节相等，每模式100068项数组的整数token均独立核对，含100000次伪随机十进制调用。两进程无force/Job双空≥8秒；原负控stage保持passed=false。
 
-这仅是写出器行为对照，不是live caps reader、完整引擎、GPU像素或应用性能资格。没有运行新GUI，不重播seek/已验原20；第12轮3/12/26失败保持。候选针对未来consumer的额外序列化成本，关闭GLPB的off基线并不调用此ReadLive链，不能宣称修复该基线峰值。详见[候选决定](.agents/notes/proposed/simplification/2026-11-20-skia-json-integer-format.md)。根回执 sourin-performance-20261120-round13/ROOT_JSON_WRITER_DIFF_READBACK_V1.json，SHA256 C1A8930A66A005F233485D4DFEC7F1B182A170066F77300B3738BA118690407F。
+人工写出器对照已另由真实live caps reader行为对照推进：五相关TU编译/链接自然0，六次同surfaceless上下文的原/候选/原逐次读取各22109字节完全相同、完整指纹一致；真实每次S32/U32/S64/U64调用85/57/12/0，实际数字故障154字节差并在同门自然exit1，正例自然0，两者noForce/双空≥8秒，原上下文守卫实际执行。根回执 sourin-performance-20261120-round14/ROOT_LIVE_CAPS_JSON_DIFF_READBACK_V1.json，SHA256 AB30A64511084B1C3A3099A224E08DF56A723DFD2B8561769904D6A302E5B575。
+
+11个实际头依赖角色的纯候选DLL（8A05A10E…C80569、闭包12014899…A5052）已完成PE静态与无窗真实加载：133导出name/ordinal、24+2 import模块/465 symbol行匹配，删导出/错ordinal负控exit4；错误hash load前exit23，正例解析36个header API并FreeLibrary后未映射。它们是限定子项，不代替完整应用资格。
+
+新的capture/consume各一次完成原20且自然退出0/无force/双空≥8秒。capture保留1082全pre-Quit raw（动作末1063，追加19），预算超3/36/74；独立原decoder确认38descriptor/37payload/496864字节，manifest362382F5…ABA24。consumer97文件实际39load/38driver accepted/1reject/0fallback，但原运行资格因NO_DROPPED_OR_MISSING_QUIT_TAIL_FRAMES失败：保存1131raw（动作末1116，追加15），Quit计1136、缺5raw。保存前缀1/5/15超限不当全分母结果，不补造或丢帧，也不重启重选成绩。两臂18加载映像正确；root亲看capture海报与consumer多数占位，Settings截面同hash，不宣称全场像素等价或因果提速。38物料原件/只读副本消费后hash均保持。
+
+旧AOT仅按真实冻结编译树继承：capture54/consumer55条冗余live路径精确桥回同relative/旧hash编译副本，保9758历史检查与819源码，其它依赖严格原地；当前路径隔离改动未被虚称已编入原AOT。首拒绝、decoder命名冲突及只读读回器错误原件均保留。详见[候选提案](.agents/notes/proposed/simplification/2026-11-20-skia-json-integer-format.md)。根pair回执sourin-performance-20261120-round15/engine-build/ROOT_R15_PURE_ENGINE_PAIR_READBACK_V1.json，SHA256 4DBC73DAC572610D6BF7615D8AEC706EFEDB21E931317F800B1BBAA7B0473C86。候选未生产采用，性能、消费者全raw、普通启动、Top20、A8、历史caller和完整目标仍未验收。
+
+按本次Owner明确指示，root+7可见队友按互斥范围推进，全部所需队友已回收实际产物/结果；工具与探针路径隔离、T38显式夹具及相关隐私文字在真实正反测试与逐行自审后本地提交ce5bd7f并已推送同工作分支，远端HEAD/树已独立读回和全树分类复扫。89个已审命中属于占位/协议/公开归属/合成fixture/检测needle，确认真实机器路径和具体私库元数据0；不声称旧git历史被重写或所有隐私范畴穷尽。437篇笔记机械门通过，旧账户/GUI探针未运行，不把helper绿当A8或UI验收。seek、既验Release和未受影响范围不重测。

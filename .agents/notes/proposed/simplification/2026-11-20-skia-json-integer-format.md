@@ -25,11 +25,11 @@ Pinned SkJSONWriter的S32/U32/S64/U64十进制方法使用通用printf格式化�
 
 ## Acceptance criteria
 
-当前原生fixture的红控、正例、全字节与独立整数值检查均已实际执行；这只关闭该差分子项。采用前还须冻结并重编所有受inline头变化影响的真实TU、在同一live caps reader逐次验证原/候选指纹，并取得同包受影响行为和原20预算的新证据。编译成功或此次fixture相等均不替代这些条件。
+人工原生写出器差分和真实surfaceless live caps reader的红控/正例均已实际执行；六次逐次读取完整字节与指纹等价，只关闭这些行为子项。产品采用前仍须冻结并重编整个受inline头变化影响的真实TU闭包、绑定产品引擎/同包并取得受影响行为、像素和原20预算的新证据。五个fixture TU不代表完整引擎图，live字节相等不代表速度或预算通过。
 
 ## Risks
 
-整数格式化在当前off基线中没有相应ReadLive消费调用；即使底层更省格式解析，也未量到实时reader或应用收益。类的inline头变化扩大重编范围，不能仅重链单对象后宣称全路径采用；本候选保留所有实时查询，不以潜在收益换取旧指纹复用。
+整数格式化在当前off基线中没有相应ReadLive消费调用；本轮真实live reader只证明字节/指纹等价，未量其速度或应用收益。类的inline头变化扩大重编范围，不能仅重链单对象后宣称完整产品采用；本候选保留所有实时查询，不以潜在收益换取旧指纹复用。
 
 ## Consequences
 
@@ -39,4 +39,24 @@ Pinned SkJSONWriter的S32/U32/S64/U64十进制方法使用通用printf格式化�
 
 根回执 sourin-performance-20261120-round13/ROOT_JSON_WRITER_DIFF_READBACK_V1.json，SHA256 C1A8930A66A005F233485D4DFEC7F1B182A170066F77300B3738BA118690407F。候选补丁 skia-decimal-writer.patch，SHA256 8FFE4D4392C574B283A6F493361BCED800D07A60DAB4DBA1B86E3DEF402F3144。
 
-代价是32位inline方法变动需要重编实际消费者，单换SkJSONWriter对象不构成完整引擎接线；未来构建须冻结所有实际受影响TU和include，而非重标旧对象。重新考虑采用只限：同一真实live caps输出/指纹等价、实际调用路径、同包受影响行为与原20严格预算都有新证据。尚无live reader、完整引擎DLL、GPU像素或应用性能资格；本轮无GUI，不重播旧seek/原20。第12轮1096帧及3/12/26超限保持失败。
+私有live夹具现在把四个真实Skia消费者（GrCaps、稳定版GrGLCaps、GrShaderCaps、SkJSONWriter）及Manager/ReadLive主TU编入同一执行体，五编译和链接均自然exit0/noForce/双空≥8秒。GrGLCaps明确复用已资格的stable caps源和原caps-fixture对象角色，未误换为当前SDK普通dump语义；实际267个include已按编译cwd解析并重哈，两个lexical候选头角色同字节。3513复用obj/556库在执行前后冻结核验；不是全SDK fresh或全引擎头依赖闭包。
+
+同一真实surfaceless EGL Manager/Ganesh上下文，正例依次0→1→0、0→1→0逐次完整ReadLive；六次caps JSON各22109字节同SHA，完整fingerprint相等，caps/options hash为F23DBB7A…1EB5。真实S32/U32/S64/U64调用每次85/57/12/0，共154；计数不从静态调用点比例推断。真实故障模式2在相同dump路径改末位数字，154字节变化且hash变化，原生自然exit1/原stage passed=false；随后正例自然exit0，原代数context/generation/scope/unbound/rebind-epoch守卫均实际执行。Job双空分别8.0471/8.0544和8.0182秒，无force。此为新的真实输入差分，不重跑旧fixture取性能成绩。
+
+根live回执 sourin-performance-20261120-round14/ROOT_LIVE_CAPS_JSON_DIFF_READBACK_V1.json，SHA256 AB30A64511084B1C3A3099A224E08DF56A723DFD2B8561769904D6A302E5B575。新增selector/counter/dump仅属于任务夹具，保持所有实时驱动/能力读取；它不属于生产实现，也不据此声明live-reader速度或应用帧预算改善。原R13人工差分仍单独有效。
+
+成熟Ninja实际依赖库现已枚举4944条记录，SkJSONWriter头有11个VALID依赖角色。与真实父DLL rsp交集10个Skia角色，另一个live-context逻辑角色对应父图中的私有identity对象；本次据此实际重编11个TU，而非把五夹具TU当整个引擎。GrGLCaps仍映射已资格R5 stable对象，identity重编使用新闭包；3506个未变物理对象按真实link去重，父sidecar中同一caps对象的两个词法alias不冒充两份物理对象。
+
+纯候选头逐字节等于R13已对照版本，不带R14 selector/counter/dump；所有其他新source保持真正父输入字节。11次编译和DLL链接均自然exit0/noForce/双空≥8秒，400个实际include已按编译cwd核字节，全部TU确实看到纯候选头，identity看到新的identity头。新DLL SHA256为8A05A10E8DA8BA9B29CC226C31D6A4149B613C1472FDB5CB3019C1223CC80569，闭包12014899017F1A37799D4EB29B78F69D883BC5F9BE7F0A3F084817BC170A5052；import lib仍20C5510E…B4616F。原OUT的size/mtime/file-ID守卫不变，原实对象/库前后hash匹配。
+
+PE与真实加载子项现有新原件：133个导出name/ordinal与父DLL相等，24个regular及2个delay模块、465个import symbol行保持；删真实导出和交换3/10 ordinal的实际子进程均exit4。RVA只要求有效，未把重编后的地址相等当ABI保证。真实LoadLibraryEx/GetProcAddress/FreeLibrary另由错误hash先exit23/不load，再正例解析6个GLPB+30个public导出、成功卸载/之后未映射；均noForce/双空≥8秒。没有调用已解析engine函数，故这不是完整runtime资格。
+
+新的同DLL/同原AOT pair各只运行一次。新捕获完成原20、自然exit0/双空8.0269/8.0283秒，动作末1063、pre-Quit/quit1082帧含19尾帧，严格build/raster/total超3/36/74。原Finish成功、38descriptor/37唯一payload/496864字节，manifest362382F5…ABA24经原decoder独立校验；消费97文件=base59+物料38。
+
+消费者虽完成20动作且原Quit自然0/noForce/双空8.0507/8.0522秒，但原检查以NO_DROPPED_OR_MISSING_QUIT_TAIL_FRAMES失败：动作末1116、已保存pre-Quit1131含15追加尾帧，Quit计1136，缺5条raw。保存前缀的1/5/15超限只属1131已保存帧，不是1136全帧预算；不补帧、不删分母、不把最终native-helper的静态false改绿，不重播该样本。原生有限计数是39load/38return/binary/matched/driver accepted、1reject、0fallback/reentrant，初态已有1load/1package return，nonce4604284952899482733保持；不推断每key全覆盖或该次拒绝原因。原38个物料及只读副本消费后字节均不变。
+
+root亲看四PNG：capture Home可见多张真实海报，consume Home主要灰占位；最终Settings同hash。18个实际加载包映像两臂均匹配新DLL，采样窗口状态非iconic/nonforeground，只限保存采样点。两臂视觉内容状态不等价，不凭数字差异作跨运行因果提速或全程像素等价。
+
+原collector最初因当前工作树隐私/探针变更触发旧AOT冗余live-root哈希拒绝，前驱保留。读侧后继对54（capture）及55（consume，新增服务器名注释脱敏）条路径仅映到旧build.sourceInputs中同relative/hash的真实冻结副本，仍检查9758绑定、819源码；其他SDK/helper/tool全部原地校验，不把当下改后源码叫已编入旧8E68…AOT。错副本字节/hash/非source path实际红控拒绝。consumer重复decoder模块名的前驱冲突同样保留，后继两私有模块均完整校验原bytes。根离线checker首稿错取capture的observation字段失败，按真实mode分支的只读v2完成原件核对，没有重启应用。
+
+根pair原件回执 sourin-performance-20261120-round15/engine-build/ROOT_R15_PURE_ENGINE_PAIR_READBACK_V1.json，SHA256 4DBC73DAC572610D6BF7615D8AEC706EFEDB21E931317F800B1BBAA7B0473C86。这是派生对象图和记录头依赖角色的有限资格，不是父SDK全源fresh/hermeticity；消费者raw尾帧完整性和原严格性能未通过，候选仍proposed、不生产采用。后续只在采集边界或性能具体owning input改变时重开，不复跑seek、旧pair或已闭子项。

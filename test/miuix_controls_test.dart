@@ -1,5 +1,6 @@
 import 'dart:ui' as semantics_ui;
 
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart' as sdk;
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
@@ -632,6 +633,121 @@ void main() {
     await tester.pumpAndSettle();
     expect(ends, hasLength(3));
     expect(value, closeTo(before + .1, .001));
+  });
+
+  testWidgets('desktop mouse click on slider commits exactly once', (
+    tester,
+  ) async {
+    var value = .2;
+    final ends = <double>[];
+    await tester.pumpWidget(
+      host(
+        StatefulBuilder(
+          builder: (context, setState) => ui.Slider(
+            value: value,
+            onChanged: (v) => setState(() => value = v),
+            onChangeEnd: ends.add,
+          ),
+        ),
+      ),
+    );
+
+    final rect = tester.getRect(find.byType(miuix.MiuixSlider));
+    final mouse = await tester.startGesture(
+      Offset(rect.left + rect.width * .75, rect.center.dy),
+      kind: PointerDeviceKind.mouse,
+    );
+    await mouse.up();
+    await tester.pump();
+
+    expect(value, closeTo(.75, .03));
+    expect(ends, [value]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('ordinary slider tap does not wait for the player commit delay', (
+    tester,
+  ) async {
+    final ends = <double>[];
+    await tester.pumpWidget(
+      host(ui.Slider(value: .2, onChanged: (_) {}, onChangeEnd: ends.add)),
+    );
+
+    final rect = tester.getRect(find.byType(miuix.MiuixSlider));
+    await tester.tapAt(Offset(rect.left + rect.width * .75, rect.center.dy));
+    await tester.pump();
+
+    expect(ends, hasLength(1));
+    expect(ends.single, closeTo(.75, .03));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tap held by a parent double-tap commits when resolved', (
+    tester,
+  ) async {
+    final ends = <double>[];
+    var doubleTaps = 0;
+    await tester.pumpWidget(
+      host(
+        StatefulBuilder(
+          builder: (context, setState) => GestureDetector(
+            onDoubleTap: () => doubleTaps++,
+            child: ui.Slider(
+              value: .2,
+              onChanged: (_) {},
+              onChangeEnd: ends.add,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final rect = tester.getRect(find.byType(miuix.MiuixSlider));
+    final tap = await tester.startGesture(
+      Offset(rect.left + rect.width * .75, rect.center.dy),
+    );
+    await tap.up();
+    await tester.pump(const Duration(milliseconds: 299));
+    expect(ends, isEmpty);
+    await tester.pump(const Duration(milliseconds: 2));
+    expect(ends, hasLength(1));
+    expect(ends.single, closeTo(.75, .03));
+    expect(doubleTaps, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('drag commits immediately before the double-tap threshold', (
+    tester,
+  ) async {
+    var value = .2;
+    final ends = <double>[];
+    await tester.pumpWidget(
+      host(
+        StatefulBuilder(
+          builder: (context, setState) => GestureDetector(
+            onDoubleTap: () {},
+            child: ui.Slider(
+              value: value,
+              onChanged: (v) => setState(() => value = v),
+              onChangeEnd: ends.add,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final rect = tester.getRect(find.byType(miuix.MiuixSlider));
+    final drag = await tester.startGesture(
+      Offset(rect.left + rect.width * .2, rect.center.dy),
+    );
+    await drag.moveBy(const Offset(45, 0));
+    await tester.pump();
+    await drag.up();
+    expect(ends, hasLength(1));
+    expect(value, greaterThan(.2));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(ends, hasLength(1));
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

@@ -76,8 +76,9 @@ double _cornerRadius(
   OutlinedBorder? shape,
   double fallback,
 ) {
-  if (shape is RoundedRectangleBorder)
+  if (shape is RoundedRectangleBorder) {
     return shape.borderRadius.resolve(Directionality.of(context)).topLeft.x;
+  }
   if (shape is StadiumBorder || shape is CircleBorder) return 999;
   return fallback;
 }
@@ -164,7 +165,7 @@ class _ActionButton extends StatelessWidget {
       ),
     );
     final side = style?.side?.resolve(states);
-    if (side != null && side.style != BorderStyle.none)
+    if (side != null && side.style != BorderStyle.none) {
       body = DecoratedBox(
         position: DecorationPosition.foreground,
         decoration: ShapeDecoration(
@@ -172,8 +173,9 @@ class _ActionButton extends StatelessWidget {
         ),
         child: body,
       );
+    }
     final maximum = style?.maximumSize?.resolve(states);
-    if (maximum != null)
+    if (maximum != null) {
       body = ConstrainedBox(
         constraints: BoxConstraints(
           maxWidth: maximum.width,
@@ -181,13 +183,15 @@ class _ActionButton extends StatelessWidget {
         ),
         child: body,
       );
+    }
     final fixed = style?.fixedSize?.resolve(states);
-    if (fixed != null)
+    if (fixed != null) {
       body = SizedBox(
         width: fixed.width.isFinite ? fixed.width : null,
         height: fixed.height.isFinite ? fixed.height : null,
         child: body,
       );
+    }
     // Miuix's pressable exposes both an explicit tap and a gesture tap. Keep
     // the action role, label and focus on one accessible button.
     return MergeSemantics(
@@ -647,8 +651,9 @@ class IconButton extends StatelessWidget {
         ),
       ),
     );
-    if (constraints != null)
+    if (constraints != null) {
       body = ConstrainedBox(constraints: constraints!, child: body);
+    }
     body = MergeSemantics(
       child: _ControlFocus(
         onActivate: onPressed,
@@ -759,7 +764,7 @@ class TextField extends StatelessWidget {
         ],
       );
     }
-    if (d?.helperText != null || d?.errorText != null)
+    if (d?.helperText != null || d?.errorText != null) {
       field = Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -779,6 +784,7 @@ class TextField extends StatelessWidget {
           ),
         ],
       );
+    }
     return MiuixFrameworkBridge(child: field);
   }
 }
@@ -938,6 +944,10 @@ class _SliderState extends State<Slider> {
     }
     pending = v;
     widget.onChanged!(v);
+    // A tap's value callback may arrive after pointer-up when an ancestor
+    // double-tap recognizer holds the gesture arena. Commit that tap value
+    // here; drags remain active until MiuixSlider reports their finish.
+    if (activePointer == null) finish();
   }
 
   void finish() {
@@ -977,8 +987,9 @@ class _SliderState extends State<Slider> {
       autofocus: widget.autofocus,
       canRequestFocus: enabled,
       onKeyEvent: (_, event) {
-        if (event is! KeyDownEvent && event is! KeyRepeatEvent)
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
           return KeyEventResult.ignored;
+        }
         final key = event.logicalKey;
         if (key == LogicalKeyboardKey.arrowRight ||
             key == LogicalKeyboardKey.arrowUp) {
@@ -1021,8 +1032,8 @@ class _SliderState extends State<Slider> {
           onPointerUp: (event) {
             if (event.pointer != activePointer) return;
             activePointer = null;
-            // Tap updates arrive later in this event dispatch. Secondary touches
-            // must not finish a seek while the initiating finger is still down.
+            // Keep Miuix's gesture-end fallback for drags. Taps commit their
+            // final (possibly delayed) value in change().
             scheduleMicrotask(finish);
           },
           onPointerCancel: (event) {
@@ -1183,7 +1194,10 @@ class ListTile extends StatelessWidget {
       ],
       holdDownState: selected,
     );
-    if (onTap != null || focusNode != null || autofocus || onLongPress != null)
+    if (onTap != null ||
+        focusNode != null ||
+        autofocus ||
+        onLongPress != null) {
       body = _ControlFocus(
         onActivate: enabled ? onTap : null,
         focusNode: focusNode,
@@ -1191,6 +1205,7 @@ class ListTile extends StatelessWidget {
         onLongPress: onLongPress,
         child: body,
       );
+    }
     // Selection belongs to the named row action, alongside its enabled state.
     // Merge only the primary component; independent trailing controls stay
     // outside this semantics group and retain their own names and actions.
@@ -1199,7 +1214,7 @@ class ListTile extends StatelessWidget {
     );
     // The row has one keyboard stop. Independent end actions live outside its
     // internal Miuix pressable so excluding duplicate focus cannot hide them.
-    if (trailing != null)
+    if (trailing != null) {
       body = Row(
         children: [
           Expanded(child: body),
@@ -1213,7 +1228,8 @@ class ListTile extends StatelessWidget {
           ),
         ],
       );
-    if (selected || tileColor != null)
+    }
+    if (selected || tileColor != null) {
       body = ColoredBox(
         color: selected
             ? selectedTileColor ??
@@ -1221,6 +1237,7 @@ class ListTile extends StatelessWidget {
             : tileColor!,
         child: body,
       );
+    }
     // Custom content bypasses BasicComponent's MiuixText title/summary path.
     // Supply the same type hierarchy and state colors to Flutter Text children.
     return DefaultTextStyle.merge(

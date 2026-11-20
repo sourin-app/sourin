@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter_miuix/miuix.dart' as miuix;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -65,6 +66,142 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('desktop mouse click on progress track commits seek', (
+    tester,
+  ) async {
+    final seeks = <Duration>[];
+    await tester.pumpWidget(
+      _host(
+        PlayerProgressSlider(
+          position: const Duration(seconds: 20),
+          duration: const Duration(seconds: 100),
+          onSeek: seeks.add,
+        ),
+      ),
+    );
+    final rect = tester.getRect(find.byType(PlayerProgressSlider));
+    final mouse = await tester.startGesture(
+      Offset(rect.left + rect.width * .75, rect.center.dy),
+      kind: PointerDeviceKind.mouse,
+    );
+    await mouse.up();
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump();
+
+    expect(seeks, hasLength(1));
+    expect(seeks.single.inMilliseconds, closeTo(75000, 1000));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('slider click still commits when pointer-up leaves hit area', (
+    tester,
+  ) async {
+    final seeks = <Duration>[];
+    await tester.pumpWidget(
+      _host(
+        PlayerProgressSlider(
+          position: const Duration(seconds: 20),
+          duration: const Duration(seconds: 100),
+          onSeek: seeks.add,
+        ),
+      ),
+    );
+    final rect = tester.getRect(find.byType(PlayerProgressSlider));
+    final start = Offset(rect.left + rect.width * .75, rect.center.dy);
+    final mouse = await tester.startGesture(
+      start,
+      kind: PointerDeviceKind.mouse,
+    );
+    await mouse.moveTo(start.translate(0, rect.height / 2 + 1));
+    await mouse.up();
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pump();
+
+    expect(seeks, hasLength(1));
+    expect(seeks.single.inMilliseconds, closeTo(75000, 1000));
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final kind in [PointerDeviceKind.mouse, PointerDeviceKind.touch]) {
+    testWidgets('progress $kind click commits beneath parent double-tap', (
+      tester,
+    ) async {
+      final seeks = <Duration>[];
+      var doubleTaps = 0;
+      var position = const Duration(seconds: 20);
+      await tester.pumpWidget(
+        _host(
+          StatefulBuilder(
+            builder: (context, setState) => GestureDetector(
+              onDoubleTap: () => doubleTaps++,
+              child: PlayerProgressSlider(
+                position: position,
+                duration: const Duration(seconds: 100),
+                onSeek: (target) {
+                  seeks.add(target);
+                  setState(() => position = target);
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+      final rect = tester.getRect(find.byType(PlayerProgressSlider));
+      final pointer = await tester.startGesture(
+        Offset(rect.left + rect.width * .75, rect.center.dy),
+        kind: kind,
+      );
+      await pointer.up();
+      await tester.pump(const Duration(milliseconds: 350));
+
+      expect(seeks, hasLength(1));
+      expect(seeks.single.inMilliseconds, closeTo(75000, 1000));
+      expect(doubleTaps, 0);
+      expect(
+        tester.widget<miuix.MiuixSlider>(find.byType(miuix.MiuixSlider)).value,
+        closeTo(75000, 1000),
+        reason: 'The click must commit the rendered slider value.',
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('progress $kind double-tap resolves before a seek commits', (
+      tester,
+    ) async {
+      final seeks = <Duration>[];
+      var doubleTaps = 0;
+      await tester.pumpWidget(
+        _host(
+          GestureDetector(
+            onDoubleTap: () => doubleTaps++,
+            child: PlayerProgressSlider(
+              position: const Duration(seconds: 20),
+              duration: const Duration(seconds: 100),
+              onSeek: seeks.add,
+            ),
+          ),
+        ),
+      );
+      final rect = tester.getRect(find.byType(PlayerProgressSlider));
+      final point = Offset(rect.left + rect.width * .75, rect.center.dy);
+      for (var tap = 0; tap < 2; tap++) {
+        final pointer = await tester.startGesture(point, kind: kind);
+        await pointer.up();
+        if (tap == 0) await tester.pump(const Duration(milliseconds: 60));
+      }
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(doubleTaps, 1);
+      expect(seeks, isEmpty);
+      expect(
+        tester.widget<miuix.MiuixSlider>(find.byType(miuix.MiuixSlider)).value,
+        20000,
+        reason: 'A double tap must not leave a preview-only position.',
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets(
     'inline search binds the exact candidate and rejects stale results',

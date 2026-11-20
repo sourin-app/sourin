@@ -308,9 +308,12 @@ void main() {
         reason: '★★★ 不许再出现裸 seek（task-14 修的就是这一行）');
 
     // ⑤ 原有的两条口径不变
-    expect(src, contains("AppLog.write('PLAY', '跳过片头"),
-        reason: '★★ 跳过动作必须落盘 —— 改前只有 debugPrint，'
-            'Release 版日志里一条都没有（Owner 无法排查）');
+    expect(
+      RegExp(r"AppLog\.write\(\s*'PLAY',\s*'跳过片头").hasMatch(src),
+      isTrue,
+      reason: '★★ 跳过动作必须落盘 —— 改前只有 debugPrint，'
+          'Release 版日志里一条都没有（Owner 无法排查）',
+    );
     expect(src, contains('_userSeekClock = Stopwatch()'),
         reason: '★★ 必须是单调时钟：墙钟会被 NTP / 用户改时间影响，'
             '2 秒窗口会变成负数或几小时');

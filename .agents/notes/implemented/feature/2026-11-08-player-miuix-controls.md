@@ -1,76 +1,85 @@
-# Agent Note: Player controls use actual Miuix components
+# Agent Note: 播放器控件使用真实 Miuix 组件
 
 Status: implemented
 
-Applies: 2026-11-08, Flutter player, episode selection, detail actions and playback settings.
+适用范围：2026-11-08、Flutter 播放器、选集、详情操作和播放设置。
 
-Partially overlaps with [Miuix appearance](2026-11-08-miuix-appearance.md): that decision supplies the palette; this one defines playback interaction and rendering contracts. The [local rebuild decision](../simplification/2026-10-18-player-mouse-jank-localize-rebuilds.md) remains in force.
+与 [Miuix 外观](2026-11-08-miuix-appearance.md) 部分重叠：该决定提供调色板；本文定义播放交互和渲染契约。[局部重建决定](../simplification/2026-10-18-player-mouse-jank-localize-rebuilds.md) 继续有效。
 
 ## Problem
 
-Changing colors on legacy controls leaves the player with a separate interaction and visual system. Video controls also need a dark surface even when the surrounding application uses light mode. Replacing the progress renderer must preserve seek throttling, buffer geometry, keyboard access and updates from the real playback position.
+只给旧控件换颜色，会让播放器保留一套分离的交互与视觉系统。即使周围应用使用浅色模式，视频控件也需要深色表面。替换进度渲染器时，仍必须保留 seek 节流、缓冲区几何、键盘访问，以及来自真实播放位置的更新。
 
 ## Decision
 
-Use flutter_miuix components directly or through `miuix_controls.dart`. Buttons, text inputs, choice controls, sliders, tooltips and progress indicators render the actual package widgets. Popover rows, episode cells and danmaku type toggles use MiuixPressable. Player cards and inputs receive the dark Miuix theme independently of the surrounding page.
+直接使用 flutter_miuix 组件，或通过 `miuix_controls.dart` 使用。按钮、文本输入、选择控件、滑块、工具提示和进度指示器都渲染实际的包组件。弹出行、选集单元和弹幕类型切换使用 MiuixPressable。播放器卡片和输入框独立使用深色 Miuix 主题，不受周围页面影响。
 
-PlayerProgressSlider delegates interaction and thumb painting to the actual MiuixSlider. Drag changes update only a local preview. Release commits one seek; cancellation clears the preview without seeking. Position updates continue through the existing ValueListenableBuilder. The buffered interval is a separate layer beneath the translucent track, inset by the actual thumb radius and clamped to duration. A supplied buffer key identifies that interval, not the played range.
+PlayerProgressSlider 将交互和滑块绘制委托给实际的 MiuixSlider。拖动变化只更新局部预览；释放时提交一次 seek，取消时清除预览且不执行 seek。位置更新继续通过现有的 ValueListenableBuilder 传递。缓冲区间作为半透明轨道下方的独立层绘制，按实际 thumb 半径向内缩进，并限制在时长范围内。传入的 buffer key 标识该缓冲区间，而不是已播放区间。
 
-The buffer stack expands its slider child to the available bounds. MiuixSlider's childless CustomPaint otherwise collapses to zero width under loose Stack constraints, leaving a full-size buffer container with no usable slider. Rendering tests assert the actual painter dimensions before inspecting its thumb pixels.
+桌面播放器把这个滑块放在页面级双击识别器之下。父级在检查双击时可能延迟滑块的单击值回调，即使适配层已经观察到 pointer-up。适配层会提交 pointer-up 之后才到达的值回调；只要 pointer 仍处于活动状态，拖动变化就保持为预览，并在拖动手势完成时结束。识别为双击后会取消待处理的单击回调，因此不会 seek。普通的独立滑块单击、键盘变化和拖动完成都不会增加额外延迟。
 
-Danmaku information uses an opaque dark MiuixCard so bright video frames cannot alter the text background. This partially supersedes the glass surface choice in [seven panel requirements](2026-10-19-danmaku-panel-seven-items.md) and [glass placement](../architecture/2026-10-18-glassify-where-it-is-visible.md). Their readability, source information, binding, failure reporting and measured performance constraints remain applicable. The previous inner-alpha gate is replaced by a rendered pixel comparison over white and cyan backgrounds.
+缓冲区 Stack 会把滑块子组件扩展到可用边界。MiuixSlider 没有 child，它的 CustomPaint 在 Stack 的宽松约束下会收缩为零宽，结果是缓冲区容器虽然占满尺寸，却没有可用的滑块。渲染测试先断言实际 painter 的尺寸，再检查 thumb 像素。
 
-Popup focus retention, Escape handling, line selection and episode identity continue through their existing controllers. The settings tab row uses keyboard-capable Miuix choice buttons. Subtitle font choices use the actual Miuix window dropdown while retaining the existing player-property callback.
+弹幕信息使用不透明的深色 MiuixCard，因此明亮的视频帧不会改变文字背景。这部分取代了 [七项面板要求](2026-10-19-danmaku-panel-seven-items.md) 和 [玻璃放置](../architecture/2026-10-18-glassify-where-it-is-visible.md) 中关于玻璃表面的选择，但其中的可读性、来源信息、绑定、失败报告和实测性能约束仍然适用。原来的 inner-alpha 门禁改为比较白色和青色背景上的实际渲染像素。
 
-The small-popover layer retains its last rendered body and anchor while the
-existing opacity/slide exit completes. Controller.close changes the active
-state immediately; the retained subtree immediately loses pointer, focus and
-semantics interaction, then unmounts after the opacity completion. Reopening
-or selecting another panel cancels obsolete removal; replacing the controller
-does not retain its former panel. Keeping only an animated empty box would
-provide no actual exit motion. Tests read the rendered animation's intermediate
-opacity and content/anchor presence, rather than only its target value, and
-check focused-editor dismissal, inaccessible exit controls, quick reopen,
-replacement and disposal.
-Only a closing render binds the removal completion: a controller close that
-arrives immediately before the entering ticker's last frame must not let that
-old entrance callback remove the retained body. The exact duration edge can
-evaluate opacity to zero while the floating-point ticker is still forward;
-regressions observe the following normal frame before requiring unmount.
-The danmaku session helpers first rebuild the changed visibility, verify that
-the retained closing panel blocks pointer, focus and semantics interaction,
-then advance Motion.fast and one normal completion frame before requiring
-removal. Their search, binding and session assertions remain in place.
+弹窗焦点保持、Escape 处理、线路选择和集身份继续由既有控制器负责。设置页签行使用支持键盘的 Miuix 选择按钮。字幕字体选择使用实际的 Miuix 窗口下拉框，同时保留已有的播放器属性回调。
 
-MediaPage, standalone DetailPage and PlayerPage use AppScaffold, which mounts the actual MiuixScaffold. Windowed surfaces keep the current theme color and the fullscreen/video surfaces keep their black background. AppScaffold consumes keyboard viewInsets after applying their bottom padding, so nested media/player shells subtract the inset once. Its Padding and MediaQuery wrappers stay mounted at zero inset to preserve page state when the keyboard opens or closes.
+小型弹出层在现有不透明度/滑动退出动画完成前，保留上一次渲染的内容和锚点。Controller.close 会立即改变活动状态；保留的子树随即失去 pointer、焦点和语义交互能力，并在不透明度动画完成后卸载。重新打开或选择其他面板会取消过时的移除操作；替换控制器不会保留旧控制器的面板。只保留一个动画空框不会产生真正的退出动效。测试读取渲染动画的中间不透明度以及内容/锚点是否存在，而不只检查目标值；同时检查聚焦编辑器的关闭、不可访问的退出控件、快速重新打开、替换和释放。
+只有关闭中的渲染才绑定移除完成回调：如果 Controller.close 紧挨着进入动画 ticker 的最后一帧到达，旧的进入回调不能移除保留的内容。精确的时长边界可能在浮点 ticker 仍处于正向时把不透明度算为零；回归测试会观察其后的普通帧，再要求卸载。
+弹幕会话辅助方法先重建可见性变化，确认保留的关闭面板阻挡 pointer、焦点和语义交互，然后推进 Motion.fast 和一帧普通完成帧，最后才要求移除。它们原有的搜索、绑定和会话断言继续保留。
 
-PopoverController keeps at most one pending geometry watcher. Switching the open panel or closing and reopening before the next frame reuses that watcher; otherwise each switch adds another recurring render-coordinate traversal. The regression test counts actual `applyPaintTransform` calls through the mounted anchor tree and requires one read per supplied frame, zero while closed, and no frame scheduling by the watcher.
+MediaPage、独立 DetailPage 和 PlayerPage 使用 AppScaffold，后者会挂载真实的 MiuixScaffold。窗口化表面保留当前主题颜色，全屏/视频表面保留黑色背景。AppScaffold 在应用底部 padding 后再消费键盘 viewInsets，因此嵌套的媒体/播放器外壳只扣除一次 inset。其 Padding 和 MediaQuery 包装器在 inset 为零时仍保持挂载，以便键盘打开或关闭时保留页面状态。
 
-PopoverAnchorButton cancels its pending hover-open timer from an outer `Listener.onPointerDown`. PlayerPage's desktop double-tap recognizer delays a child single click until 300 ms; the independent 150 ms hover timer otherwise opens the panel first, and the delayed click toggles it closed. The raw listener sees the press even when the nested Miuix button wins the gesture arena. An ancestor `GestureDetector.onTapDown` did not fix the race because that recognizer lost to the child. Explicit clicking still toggles a panel that was already open before the press.
+PopoverController 最多保留一个待处理的几何观察器。下一帧前切换打开的面板，或关闭后重新打开，会复用该观察器；否则每次切换都会增加一次持续的渲染坐标遍历。回归测试通过已挂载的锚点树统计实际的 applyPaintTransform 调用，要求每个提供的帧只读取一次，关闭时为零，并且观察器不调度帧。
 
-The note audit also found the [send capability decision](2026-10-17-player-danmaku-send-entry.md), which is independent of the control implementation: capability gating remains, and this change does not reinstate its historical floating placement. The [rejected buffering-spinner proposal](../../rejected/bug-fix/2026-10-18-buffering-spinner-despite-cached-range.md) stays rejected; a visible buffer interval does not establish decoder readiness.
+PopoverAnchorButton 在外层 Listener.onPointerDown 中取消待处理的悬停打开计时器。PlayerPage 的桌面双击识别器会把子级单击延迟 300 ms；独立的 150 ms 悬停计时器否则会先打开面板，延迟的单击随后又把它关闭。原始 listener 即使嵌套的 Miuix 按钮赢得手势竞技，也能看到按下事件。祖先 GestureDetector.onTapDown 没有解决竞争，因为该识别器输给了子级。按下前已经打开的面板，显式单击仍会切换它。
 
-Buffered progress is delivered through a ValueListenable scoped to PlayerProgressSlider. Native cache polling includes span and percent in change detection; unchanged endpoints still update a shrinking interval. Stop invalidates pending reads, and non-finite or negative time values are unavailable. Position, duration, seek throttling and the live progress omission retain their existing contracts.
+笔记审计还发现了 [发送能力决定](2026-10-17-player-danmaku-send-entry.md)，但它独立于控件实现：能力门控继续有效，本次改动不会恢复历史上的浮动位置。[被拒绝的缓冲旋转器提案](../../rejected/bug-fix/2026-10-18-buffering-spinner-despite-cached-range.md) 仍然被拒绝；可见的缓冲区间不能证明解码器已经就绪。
 
-The 4px track and 28px hit area are deliberately independent. Thumb pixel checks render the actual Miuix painter at 4x and convert centroids back to logical coordinates. A 1x white-pixel area threshold inherited from the thicker legacy thumb is not appropriate to this geometry. The pixel count threshold stays intact at 4x; making the thumb transparent must fail. Endpoint, drag, cancel, buffer-bound and live-omission assertions remain.
+缓冲进度通过作用域限定在 PlayerProgressSlider 内的 ValueListenable 传递。原生缓存轮询把 span 和 percent 纳入变化检测；即使端点不变，正在缩小的区间仍会更新。停止操作会使待处理的读取失效，非有限或负的时间值视为不可用。位置、时长、seek 节流和直播进度省略继续遵守既有契约。
+
+4px 轨道和 28px 命中区域是有意分离的。thumb 像素检查以 4 倍尺寸渲染实际的 Miuix painter，再把质心换算回逻辑坐标。沿用较粗旧 thumb 的 1 倍白像素面积阈值不适合这套几何。像素数量阈值在 4 倍尺寸下保持不变；让 thumb 透明必须使测试失败。端点、拖动、取消、缓冲边界和直播省略断言继续保留。
+
+## 点击 seek 的完成范围
+
+适用记录：2026-11-19 点击修复工作树及其已验 Release。单击进度条的修复已有真实
+PlayerPage、libmpv 与发行包证据，不因继续任务而重新实现或重跑。完整回执见
+[逐项验收报告](../../../../FINAL_ACCEPTANCE_20261118.md)的“进度条点击 seek 续验”和
+“含点击修复的 Release 同包续验”；[同包及窗口安全决定](../bug-fix/2026-11-18-task-window-safety-and-package-acceptance.md)
+持有运行包的适用范围。
+
+原隔离串行回归为控件 31 项、启用 native-media 后的真实 seek 链路 24 项；
+撤销修复时，父级双击识别器下的单击用例变红。原生本地 WAV 观察到一次点击提交一次，
+`time-pos=22.576` 秒，随后继续推进至少 300 ms。这些是已有运行，不是补记时新执行的测试。
+
+同一 59 文件生产 Release 在 96 DPI 下，窗口消息按下/抬起一次使隔离进度
+32→93→98 秒，视频自身时间显示 `00:01:38.917`；原 ask/Quit 自然退出，未移动系统光标
+或激活窗口。统一回执为
+`.probe/seek-click-release-v1/CURRENT_RELEASE_CLICK_STABILITY_VISIBILITY_ACCEPTANCE_V2.json`。
+未出现可见滑块、实际点击为零的先前失败均保留，不算通过。物理鼠标、125% DPI、
+公网取流、普通默认启动和完整 18+12 目标不在这条成功的范围内。
+
+只有 Slider 手势完成协议、PlayerPage 的用户 seek/自动跳过接线、播放器依赖或最终包中
+对应编译输入改变，或出现新的反证时，才重开受影响的 seek 验证。其它分配优化不能抹掉
+这次成功，也不能让新包自动继承它的整包资格。
 
 ## Alternatives considered
 
-- Repaint the old controls to resemble Miuix: does not satisfy the requested actual component migration.
-- Draw a custom thumb above MiuixSlider: creates competing position renderers and hides package behavior from the rendering tests.
-- Rebuild PlayerPage on slider movement: violates the existing local rebuild constraint and expands work on every pointer event.
-- Preserve the old glass alpha assertions: measures a superseded visual choice and permits the actual text background to remain unverified.
+- 把旧控件重新绘制成 Miuix 的样子：不满足要求的真实组件迁移。
+- 在 MiuixSlider 上方绘制自定义 thumb：会产生相互竞争的位置渲染器，并让渲染测试无法看到包组件的行为。
+- 在滑块移动时重建 PlayerPage：违反既有的局部重建约束，并让每次 pointer 事件都扩大工作量。
+- 保留旧的玻璃 alpha 断言：测量的是已经取代的视觉选择，并允许实际文字背景继续处于未验证状态。
 
 ## Consequences
 
-Behavior tests read the actual Miuix slider painter, exercise tap/drag/cancel/keyboard paths, and retain failure, pending-input, focus and line/episode assertions. Tooltip tests locate the application MiuixTooltipHost and verify rendered MiuixPlainTooltip content; [anchor visibility and overlay ownership](../bug-fix/2026-11-10-tooltip-clipped-scroll-anchors.md) governs their lifecycle. Surface tests compare real pixels, not just input color constants. These tests require the product theme bridge when mounting actual Miuix text inputs.
+行为测试读取实际的 Miuix 滑块 painter，覆盖单击/拖动/取消/键盘路径，并保留失败、待处理输入、焦点以及线路/选集断言。工具提示测试定位应用的 MiuixTooltipHost，并验证渲染出的 MiuixPlainTooltip 内容；[锚点可见性与浮层归属](../bug-fix/2026-11-10-tooltip-clipped-scroll-anchors.md) 负责其生命周期。表面测试比较真实像素，而不是只比较输入颜色常量。挂载真实 Miuix 文本输入时，这些测试需要产品主题桥接器。
 
-The scaffold regression checks actual nested Miuix shells, content geometry and an unkeyed stateful child's lifetime across keyboard inset changes. Embedded layout/theme tests retain their existing contracts while locating the Miuix shell. The player capability import allowlist now explicitly includes flutter_miuix while preserving the rule that the settings panel does not own mpv or playback.
+脚手架回归测试检查真实的嵌套 Miuix 外壳、内容几何，以及键盘 inset 变化期间无 key 的有状态子组件生命周期。嵌入式布局/主题测试在定位 Miuix 外壳时继续保留既有契约。播放器能力导入白名单现在显式包含 flutter_miuix，同时保留设置面板不拥有 mpv 或播放能力的规则。
 
-Root executed the actual PlayerBottomBar/Miuix mouse-click regression under a desktop double-tap ancestor. `miuix-popover-click-red-v3.log` records one failure and one passing explicit-close control: a fresh click was closed at 149 ms, open at 151 ms, then closed at 301/551 ms. The first two attempts were import failures, not behavioral RED evidence. The attempted ancestor onTapDown fix still failed (`miuix-popover-click-green-v1.log`, 12 passed / 1 failed). With the raw pointer listener, `miuix-popover-click-green-v2.log` passes all 51 cases, including the two hover/click cases, geometry watcher, ten quick-panel interactions, pixel contrast, dialog geometry and Material-boundary audits. These logs are under `.probe/parallel-astra-1108/`.
+根代理在桌面双击祖先下实际执行了 PlayerBottomBar/Miuix 鼠标单击回归。`miuix-popover-click-red-v3.log` 记录了一次失败和一个通过的显式关闭控件：一次新鲜单击在 149 ms 时关闭、151 ms 时打开，然后在 301/551 ms 时关闭。前两次尝试是导入失败，不是行为 RED 证据。尝试的祖先 onTapDown 修复仍然失败（`miuix-popover-click-green-v1.log`，12 项通过 / 1 项失败）。加入原始 pointer listener 后，`miuix-popover-click-green-v2.log` 的 51 个用例全部通过，包括两个悬停/单击用例、几何观察器、十个快速面板交互、像素对比、对话框几何和 Material 边界审计。这些日志位于 `.probe/parallel-astra-1108/`。
 
-Native v5 had already decoded the synthetic A2/B2 sequence but stopped before focusing search; it did not complete native interaction acceptance. Its lifecycle trace now records actual controller transitions and call stacks without reopening or replacing a removed target. V6 confirmed that the raw-pointer fix leaves the panel/editor stable, then exposed a separate harness error: the same editor gained focus 303.625 ms after the pointer-up observation, 47.309 ms after the driver had prematurely failed at its 250 ms check. The trace retained the same panel, editor and focus-node identities, and the player typing state became true with focus.
+Native v5 已经解码合成的 A2/B2 序列，但在聚焦搜索前停止；它没有完成原生交互验收。其生命周期追踪现在记录真实的控制器转换和调用栈，没有重新打开或替换已移除的目标。V6 确认原始指针修复让面板/编辑器保持稳定，同时暴露了另一个测试工具错误：同一个编辑器在 pointer-up 观察后 303.625 ms 才获得焦点，比驱动在 250 ms 检查时过早失败晚了 47.309 ms。追踪保留了相同的面板、编辑器和焦点节点身份，播放器输入状态变为 true 且已获得焦点。
 
-The shared diagnostic click helper therefore retains its original 250 ms observation, waits for the original pointer-up plus kDoubleTapTimeout, then observes two frames before checking the result. The gear continues to require the same unique panel/editor across those frames. `t20261108_miuix_editor_double_tap_completion_test.dart` reproduces the real Miuix editor under a parent double-tap recognizer and checks focus through the actual mouse path; it does not request focus directly. This is a diagnostic timing correction, with no further production change. V6 stopped before the remaining interaction gates; complete native validation remains a separate root-owned run.
+因此，共享诊断单击辅助工具保留原来的 250 ms 观察点，等待原始 pointer-up 加上 kDoubleTapTimeout，然后再观察两帧才检查结果。齿轮仍要求这两帧中的面板/编辑器保持同一个唯一实例。`t20261108_miuix_editor_double_tap_completion_test.dart` 在父级双击识别器下复现真实 Miuix 编辑器，并通过真实鼠标路径检查焦点；它不会直接请求焦点。这是诊断时序修正，不涉及进一步的生产改动。V6 在剩余交互门禁前停止；完整原生验证仍是根代理负责的独立运行。
 
-The child implementation checks are syntax parsing and diff validation only; focused Flutter execution, mutation checks and native window acceptance are separate root-agent validation gates. Revisit the adapter if the package changes gesture completion, keyboard, semantics or color contracts. Do not treat widget presence or successful compilation as evidence of playback acceptance.
+子组件实现检查仅进行语法解析和差异校验；定向 Flutter 执行、变异检查和原生窗口验收属于根代理的独立验证门禁。若包改变手势完成、键盘、语义或颜色契约，应重新审视适配层。不要把控件存在或编译成功当作播放验收证据。

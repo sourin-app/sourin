@@ -363,3 +363,13 @@ root亲看Home和Settings两PNG：Home混合已解码图与灰占位，Settings�
 旧AOT仅按真实冻结编译树继承：capture54/consumer55条冗余live路径精确桥回同relative/旧hash编译副本，保9758历史检查与819源码，其它依赖严格原地；当前路径隔离改动未被虚称已编入原AOT。首拒绝、decoder命名冲突及只读读回器错误原件均保留。详见[候选提案](.agents/notes/proposed/simplification/2026-11-20-skia-json-integer-format.md)。根pair回执sourin-performance-20261120-round15/engine-build/ROOT_R15_PURE_ENGINE_PAIR_READBACK_V1.json，SHA256 4DBC73DAC572610D6BF7615D8AEC706EFEDB21E931317F800B1BBAA7B0473C86。候选未生产采用，性能、消费者全raw、普通启动、Top20、A8、历史caller和完整目标仍未验收。
 
 按本次Owner明确指示，root+7可见队友按互斥范围推进，全部所需队友已回收实际产物/结果；工具与探针路径隔离、T38显式夹具及相关隐私文字在真实正反测试与逐行自审后本地提交ce5bd7f并已推送同工作分支，远端HEAD/树已独立读回和全树分类复扫。89个已审命中属于占位/协议/公开归属/合成fixture/检测needle，确认真实机器路径和具体私库元数据0；不声称旧git历史被重写或所有隐私范畴穷尽。437篇笔记机械门通过，旧账户/GUI探针未运行，不把helper绿当A8或UI验收。seek、既验Release和未受影响范围不重测。
+
+## Quit原始帧响应协议子项已闭合，严格性能仍未通过
+
+第16轮只改任务Profile的Quit分支，在native Finish后由既有同步_result一次返回raw/count/windows/timingReceipts；phase=quit-requested和complete=false保持，measurementCompleteBeforeQuit单独验证动作已完成，旧callback/200msTimer/原20动作体不变。新AOT A453D16D…75B80真实kernel+snapshot均自然0，3485实际kernel输入含新entry30C874F…5F6E；source819其余818字节继承旧cohort，不虚称当前工作树已进同一产品包。
+
+新capture/consumer各只一次：真实Quit包1090/1234条与各自count一致，动作后各20条全保留，均自然exit0/noForce/Job双空>=8秒；两实际Finish期间新增callback恰0，不将其称为强制晚入场景。强制晚入由真实dart:ui FrameTiming/原入口方法的controlled Finish future夹具验证，7编译0、4错误run1、3正/阶段run0，反向适配hash还原实际源；它不是native/driver替代。每臂另9个实际原件负控exit17、独立raw读回0；严格全帧预算各真exit3，capture超1/21/45、consumer超1/11/25。1234帧互斥冷/动作内/窗外前中/尾170/793/251/20；total超7/11/6/1。
+
+独立原decoder拒旧AOT物料，新39descriptor/38payload/506424字节身份绑定新AOT/同8A05DLL，consumer39load/39driver accepted/0reject/0fallback，消费后39物料文件及副本hash保持。root亲见四截图，Home海报状态不等价、Settings同hash；加载18/17映像逐hash核验。完整性仅截至Finish后同步Quit响应，不涵盖响应之后的析构帧，不据此宣布普通未修改启动/全程像素/性能或完整18+12通过；旧R15缺5raw失败原件保留。
+
+[协议决定与验证边界](.agents/notes/implemented/testing/2026-11-20-atomic-quit-raw-packet.md)。根回执sourin-performance-20261120-round16/ROOT_ATOMIC_QUIT_PAIR_READBACK_V1.json，SHA256 2B29ACFE7A0FDCC145092B2129674E0B30582CDD3B246EDDBFB93B36E1334C92。下一步只基于25个已冻结超限帧的真实时钟和动作标签选择新的性能归因输入，不重播此次样本、已验seek或稳定Release。

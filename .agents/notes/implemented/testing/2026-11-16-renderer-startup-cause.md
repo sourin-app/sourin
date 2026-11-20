@@ -838,6 +838,10 @@ root亲看Home和Settings两PNG：Home混合已解码图与灰占位，Settings�
 
 根回执 sourin-performance-20261120-round12/lead/ROOT_GLPB_OFF_ORIGINAL20_READBACK_V1.json，SHA256 B568F780D0DB5ADFBF16997F8432B86A5C02D22B88431AB2611552844964EBD6；精确源/包/原件链与失败均保留，未经远端发布。
 
+原件的26个totalSpan超限已进一步按真实frame ID落到具体动作：首轮搜索129/130/131/141、首轮设置292、第二轮搜索413、第二轮设置600、第三轮发现939、滚动准备992、第二次设置滚动1058；冷10和窗外6个totalSpan超限也保持。3个build与12个raster超限均落在totalSpan超限集合，只有1帧同时build+raster。这个算术分布不提供当次shader、present或CPU/驱动调用归因；新off样本没有对应事件scope和校准QPC，不能从旧运行移植原因。队友的范围算术与root原checker对时钟、窗成员、丢20尾帧的实际深拷贝篡改分别保留；真正原checker错误为ACTUAL_RAW_TIMING_EQUATIONS、ACTUAL_WINDOW_FRAME_MEMBERSHIP、QUIT_FRAME_CENSUS_NO_MISSING_TAIL。
+
+[整数写出候选](../../proposed/simplification/2026-11-20-skia-json-integer-format.md)在私有pinned Skia真C++差分下得到两模式字节等价和实际符号位红控，尚未编入引擎或运行live reader。它只针对未来consumer的JSON格式化开销，原关闭GLPB路径不经该ReadLive链，因此不把它写成本次off超限的修复。生产/性能资格仍缺，未重播原20或seek。
+
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
 Rejected warm-up, shadow and repaint experiments stay rejected. Revisit this

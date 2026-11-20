@@ -349,3 +349,9 @@ GLPB关闭的新原20样本已执行并独立复核：新AOT 85BCA990…DA7E9（
 root亲看Home和Settings两PNG：Home混合已解码图与灰占位，Settings可见；不宣称全部封面解码、全程像素等价或与旧capture/consume跨运行因果提速。当前匿名上游数据可能变化，卡片数量/几何一致不足以证明内容像素一致。当前只关闭额外GLPB观察，不是无探针Release；严格性能、生产采用、普通启动、Top20、真实外链、历史caller与完整18+12仍未通过。
 
 根回执 sourin-performance-20261120-round12/lead/ROOT_GLPB_OFF_ORIGINAL20_READBACK_V1.json，SHA256 B568F780D0DB5ADFBF16997F8432B86A5C02D22B88431AB2611552844964EBD6；精确源/包/原件链与失败均保留，未经远端发布。
+
+## 私有整数序列化候选仍待引擎采用验证
+
+在实际pinned SkJSONWriter类及真实Skia核心实现下，四种十进制方法改用现成SkStrAppend函数，保持实时能力读取、全部输出字段、float/hex和状态机。故障副本先真实自然exit73；候选正例自然exit0，kFast/kPretty原件逐字节分别1562905/2263461字节相等，每模式100068项数组的整数token均独立核对，含100000次伪随机十进制调用。两进程无force/Job双空≥8秒；原负控stage保持passed=false。
+
+这仅是写出器行为对照，不是live caps reader、完整引擎、GPU像素或应用性能资格。没有运行新GUI，不重播seek/已验原20；第12轮3/12/26失败保持。候选针对未来consumer的额外序列化成本，关闭GLPB的off基线并不调用此ReadLive链，不能宣称修复该基线峰值。详见[候选决定](.agents/notes/proposed/simplification/2026-11-20-skia-json-integer-format.md)。根回执 sourin-performance-20261120-round13/ROOT_JSON_WRITER_DIFF_READBACK_V1.json，SHA256 C1A8930A66A005F233485D4DFEC7F1B182A170066F77300B3738BA118690407F。

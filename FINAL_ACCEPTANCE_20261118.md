@@ -298,7 +298,7 @@ V30/V31 的失败和污染输入审计仍保留在 `.probe/`，不与 V32 混用
 - 后继真实D3D离屏绘制只针对原私有缓存header（无即时日志）验证像素：固定人工VS/PS、同设备/常量/纹理/顶点/光栅与混合状态，直接Create和cache miss/hit分别画入独立RGBA8 render target，CopyResource到staging后Map，opaque与alpha两对共32768字节完全一致；真实覆盖各1152像素，中心色和边角clear另检。先改变候选alpha draw的红色常量，实际GPU回读出现1152字节差，同一像素门自然exit1；随后原状态自然exit0，所有owned Job无force、双空≥8秒。root另从原raw重算并亲看PNG。它只证明人工shader/指定状态的局部绘制等价，不是35程序的全像素、debug-label等价或性能通过。证据 `sourin-shader-validation-20261120-round8/lead/pixel-execution/PIXEL_READBACK_V1.json`。
 - Owner要求的本地检查点已完成：43cfb07、22b9846、71fba84、f440d68。既有seek与已验UI源码已入库，原实测范围不变；私有引擎/脚本/日志/图片仍只留统一任务目录，不入源码库。无新增trace候选的当前结果以下述原件为准，不沿用准备阶段状态。未执行远端push、PR、tag或发布。
 
-## 无新增 trace 候选的当前阻断
+## 无新增 trace 候选的第 9 轮保留失败
 
 - 新私有 DLL `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB` /派生闭包 `7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587` 已实际单身份编译/重链自然0、无force、双空≥8；3535复用对象/实际库字节及246实际include已核，原OUT/SDK成员stat不变，不是全父源码新鲜重验。它仅恢复原compositor以去除新增trace，cache算法、原AOT8E68…0331A及原20动作区保持；没有生产安装或正式性能通过。
 - 首捕获在start前 `CAPTURE_SIZE_BOUND` 失败，26 raw、0动作，Dartready1592×904/DPR1而原生日志160×28；无同期iconic/placement/caller，不能归因Owner或DLL。原退出自然0/无force/双空8.0096秒，清理35材料未资格。
@@ -308,3 +308,14 @@ V30/V31 的失败和污染输入审计仍保留在 `.probe/`，不与 V32 混用
 - 只对原匿名分类20/page1同公开GET经既有loopback路由单次请求，零重试/凭据/跳转、TLS不放宽：curl35、HTTP000、0字节握手失败。这不是此前八请求共同根因，也不采用更新服务502来解释区块。网络队友报告漏lead根而未读当前run，保持partial；root读取正确原件核结论，不把独审未覆盖标绿。
 - 根离线读回 `sourin-performance-20261120-round9/lead/ROUND9_FAILED_CAPTURE_SCOPE_READBACK_V1.json`，SHA `7D06222203B300EC2DD4CF61B9996FFBCFEF481B3D9E5A21CF369313D60A3C66`。读回通过只证明原件链一致，非采集/性能/生产资格；无第三次客户端、无新合格材料或消费，完整18+12继续active。路由内容恢复及原显示cohort的新只读准入证据缺失前，不延长超时/换内容/改DPR或重复启动挑成绩。
 - 统一round9任务目录实盘点约584.2MB，其中唯一plain引擎构建约298.9MB、两份不同失败native配置/运行及根验证约285.2MB；可用约78.29GiB。保留唯一可复用构建及失败原件，不删证据、不安装生产；未创建第三套运行包。
+
+## 主屏私有入口的原 20 动作实测及严格预算失败
+
+- 第10轮先对同包core现成匿名文本接口做一次分类20/page1 GET：HTTP200、14记录/13非空封面，独立六根/命名空间、无账号或凭据读取，自然0/无force/双空8.0481秒；真实非HTTP scheme被拒绝。它是reqwest/rustls路径，不重播curl/Schannel，也不反推此前八区块共同根因。
+- 仅私有runner main加入编译宏与原合法非激活hook控制的首显前主屏准入；共享guard真隐窗红控自然1、绿控自然0且尺寸保留。初版误传新增环境hook被原AOT隔离拒绝、Quit未注册、owned强制清理，原件完整保留。修订删除新hook、保持AOT白名单，静态非法hook负控明确拒绝；main真实编译后只读纠正报告路径，不重编成功对象。
+- 同plain DLL C65C5AD5…773CB、闭包7FA1F59A…12587、原AOT8E68…0331A和修订main对象401239C3…6098：capture/consume各一次完成原15导航+1准备+4滚动，700ms窗口/450ms linear/原动作区逐字保持。两臂实见首显/ready为当前主屏、96DPI、1592×904/DPR1，8区块154卡片；各18加载映像匹配，准确HWND消失，原Quit自然0/无force，双空分别8.0463/8.0486、8.0282/8.0282秒。只记录采样窗口状态，不声称连续历史或历史caller。
+- 捕获39描述符/38唯一blob/506424字节，manifest `3156F44CCCA7D1E17515ED90C7573E0B398716FDBFB3692C63F2E0452EB7EB18`，真实Finish及原decoder重开后才编消费配置。消费者base59+材料39=98件，首预检固定59误拒发生在GUI前；读侧修正后缺材料/多成员负控均拒绝，未重采或重编AOT。原件与只读副本39文件消费后逐项同hash。
+- 消费真实41load、39return/binary/matched/driver accepted、2reject、0fallback/reentrant，session nonce8119367108902853076。不写成41全命中，不从总数回溯拒绝原因，也不改helper静态false为资格绿。root实际counter/session/material链及38blob/key/长度/格式已读回。
+- capture动作末812/preQuit830（18尾帧），consume动作末908/preQuit925（17尾帧），冷/窗内/窗外全部计入；Quit计数等于preQuit，不声明Quit后到exit逐帧完整。原整数判据下build/raster/total超限capture **7/156/301**，consume **8/150/263**；consumer最大52550/372920/690855μs，p95为4572/38033/82312μs，冷启动115帧和窗外199帧保留。**原20运行完成，但性能明确未通过**。
+- root亲看四张PNG：捕获首页全占位，消费者首页可见海报；最终设置图同hash，不能宣称全程像素等价或跨运行因果提速。有限独审只核capture830raw/39材料及38blob，环境审查为partial，不能转作consumer独审成功。root离线另核两臂完整原件；时钟、700ms窗口、Quit分母篡改及“隐藏拒绝”/错误payload hash负控都拒绝。
+- 根回执 `sourin-performance-20261120-round10/lead/ROUND10_PRIMARY_FULL20_PAIR_ROOT_READBACK_V1.json`，SHA `9554E764B8B945AC08FDD461F58434586C26525883D5BF69EBB75028F346F55D`。仅读回通过，不生产采用、不正式发布、不推送。已验seek、生产源码和Release ZIP保持；原18+12继续active，普通启动、Top20精确封面、A8真实外链、历史caller和完整交付不因本轮局部通过而升级。

@@ -1199,19 +1199,27 @@ evidence, not full product/debug-label equivalence. Owner's local checkpoint com
 `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB`, derived closure
 `7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587`; one identity TU and
 link qualified 3535 reused objects/246 actual includes without SDK/OUT mutation, not fresh full-source.
-Both new capture attempts failed before start: first CAPTURE_SIZE_BOUND (26raw), then an observer-only
-successor failed the unchanged90-second Home readiness gate (8failed sections/0cards/551raw).
-Both naturally quit0/noForce/dualempty8s; cleanup35/30 materials remain unqualified, no consumer.
-The passive state observer passed a real hidden owned-window/birth-fault check; the successor saved
-4noniconic/nonforeground states, not continuous history or caller attribution. DPR/display snapshots
-changed1/65537 to1.25/65539. One exact anonymous category20 GET through the existing route failed
-curl35/TLS/HTTP000/0bytes without retries or credentials. Do not make a third launch, move/restore a
-window, extend readiness, swap content or claim performance. First obtain genuinely new route-content
-and original display/cohort admission evidence. Root failed-scope readback is round9/lead/
-ROUND9_FAILED_CAPTURE_SCOPE_READBACK_V1.json; all577raw and checker failures retained.
-All-raw budgets must use pre-Quit append-only data: the saved former20 result1112 vs preQuit1120
-changes totalSpan excess13 to14. Original20 body/700ms windows remain unchanged.
-Round9 artifacts total about584.2MB; available disk about78.29GiB. No third package or production install.
+第9轮两次start前失败（尺寸界26raw、八区块失败551raw）及curl/Schannel TLS失败保持未资格。
+第10轮同产品core的匿名文本接口一次HTTP200（14项/13非空封面）提供新的有限路由证据；
+不解释旧失败共同根因，不读取真实账号/凭据。私有main首显前主屏守卫真隐窗红1/绿0已验证，
+随后修订为编译宏+原合法SOURIN_TASK_NO_ACTIVATE，原AOT不改。初版多传PRIMARY环境hook
+导致Dart入口异常、Quit未注册和强制清理，保留失败；静态环境门现能拒绝同非法注入。
+
+修订main对象401239C3…6098 + 同C65DLL/AOT，两臂各一次实际完成原20动作和700ms窗口，
+当前主屏ready1592×904/DPR1、8区块154卡片，各18实际加载包映像匹配；原Quit自然0/无force、
+双空≥8秒。capture原decoder验证39descriptor/38blob/506424B，manifest
+`3156F44CCCA7D1E17515ED90C7573E0B398716FDBFB3692C63F2E0452EB7EB18`；
+consumer98文件材料只读，41load/39driver accepted/2reject/0fallback，同nonce关联，消费后原件及
+39文件副本hash未变。不要把2reject隐藏或从计数推原因。消费者预检59固定值错误在GUI前已拒绝，
+仅修读侧成员门并用缺材料/多成员负控验证，原AOT和capture不重跑。
+
+capture830preQuit含18尾帧，consumer925含17尾帧，原严格全帧预算仍红：7/156/301与8/150/263。
+consumer最大build/raster/total52550/372920/690855μs；冷115帧、窗外199帧不删。
+root亲查capture首页占位/consumer有图，设置末图同hash，不证明全程像素等价或因果提速。
+采样状态非连续历史，也不归因Owner/历史caller；原helper静态false不转绿。
+根原件 `sourin-performance-20261120-round10/lead/ROUND10_PRIMARY_FULL20_PAIR_ROOT_READBACK_V1.json`
+SHA9554E764…46F55D。当前pair已完成且预算失败，禁止重播挑成绩；继续需明确受影响owning input
+和新的可证成本，不重做旧seek/API/像素/已资格构建。私有main/GLPB均未生产采用或安装。
 
 The latest product source is compiled into Release AOT `58131BEB…CA9361E`, with all 3483 actual
 kernel inputs matched. Asset checks qualify reuse of 58 non-AOT files (including actual rebuilt

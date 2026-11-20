@@ -232,22 +232,28 @@ geometry/compute/stream-output保持原样，不擅改ShaderExecutable头布局�
 
 这只是proposed+实际API fixture和私有静态资格，尚未证明像素、全部状态、应用链接收益或正式性能。
 
-### 当前无新增 trace 候选未取得原 20 运行资格
+### 当前无新增 trace 候选已完成原动作，未通过性能
 
-私有 DLL `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB` /闭包
-`7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587` 已按实际父对象谱系重链：
-恢复原 compositor、无即时 cache 标签，仅编新身份。原 AOT 与原动作不改，3535 对象和 246 include
-资格只到静态构建。第一次捕获在截图前因窗口尺寸界失败，后继只补已经真实隐窗红绿验证的被动
-状态观察；第二次因八区块请求失败、0 卡片及 90 秒就绪超时而失败。两次都未开始原 20 动作，
-26/551 raw 保留，均按原 Quit 自然 0/无 force/双空 ≥8；清理 Finish 的 35/30 材料不能用于消费。
-后继 DPR1.25/display65539 与此前 DPR1/display65537 也不构成同 cohort；源码与当前显示枚举不证明
-是谁移动/最小化窗口。单次精确原匿名分类 GET 经原代理出现 curl35/TLS 握手失败/HTTP000，
-没有重试、凭据、TLS 放宽、第三次客户端或新 consumer。
+私有 DLL `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB`、
+闭包 `7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587` 与
+原 AOT 保持。第 9 轮尺寸失败和八区块失败的577raw/清理材料继续未资格；第10轮先以
+同产品core的真实匿名请求取得HTTP200新证据，再以只作用新任务HWND首显前的主屏守卫
+恢复DPR1准入，不移动现有窗口、不改系统DPI/效果/VSync。未知环境hook导致的一次
+Dart隔离异常和强制清理保留为失败，修订只改native编译宏、删除额外hook，不放宽AOT。
 
-详细事实与再开条件由[渲染启动归因](../../implemented/testing/2026-11-16-renderer-startup-cause.md)
-持有。旧 trace 对、API/局部像素阳性保留原范围，本方案仍 proposed；全帧读回须包含 pre-Quit
-追加帧，不能把动作末 result 当完整 raw。路由/显示内容未满足时不测性能，不延长原就绪门或
-重播失败挑成绩；只有具体 owning input 改变及新的匿名内容/显示准入证据才允许后继。
+修订capture与readonly consume各实际完成原20动作并自然0/无force/双空≥8；ready为
+1592×904/DPR1、8区块154卡片、各18个包映像同hash。捕获39descriptor/38blob/506424字节，
+manifest `3156F44CCCA7D1E17515ED90C7573E0B398716FDBFB3692C63F2E0452EB7EB18`；
+原decoder重开后才组98文件消费者。实际41load/39driver accepted/2reject/0fallback，
+同nonce关联，原件及只读副本39文件消费后未变。它不等于所有请求命中或两次拒绝已归因。
+
+capture保留830preQuit帧（含18尾帧），consumer925帧（含17尾帧），原700ms窗口及整数
+全帧预算不变；超限分别7/156/301与8/150/263，严格性能未通过。root亲查capture首页
+全占位、consumer有图，最终设置截面同hash，不能作全场视觉等价或跨运行因果比较。
+本方案仍proposed，不生产安装；详细原件、失败、负控与再开边界由
+[渲染启动归因](../../implemented/testing/2026-11-16-renderer-startup-cause.md)和
+[任务窗口边界](../../implemented/bug-fix/2026-11-18-task-window-safety-and-package-acceptance.md)持有。
+不重复该pair、旧seek或成功fixture挑成绩；下一次性能执行必须有明确新的受影响输入。
 
 ## Acceptance criteria
 
@@ -264,5 +270,5 @@ geometry/compute/stream-output保持原样，不擅改ShaderExecutable头布局�
 有限闭包不是全宿主可复现保证，身份头 true 不是运行授权；alias 去重若丢失词法角色或输入字节会失去可信度。
 native capture/consume 代码、GL driver 和窗口生命周期都可能失败；必须保留失败终态、一次性调用与自然退出约束。
 普通默认启动需要授权交互式会话；真实账户、凭据、真实库写入、远端传输或清理不在本提案授权内。
-已有分开的旧九条与新 39 条同 DLL/AOT 实际材料及关联驱动接受。新样本只在当前实际 render 请求内零拒绝，
-两个现存截面同字节，不代表全程视觉等价、其它上下文覆盖、生产采用或原始预算通过。
+早期九条及stable-caps的39条材料各保留原DLL/AOT范围；其中零拒绝和同字节截面只属于各自旧样本。
+当前plain候选41次尝试仍有2次拒绝、首页截面不同且严格预算失败，不提升为全覆盖、全程视觉等价或生产采用。

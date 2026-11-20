@@ -723,7 +723,7 @@ cohort或DPR已相同。
 `sourin-shader-validation-20261120-round8/lead/pixel-execution/PIXEL_READBACK_V1.json`。
 主代理原始链检查仍单独有效，正式采用需要补齐受影响行为/原预算与相应独立复核。
 
-### 无新增 trace 候选的原动作准入边界
+### 无新增 trace 候选的原动作准入与保留失败
 
 当前无新增 trace 私有 DLL 为 `C65C5AD538301D0F45586391663CED3D660C16A2205EBEBE4EA73608570773CB`，
 派生闭包为 `7FA1F59A40EE667ADDD9C78041F2472F6D9DEE8D19A9C068C61421F72DB12587`。
@@ -738,7 +738,7 @@ AOT 仍为原 `8E68C741…0331A`，原 20 动作区逐字保留。原滚动是 4
 原动作/窗口成员及 Quit 分母，并用实际数据的时钟、窗口时长、Quit 帧数三种篡改证明会拒绝；
 没有重新运行旧应用。它修正采集边界，不能反过来称旧 result 已包含尾帧。
 
-新 DLL 的首次捕获在原动作开始前被 `CAPTURE_SIZE_BOUND` 拒绝：Dart ready 为
+以下两次是第 9 轮保留的失败，不覆盖后述第 10 轮修订输入的运行。首次捕获在原动作开始前被 `CAPTURE_SIZE_BOUND` 拒绝：Dart ready 为
 1592×904 / DPR1，原生日志随后为 160×28；没有同期 IsIconic/placement/caller，不能叫已归因
 最小化或认定 Owner 操作。26 条失败 raw 的 build/raster/total 超限为 2/13/17，零个原动作；
 清理 Finish 得到 35 条材料并不赋予采集资格。原 Quit 自然 0、无 force、双时钟空 Job ≥8 秒。
@@ -766,6 +766,63 @@ SHA256 `7D06222203B300EC2DD4CF61B9996FFBCFEF481B3D9E5A21CF369313D60A3C66` 只证
 内容、移动/恢复窗口、删冷帧或反复启动挑成绩绕过。再开须先有精确匿名请求恢复内容就绪的新证据，
 并只读绑定原几何/DPR/显示 cohort 或明确新 cohort 的授权与不可比边界。产品、既验 seek 与本地
 Release ZIP 均未改变；普通启动、真实外链、Top20 和历史 caller 条件仍另行未验收。
+
+### 原 20 动作已完成，严格性能仍失败
+
+第 10 轮沿用上述 DLL、闭包与原 AOT，没有重编引擎或 Dart。新准入证据来自同包
+`sourin_core.dll` 的现成 `global_proxy_text_request`：全新六根隔离目录和独立钥匙串
+命名空间内，一次原匿名分类 20/page1 请求返回 HTTP200、14 条记录、13 条非空封面；
+自然退出 0、无 force、双时钟空 Job 8.0481 秒。非 HTTP scheme 的真实 API 调用先被拒绝。
+该接口使用 reqwest/rustls，不能用旧 curl/Schannel 握手失败替代它的结论，也不能反推
+此前八区块的共同根因。请求只证明当时这一分类可用，没有读取真实账号或凭据。
+
+显示准入只改变私有任务 runner 的 main：编译宏 `SOURIN_TASK_PRIMARY_GUARD=1` 与
+已有合法 `SOURIN_TASK_NO_ACTIVATE` 同时生效，创建前确认当前主屏为 96 DPI；
+仅在新 HWND 首次可见前，对越主屏工作区的位置消息加 `SWP_NOMOVE`，保留尺寸和
+其它标志，首次可见后释放。它不恢复或激活窗口，不锁定已显示窗口，不改系统 DPI、
+普通入口、AOT、效果或 VSync。共享同一 guard 的真实自有隐窗测试中，关闭 guard 后
+跨区移动使断言自然 exit1；启用后位置被保留、尺寸变化仍通过，前台不变，正例自然0。
+这只证明该消息路径，不是所有窗口路径或历史 caller 的归因。
+
+首个私有入口误把新 `SOURIN_TASK_PRIMARY_AT_CREATE` 环境变量传给冻结 AOT，
+`_verifyIsolation` 因未知 hook 抛错，Quit 扩展未注册，最终 owned Job 强制清理；
+该运行始终为失败，不享有自然退出或性能资格。后继只用编译期开关和原合法 hook，
+不改 AOT 白名单；AST 门对同一非法 hook 注入明确拒绝，原环境接受。默认编码读侧失败、
+main 编译成功但最终报告写错旧路径而被 CREATE_NEW 拒绝的原件均保留；只读 stage
+重建编译资格，没有重编成功对象。消费者首次静态预检还误用固定 59 文件，GUI 未启动；
+改为精确 base59+本次材料39=98 成员，缺材料和多成员负控均拒绝，不重采捕获。
+
+修订后的 capture/consume 各只运行一次，原 15 导航、1 滚动准备、4 设置滚动以及
+700ms 测量窗口、450ms linear 滚动保持，原动作区逐字相同。两臂实际 ready 均为主屏
+DPR1、物理/逻辑1592×904、8 区块/154 卡片；各有首显原生标签及三条被动状态记录，
+记录时非 iconic/非 foreground，不冒充连续窗口历史。两臂均原 Quit 自然 exit0、无force、
+准确窗口消失、18 个实际加载包映像匹配，双时钟空 Job 分别 8.0463/8.0486 与8.0282/8.0282秒。
+
+捕获 Finish 得到 39 descriptor、38 唯一 blob、506424 字节，manifest
+`3156F44CCCA7D1E17515ED90C7573E0B398716FDBFB3692C63F2E0452EB7EB18`；
+原 decoder 重开并验证后才构建消费者。消费者实际41 load、39 return/binary/matched/
+driver accepted、2 rejected、0 fallback/reentrant，同 nonce8119367108902853076。
+原件与只读包副本39文件在消费结束后逐项同hash，key解码/hash及payload长度/格式已核；
+不能称41次全命中，也不由计数猜两次拒绝原因。
+
+capture 动作末812帧、pre-Quit830帧，consume动作末908帧、pre-Quit925帧；18/17条尾帧
+及所有冷/窗外帧均保留，Quit分母一致，不声明Quit后到exit还有完整逐帧记录。原整数预算
+`rawUs * 60 <= 1000000` 下，捕获 build/raster/total 超限7/156/301（采集有开销）；
+只读消费超限8/150/263，最大52550/372920/690855μs，p95为4572/38033/82312μs。
+消费者冷启动115帧、窗外199帧也计入；不能删掉这些帧或挑另一运行来报告性能通过。
+此候选已完成一次原动作运行，但未获得严格性能、生产采用或全目标资格。
+
+root亲看四张实机PNG：capture首页全占位，consume首页可见海报；最终设置页图片同hash。
+几何/内容计数不等于首帧解码，首页截面不同，不宣称全场像素等价、跨运行缓存因果提速。
+有限独审覆盖capture830帧/39材料及38实际blob散列，不覆盖consumer之后的新原件；环境
+队友报告保持partial，未把lead报告转成独立实测。root另核两臂全部时序/包/模块/材料/nonce，
+三种raw篡改及隐去真实拒绝、改payload hash均拒绝。原helper中的静态false资格字段不被
+擅自改写，实际driver接受只来自原生关联计数。
+
+根回执为 `sourin-performance-20261120-round10/lead/ROUND10_PRIMARY_FULL20_PAIR_ROOT_READBACK_V1.json`，
+SHA256 `9554E764B8B945AC08FDD461F58434586C26525883D5BF69EBB75028F346F55D`。
+读回通过只证明这些原件绑定；生产源码、既验seek、Release ZIP及其它未验授权边界未改变。
+后续只在具体 owning input 变化或直接反证下重开，不重采该pair或重复已完成的fixture。
 
 Use causal evidence to review a new renderer hypothesis. Debug pauses and raw wall spans remain
 diagnostic; untraced full-frame validation is still required for admission.
